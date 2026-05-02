@@ -6,9 +6,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 internal static class SystemPromptBuilder
 {
-    private const string BasePersona =
-
-        "You are an autonomous developer assistant running as a local background daemon. You have access to local system tools and must use them when necessary to fulfill the operator's request.";
+    private const string BasePersona = "You are an autonomous developer assistant running as a local background daemon. You have access to local system tools and must use them when necessary to fulfill the operator's request.";
 
     internal static string Build(PingRequest request, string? codexContent, ParsedSpell? activeSpell = null)
     {

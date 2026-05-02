@@ -44,7 +44,6 @@ internal static class SemanticRouter
             safeUser);
 
         var routerMessages = new List<MeAiChatMessage>
-
         {
             new MeAiChatMessage(ChatRole.User, classificationPrompt),
         };

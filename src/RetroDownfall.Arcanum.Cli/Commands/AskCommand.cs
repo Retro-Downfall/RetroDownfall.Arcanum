@@ -177,17 +177,13 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "[PROMPT...]")]
-
         public string[] PromptWords { get; init; } = [];
 
         [CommandOption("-m|--model")]
-
         public string? Model { get; init; }
 
         [CommandOption("-n|--new")]
-
         [Description("Start a new conversation thread, clearing the previous session.")]
-
         public bool New { get; init; }
     }
 }

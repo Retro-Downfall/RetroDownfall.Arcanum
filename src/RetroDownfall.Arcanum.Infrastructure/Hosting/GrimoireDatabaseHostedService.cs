@@ -21,6 +21,7 @@ public sealed class GrimoireDatabaseHostedService(
         "AOT",
         "IL3050",
         Justification = "EnsureCreatedAsync is RequiresDynamicCode; used only for first-run empty-database bootstrap with the compiled EF model—migrations and design-time model builds are not executed here.")]
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         Batteries_V2.Init();

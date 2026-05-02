@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
     "AOT",
     "IL3050",
     Justification = "DbContext base ctor is marked RequiresDynamicCode; Arcanum always applies UseModel(ArcanumDbContextModel.Instance) so the compiled model is used at runtime without EF design-time model materialization.")]
-
 [UnconditionalSuppressMessage(
     "AOT",
     "IL2026",

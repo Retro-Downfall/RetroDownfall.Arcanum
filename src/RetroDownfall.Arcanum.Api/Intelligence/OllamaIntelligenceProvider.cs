@@ -762,7 +762,6 @@ public sealed class OllamaIntelligenceProvider(
         "ReflectionAnalysis",
         "IL2026:RequiresUnreferencedCode",
         Justification = "Tool argument dictionaries are small JSON-serializable payloads from the model; keys/values are strings or primitives.")]
-
     [UnconditionalSuppressMessage(
         "AOT",
         "IL3050:RequiresDynamicCode",

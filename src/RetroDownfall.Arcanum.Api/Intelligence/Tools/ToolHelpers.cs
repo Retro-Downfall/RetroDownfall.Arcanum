@@ -15,9 +15,7 @@ internal static class ToolHelpers
         {
             normalized = null;
 
-            configurationErrorMessage =
-
-                "No workspace directory was provided for this request. The operator should run `arcanum ask` from their project folder so file paths and commands are scoped to that workspace.";
+            configurationErrorMessage = "No workspace directory was provided for this request. The operator should run `arcanum ask` from their project folder so file paths and commands are scoped to that workspace.";
 
             return false;
         }
@@ -34,9 +32,7 @@ internal static class ToolHelpers
         {
             normalized = null;
 
-            configurationErrorMessage =
-
-                "The workspace directory on this request could not be resolved. Please ask the operator to use a valid path and try again.";
+            configurationErrorMessage = "The workspace directory on this request could not be resolved. Please ask the operator to use a valid path and try again.";
 
             return false;
         }

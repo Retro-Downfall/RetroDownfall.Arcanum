@@ -29,7 +29,6 @@ public static class ApiBootstrapper
         "Trimming",
         "IL2026",
         Justification = "AddOpenApi pulls MVC model metadata with RequiresUnreferencedCode; Arcanum uses minimal APIs plus source-generated OpenAPI metadata—no controller-based model binding at runtime.")]
-
     [UnconditionalSuppressMessage(
         "AOT",
         "IL2026",
