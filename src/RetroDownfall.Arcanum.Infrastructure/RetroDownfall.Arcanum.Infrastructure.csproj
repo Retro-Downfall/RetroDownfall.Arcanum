@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+
+    <RootNamespace>RetroDownfall.Arcanum.Infrastructure</RootNamespace>
+
+    <AssemblyName>RetroDownfall.Arcanum.Infrastructure</AssemblyName>
+
+    <IsAotCompatible>true</IsAotCompatible>
+
+    <IsTrimmable>true</IsTrimmable>
+
+    <PublishAot>true</PublishAot>
+
+    <!-- Keep false: MSBuild precompiled-query pass fails on some LINQ (e.g. ordered Include); compiled model comes from `dotnet ef dbcontext optimize`. -->
+
+    <EFOptimizeContext>false</EFOptimizeContext>
+
+    <EFPrecompileQueriesStage>none</EFPrecompileQueriesStage>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <ProjectReference Include="..\RetroDownfall.Arcanum.Core\RetroDownfall.Arcanum.Core.csproj" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.7" />
+
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.7" />
+
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7">
+
+      <PrivateAssets>all</PrivateAssets>
+
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+
+    </PackageReference>
+
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.7" />
+
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.7" />
+
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+
+    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
+
+  </ItemGroup>
+
+</Project>

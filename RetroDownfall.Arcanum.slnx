@@ -1,0 +1,19 @@
+<Solution>
+
+  <Configurations>
+
+    <Platform Name="Any CPU" />
+
+  </Configurations>
+
+  <Project Path="src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj" />
+
+  <Project Path="src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj" />
+
+  <Project Path="src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj" />
+
+  <Project Path="src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj" />
+
+  <Project Path="src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj" />
+
+</Solution>

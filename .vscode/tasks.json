@@ -1,0 +1,111 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build-solution",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "${workspaceFolder}/RetroDownfall.Arcanum.slnx",
+        "-c",
+        "Debug",
+        "/property:GenerateFullPaths=true",
+        "/consoleloggerparameters:NoSummary"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "silent"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "build-cli",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "${workspaceFolder}/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj",
+        "-c",
+        "Debug",
+        "/property:GenerateFullPaths=true",
+        "/consoleloggerparameters:NoSummary"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "silent"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "build-api-devhost",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "${workspaceFolder}/src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj",
+        "-c",
+        "Debug",
+        "/property:GenerateFullPaths=true",
+        "/consoleloggerparameters:NoSummary"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "silent"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "wait-arcanum-api-port",
+      "type": "shell",
+      "command": "/bin/bash",
+      "args": [
+        "${workspaceFolder}/.vscode/wait-arcanum-5001.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "windows": {
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder}\\.vscode\\wait-arcanum-5001.ps1"
+        ]
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent"
+      }
+    },
+    {
+      "label": "build-cli-wait-api-port",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "build-cli",
+        "wait-arcanum-api-port"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Arcanum: CLI workspace shell",
+      "type": "shell",
+      "command": "echo Arcanum: repo root is cwd. Use dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- and your verb. See README Debugging. ask needs http://localhost:5001.",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["build-cli"],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

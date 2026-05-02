@@ -1,0 +1,902 @@
+# Arcanum — Design Document
+
+This document captures the **architecture, design decisions, and tradeoffs** for the Retro Downfall **Arcanum** solution as implemented today. The intended audience is **senior C# / .NET engineers** who will extend, review, or operate the system.
+
+---
+
+## 1. Purpose and scope
+
+**Arcanum** is the application shell for a larger product: a **single deployable CLI** that can:
+
+1. Run **terminal-oriented commands** (orchestration, maintenance, batch work — currently the **`ask`** command for LLM inference: one user **`prompt`** per HTTP request, with optional **Grimoire thread continuation** via persisted **`conversationId`** — see §4.4 / §8.5 / §16).
+2. Optionally act as a **long-running HTTP host** exposing a **Minimal API** surface (the **`serve`** command).
+
+The current codebase implements the **multi-project host layer** — solution layout, project boundaries, CLI composition, slim Minimal API hosting, **`RetroDownfall.Arcanum.Infrastructure`** for **Serilog**, **Data Protection**, **encrypted Grimoire** (EF Core 10 + SQLCipher SQLite, HKDF-derived passphrase, compiled model), **workspace scanning**, **Eye of the World** situational perception (`IEyeOfTheWorld` / **`PatternSnapshot`** — filename- and path-based domain hints plus a bounded table of contents for LLM context), **Ollama-backed intelligence** via **Microsoft.Extensions.AI** in **`Api`**, **local API-key security**, and **Native AOT–friendly** patterns where the toolchain allows. The **`ask`** command materializes **`Environment.CurrentDirectory`**, a **`PatternSnapshot`**, and optionally **`PingRequest.ConversationId`** (from **`CliSessionManager`** / **`cli-session.txt`**) before calling the daemon-hosted API so inference requests carry **operator spatial context** and can **continue a Grimoire conversation** (see §10.5). **`Api/Intelligence/Tools`** implements three sealed **`AIFunction`** tools — **`GetLocalSystemTime`**, **`seek_workspace_lore`** (read UTF-8 text under **`WorkingDirectory`** with traversal checks), and **`invoke_rune`** (spawn **`Process`** in that directory with a **30s** timeout and **`Kill(entireProcessTree: true)`** on overrun) — using **static `JsonDocument`** parameter schemas only (**no `AIFunctionFactory`**, no reflection-driven tool JSON).
+
+**Two-pass semantic routing:** **`SpellScanner`** (Infrastructure **`Workspace`**) walks the normalized **`WorkingDirectory`** for **`*.spell.md`** files and parses a minimal YAML frontmatter (**`name:`**, **`description:`**) without **YamlDotNet**. **`SemanticRouter`** (Api) performs a **bounded-time** pre-flight **`IChatClient.GetResponseAsync`** (no tools, **low max output tokens**, **zero temperature**) that returns a spell **Name** or **`NONE`**; failures and timeouts resolve to **no spell** so the main inference loop is unchanged. The winning file’s full markdown is appended under **`### Active Operational Spell`** in **`SystemPromptBuilder`** (§10.2.2, §10.5).
+
+---
+
+## 2. Architectural goals
+
+| Goal | Rationale |
+|------|-----------|
+| **Strict project boundaries** | Keeps compile-time dependencies honest, enables parallel ownership (host vs HTTP surface vs domain), and avoids the "everything references everything" failure mode of large solutions. |
+| **Hybrid process model** | One binary reduces deployment and versioning surface; operators choose mode via CLI verbs instead of maintaining separate API and tool executables unless scale demands it later. |
+| **Native AOT readiness for the host** | Predictable startup, smaller attack surface from reflection-heavy stacks, and deployment as a native binary where required — balanced against ecosystem limitations (see §9). |
+| **Minimal API over MVC for the embedded host** | Fewer moving parts, explicit endpoint mapping, and alignment with ASP.NET Core's AOT-oriented request pipeline and source generators. |
+| **Source-generated JSON and request delegates** | Required for credible **trimming** and **Native AOT** compatibility; avoids runtime reflection on handler parameters and JSON contracts. |
+
+---
+
+## 3. Repository and solution layout
+
+### 3.1 `src/` per project
+
+Projects live under `src/` rather than the repository root:
+
+- Shorter, stable paths in CI and scripts.
+- Room for future top-level folders (`build/`, `docs/`, `test/`, `tools/`) without colliding with project folders.
+- Matches common enterprise monorepo conventions.
+
+### 3.2 SLNX solution format (`RetroDownfall.Arcanum.slnx`)
+
+The solution uses the **XML SLNX** format instead of the legacy `.sln` text format.
+
+**Decision:** Prefer `.slnx` for new work on .NET 9+ / 10 SDK toolchains.
+
+**Reasons:**
+
+- Human-readable XML; smaller diffs; fewer opaque GUID blocks.
+- First-class support in `dotnet` CLI (e.g. `dotnet build RetroDownfall.Arcanum.slnx`, `dotnet sln` subcommands) when the team standardizes on a single SDK band.
+- **Constraint:** Do not place both `.sln` and `.slnx` in the same directory — the CLI refuses to guess which to build.
+
+**Configurations block:** The file declares `<Platform Name="Any CPU" />` explicitly so platform dimensions are stable for tooling that reads SLNX; additional platforms can be added when needed (e.g. ARM64-specific solution build matrices).
+
+### 3.3 `Directory.Build.props`
+
+Shared MSBuild properties are centralized:
+
+- `TargetFramework`: `net10.0` — single TFM for the whole tree unless a project needs to multi-target later.
+- `Nullable`: `enable` — treats nullability as part of the public contract; important for long-lived libraries (`Core`, `Api`).
+- `ImplicitUsings`: `enable` — reduces noise; team standard usings remain implicit unless a file needs explicit clarity.
+- `LangVersion`: `latest` — allows the newest language features the installed SDK supports (e.g. C# 14 on a .NET 10 SDK) without per-project drift.
+
+**Decision:** Centralize TFM here so individual `.csproj` files focus on what *differentiates* each project (`PublishAot`, `IsTrimmable`, `EnableRequestDelegateGenerator`, references).
+
+### 3.4 Package version inventory
+
+All first-party **Microsoft.\*** framework and library packages are pinned to **10.0.7** across every project that references them. Third-party packages are pinned per project as follows:
+
+| Package | Version | Consuming projects |
+|---------|---------|--------------------|
+| `Microsoft.Extensions.AI.Abstractions` | 10.5.0 | Core |
+| `Microsoft.Extensions.AI` | 10.5.0 | Api |
+| `Microsoft.Extensions.Configuration` | 10.0.7 | Core |
+| `Microsoft.Extensions.Configuration.Json` | 10.0.7 | Core |
+| `Microsoft.Extensions.Configuration.EnvironmentVariables` | 10.0.7 | Core |
+| `Microsoft.Extensions.Hosting.WindowsServices` | 10.0.7 | Infrastructure, Api, Cli |
+| `Microsoft.Extensions.Hosting.Systemd` | 10.0.7 | Infrastructure, Api, Cli |
+| `Microsoft.AspNetCore.OpenApi` | 10.0.7 | Api |
+| `Microsoft.EntityFrameworkCore.Sqlite.Core` | 10.0.7 | Infrastructure |
+| `Microsoft.EntityFrameworkCore.Tasks` | 10.0.7 | Infrastructure |
+| `Microsoft.EntityFrameworkCore.Design` | 10.0.7 | Infrastructure (private) |
+| `OllamaSharp` | 5.4.25 | Api |
+| `Scalar.AspNetCore` | 2.14.7 | Api |
+| `Spectre.Console.Cli` | 0.53.0 | Cli |
+| `Serilog.AspNetCore` | 10.0.0 | Infrastructure |
+| `Serilog.Formatting.Compact` | 3.0.0 | Infrastructure |
+| `Serilog.Sinks.File` | 7.0.0 | Infrastructure |
+| `SQLitePCLRaw.bundle_e_sqlcipher` | 2.1.11 | Infrastructure |
+
+**Version discipline:** Upgrades to any package should be deliberate — re-run `dotnet publish` with AOT analysis for the Cli project and verify zero warnings before committing.
+
+---
+
+## 4. Project model and dependency graph
+
+```mermaid
+flowchart TB
+  subgraph cli [RetroDownfall.Arcanum.Cli]
+    Program[Program + Spectre CommandApp]
+    Serve[ServeCommand]
+    Ask[AskCommand]
+    Look[LookCommand]
+    ApiClient[ArcanumApiClient]
+    CliSession[CliSessionManager]
+  end
+  subgraph api [RetroDownfall.Arcanum.Api]
+    Boot[ApiBootstrapper]
+    Json[ArcanumJsonContext]
+    OllamaProvider[OllamaIntelligenceProvider]
+    MeAiTools[Intelligence/Tools sealed AIFunction]
+    ApiKeyFilter[ApiKeyEndpointFilter]
+  end
+  subgraph infra [RetroDownfall.Arcanum.Infrastructure]
+    InfraDi[AddArcanumInfrastructure]
+    EyeDi[AddArcanumEyeOfTheWorld]
+    GrimHost[GrimoireDatabaseHostedService]
+    Repo[GrimoireRepository]
+    EyeSvc[EyeOfTheWorldService]
+  end
+  subgraph core [RetroDownfall.Arcanum.Core]
+    Primitives["Primitives: Error, Result, ApiResponse"]
+    Config["Configuration: ArcanumSettings"]
+    Security["Security: ISecretStore"]
+    Storage["Storage: IGrimoireRepository, entities"]
+    Workspace["Workspace: IWorkspaceScanner"]
+    Pattern["Pattern: IEyeOfTheWorld, PatternSnapshot"]
+    Intelligence["Intelligence: IArcanumIntelligenceProvider, PingRequest, IntelligenceEvent"]
+  end
+  cli --> api
+  cli --> core
+  cli --> infra
+  api --> core
+  api --> infra
+  OllamaProvider --> MeAiTools
+  infra --> core
+  Serve --> Boot
+  Ask --> ApiClient
+  Ask --> CliSession
+  Look --> Pattern
+  EyeSvc --> Pattern
+  EyeDi --> EyeSvc
+  Boot --> InfraDi
+  Boot --> Json
+  Boot --> OllamaProvider
+  Boot --> ApiKeyFilter
+  Boot --> Primitives
+  Boot --> Config
+  InfraDi --> GrimHost
+  InfraDi --> Repo
+  InfraDi --> EyeDi
+  OllamaProvider --> Intelligence
+  OllamaProvider --> Storage
+  ApiKeyFilter --> Security
+  ApiClient --> Security
+  ApiClient --> Json
+  Repo --> Storage
+```
+
+**Inference wire:** **`PingRequest`** (§10.5) may embed a **`PatternSnapshot`** and optional **`conversationId`** serialized from **`Cli`** so **`Api`** receives cwd-bound context and **Grimoire thread continuation** that the daemon process alone cannot infer.
+
+### 4.1 `RetroDownfall.Arcanum.Core` (class library)
+
+**Role:** Long-term home for **domain primitives, shared contracts, configuration, security abstractions, and cross-cutting types** that must not depend on ASP.NET Core hosting.
+
+**Current state:**
+
+**`Primitives/`** — foundational result/envelope types under `RetroDownfall.Arcanum.Core.Primitives`:
+
+- **`Error`** — `readonly record struct (string Code, string Message)` with a `static readonly Error None` sentinel. Value equality drives the success/failure invariants in `Result`.
+- **`Result`** — base class carrying `IsSuccess`, `IsFailure`, `Error`. Provides `Success()`, `Failure(Error)`, and an `implicit operator Result(Error)` so any failure can be returned as `Error` and bind to `Result`.
+- **`Result<T>`** — sealed subtype carrying a `Value` accessor (throws on failure). `implicit operator Result<T>(T)` and `implicit operator Result<T>(Error)` make handler code read as straight return statements without ceremony.
+- **`ApiResponse<T>`** — `sealed record (T? Data, bool IsSuccess, Error? Error, string? TraceId)`. The standard wire envelope for every Arcanum HTTP response. `FromResult(Result<T>, string?)` is the canonical mapping point from domain result to wire envelope.
+
+**`Configuration/`** — strongly typed settings and bootstrap:
+
+- **`ArcanumSettings`** — root options class with `OllamaSettings Ollama` and `BureauSettings Bureau` properties.
+- **`OllamaSettings`** — `Endpoint` (default `http://localhost:11434`) and `DefaultModel` (default `llama3.2`).
+- **`BureauSettings`** — `Enabled` flag (placeholder for future feature; no current consumers).
+- **`ConfigurationBootstrapper`** — `AddArcanumConfiguration(this IConfigurationBuilder)` extension that reads `arcanum.json` from `{ApplicationData}/arcanum/` (creating the directory if needed), with reload-on-change enabled, and adds `ARCANUM_`-prefixed environment variables. Called by both `ServeCommand` and `Api.DevHost` before service registration.
+
+**`Security/`** — secret storage abstraction:
+
+- **`ISecretStore`** — `GetApiKeyAsync()` / `SaveApiKeyAsync(string)` contract. Concrete stores (for example **`DataProtectionSecretStore`**) live in **`RetroDownfall.Arcanum.Infrastructure`** so **Core** stays free of ASP.NET Core Data Protection and hosting packages.
+
+**`Intelligence/`** — provider contract and DTOs:
+
+- **`IArcanumIntelligenceProvider`** — `ExecutePromptAsync(PingRequest request, CancellationToken)` (buffered) and `StreamPromptAsync(PingRequest request, CancellationToken)` (`IAsyncEnumerable<IntelligenceEvent>`). Implementations receive the **full** request payload, including optional spatial fields (§10.5).
+- **`PingRequest`** — `sealed record (string Prompt, string? Model, string WorkingDirectory, PatternSnapshot? ContextSnapshot, Guid? ConversationId = null)` with defaults so **`WorkingDirectory`** may deserialize as empty, **`ContextSnapshot`** as null, and **`ConversationId`** omitted for older clients. **`PatternSnapshot`** is defined under **`Pattern/Entities`** (same assembly); it is JSON-friendly (no filesystem handles). The same **`WorkingDirectory`** string is passed into **`Api`** tool constructors for **`seek_workspace_lore`** / **`invoke_rune`** (§10.2.1) alongside **`CodexReader`** / **`SystemPromptBuilder`** (§10.5).
+- **`Intelligence/Models/IntelligenceEvent`** — `sealed record (IntelligenceEventType Type, string Message, string? Data)`.
+- **`Intelligence/Models/IntelligenceEventType`** — enum: `Status`, `ConversationBound`, `Token`, `Result`, `Error`, `ToolCall`, `ToolResult`.
+
+**`Storage/`** — Grimoire persistence contracts: path helper **`ArcanumPaths`**, POCO entities, and **`IGrimoireRepository`** (EF implementation and **`DbContext`** mapping live in **Infrastructure**).
+
+**`Workspace/`** — **`IWorkspaceScanner`** for discovering local `.sln` files and workspace summary text from the current working directory (filesystem implementation in **Infrastructure**).
+
+**`Pattern/`** — **Eye of the World** contracts: **`IEyeOfTheWorld`** (`PerceivePatternAsync`), **`DomainType`** (`SoftwareEngineering`, `Administration`, `Research`, `Unknown`), and **`PatternSnapshot`** (`Domain`, `RootPath`, **`Threads`** — a bounded string array acting as a **table of contents** of named artifacts). No filesystem types in **Core**; implementations live in **Infrastructure**.
+
+The original `CoreAssembly` placeholder remains as the assembly anchor; it is not consumed by anything.
+
+**MSBuild:**
+
+- `<IsAotCompatible>true</IsAotCompatible>` — marks the assembly as authored with trimming/AOT in mind (analyzer guidance). Only the **`Cli` executable** is **published** as a native image today; **`Infrastructure`** additionally sets **`PublishAot`** / **`IsTrimmable`** so the ILCompiler analyzes that library in the publish graph — it is not shipped as its own binary. **Libraries in the closure should remain AOT-compatible** to avoid blocking future hosts (tests, alternate entrypoints).
+
+**Packages:** `Microsoft.Extensions.Configuration`, `Microsoft.Extensions.Configuration.Json`, `Microsoft.Extensions.Configuration.EnvironmentVariables`, `Microsoft.Extensions.AI.Abstractions`.
+
+**Non-goals for Core:** Web types, DI registration extensions that pull in hosting, or HTTP-specific middleware. If a type is only used on the wire, it belongs in `Api` (or a future `Contracts` project) rather than `Core`.
+
+### 4.2 `RetroDownfall.Arcanum.Infrastructure` (class library)
+
+**Role:** **Composition of OS-adjacent services** — Serilog rolling file logging, ASP.NET Core Data Protection + encrypted API key persistence, **Grimoire** (EF Core 10 + SQLCipher SQLite with HKDF-derived passphrase from the master key), hosted database initialization, and **workspace** scanning. Hosts call **`AddArcanumInfrastructure(IConfiguration)`** once; **`ApiBootstrapper`** delegates to it before registering HTTP-only services (Ollama, OpenAPI, JSON options).
+
+**MSBuild:** **`IsTrimmable`** and **`PublishAot`** on this project signal that the library is authored for the **Native AOT** closure (alongside **`IsAotCompatible`**). **`Microsoft.EntityFrameworkCore.Tasks`** is referenced for tooling alignment; **`EFOptimizeContext`** is **`false`** and **`EFPrecompileQueriesStage`** is **`none`** so **`dotnet publish` / PublishAot** do not run conflicting MSBuild passes against repository LINQ (the ordered `Include` in `GetConversationAsync` is one pattern that fails the precompiled-query stage) — the **compiled EF model** is produced with **`dotnet ef dbcontext optimize`** (see repository `README.md`).
+
+**Key types:**
+
+- **`DependencyInjection/ServiceCollectionExtensions`** — `AddArcanumEyeOfTheWorld` registers **`IEyeOfTheWorld`** → **`EyeOfTheWorldService`** (singleton). **`AddArcanumInfrastructure`** calls `AddArcanumEyeOfTheWorld` first, then Serilog (`LoggingBootstrapper`), `Configure<ArcanumSettings>`, Data Protection, `ISecretStore` → `DataProtectionSecretStore`, Grimoire passphrase source + hosted service + `DbContext` + `IGrimoireRepository`, `IWorkspaceScanner` → `PhysicalWorkspaceScanner`.
+- **`Logging/LoggingBootstrapper`** — `AddArcanumSerilog` on `IServiceCollection` (compact JSON rolling files under the Arcanum application data directory).
+- **`Security/DataProtectionSecretStore`**, **`Security/ArcanumMasterKeyBootstrapper`**, **`Security/GrimoireKeyDerivation`**, **`Security/GrimoireDbPassphraseSource`**.
+- **`Data/ArcanumDbContext`**, **`Repositories/GrimoireRepository`**, **`Hosting/GrimoireDatabaseHostedService`**, **`Data/ArcanumDbContextFactory`** (design-time), **`Generated/`** — compiled model for `UseModel(...)`.
+- **`Workspace/PhysicalWorkspaceScanner`** — discovers `*.sln` under the working tree with **`EnumerationOptions`** (`RecurseSubdirectories`, **`IgnoreInaccessible`**), skipping paths whose relative segments include `bin`, `obj`, or `.git`.
+
+- **`Workspace/CodexReader`** — internal static helper that cascades two **`CODEX.md`** files into a single string for the dynamic system prompt: the **global** codex at **`Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md")`** (i.e. **`~/.config/arcanum/CODEX.md`**) is read unconditionally; the **local** codex at **`Path.Combine(workingDirectory, "CODEX.md")`** is read only when **`workingDirectory`** is non-null and non-whitespace. Each read is wrapped independently in a try/catch that silently swallows **`IOException`** (covers **`FileNotFoundException`** / **`DirectoryNotFoundException`**) and **`UnauthorizedAccessException`**, returning **`null`** for that side. When both files exist, the result is **`$"{global}\n\n### Local Workspace Spells\n\n{local}"`**; when only one exists, that content is returned verbatim; when neither exists, the helper returns **`null`**. Exposed to **`RetroDownfall.Arcanum.Api`** via **`InternalsVisibleTo`** so **`OllamaIntelligenceProvider`** can merge operator rules into the dynamic system prompt without growing the public Infrastructure surface.
+
+- **`Workspace/SpellScanner`** — internal **`ParsedSpell`** record (**`Name`**, **`Description`**, **`FilePath`**, **`FullContent`**) plus **`ScanAsync`**: **BFS** queue from the normalized workspace root, **`*.spell.md`** per directory, skips directory segments whose names start with **`.`** or match **`node_modules`**, **`bin`**, **`obj`**, **`out`**, **`dist`** (case-insensitive). Each file read uses try/catch for **`IOException`** / **`UnauthorizedAccessException`**. YAML frontmatter is the span between the first and second **`---`** line markers; **`name:`** / **`description:`** lines are parsed with simple string checks (**no YamlDotNet**). Child directory paths are **`Path.GetFullPath`**-normalized and rejected if they fall outside the workspace root prefix (same rule as **`ToolHelpers.IsPathUnderWorkspace`** in Api). Exposed to **`Api`** via **`InternalsVisibleTo`**.
+
+- **`Pattern/EyeOfTheWorldService`** — implements **`IEyeOfTheWorld`**: recursive directory walk (see §15), path-based heuristics, and TOC materialization. Complements **`IWorkspaceScanner`** (which targets **solution discovery and human-readable summary text**) rather than replacing it.
+
+**Packages (representative):** `Serilog.AspNetCore`, file sinks, `Microsoft.EntityFrameworkCore.Sqlite.Core`, `SQLitePCLRaw.bundle_e_sqlcipher`, `Microsoft.EntityFrameworkCore.Design` (private), `Microsoft.EntityFrameworkCore.Tasks`, `Microsoft.AspNetCore.App` (framework reference for Data Protection and hosting primitives used by Serilog integration).
+
+**Non-goals for Infrastructure:** Minimal API route mapping, OpenAPI, or Ollama-specific code — those remain in **`Api`**.
+
+### 4.3 `RetroDownfall.Arcanum.Api` (class library, not executable)
+
+**Role:** **HTTP surface composition** — endpoint mapping, JSON contracts used by Minimal APIs, intelligence provider implementation, API-key endpoint filter, and bootstrap extension methods callable from any host (`Cli` today, possibly integration tests or another host later).
+
+**Critical decision:** The Api project is a **`Microsoft.NET.Sdk` class library** with:
+
+```xml
+<FrameworkReference Include="Microsoft.AspNetCore.App" />
+```
+
+**Why not `Microsoft.NET.Sdk.Web` or an executable web project?**
+
+- **Separation of "composition" from "hosting."** The library describes *what* routes exist and *how* they serialize; it does not own process lifetime, console parsing, or Kestrel binding defaults.
+- **Reusability:** The same mapping can be applied from `WebApplication.CreateSlimBuilder`, test hosts, or future hosts without copying `Program.cs` from a web template.
+- **FrameworkReference vs PackageReference:** `Microsoft.AspNetCore.App` pulls in the shared framework surface needed for `WebApplication`, `WebApplicationBuilder`, Minimal API extension methods, and HTTP primitives — without turning the project into a runnable web SDK layout.
+
+**Key types:**
+
+- **`ApiBootstrapper`** — `AddArcanumApiServices(this IServiceCollection, IConfiguration)` calls **`AddArcanumInfrastructure`** (Serilog, options, Data Protection, secrets, Grimoire, workspace scanner, **`IEyeOfTheWorld`** via `AddArcanumEyeOfTheWorld`), then registers `ApiKeyEndpointFilter`, OpenAPI, JSON options, `OllamaApiClient` (scoped), `IOllamaApiClient`, `IChatClient`, and `IArcanumIntelligenceProvider`. `MapArcanumEndpoints(this WebApplication)` wires OpenAPI/Scalar + the `/api` route group with API-key filter + health/intelligence endpoints.
+- **`Intelligence/OllamaIntelligenceProvider`** — implements `IArcanumIntelligenceProvider` using OllamaSharp and `IChatClient`. Handles model-exists checks, on-demand model pull with progress, buffered inference, and streaming inference. Model name matching is **case-insensitive** and handles Ollama's `:latest` tag convention via a shared `ModelNameMatches` helper. After **`CodexReader.ReadCodexAsync`**, when **`ToolHelpers.TryNormalizeWorkspace`** succeeds, it **`await`s `SpellScanner.ScanAsync`** on the normalized root, then **`SemanticRouter.DetermineActiveSpellAsync`** (same scoped **`IChatClient`** as main inference). It prepends a **dynamic `ChatRole.System`** message from **`SystemPromptBuilder`** (base persona, optional **`ContextSnapshot`**, optional cascaded **`CODEX.md`**, optional **`### Active Operational Spell`** — see §10.2.2). That system turn exists **only in memory** for Ollama — it is **not** persisted to Grimoire. When tools are enabled, **`CreateInferenceChatOptions(bool includeTools, string workingDirectory)`** attaches **`ChatOptions.Tools`** built per request: **`new ArcanumLocalTimeTool()`**, **`new LoreSeekerTool(workingDirectory)`**, **`new RuneExecutorTool(workingDirectory)`** (see §10.2.1).
+- **`Intelligence/SemanticRouter`** — internal static pre-flight **`IChatClient`** classification over **`ParsedSpell`** instances (strict router prompt; **`NONE`** or unknown names → no injection). Timeouts and all non-user-cancel failures return **`null`** so chat continues (§10.2.2).
+- **`Intelligence/Tools/`** — sealed **`AIFunction`** subclasses for Native AOT–safe tool metadata: **`ArcanumLocalTimeTool`** (**`GetLocalSystemTime`**), **`LoreSeekerTool`** (**`seek_workspace_lore`**), **`RuneExecutorTool`** (**`invoke_rune`**), plus **`ToolHelpers`** (workspace normalization, argument coercion). Schemas are **`static readonly JsonDocument`** roots exposed as **`JsonSchema`** overrides; invocation is **`InvokeCoreAsync`** only.
+- **`Security/ApiKeyEndpointFilter`** — `IEndpointFilter` registered as singleton. Validates `X-Arcanum-Key` header against the stored key using **`CryptographicOperations.FixedTimeEquals`** for timing-safe comparison. The decrypted key's UTF-8 bytes are **cached for the process lifetime** to avoid filesystem I/O and decryption on every request. Header values are encoded via `stackalloc` when <=256 bytes to avoid heap allocation.
+- **`Security/ArcanumApiHeaders`** — static constants (`ApiKey = "X-Arcanum-Key"`).
+- **`Serialization/ArcanumJsonContext`** — source-generated `JsonSerializerContext` with camelCase naming. See §8.2.
+
+**MSBuild:**
+
+- `<IsAotCompatible>true</IsAotCompatible>` — same rationale as Core.
+- `<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>` — **essential** for Minimal API endpoints defined in a **referenced class library**. The Request Delegate Generator (RDG) is not reliably enabled for class libraries by default; without it, `MapGet`/`MapPost` delegates keep `RequiresUnreferencedCode` / `RequiresDynamicCode` semantics that break confidence under full trimming and Native AOT.
+- `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` — source-generates the configuration binding code for `IOptions<ArcanumSettings>`, avoiding reflection under AOT. **Do not** add an explicit `PackageReference` to `Microsoft.Extensions.Configuration.Binder` — `Microsoft.AspNetCore.App` already brings it in and a duplicate triggers NU1510 package-pruning warnings.
+- `<EFOptimizeContext>false</EFOptimizeContext>` — mirrors Infrastructure; prevents the EF MSBuild task from running against this project's compile output during publish.
+
+**Packages:** `Microsoft.AspNetCore.OpenApi`, `Scalar.AspNetCore`, `Microsoft.Extensions.AI`, `OllamaSharp`, `Microsoft.Extensions.Hosting.WindowsServices`, `Microsoft.Extensions.Hosting.Systemd` (version-aligned with **Cli** and **Infrastructure** so **`UseWindowsService`** / **`UseSystemd`** invoked from **`ServeCommand`** resolve against a single package version in the closure).
+
+### 4.4 `RetroDownfall.Arcanum.Cli` (console executable)
+
+**Role:** **Single entry assembly** — process argv, dispatch commands, and when asked, construct the ASP.NET Core pipeline and run Kestrel until shutdown.
+
+**MSBuild:**
+
+- `<OutputType>Exe</OutputType>` — obvious for a host process.
+- `<PublishAot>true</PublishAot>` — **Native AOT publish is scoped to the CLI** as the shipping executable. **`Infrastructure`** also sets **`PublishAot`** / **`IsTrimmable`** as a **library** signal for IL analysis (it is not published as its own runnable); other class libraries use **`IsAotCompatible`** only.
+- `<EFOptimizeContext>false</EFOptimizeContext>` — prevents the EF MSBuild task from running during publish.
+- `<StripSymbols>false</StripSymbols>` — **conditional on macOS RIDs** (`Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))"`). Disabling symbol stripping reduces Apple clang/ld64 `.pcm` EXEC noise that is otherwise surfaced as MSBuild warnings during the ILC step. These are toolchain notices, not IL diagnostics; the native binary is unaffected.
+- `<FrameworkReference Include="Microsoft.AspNetCore.App" />` — the CLI must host Kestrel and the generic host stack when `serve` runs.
+
+**Dependency rule:** `Cli` → `Api` → `Infrastructure` → `Core`, with **`Cli` also referencing `Core` and `Infrastructure` directly** — the direct **`Infrastructure`** reference ensures the same **`DataProtectionSecretStore`** concrete type is used in standalone DI (before **`serve`**) as in the API host graph.
+
+**DI registration in `Program.Main`:** Data Protection (`SetApplicationName("ArcanumCore")`), `ISecretStore` → **`DataProtectionSecretStore`** (singleton, type from **Infrastructure**), **`AddArcanumEyeOfTheWorld()`** (registers **`IEyeOfTheWorld`** without starting Grimoire or Serilog file logging), **`AddArcanumDaemonManagement()`** (registers **`IDaemonManager`** only—**`WindowsDaemonManager`** on Windows, **`MacOsDaemonManager`** on macOS, **`LinuxDaemonManager`** on Linux; throws **`PlatformNotSupportedException`** on other OSes; no **`AddArcanumInfrastructure`** in the global CLI graph), named `HttpClient` "ArcanumApi" with base address `http://localhost:5001/`, `ArcanumApiClient` (singleton), transient command registrations for `ServeCommand`, `AskCommand`, **`LookCommand`**, and the **`daemon`** branch commands (**`InstallCommand`**, **`UninstallCommand`**, **`StatusCommand`** under **`Commands/Daemon/`**).
+
+**Key types:**
+
+- **`Commands/ServeCommand`** — `AsyncCommand` that builds a `WebApplication` with slim defaults, configures Kestrel to `ListenLocalhost(5001)` unless **`ARCANUM_HOST_ANY`** is **`1`** or **`true`** (then `ListenAnyIP(5001)` for container publish), loads Arcanum configuration, registers API services, bootstraps the API key if missing, maps endpoints, and runs the host. See §5.3.
+- **`Commands/AskCommand`** — `AsyncCommand<AskCommand.Settings>` with **`IEyeOfTheWorld`** + **`ArcanumApiClient`**. The logical prompt is **`string.Join(' ', PromptWords)`** plus any **`CommandContext.Remaining.Raw`** tokens (Spectre: everything after **`--`**), so multi-word prompts work without quotes (**`ask local time`**) and **`ask -- local time`** is valid. Resolves **`Environment.CurrentDirectory`**, awaits **`PerceivePatternAsync`** (non-throwing; invalid paths yield **`Unknown`** per §15). If **`-n`/`--new`**, calls **`CliSessionManager.ClearSession()`** and omits **`conversationId`**; otherwise reads **`CliSessionManager.GetLastConversationId()`** and passes it as **`PingRequest.ConversationId`**. Builds **`PingRequest`** with **`WorkingDirectory`**, **`ContextSnapshot`**, and optional id, then calls **`ArcanumApiClient.AskStreamAsync(PingRequest, …)`** to stream **`/api/intelligence/ping-stream`**. On **`IntelligenceEventType.ConversationBound`**, parses **`Data`** as a **`Guid`** and **`CliSessionManager.SaveConversationId`** (no console output). Prints `status` events to stderr (dim markup), prints `toolCall` / `toolResult` diagnostics to stderr (grey markup), writes `token` chunks to stdout, exits 0/1/130 (Ctrl+C). Adds a **directory-walk latency** before each HTTP round-trip. Supports **`-m`/`--model`** and **`-n`/`--new`**.
+
+- **`Services/CliSessionManager`** — internal static helper: **`GetLastConversationId`**, **`SaveConversationId`**, **`ClearSession`** against **`Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt")`** (same base directory as **`arcanum.db`**). Plain text file I/O only (Native AOT–friendly).
+
+- **`Commands/LookCommand`** — `AsyncCommand` that resolves **`IEyeOfTheWorld`**, calls **`PerceivePatternAsync(Environment.CurrentDirectory, …)`**, and prints **`PatternSnapshot`** via Spectre markup (silver `#C0C0C0` for structural labels, sky blue `#87CEEB` for domain and path values). Intended as a fast **operator and agent** affordance for situational awareness (see §15).
+- **`Commands/Daemon/*`** — `AsyncCommand` types (**`InstallCommand`**, **`UninstallCommand`**, **`StatusCommand`**) that resolve **`IDaemonManager`**. On **Windows**, **`WindowsDaemonManager`** drives **`%SystemRoot%\System32\sc.exe`** to **`create`** / **`start`** / **`query`** / **`stop`** / **`delete`** the **`ArcanumDaemon`** service with **`binPath=`** quoting per **`sc`** rules (`Environment.ProcessPath` + **`serve`**, **`start= auto`**). Elevated operations require an administrator token; **`ERROR_ACCESS_DENIED` (5)** and **`UnauthorizedAccessException`** map to a stable **`Result.Failure`** message. **`GetStatusAsync`** treats **`ERROR_SERVICE_DOES_NOT_EXIST` (1060)** as success with **`ArcanumDaemon is not installed.`** (exit **0** for **`daemon status`**). **`sc query`** status text is **localized** by Windows UI language; **`GetStatusAsync`** therefore parses only the **`STATE`** line’s **numeric** `dwCurrentState` (for example **4** = running, **1** = stopped) and returns fixed English operator strings—**never** the localized words printed after the code. On **macOS**, **`MacOsDaemonManager`** writes **`~/Library/LaunchAgents/com.retrodownfall.arcanum.plist`**, runs **`/usr/bin/id -u`** for the UID, then **`launchctl bootstrap gui/<UID> <plist>`** / **`launchctl bootout gui/<UID> <plist>`** (no deprecated **`load`** / **`unload`**). **`GetStatusAsync`** uses **`launchctl list com.retrodownfall.arcanum`**; a missing job returns **`Result<string>.Success("Daemon is not currently loaded")`** so **`daemon status`** exits **0**. **`bootstrap`** / **`bootout`** / **`id -u`** non-zero exits map to **`Result.Failure`** with stderr folded into **`Error.Message`**. On **Linux**, **`LinuxDaemonManager`** writes **`~/.config/systemd/user/arcanum.service`**, runs **`systemctl --user daemon-reload`**, **`systemctl --user enable --now arcanum.service`**, and **`systemctl --user show -p ActiveState --value arcanum.service`** for status (**`active`** → **`Arcanum daemon is running.`**; otherwise success **`Daemon is not currently loaded.`** including missing unit file). **`systemctl --user disable --now`** on uninstall ignores non-zero exits. **`IsRunningInContainer()`** (**`/.dockerenv`** or **`DOTNET_RUNNING_IN_CONTAINER=true`**) forces **`Result.Failure`** with **`ContainerUnsupported`** for all daemon verbs.
+- **`Services/ArcanumApiClient`** — wraps `IHttpClientFactory` + `ISecretStore`; provides **`AskAsync(PingRequest, CancellationToken)`** (buffered **`/api/intelligence/ping`**) and **`AskStreamAsync(PingRequest, CancellationToken)`** (`IAsyncEnumerable<IntelligenceEvent>` by reading the response stream line-by-line and **`JsonSerializer.Deserialize<IntelligenceEvent>(line, ArcanumJsonContext.Default.IntelligenceEvent)`** for each NDJSON line, matching the server’s **`application/x-ndjson`** writer; request bodies still use **`ArcanumJsonContext`** for nested **`PatternSnapshot`** / **`DomainType`** metadata).
+- **`Infrastructure/CliTypeRegistrar`** / **`CliTypeResolver`** — Spectre DI bridge. `CliTypeResolver` implements `IDisposable` to properly dispose the underlying `ServiceProvider`.
+
+**Daemon branch help text:** The Spectre descriptions for `daemon install`, `uninstall`, and `status` currently reference **macOS-specific** terminology (e.g. "Write the LaunchAgent plist", "launchctl bootout"). This is a cosmetic mismatch: `AddArcanumDaemonManagement` dispatches to the correct platform manager at runtime, but the static help output is macOS-centric. A future revision should use platform-neutral descriptions or detect the OS at description-render time.
+
+**Native AOT + Spectre:** The publish graph trims `Spectre.Console.Cli` aggressively. The CLI project sets **`<TrimmerRootAssembly Include="Spectre.Console.Cli" />`** so command-model types used via reflection remain in the native image. **`Program.Main`** carries **`[DynamicDependency]`** attributes for `ServeCommand`, `AskCommand`, **`LookCommand`**, **`InstallCommand`**, **`UninstallCommand`**, **`StatusCommand`** (daemon branch), `ArcanumApiClient`, and `CliTypeRegistrar`. The remaining Spectre `IL3050` warning on `CommandApp`'s constructor is suppressed via **`[UnconditionalSuppressMessage]`** — the trimmer roots and dynamic dependencies provide sufficient coverage for the bounded command graph.
+
+### 4.5 `RetroDownfall.Arcanum.Api.DevHost` (console executable, debug-only)
+
+**Role:** Thin host that references **`RetroDownfall.Arcanum.Api`**, **`Core`**, and **`Infrastructure`** (for **`ArcanumMasterKeyBootstrapper`** used before `Build`, matching **`ServeCommand`**), mirrors the slim-builder wiring from **`ServeCommand`**, and exists so engineers can **F5 the HTTP stack** from VS Code without loading Spectre. It is part of the solution build but is **not** the production entrypoint; **`PublishAot`** is not enabled on this project. On first run, if no API key exists, it generates one and **prints the raw key to stdout** for use with tools like `curl`.
+
+**VS Code:** The **Api.DevHost** launch profile uses **`serverReadyAction`** (see [`.vscode/launch.json`](../.vscode/launch.json)) so that when hosting logs **`Now listening on: ...`**, the default browser opens **`{baseUrl}/scalar/v1`** (Scalar against the in-process OpenAPI document).
+
+---
+
+## 5. Hybrid hosting model
+
+### 5.1 Process roles
+
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| **CLI / help** | No arguments | argv is rewritten to `["--help"]` so Spectre prints standard usage without inventing a custom help renderer. |
+| **HTTP host** | `serve` command | Builds a `WebApplication` with **slim defaults**, registers JSON metadata, maps Arcanum routes, blocks until shutdown. |
+| **Ask** | `ask <PROMPT>` | Runs Eye of the World on **`Environment.CurrentDirectory`**, sends **`workingDirectory`** + **`contextSnapshot`** + optional **`conversationId`** (from **`cli-session.txt`** unless **`--new`**) on **`PingRequest`**, streams to the running API via NDJSON, persists **`conversationBound`** to the session file; prints incremental tokens to stdout; exits with 0/1/130. |
+| **Look** | `look` | Runs **`IEyeOfTheWorld`** on **`Environment.CurrentDirectory`**; prints **`DomainType`** and up to **20** TOC lines (no HTTP dependency). |
+
+### 5.2 Why Spectre.Console.Cli
+
+**Decision:** Use **Spectre.Console.Cli** for command parsing and dispatch.
+
+**Reasons:**
+
+- Mature command model (`CommandApp`, `AsyncCommand` / `AsyncCommand<TSettings>`), consistent help, and straightforward registration for additional verbs later (`migrate`, `import`, etc.).
+- Keeps `Program.cs` thin: configuration is declarative in `Configure`.
+
+**Tradeoff (important):** Spectre is **reflection-heavy** and carries **trim / Native AOT analysis warnings** (`IL3050`, `IL2104`, etc.). The project sets `<PublishAot>true</PublishAot>` because the **HTTP stack** is the primary AOT target; **`Program.Main`** uses **`[UnconditionalSuppressMessage("AOT", "IL3050")]`** on **`CommandApp`** construction, **`[DynamicDependency]`** on each command plus **`AskCommand.Settings`**, and **`<TrimmerRootAssembly Include="Spectre.Console.Cli" />`**. First-party EF/OpenAPI warnings use **`[UnconditionalSuppressMessage]`** on **`ArcanumDbContext`**, **`GrimoireDatabaseHostedService.StartAsync`**, and **`AddArcanumApiServices`**; grouped third-party ILC-only codes are filtered with **`<IlcArg Include="--nowarn:…" />`** (see README **Native AOT publish**). **`dotnet build`** is warning-clean; **`dotnet publish`** on **macOS** may still show **clang `EXEC`** `.pcm` notices (toolchain noise, not IL).
+
+**Version pinning:** `Spectre.Console.Cli` is pinned to **0.53.0** in the project file for reproducible restores; upgrades should be deliberate and re-run `dotnet publish` with AOT analysis.
+
+### 5.3 `ServeCommand` lifecycle
+
+1. **Cancellation:** `ExecuteAsync` receives a `CancellationToken` from Spectre; the implementation calls `ThrowIfCancellationRequested()` before building the host so cooperative cancellation is honored when the runner supports it.
+2. **Slim builder:** `WebApplication.CreateSlimBuilder()` — see §6.
+3. **Windows Service integration (cross-platform call):** `builder.Host.UseWindowsService(options => options.ServiceName = "ArcanumDaemon")` via **`Microsoft.Extensions.Hosting.WindowsServices`** — when the process runs as a Windows service, the generic host receives SCM stop/pause notifications; on non-Windows OSes the call is a no-op. The service name matches **`WindowsDaemonManager.ServiceName`** / **`sc`** registration.
+4. **systemd integration (cross-platform call):** `builder.Host.UseSystemd()` via **`Microsoft.Extensions.Hosting.Systemd`** — when the process runs as a **systemd** service on Linux, the generic host receives **`SIGTERM`** readiness / shutdown integration; on non-Linux OSes the call is a no-op.
+5. **URL binding:** `builder.WebHost.ConfigureKestrel` chooses **`ListenLocalhost(5001)`** unless **`ARCANUM_HOST_ANY`** is **`1`** or parses as **`true`**, in which case **`ListenAnyIP(5001)`** is used for container publish. See §7.
+6. **Logging:** `builder.Logging.ClearProviders()` so Serilog registered by **`AddArcanumInfrastructure`** replaces the default console/debug providers for **`serve`**.
+7. **Configuration:** `builder.Configuration.AddArcanumConfiguration()` loads `arcanum.json` from the user's application-data directory and `ARCANUM_` environment variables.
+8. **API services:** `builder.Services.AddArcanumApiServices(builder.Configuration)` registers **`AddArcanumInfrastructure`** (Serilog, options, Data Protection, secrets, Grimoire, workspace) plus `ApiKeyEndpointFilter`, OpenAPI, JSON serialization, Ollama client, and intelligence provider — must run **before** `Build()` — see §8.3.
+9. **API key bootstrap (before `Build`):** **`ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync`** (from **Infrastructure**) runs **before** `WebApplicationBuilder.Build()` so a master key exists in **`ISecretStore`** before the generic host starts. When a new key is generated, **`serve`** prints a green Spectre line; **Api.DevHost** prints the raw key once to stdout. This ordering ensures **`GrimoireDatabaseHostedService`** can derive the SQLCipher passphrase on startup.
+10. **`Build()`** — constructs the `WebApplication` and service provider.
+11. **Pipeline:** `app.MapArcanumEndpoints()` then `await app.RunAsync()`. **`Log.CloseAndFlush()`** runs in a `finally` block after shutdown.
+
+### 5.4 Grimoire persistence (Infrastructure + Api)
+
+**Role:** Local-first **conversation history** (and related entities) in an **SQLCipher**-encrypted SQLite file under the user's Arcanum config area (see **`ArcanumPaths`** in Core).
+
+**Composition:**
+
+- **`GrimoireDatabaseHostedService`** (`IHostedService`) — runs **`SQLitePCL.Batteries_V2.Init()`**, verifies the master API key is present, derives the DB passphrase with **`GrimoireKeyDerivation`** (HKDF from the UTF-8 API key), probes an **existing** DB with `SELECT 1` or **`EnsureCreatedAsync`** when the file is missing, and **`FailFast`** on fatal key mismatch (see README for operator-facing semantics).
+- **`ArcanumDbContext`** — compiled model via **`UseModel(ArcanumDbContextModel.Instance)`**; connection password from **`IGrimoireDbPassphraseSource`** set by the hosted service.
+- **`GrimoireRepository`** — implements **`IGrimoireRepository`**; streaming inference uses **`ExecuteSqlInterpolatedAsync`** for token append and **`ExecuteUpdateAsync`** for final assistant content where appropriate.
+
+**Api integration:** **`OllamaIntelligenceProvider`** injects **`IGrimoireRepository`**; persistence failures on the non-streaming path are logged as warnings and do not replace the inference result. Streaming behavior matches the README (append tokens, finalize on completion, **`conversationBound`** event). Multi-turn threads use **`PingRequest.ConversationId`**: prior messages are loaded for **`IChatClient`**; **`BeginAssistantReplyAsync`** appends to an existing **`Conversation`** when the id exists. **`WorkingDirectory`**, **`ContextSnapshot`**, and the cascaded global+local **`CODEX.md`** content feed a **dynamic system** message prepended to the chat sent to Ollama (see **§10.5**); Grimoire still stores only **User**, **Assistant**, and tool-bracket transcript rows — not that synthetic system prompt.
+
+#### 5.4.1 Grimoire data model
+
+The schema is defined by EF `OnModelCreating` in **`ArcanumDbContext`** and published as a compiled model under `Generated/`. Four entity types are mapped:
+
+| Entity | Table | Primary key | Notable constraints and indexes |
+|--------|-------|-------------|--------------------------------|
+| **`Conversation`** | `Conversations` | `Id` (Guid) | `Title` (string, max 512, required); **index on `CreatedAt`**; has-many `ChatMessage` with cascade delete. |
+| **`ChatMessage`** | `ChatMessages` | `Id` (Guid) | `ConversationId` (Guid FK, **indexed**); `Role` (enum stored as `int` via `HasConversion<int>()`: `User` = 0, `Assistant` = 1, `System` = 2); `Content` (required); `ModelUsed` (max 256, required); `Timestamp` (DateTime). |
+| **`MageSetting`** | `MageSettings` | `Key` (string, max 256) | `Value` (required); `UpdatedAt` (DateTime). **Reserved entity** — defined and mapped but not consumed by any current feature. |
+| **`WorkspaceContext`** | `WorkspaceContexts` | `Id` (Guid) | `RootPath` (max 4096, required, **indexed**); `ProjectSummary` (required); `LastScanned` (DateTime). **Reserved entity** — defined and mapped but not consumed by any current feature. |
+
+**Supporting types (Core, not entities):**
+
+- **`MessageRole`** — `enum { User, Assistant, System }` under `RetroDownfall.Arcanum.Core.Storage`.
+- **`ConversationSummary`** — `sealed record (Guid Id, DateTime CreatedAt, string Title)` — projection DTO used by `ListRecentConversationsAsync`; not a mapped entity.
+- **`ArcanumPaths`** — static helper: `GrimoireDirectory` → `{UserProfile}/.config/arcanum/`; `GrimoireDatabaseFile` → `{GrimoireDirectory}/arcanum.db`.
+
+#### 5.4.2 `IGrimoireRepository` operations
+
+The contract (`Core`) and implementation (`Infrastructure/Repositories/GrimoireRepository`) expose seven methods. The implementation uses **`ArcanumDbContext`** directly.
+
+| Method | Purpose | Implementation detail |
+|--------|---------|----------------------|
+| **`BeginAssistantReplyAsync`** | When **`conversationId`** is null or not found: creates a **`Conversation`** + user **`ChatMessage`** + empty assistant **`ChatMessage`** in one **`SaveChangesAsync`**. When id exists: appends user + empty assistant rows to that conversation. | Title (new threads only) auto-truncated to **200** characters via **`TruncateTitle`**. Returns **`(ConversationId, AssistantMessageId)`**. |
+| **`AppendAssistantContentAsync`** | Appends a streamed token chunk to the assistant message content. | Uses **raw SQL** via `ExecuteSqlInterpolatedAsync`: `UPDATE "ChatMessages" SET "Content" = IFNULL("Content", '') \|\| @chunk WHERE "Id" = @id` — bypasses EF change tracking for high-frequency streaming writes. Empty/null chunks short-circuit to `Task.CompletedTask`. |
+| **`FinalizeAssistantMessageAsync`** | Replaces the assistant message content with the full accumulated text and updates the timestamp. | Uses **`ExecuteUpdateAsync`** with `SetProperty` lambdas (EF bulk-update API, no entity load). |
+| **`AppendToolInteractionAsync`** | Persists one local tool round as two rows: assistant **`[ToolCall: name(args)]`** and system **`[ToolResult: …]`** (plain `Content` text for reload into `IChatClient`). | Same explicit **transaction** pattern as **`SaveCompletedExchangeAsync`**; **`ModelUsed`** matches the active model on the turn. |
+| **`SaveCompletedExchangeAsync`** | Persists a buffered (non-streaming) user/assistant exchange atomically. | Wraps the insert in an **explicit `IDbContextTransaction`** (`BeginTransactionAsync` / `CommitAsync` / `RollbackAsync`) — the transaction ensures that a partial write (conversation without messages) never commits. |
+| **`ListRecentConversationsAsync`** | Returns the N most recent conversations. | `AsNoTracking`, `OrderByDescending(CreatedAt)`, `Take(n)`, projects to `ConversationSummary`. Returns empty array when `take <= 0`. |
+| **`GetConversationAsync`** | Loads a conversation with its messages ordered by timestamp. | `AsNoTracking`, eager-loads `Messages` via `Include(c => c.Messages.OrderBy(m => m.Timestamp))`. |
+
+#### 5.4.3 Design-time factory (`ArcanumDbContextFactory`)
+
+**`ArcanumDbContextFactory`** implements **`IDesignTimeDbContextFactory<ArcanumDbContext>`** so that `dotnet ef` tooling (migrations, `dbcontext optimize`) can construct the context without the full runtime host:
+
+- Calls **`Batteries_V2.Init()`** for SQLCipher.
+- Reads **`ARCANUM_GRIMOIRE_DEV_KEY`** from the environment; falls back to `"compile-time-placeholder-not-for-production"` when unset (MSBuild compiled-model generation runs without user environment).
+- Derives the passphrase via **`GrimoireKeyDerivation`** and writes to a **temp-directory** database (`Path.GetTempPath() + "arcanum-ef-design.db"`), not the user's real Grimoire file.
+- Constructs the context with a nested **`DesignTimeSecretStore`** (`private sealed class`) that returns `null` for `GetApiKeyAsync` and no-ops on `SaveApiKeyAsync` — appropriate for offline tooling only.
+
+**Workspace:** **`IWorkspaceScanner`** / **`PhysicalWorkspaceScanner`** are registered with infrastructure for future product features (solution discovery under cwd, skipping `bin` / `obj` / `.git`); not all HTTP routes consume them yet. **`IEyeOfTheWorld`** is registered the same way and is consumed by the CLI **`look`** verb (local print) and by **`ask`** ( **`PerceivePatternAsync`** before HTTP; snapshot serialized on **`PingRequest`** — see §15 for **`PatternSnapshot`** semantics).
+
+---
+
+## 6. `WebApplication.CreateSlimBuilder` vs `CreateBuilder`
+
+**Decision:** Use **`WebApplication.CreateSlimBuilder`** for the `serve` command.
+
+**Reasons (aligned with ASP.NET Core team guidance):**
+
+- **Smaller default service graph** — fewer registered defaults that Native AOT and trimming must prove reachable or safe to elide.
+- **Explicit opt-in** for features that full `CreateBuilder` wires by default (some of which imply reflection, configuration conventions, or hosting features you may not want in a tool-embedded listener).
+- **Operational fit:** Arcanum's HTTP surface is intentionally lean; starting slim keeps startup predictable and diagnostics simpler.
+
+**Implication:** When the product grows (e.g. authentication middleware stacks, SignalR), the team must **consciously add** the corresponding services and generators rather than inheriting them "for free" from `CreateBuilder`. OpenAPI and Scalar are already wired explicitly via `AddArcanumApiServices` and `MapArcanumEndpoints`.
+
+---
+
+## 7. Kestrel URL binding
+
+**Desired ergonomics:** Default to **loopback only, port 5001** for local zero-trust use; allow **all interfaces** on the same port when explicitly opted in for containers.
+
+**Decision:** In **`ServeCommand`**, `builder.WebHost.ConfigureKestrel` uses **`ListenLocalhost(5001)`** unless **`ARCANUM_HOST_ANY`** is set to **`1`** or a value that **`bool.TryParse`** treats as **`true`**, in which case **`ListenAnyIP(5001)`** is used so Docker (or similar) can publish port **5001**. **Api.DevHost** continues to call **`ListenLocalhost(5001)`** only. This:
+
+- Keeps the default bind on **127.0.0.1 / ::1** so the server is not reachable from LAN interfaces unless the operator sets **`ARCANUM_HOST_ANY`**.
+- Avoids pulling in extra configuration sources solely to set `urls` for the common case.
+
+**Alternatives for a future revision:**
+
+- Centralize URL policy in **`ASPNETCORE_URLS`** or **`Kestrel:Endpoints`** for more complex deployment topologies.
+
+---
+
+## 8. HTTP JSON and Minimal API design (`Api` project)
+
+### 8.1 Wire contract: the `ApiResponse<T>` envelope
+
+Every Arcanum HTTP response is a single, source-generated envelope:
+
+```csharp
+public sealed record ApiResponse<T>(T? Data, bool IsSuccess, Error? Error, string? TraceId = null);
+```
+
+**Decisions:**
+
+- **One envelope shape for the whole API.** Clients, contract tests, and middleware can rely on a single deserialization target regardless of endpoint. The first `[JsonSerializable]` registration is `ApiResponse<string>`; new payload types extend the context with one entry per `T` (`ApiResponse<MyDto>`).
+- **`sealed record`** — value equality and immutability, but a class (not a struct) because the envelope can hold reference-typed `Data` and a nullable `Error`, and is allocated per-response anyway.
+- **`Error?` rather than always-present `Error`.** A successful response carries a literal `null` on the wire for `error`, which is unambiguous and avoids the "is `Error.None` an error?" question for clients.
+- **`TraceId` populated from `Activity.Current?.Id ?? HttpContext.TraceIdentifier`.** Activity gives the W3C trace id when distributed tracing is configured; `TraceIdentifier` is Kestrel's per-connection fallback. The endpoint does this lookup explicitly so the envelope is meaningful even before observability infrastructure is added.
+- **No reflection-based JSON attributes anywhere.** Property names come from the source generator; wire-format casing is configured once on the context (see §8.2). This keeps the envelope, `Result<T>`, and `Error` AOT-clean.
+
+### 8.2 `ArcanumJsonContext` — public, source-generated, located under `Serialization/`
+
+```csharp
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(ApiResponse<string>))]
+[JsonSerializable(typeof(Result<string>))]
+[JsonSerializable(typeof(Error))]
+[JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(PatternSnapshot))]
+[JsonSerializable(typeof(DomainType))]
+[JsonSerializable(typeof(IntelligenceEventType))]
+[JsonSerializable(typeof(IntelligenceEvent))]
+public partial class ArcanumJsonContext : JsonSerializerContext;
+```
+
+**Decisions:**
+
+- **`public`**. `AddArcanumApiServices` in the `Api` assembly registers `ArcanumJsonContext.Default` on `HttpJsonOptions`; the type stays visible to the CLI host via the project reference without the CLI importing `Serialization` directly. The CLI's `ArcanumApiClient` also uses the context for NDJSON deserialization.
+- **`Api/Serialization/` folder.** As the JSON contract surface grows, serialization will accumulate context classes, converters, and well-known types. The folder is the obvious home before that pressure exists.
+- **`[JsonSourceGenerationOptions(... CamelCase)]`** is a **source generator hint**, not a runtime reflection annotation. Using it instead of per-property `[JsonPropertyName]` keeps every DTO clean and lets the generator emit the right `JsonTypeInfo<T>` directly.
+- **Registrations.** `ApiResponse<string>` is the buffered-endpoint wire type. `PingRequest` is the request body for intelligence routes; **`PatternSnapshot`** and **`DomainType`** are **explicit** entries so nested serialization under **`PingRequest`** is trimming- and **Native AOT–safe** on both **Api** (request deserialization) and **Cli** (request serialization + NDJSON read). `IntelligenceEvent` and `IntelligenceEventType` serve the NDJSON streaming pipeline. `Result<string>` and `Error` are registered as supporting types within the envelope and so handlers can serialize them directly when needed.
+
+### 8.3 Service registration in `AddArcanumApiServices` (`Api` library)
+
+**Decision:** `RetroDownfall.Arcanum.Api.ApiBootstrapper` exposes `AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)`.
+
+**Contents:**
+
+- `services.AddArcanumInfrastructure(configuration)` — **`RetroDownfall.Arcanum.Infrastructure.DependencyInjection.ServiceCollectionExtensions`**: Serilog file logging, `Configure<ArcanumSettings>(configuration.GetSection("Arcanum"))` (binding source generator on consuming projects), Data Protection (`SetApplicationName("ArcanumCore")`), `ISecretStore` → `DataProtectionSecretStore`, Grimoire (passphrase, hosted init, `ArcanumDbContext`, `IGrimoireRepository`), and `IWorkspaceScanner` → `PhysicalWorkspaceScanner`.
+- `services.AddSingleton<ApiKeyEndpointFilter>()` — singleton so the cached key persists for the process lifetime.
+- `services.AddOpenApi()` — registers the built-in OpenAPI document generator.
+- `services.ConfigureHttpJsonOptions(...)` — inserts `ArcanumJsonContext.Default` at index **0** of `SerializerOptions.TypeInfoResolverChain` so Minimal API JSON responses use source-generated `JsonTypeInfo` (Native AOT-friendly).
+- `services.AddScoped<OllamaApiClient>(...)` — factory-resolved from `IOptions<ArcanumSettings>` for the configured endpoint.
+- `services.AddScoped<IOllamaApiClient>`, `services.AddScoped<IChatClient>` — forwarded from the scoped `OllamaApiClient` so concurrent requests do not share mutable `SelectedModel` state.
+- `services.AddScoped<IArcanumIntelligenceProvider, OllamaIntelligenceProvider>()`.
+
+The **CLI** host remains responsible for process composition (`CreateSlimBuilder`, Kestrel, configuration, `Build`, `RunAsync`) but delegates service registration to the Api assembly via one call: `builder.Services.AddArcanumApiServices(builder.Configuration)`.
+
+**Chain insertion (`Insert(0, ...)`)** keeps Arcanum's source-generated metadata ahead of default resolvers. When additional product modules contribute their own `JsonSerializerContext` instances later, extend `AddArcanumApiServices` (or a follow-on extension) so registration stays ordered and discoverable.
+
+**Packages on `RetroDownfall.Arcanum.Api`:** `Microsoft.AspNetCore.OpenApi`, `Scalar.AspNetCore`, `Microsoft.Extensions.AI`, `OllamaSharp`. `MapArcanumEndpoints` calls `MapOpenApi()` (OpenAPI at `/openapi/v1.json` by default) and `MapScalarApiReference()` (Scalar UI; e.g. `/scalar`, `/scalar/v1`).
+
+### 8.4 Returning the envelope from a Minimal API handler
+
+The health endpoint is the canonical example of the infallible pattern:
+
+```csharp
+apiGroup.MapGet("/health", (HttpContext httpContext) =>
+{
+
+    Result<string> healthResult = "Arcanum API is online";
+
+    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+    ApiResponse<string> response = ApiResponse<string>.FromResult(healthResult, traceId);
+
+    return Results.Ok(response);
+
+})
+
+    .WithName("GetHealth");
+```
+
+For failable endpoints (e.g. `/api/intelligence/ping`), the handler checks `result.IsSuccess`:
+
+```csharp
+return result.IsSuccess
+
+    ? Results.Ok(response)
+
+    : Results.Json(response, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status500InternalServerError);
+```
+
+**Decisions:**
+
+- **Implicit `string -> Result<string>` conversion** demonstrates the ergonomic the `Result` type was designed for: handlers (and deeper domain code) return values or errors and the compiler wraps them into `Result<T>`.
+- **`ApiResponse<T>.FromResult`** is the single mapping point from domain result to wire envelope. Endpoints never `new` an envelope manually; this keeps `IsSuccess`/`Error`/`Data` invariants in one place.
+- **`Results.Ok(response)`** is AOT-safe in this layout because `ApiResponse<string>` is registered in `ArcanumJsonContext` and the context is at the head of `TypeInfoResolverChain`. The Minimal API framework picks up the source-generated `JsonTypeInfo<ApiResponse<string>>` without falling back to reflection.
+- **Status-code-aware failure returns.** Failable endpoints use `Results.Json` with the source-generated `JsonTypeInfo` and an explicit status code (e.g. **400** for validation, **500** for server/inference errors), so HTTP status codes reflect the outcome rather than always returning 200. The `ApiResponse<string>` envelope in the body still carries the structured error for clients that inspect it.
+- **`.WithName("...")`** — names the operation for OpenAPI document generation. The deprecated per-endpoint `.WithOpenApi()` extension has been removed; `AddOpenApi()` discovers all endpoints at startup automatically.
+
+### 8.5 NDJSON streaming pipeline
+
+The `/api/intelligence/ping-stream` endpoint uses **NDJSON** (`Content-Type: application/x-ndjson; charset=utf-8`) for real-time token streaming.
+
+**Server-side design:**
+
+- Events are serialized into a reusable `ArrayBufferWriter<byte>` via `Utf8JsonWriter` + `JsonSerializer.Serialize` with `ArcanumJsonContext.Default.IntelligenceEvent`, then a static newline byte is appended to the buffer. The entire buffer is written and flushed in two async calls per event (down from three in the original implementation).
+- A `CancellationTokenSource` links `HttpContext.RequestAborted` and the framework cancellation token, threaded into `StreamPromptAsync(PingRequest, …)` and `IChatClient.GetStreamingResponseAsync`, so closing the connection stops Ollama generation promptly.
+
+**Client-side design (CLI `ask` command):**
+
+- `AskCommand` builds a **`PingRequest`** (prompt, optional model, **`WorkingDirectory`**, **`ContextSnapshot`**, optional **`ConversationId`**) after **`PerceivePatternAsync`** on **`Environment.CurrentDirectory`** (§10.5). **`ConversationId`** comes from **`CliSessionManager`** unless **`-n`/`--new`** cleared the session file.
+- `ArcanumApiClient.AskStreamAsync(PingRequest, …)` serializes the body with **`ArcanumJsonContext`**, sends the request with **`HttpCompletionOption.ResponseHeadersRead`**, then reads UTF-8 text lines from the response body and deserializes each non-empty line with **`JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent)`** (NDJSON is **not** a JSON array root, so **`DeserializeAsyncEnumerable`** is the wrong primitive for this wire format).
+- `AskCommand` handles **`ConversationBound`** by saving the GUID from **`Data`** via **`CliSessionManager`** (silent). It prints `status` events to stderr (dim Spectre markup), prints `toolCall` / `toolResult` lines to stderr (grey Spectre markup), writes `token` data directly to stdout, and returns exit code 0 (success), 1 (error), or 130 (Ctrl+C interrupt).
+
+### 8.6 Request Delegate Generator (`EnableRequestDelegateGenerator`)
+
+**Decision:** Set `<EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>` on **`RetroDownfall.Arcanum.Api`**.
+
+**Reason:** Minimal API endpoints live in a **referenced class library**. RDG is not universally enabled there by default; without it, `MapGet` with a `Delegate` triggers analyzer warnings under trimming/AOT analysis because the framework cannot prove the delegate's shape is safe.
+
+**Effect:** Request delegates for mapped endpoints are **source-generated** where supported, aligning the `Api` project with Native AOT publishing of the `Cli` entrypoint.
+
+---
+
+## 9. Native AOT and trimming: scope and known limitations
+
+### 9.1 What is AOT-optimized today
+
+- **`Cli` publish** with `<PublishAot>true</PublishAot>` produces a native binary and runs the **ILCompiler** / AOT analysis pipeline over the closure (`Cli` + `Api` + `Infrastructure` + `Core` + framework assemblies + third-party assemblies).
+
+- **`Api` / `Infrastructure` / `Core`** declare `<IsAotCompatible>true</IsAotCompatible>` (and **`Infrastructure`** additionally **`IsTrimmable`** / **`PublishAot`** project metadata) to opt into **AOT-oriented analyzers** and signal authoring intent.
+
+### 9.2 Spectre.Console.Cli and AOT analysis
+
+Spectre's command model relies on **reflection** for type discovery and binding. The `CommandApp` constructor carries `RequiresDynamicCodeAttribute`.
+
+**Engineering stance:**
+
+- The `IL3050` warning is **suppressed** on `Program.Main` via `[UnconditionalSuppressMessage("AOT", "IL3050")]`.
+- The CLI project provides **`<TrimmerRootAssembly Include="Spectre.Console.Cli" />`** and **`[DynamicDependency]`** attributes for all command types (including **`ServeCommand`**, **`AskCommand`**, **`LookCommand`**, and the **`daemon`** branch **`InstallCommand`**, **`UninstallCommand`**, **`StatusCommand`**), `ArcanumApiClient`, and `CliTypeRegistrar` — preserving the bounded reflection graph.
+- The solution **`dotnet build`** produces **zero warnings** in Debug and Release; **`dotnet publish`** for the **Cli** may still print **macOS clang `EXEC`** `.pcm` notices (see README).
+- **Mitigation paths** (if future Spectre versions break under AOT):
+  - Replace Spectre with a **source-generated** CLI parser for the AOT build only.
+  - Split into **two executables**: a fully native HTTP listener and a separate managed-only tool.
+
+### 9.3 JSON and endpoints
+
+JSON and Minimal API mapping are authored on **AOT-friendly paths** (`JsonSerializerContext`, `Results.Json` with `JsonTypeInfo`, RDG enabled on `Api`). Future endpoints must follow the same rules: **no anonymous DTOs returned from handlers without a declared `JsonSerializable` graph**, and no **unbounded reflection-based** model binding unless the team accepts trimming warnings or disables AOT for that host.
+
+---
+
+## 10. Intelligence pipeline
+
+### 10.1 Architecture
+
+The intelligence layer follows a **provider pattern**: `Core` defines the contract (`IArcanumIntelligenceProvider`), `Api` provides the Ollama implementation (`OllamaIntelligenceProvider`).
+
+**Why Ollama + OllamaSharp + Microsoft.Extensions.AI:**
+
+- **Ollama** runs locally, keeping inference off external APIs during development.
+- **OllamaSharp** provides the native Ollama API surface (list models, pull, etc.).
+- **Microsoft.Extensions.AI** provides `IChatClient` — the official .NET AI abstraction — so swapping Ollama for another backend later requires only a new `IChatClient` registration.
+
+### 10.2 `OllamaIntelligenceProvider` design
+
+**Model resolution:** Reads **`PingRequest.Model`**: when non-empty after trim, that value is the target model; otherwise **`ArcanumSettings.Ollama.DefaultModel`**.
+
+**Model name matching:** A shared `ModelNameMatches` helper performs **case-insensitive** comparison and handles Ollama's tag convention: if the target model has no `:` (e.g. `phi4`), it also matches against the local model name prefix before `:` (e.g. `phi4:latest`). This prevents unnecessary multi-GB re-downloads when the user specifies a bare model name.
+
+**Model availability:** A shared `IsModelLocalAsync` method wraps `ListLocalModelsAsync` + `ModelNameMatches` and returns `Result<bool>`, used by both `ExecutePromptAsync` (via `EnsureModelExistsAsync`) and `StreamPromptAsync`.
+
+**Streaming:** `StreamPromptAsync` yields `IntelligenceEvent` objects. Status events report model checks and download progress; **`conversationBound`** carries the canonical conversation id after Grimoire begins the turn; token events carry incremental assistant text; **`toolCall`** / **`toolResult`** surface local tool execution between LLM rounds; a final result event carries the full accumulated text (in a `StringBuilder` initialized with capacity 1024 to reduce resizing for typical LLM responses); error events describe failures. The `[EnumeratorCancellation]` attribute threads cancellation correctly through the async iterator.
+
+### 10.2.1 Built-in tools (`Intelligence/Tools`)
+
+**Decision:** Register **fixed** local tools as **`Microsoft.Extensions.AI.AIFunction`** sealed subclasses — **not** **`AIFunctionFactory.Create`**, so parameter JSON schemas are **authored** as **`JsonDocument.Parse(...)`** literals (AOT-friendly; no reflection over delegates for schema generation).
+
+**Registration:** **`OllamaIntelligenceProvider`** builds **`ChatOptions`** per inference attempt. When tools are included, **`Tools`** is **`[new ArcanumLocalTimeTool(), new LoreSeekerTool(workingDirectory), new RuneExecutorTool(workingDirectory)]`**, where **`workingDirectory`** is **`PingRequest.WorkingDirectory`** (same value **`ask`** sends as the operator cwd anchor). **`ResolveRegisteredFunction`** matches **`FunctionCallContent.Name`** to each tool’s **`Name`** override; **`InvokeToolCallAsync`** forwards **`AIFunctionArguments`** from the model’s argument dictionary.
+
+| Tool name | Class | Role |
+|-----------|-------|------|
+| **`GetLocalSystemTime`** | **`ArcanumLocalTimeTool`** | Returns **`DateTime.Now`** as round-trip **`O`** string; empty object schema (`additionalProperties: false`). |
+| **`seek_workspace_lore`** | **`LoreSeekerTool`** | Reads one **UTF-8** text/markdown file; required **`relativePath`**. Rejects **`Path.IsPathRooted`** inputs; resolves with **`Path.GetFullPath(Path.Combine(workspace, relativePath))`**; requires the resolved path to stay under the normalized workspace (**prefix + directory separator**, case-insensitive on Windows). Returns polite prose on missing file, permission errors, or sandbox escape attempts. |
+| **`invoke_rune`** | **`RuneExecutorTool`** | Runs **`ProcessStartInfo`** with **`UseShellExecute = false`**, **`FileName`** / **`Arguments`** from required strings **`command`** / **`arguments`**, **`WorkingDirectory`** = normalized workspace. **`CancellationTokenSource.CreateLinkedTokenSource`** links the request token with a **30 second** timeout for **`WaitForExitAsync`** and stream reads; on **timeout-only** cancel, **`Kill(entireProcessTree: true)`** if still running. Combines **stdout**, **stderr**, and **exit code** into one string for the model. |
+
+**Empty workspace:** **`LoreSeekerTool`** and **`RuneExecutorTool`** constructors accept the raw **`workingDirectory`** string; **`ToolHelpers.TryNormalizeWorkspace`** rejects null/whitespace before **`Path.GetFullPath`**; **`InvokeCoreAsync`** returns a short operator-facing error if the workspace was not configured — the implementation **never** substitutes **`Environment.CurrentDirectory`** of the API process.
+
+### 10.2.2 Semantic spell routing (pre-flight → main loop)
+
+**Problem:** Operators want **large, versioned markdown “spells”** in the repo (workflows, checklists, persona blocks) without pasting them into **`CODEX.md`** every time. Only **one** spell should apply per user prompt.
+
+**Decision — two passes:**
+
+1. **Discovery (`SpellScanner` in Infrastructure):** After **`CodexReader`**, **`OllamaIntelligenceProvider`** resolves **`PingRequest.WorkingDirectory`** the same way as tools (**`ToolHelpers.TryNormalizeWorkspace`**). On success, **`SpellScanner.ScanAsync`** returns all **`*.spell.md`** files under the root using a **manual BFS** (`Queue<string>`), explicit directory-name skips (leading **`.`**; **`node_modules`**, **`bin`**, **`obj`**, **`out`**, **`dist`**), per-directory file enumeration, and **prefix containment** checks so resolved paths cannot escape the workspace. Each file supplies **`ParsedSpell`** (**`Name`**, **`Description`**, **`FilePath`**, **`FullContent`**). Frontmatter between **`---`** fences is parsed with **line `StartsWith` checks** — **no YamlDotNet** (Native AOT / trimming friendly).
+
+2. **Pre-flight routing (`SemanticRouter` in Api):** If the spell list is empty, skip. Otherwise **`IChatClient.GetResponseAsync`** runs once with a **single user** classification message, **`ChatOptions`** set to **very small max output tokens** and **temperature 0**, and **no tools**. A **linked `CancellationTokenSource`** applies a **short wall-clock timeout** (a few seconds). **`OperationCanceledException`** from the **request** token propagates (user abort); timeout or any other failure returns **`null`** (no spell). The model reply is normalized (first line / first token, trim quotes) and matched **case-insensitively** to **`ParsedSpell.Name`**; **`NONE`** clears the selection.
+
+3. **Main inference:** Unchanged **`ChatOptions`** tool registration and multi-round tool loop. **`SystemPromptBuilder.Build`** appends **`### Active Operational Spell ({Name})`** and the spell’s **`FullContent`** when a spell was selected.
+
+**Why not one combined prompt:** Keeps the **main** context budget for tools and answer generation; the router call is **small and deterministic** by construction.
+
+### 10.3 Scoped registration
+
+`OllamaApiClient`, `IOllamaApiClient`, `IChatClient`, and `IArcanumIntelligenceProvider` are registered as **scoped** so concurrent requests do not share mutable `SelectedModel` on one client instance.
+
+### 10.4 Grimoire integration in `OllamaIntelligenceProvider`
+
+**Decision:** The intelligence implementation lives in **`Api`** but **persists** through **`IGrimoireRepository`** registered in **`AddArcanumInfrastructure`**.
+
+**Buffered path (`ExecutePromptAsync`):** When **`conversationId`** is set, **`GetConversationAsync`** loads prior turns. The provider calls **`BeginAssistantReplyAsync`**, then (in its inference loop) maps Grimoire messages plus the new user prompt to a **`Microsoft.Extensions.AI.ChatMessage`** list, **prepends the dynamic system prompt (§10.5)** at index **0**, and invokes **`GetResponseAsync`** (tool rounds append to the same list). **`FinalizeAssistantMessageAsync`** completes the assistant row. Failures are **`LogWarning`** only so the user still receives model text when persistence breaks.
+
+**Streaming path (`StreamPromptAsync`):** Loads history when **`conversationId`** is present, maps Grimoire messages plus the new user prompt to a **`ChatMessage`** list, **prepends the dynamic system prompt (§10.5)**, then **`BeginAssistantReplyAsync`**, yields **`conversationBound`**, streams via **`GetStreamingResponseAsync`**, appends token text via **`AppendAssistantContentAsync`**, and finalizes with **`FinalizeAssistantMessageAsync`** (see §5.4). Failures follow the same non-fatal logging stance as the README.
+
+### 10.5 Spatial context on inference (operator vs daemon cwd)
+
+**Problem:** The API often runs in a **background daemon** or a **`serve`** host whose **process current working directory** is **not** the operator’s shell cwd. Ollama and **`IChatClient`** therefore cannot infer “which tree am I answering about?” from server state alone.
+
+**Decision:** **`PingRequest`** is the **single JSON body** for **`POST /api/intelligence/ping`** and **`POST /api/intelligence/ping-stream`**. The **`Cli`** **`ask`** command resolves **`Environment.CurrentDirectory`**, awaits **`IEyeOfTheWorld.PerceivePatternAsync`**, and sets **`WorkingDirectory`**, **`ContextSnapshot`** (**`PatternSnapshot`** — see §15), and optional **`ConversationId`** (from **`CliSessionManager`** / **`cli-session.txt`** when continuing a thread; **`ask --new`** clears the file) before **`ArcanumApiClient`** serializes the request. **`ApiBootstrapper`** deserializes the same shape and passes the **`PingRequest`** instance to **`IArcanumIntelligenceProvider`**.
+
+**Contract / versioning:** New JSON members are **additive** with **safe defaults** (`workingDirectory` may be absent → empty string; `contextSnapshot` may be null; `conversationId` may be absent → new thread). Renames or type changes remain coordinated breaking changes per §14.
+
+**Runtime behavior:** **`OllamaIntelligenceProvider`** builds the message list from Grimoire history (when continuing a thread) plus the new user **`Prompt`**, then **`Insert(0, …)`** a **`ChatRole.System`** message produced by **`SystemPromptBuilder.Build`**: a fixed **base persona**, an optional **### Workspace Context** / **### Table of Contents** block when **`ContextSnapshot`** is present (**`Domain`**, **`RootPath`**, **`Threads`**), and an optional **### Master Codex (CODEX.md)** block when **`CodexReader.ReadCodexAsync`** returns text. **`CodexReader`** cascades two files: a **global** **`Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md")`** (i.e. **`~/.config/arcanum/CODEX.md`**) read unconditionally, and a **local** **`Path.Combine(WorkingDirectory, "CODEX.md")`** read only when **`WorkingDirectory`** is non-null and non-whitespace. When both files exist, the local content is appended after the global content under a **`### Local Workspace Spells`** sub-header (`$"{global}\n\n### Local Workspace Spells\n\n{local}"`); when only one exists, that content is returned verbatim; when neither exists, the section is omitted. Each filesystem read is wrapped independently in a try/catch that silently swallows **`IOException`** and **`UnauthorizedAccessException`** so a missing or unreadable side never breaks inference. When **`SpellScanner`** finds spells and **`SemanticRouter`** selects one (§10.2.2), **`SystemPromptBuilder`** also appends **`### Active Operational Spell ({name})`** followed by the file’s full markdown body. This system turn is **not** written to the Grimoire **`ChatMessage`** table; only **User**, **Assistant**, and tool-bracket lines are persisted for reload on the next turn.
+
+**Same `WorkingDirectory` for tools:** The **`seek_workspace_lore`** and **`invoke_rune`** tools are constructed with the same **`PingRequest.WorkingDirectory`** string passed into **`CreateInferenceChatOptions`** (§10.2.1). That keeps file reads and process **`WorkingDirectory`** aligned with the **CODEX.md** local root and the operator cwd **`ask`** sends — not the daemon process default directory.
+
+**Security / trust:** **`ContextSnapshot`** includes a full **`RootPath`** and **TOC strings** that may contain relative paths and filenames. Treat payloads as **operator-supplied local context** under the same **loopback + API key** trust model as §11.
+
+---
+
+## 11. Local API security
+
+### 11.1 Threat model
+
+Arcanum runs on **loopback only** and is intended for **single-user local development**. The security model provides **zero-trust local use**: even on localhost, every `/api` request must present a valid API key. This prevents other local processes from accessing the API without authorization.
+
+**Tool execution:** A client that holds the API key can ask the model to call **`invoke_rune`**, which runs arbitrary **`command`** / **`arguments`** with **`UseShellExecute = false`** inside **`PingRequest.WorkingDirectory`** when that path is valid. That is **operator-equivalent power** within the declared workspace tree (same trust boundary as local shell access plus the key). **`seek_workspace_lore`** is read-only but still constrained to the same tree (§10.2.1).
+
+### 11.2 API key lifecycle
+
+1. **Before `WebApplicationBuilder.Build()`**, **`ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync`** builds a minimal **`ServiceProvider`** with the same Data Protection app name and **`DataProtectionSecretStore`** as the full host, then calls **`ISecretStore.GetApiKeyAsync()`**.
+2. If no key exists, a **cryptographically random 32-byte key** is generated via `RandomNumberGenerator.Fill`, Base64-encoded, and saved through **`ISecretStore.SaveApiKeyAsync`** (encrypted at rest).
+3. **`ServeCommand`** prints a green Spectre confirmation when a new key was created. **`Api.DevHost`** prints the raw key to stdout once for developer convenience with `curl`.
+4. The key is encrypted via **ASP.NET Core Data Protection** (`SetApplicationName("ArcanumCore")`, purpose `Arcanum.Core.ApiKey`) and persisted as `security.dat` in `{ApplicationData}/arcanum/`.
+
+### 11.3 Request authentication
+
+The **`ApiKeyEndpointFilter`** (registered as singleton) intercepts all requests to the `/api` route group:
+
+1. Reads `X-Arcanum-Key` from **`IHeaderDictionary.TryGetValue`** (first header value only; avoids enumerator allocation from **`StringValues`**).
+2. Loads the expected key — the decrypted key's **UTF-8 bytes are cached** in a `private byte[]?` field after the first successful load, eliminating filesystem I/O and Data Protection decryption on subsequent requests.
+3. Encodes the header value to UTF-8 using **`stackalloc`** (for keys <= 256 bytes) to avoid heap allocation.
+4. Compares using **`CryptographicOperations.FixedTimeEquals`** — timing-safe to prevent side-channel attacks.
+5. Returns **401** with a structured `ApiResponse<string>` error envelope on failure.
+
+### 11.4 Unauthenticated routes
+
+OpenAPI (`/openapi/v1.json`) and Scalar (`/scalar`, `/scalar/v1`) remain on the root pipeline and are **not** covered by the API-key route group.
+
+---
+
+## 12. C# language and coding conventions
+
+- **File-scoped namespaces** — reduce indentation noise; used consistently in new code.
+- **Primary constructor-style DTOs** — `Error` is a positional `readonly record struct`; `ApiResponse<T>` is a positional `sealed record`; `PingRequest` and `IntelligenceEvent` are positional `sealed record`s. No JSON-property attributes on any type; wire-format casing comes from `[JsonSourceGenerationOptions]` on the context.
+- **Primary constructors on services** — `ApiKeyEndpointFilter`, `DataProtectionSecretStore`, `OllamaIntelligenceProvider`, `ArcanumApiClient`, `AskCommand` (**`IEyeOfTheWorld`**, **`ArcanumApiClient`**), `LookCommand`, `CliTypeRegistrar`, `CliTypeResolver` use primary constructors for DI injection. **Exception:** `OllamaIntelligenceProvider` uses a traditional constructor with explicit field assignments because the five injected dependencies exceed comfortable primary-constructor ergonomics.
+- **`IDisposable` on infrastructure services** — `DataProtectionSecretStore` implements `IDisposable` to dispose its `SemaphoreSlim(1, 1)` file lock; `CliTypeResolver` disposes the underlying `ServiceProvider`. Both patterns ensure deterministic cleanup when containers are torn down.
+- **`public static class ApiBootstrapper`** — extension method container; no instance state (except the static `NewlineBytes` buffer for NDJSON streaming).
+- **`internal static class Program`** — entrypoint visibility minimized; Spectre owns public CLI behavior through its attribute model and command types.
+- **Blank line after each code line** — the project follows a convention of one blank line after each line of C# code for visual breathing room.
+
+---
+
+## 13. Testing strategy (future)
+
+The design supports **host-level integration tests** by referencing `RetroDownfall.Arcanum.Api` from a test assembly, constructing `WebApplicationFactory`-style hosts (or `WebApplication.CreateSlimBuilder` in tests), calling `AddArcanumApiServices(configuration)`, calling `MapArcanumEndpoints`, and asserting on `HttpClient` responses — without launching the real `Cli` process.
+
+No test projects exist yet; this section documents **intent** so test placement does not accidentally couple to `Program` internals.
+
+---
+
+## 14. Extension guidelines for future contributors
+
+1. **New HTTP routes:** Add mapping inside `MapArcanumEndpoints` (or split into `MapFooEndpoints` extension methods in the same assembly when the file grows). Endpoints **must** return `ApiResponse<T>` produced via `ApiResponse<T>.FromResult(Result<T>, traceId)`; never return bare DTOs. Failable endpoints must return appropriate HTTP status codes (not 200 for failures). For each new payload type `T`, extend `ArcanumJsonContext` with `[JsonSerializable(typeof(ApiResponse<T>))]` (and the underlying `T` if it isn't already covered transitively). Use `.WithName(...)` for OpenAPI naming; do **not** use the deprecated `.WithOpenApi()`.
+
+2. **New domain operations:** Return `Result` or `Result<T>` from domain methods; rely on the implicit conversions (`T -> Result<T>`, `Error -> Result<T>`) so call sites stay uncluttered. Only construct `Result.Success(...)` / `Result.Failure(...)` explicitly when the implicit form is ambiguous.
+
+3. **New CLI verbs:** Add `AsyncCommand` (no settings) or `AsyncCommand<TSettings>` under `Cli/Commands` and register them in `Program.Configure`. Add `[DynamicDependency]` for each new command type on `Program.Main`. When a verb needs flags, introduce **`TSettings : CommandSettings`** and switch that command to **`AsyncCommand<TSettings>`** (and validate `dotnet publish` / AOT with **trimmer roots** or **`DynamicDependency`** if Spectre fails to resolve settings at runtime). JSON wiring (registering additional `JsonSerializerContext` instances) extends **`AddArcanumApiServices`** in the Api project; the CLI should not duplicate `ConfigureHttpJsonOptions` for Arcanum's envelope types. **Lightweight** verbs that only need filesystem perception should call **`AddArcanumEyeOfTheWorld()`** (see **`LookCommand`** and **`AskCommand`**, §15.7 / §10.5) rather than **`AddArcanumInfrastructure`**.
+
+4. **New intelligence providers:** Implement `IArcanumIntelligenceProvider` in the `Api` project and register via DI in `AddArcanumApiServices`. Follow the `OllamaIntelligenceProvider` pattern: accept **`PingRequest`** on **`ExecutePromptAsync`** / **`StreamPromptAsync`**, use **`ModelNameMatches`** for model resolution, return **`Result<T>`** from buffered methods, yield **`IntelligenceEvent`** from streaming methods.
+
+5. **Domain logic:** Place in `Core` (or future focused libraries); keep `Api` free of business orchestration except HTTP adaptation.
+
+6. **Breaking JSON contracts:** Treat `ApiResponse<T>`, `Result<T>`, `Error`, `PingRequest`, `IntelligenceEvent`, and every payload `T` as **versioned contracts**; coordinate with consumers before renaming properties or shapes. Property casing is fixed at the context level (`JsonKnownNamingPolicy.CamelCase`); changing it is a breaking change for every endpoint.
+
+7. **Situational perception (`IEyeOfTheWorld`):** Keep **`Core.Pattern`** free of filesystem references. Put enumeration and heuristics in **`Infrastructure.Pattern.EyeOfTheWorldService`**. Register via **`AddArcanumEyeOfTheWorld`** when a host (such as the **`Cli`**) must not call **`AddArcanumInfrastructure`**; extend **`AddArcanumInfrastructure`** when the full stack should expose perception. Document threshold or TOC-ranking changes in **§15** in the same pull request.
+
+---
+
+## 15. Eye of the World — situational awareness (`IEyeOfTheWorld`)
+
+### 15.1 Problem and product intent
+
+Operators and autonomous agents pay a **context tax** when dropped into an arbitrary working directory: they must infer whether the tree is a **.NET repo**, a **Node** workspace, **office / life-admin** documents, **research notes**, or something else before choosing tools and prompts.
+
+**Eye of the World** answers that with a **single async call** returning a **`PatternSnapshot`**: an inferred **`DomainType`** plus a **bounded table of contents** (`Threads`, typically **20 lines**) made of **labeled, human- and LLM-readable signatures** (concrete relative paths and stable prefixes such as `Solution:`, `Project:`, `File:`). The design **prioritizes accuracy and semantic hooks** (named artifacts the model can reason about) over microsecond scans; multi-hundred-millisecond walks on large trees are acceptable when ignore rules keep noise down.
+
+**Non-goal:** No deep parsers (no MSBuild, JSON, or Dockerfile **content** inspection). Everything is derived from **paths, file names, and extensions** plus **filesystem timestamps** for one specific fallback (§15.6).
+
+### 15.2 Contract (`RetroDownfall.Arcanum.Core.Pattern`)
+
+| Type | Role |
+|------|------|
+| **`DomainType`** | `SoftwareEngineering`, `Administration`, `Research`, `Unknown`. |
+| **`PatternSnapshot`** | Immutable aggregate: `Domain`, `RootPath` (full path), `Threads` (`string[]`). |
+| **`IEyeOfTheWorld`** | `Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken)` — invalid or missing directories return **`Unknown`** with an explanatory thread rather than throwing, so the CLI stays friendly. |
+
+### 15.3 Enumeration and noise control (`EyeOfTheWorldService`)
+
+**Traversal:** **`Directory.EnumerateFiles(root, "*", enumerationOptions)`** with **`RecurseSubdirectories = true`**, **`IgnoreInaccessible = true`**, and **`AttributesToSkip = Hidden | System`** so hidden and system entries are skipped early. There is **no artificial depth cap** — nested `src/.../*.csproj` must be discoverable.
+
+**Segment-based ignores** (case-insensitive path parts under `root`): `bin`, `obj`, `.git`, `node_modules`, `.vs`, `.nuget`, `packages`, `dist`, `build` — same philosophy as **`PhysicalWorkspaceScanner`**, extended for common dependency and artifact directories.
+
+**Safety valve:** A hard cap on **enumeration steps** (currently **50,000** entries returned by the enumerator) prevents pathological trees from running unbounded. When the cap trips, **`EnumerationTruncated`** is recorded and a final thread such as **`Scan: truncated after …`** is eligible for the TOC (reserving one line so the operator knows the snapshot is partial).
+
+**Exception stance:** A top-level **`catch`** around the enumeration swallows non-cancel exceptions so a single permission failure does not erase partial intelligence; **`OperationCanceledException`** is rethrown.
+
+### 15.4 Domain classification (heuristic)
+
+Counts and booleans are accumulated during the same pass used for signatures (ignores applied). **Classification order:**
+
+1. **`SoftwareEngineering`** if any **strong artifact** exists: `.sln` / `.slnx`, `.csproj` / `.fsproj` / `.vbproj`, **`package.json`**, **`Dockerfile`** (file name, case-insensitive), **`go.mod`**, **`Cargo.toml`**, **`pom.xml`**, **`build.gradle` / `build.gradle.kts`** — **or** if **developer source extensions** are abundant (currently **≥ 25** files among `.cs`, `.py`, `.js`/`.jsx`, `.ts`/`.tsx`, `.java`, `.go`, `.rs`, `.php`, C/C++-family extensions, `.vb`, `.fs`) even without a manifest, to catch loose script trees.
+
+2. Else **`Administration`** if **office-style** files (`.pdf`, `.xlsx`, `.xls`, `.docx`, `.pptx`) number **≥ 3** and **≥** prose-like counts.
+
+3. Else **`Research`** if **`.md` / `.txt`** files number **≥ 4** and **exceed** office counts.
+
+4. Else **`Unknown`**.
+
+These thresholds are **tunable constants** in the service; they are intentionally simple so behavior stays explainable in code review and in this document.
+
+### 15.5 Signature table of contents (non-`Unknown` domains)
+
+**Principle:** `Threads` should read like a **table of contents of defining files**, not aggregate statistics (avoid `"15 .cs files"`).
+
+**Software-oriented lines** (from the full tree, deduped by relative path): `Solution:` / `Project:` / `Package:` / `Dockerfile:` / `Manifest:` prefixes for the artifact types in §15.4.
+
+**Administration / Research near the root:** For **`Document:`** (office) and **`Note:`** (`.md` / `.txt`), collection favors **repository root and primary subfolders** — relative paths with **depth ≤ 2** path segments — so deep `node_modules`-like trees (already skipped) do not flood the TOC while leases next to `src/` still appear. **`SoftwareEngineering`** snapshots may **backfill** from these near-root buckets when fewer than 20 lines were produced from pure software artifacts.
+
+**Cap and dedupe:** Merge buckets in a **priority order** (solutions → projects → packages → Dockerfiles → other manifests → documents → notes), **`OrderBy` relative path** within a bucket for stability, **dedupe by relative path**, then **take 20**. If enumeration was truncated, **one line** is reserved for the **`Scan:`** notice (19 signature lines + notice).
+
+### 15.6 `Unknown` domain — recency fallback for TOC ranking
+
+When the classifier yields **`DomainType.Unknown`**, signature-bucket ordering is **not** the right signal — there may be no clear project or document theme.
+
+**Decision:** For **`Unknown`**, rank TOC candidates strictly by **filesystem recency**:
+
+1. **`LastWriteTimeUtc` descending** (most recently modified first).
+
+2. **`CreationTimeUtc` descending** as a **secondary** sort key when modified times tie.
+
+Up to **20** lines are emitted as **`File: {relativePath}`**. If enumeration truncated, reserve one line for the **`Scan:`** thread (19 files + notice). **`File.GetLastWriteTimeUtc`** / **`File.GetCreationTimeUtc`** are used per file; failures to stat a file skip that entry.
+
+**Platform note:** On some Unix filesystems **creation time** may approximate **change time** or **birth time** depending on OS and volume capabilities; the **primary** signal remains **last write**, which is universally meaningful for “what did the user touch last?”
+
+### 15.7 Dependency injection split
+
+**Decision:** Expose **`AddArcanumEyeOfTheWorld(this IServiceCollection)`** as a **narrow** registration (singleton **`IEyeOfTheWorld`** → **`EyeOfTheWorldService`** only). **`AddArcanumInfrastructure`** calls it so the **API host** receives perception without extra wiring.
+
+**Reason:** The **`Cli`** **`look`** command must **not** call **`AddArcanumInfrastructure`** whole-cloth — that would start **Serilog file logging**, **EF Core**, the **Grimoire hosted service**, and other side effects inappropriate for a lightweight directory snapshot. The CLI registers **`AddArcanumEyeOfTheWorld()`** alongside its existing **Data Protection** + **`ISecretStore`** setup.
+
+### 15.8 Relationship to `IWorkspaceScanner`
+
+| Concern | `IWorkspaceScanner` | `IEyeOfTheWorld` |
+|---------|---------------------|------------------|
+| **Primary output** | Human-readable **text summary** of `.sln` discovery | **`PatternSnapshot`** with **`DomainType`** + **TOC strings** for machines and LLMs |
+| **Scope** | `*.sln` enumeration | Multi-signal **domain** + **multi-type** signatures |
+| **Overlap** | Both skip `bin` / `obj` / `.git` (Eye extends ignores) | Both walk the tree under a root |
+
+They are **complementary**, not duplicates. Product code may call either or both depending on whether the consumer needs **prose summary** vs **structured situational JSON-path analog** (`Threads`).
+
+### 15.9 Tradeoffs and known limitations
+
+- **Heuristic misclassification** is possible (e.g. a folder with many PDFs *and* a stray `package.json`). Tuning thresholds (§15.4) is the escape hatch; avoid ML or rules engines in this layer unless requirements change.
+
+- **No content indexing** — security and performance stay predictable; RAG or full-text search belong in future layers.
+
+- **TOC is not exhaustive** — it is a **deliberately small** hint surface for context windows.
+
+---
+
+## 16. Known limitations and future work
+
+This section consolidates design-level constraints and gaps that are known but intentionally deferred.
+
+### 16.1 Inference
+
+- **Single user prompt per HTTP request.** Each `PingRequest` carries one new user `Prompt` string. When optional `conversationId` identifies an existing Grimoire conversation, `ExecutePromptAsync` / `StreamPromptAsync` **do** load prior `ChatMessage` rows into `IChatClient` before sending that prompt; stale or unknown ids start a new conversation. What remains deferred is the broader **agentic** control plane (**remote MCP**, richer **skill catalogs**, **approval / human-in-the-loop** beyond fixed local tools) — see below.
+- **Dynamic system prompt and spatial context.** **`OllamaIntelligenceProvider`** prepends a **`ChatRole.System`** message built by **`SystemPromptBuilder.Build`**, which consumes **`PingRequest.ContextSnapshot`**, **`PingRequest.WorkingDirectory`** (for **`CodexReader`** local **`CODEX.md`** merge), and optional cascaded codex text. That turn is **in-memory only** (not a Grimoire row); see §10.5.
+- **Single-model routing only.** There is no multi-model routing, fallback, or load balancing. The resolved model (from request or `ArcanumSettings.Ollama.DefaultModel`) is used as-is.
+- **The agentic loop (tool calling).** `OllamaIntelligenceProvider` implements a bounded local loop for **`Microsoft.Extensions.AI`** tools: `FunctionCallContent` from the model is executed on the API host, `FunctionResultContent` is fed back on `ChatRole.Tool`, and NDJSON **`toolCall`** / **`toolResult`** events surface progress. **Three** first-party sealed **`AIFunction`** tools live under **`Api/Intelligence/Tools`** (§10.2.1): local time, workspace file read, and workspace command execution with timeout. What remains deferred is **remote MCP**, pluggable **tool catalogs**, and **human approval** gates before high-risk actions.
+- **Models without tool support.** Some Ollama models (for example **`phi4`**) reject requests that include tool definitions (`…does not support tools`). When the first inference attempt fails with that message and no assistant text has been produced yet, **`ExecutePromptAsync`** / **`StreamPromptAsync`** log at **Information**, retry once with **`ChatOptions`** that omit tools (plain chat only), and streaming clients receive a **`status`** line explaining the downgrade.
+
+### 16.2 Persistence
+
+- **No database migrations.** Schema changes require deleting the existing `arcanum.db` and allowing `EnsureCreatedAsync` to recreate it, or manual re-encryption with an updated schema. This is acceptable for local-first tooling; a migration strategy should be introduced before any shipped release depends on data continuity.
+- **`MageSetting` and `WorkspaceContext` entities** are defined, mapped, and present in the compiled model but have **no current producers or consumers**. They are reserved for future product features (per-operator settings, workspace indexing).
+- **`BureauSettings.Enabled`** is defined in `ArcanumSettings` but has **no consumers**. It is a placeholder for a future feature.
+- **Conversation titles and models.** New `Conversation` rows still get human-oriented metadata from the truncated prompt and model choice; correlation for **threading** is the explicit **`Conversation.Id`** carried on **`PingRequest`** and returned on the NDJSON **`conversationBound`** event.
+- **CLI session file scope.** `cli-session.txt` stores **one** last id for the current OS user profile — not multi-user isolation, not cloud sync, and not tamper-proofing beyond normal filesystem permissions.
+- **Agentic persistence.** `AppendToolInteractionAsync` records each tool round as two `ChatMessage` rows (assistant bracket **`[ToolCall: …]`**, system bracket **`[ToolResult: …]`**) so history reload preserves tool context without JSON columns on messages. Multi-turn **user/assistant chat** via `conversationId` remains the primary threading mechanism (CLI + API + Grimoire).
+
+### 16.3 Security and identity
+
+- **No user identity, sessions, or OAuth.** The security model is **loopback + API key** only. There is no concept of multiple users, role-based access, or external identity providers.
+- **API key rotation** requires deleting `security.dat` and restarting; there is no in-process rotation or key versioning. The Grimoire database must also be recreated (or the HKDF-derived passphrase manually updated) when the master key changes.
+
+### 16.4 Testing
+
+- **No test projects exist.** The design supports host-level integration tests via `WebApplicationFactory`-style hosts (§13), but no test assemblies are present in the solution today.
+
+### 16.5 CLI
+
+- **Daemon help text is macOS-centric.** The Spectre `WithDescription` strings for `daemon install` / `uninstall` / `status` reference macOS-specific terminology (LaunchAgent, `launchctl`) even though `AddArcanumDaemonManagement` dispatches to the correct platform manager at runtime.
+
+---
+
+## 17. Glossary
+
+| Term | Meaning in this repo |
+|------|----------------------|
+| **RDG** | ASP.NET Core Request Delegate Generator — compile-time generation for Minimal API route handlers. |
+| **`JsonSerializerContext`** | System.Text.Json source generator context producing `JsonTypeInfo` metadata for AOT-safe serialization. |
+| **`CreateSlimBuilder`** | ASP.NET Core API returning a `WebApplicationBuilder` with a reduced default service set compared to `CreateBuilder`. |
+| **`IsAotCompatible`** | MSBuild signal that a library is intended to be safe under AOT analysis; not a guarantee without discipline in code. |
+| **`PublishAot`** | On **`Cli`**, enables Native AOT publishing of the executable. On **`Infrastructure`**, the same property name is used together with **`IsTrimmable`** so the library is analyzed in the publish graph — it does not produce a standalone native binary. |
+| **NDJSON** | Newline-Delimited JSON — one JSON object per line, used for streaming `IntelligenceEvent`s. |
+| **Data Protection** | ASP.NET Core's key-management and encryption system, used here to encrypt the local API key at rest. |
+| **Grimoire** | Encrypted local SQLite (EF Core + SQLCipher) for Arcanum persistence; passphrase derived from the master API key via HKDF in **Infrastructure**. |
+| **`AddArcanumInfrastructure`** | DI extension on **`IServiceCollection`** that calls **`AddArcanumEyeOfTheWorld`**, then registers Serilog, options, Data Protection, **`ISecretStore`**, Grimoire, and **`IWorkspaceScanner`**. |
+| **`AddArcanumEyeOfTheWorld`** | Narrow DI extension: registers **`IEyeOfTheWorld`** → **`EyeOfTheWorldService`** only (no Grimoire or Serilog file pipeline). Used by **`Cli`** for **`look`** and **`ask`** (perception before intelligence HTTP) and chained from **`AddArcanumInfrastructure`**. |
+| **`IEyeOfTheWorld`** | Core contract for **Eye of the World** — async **`PerceivePatternAsync`** returning **`PatternSnapshot`**. |
+| **`PatternSnapshot`** | **`DomainType`** + **`RootPath`** + **`Threads`** (TOC lines, capped). |
+| **Eye of the World** | Product name for situational directory perception; **`EyeOfTheWorldService`** is the Infrastructure implementation. |
+| **`IGrimoireRepository`** | Core contract for Grimoire CRUD — streaming append, finalize, buffered save, list, and get operations. Implemented by **`GrimoireRepository`** in Infrastructure. |
+| **`ArcanumDbContextFactory`** | `IDesignTimeDbContextFactory<ArcanumDbContext>` for `dotnet ef` tooling; uses a temp DB and environment-variable key, not the user's live Grimoire. |
+| **`AddArcanumDaemonManagement`** | Narrow DI extension: registers **`IDaemonManager`** for the detected OS (Windows **`sc`**, macOS **launchd**, Linux **`systemctl --user`**). Throws **`PlatformNotSupportedException`** on unsupported OSes. |
+| **`IDaemonManager`** | Core contract for daemon lifecycle — `InstallAsync`, `UninstallAsync`, `GetStatusAsync`. Platform implementations live in Infrastructure. |
+| **`EFPrecompileQueriesStage`** | EF Core 10 MSBuild property controlling precompiled-query generation; set to **`none`** in Infrastructure to avoid MSBuild conflicts with repository LINQ patterns. |
+
+---
+
+## 18. Document maintenance
+
+When any of the following change, **update this document** in the same pull request:
+
+- Project topology or `.csproj` flags (`PublishAot`, `IsTrimmable`, `EnableRequestDelegateGenerator`, TFM).
+- **`AddArcanumInfrastructure`**, **`AddArcanumEyeOfTheWorld`**, Grimoire / Serilog / workspace / **Eye of the World** wiring in **Infrastructure**.
+- Hosting entry (`ServeCommand`) or URL binding strategy.
+- JSON or endpoint bootstrap patterns (`AddArcanumApiServices`, `MapArcanumEndpoints`, OpenAPI/Scalar mapping, `ArcanumJsonContext`, or any change to the `ApiResponse<T>` / `Result<T>` / `Error` / `PingRequest` / `IntelligenceEvent` shapes).
+- Intelligence provider contract or implementation patterns (**including `Intelligence/Tools`**, **`ChatOptions.Tools`**, workspace sandbox rules for **`seek_workspace_lore`** / **`invoke_rune`**, and any change to hand-authored **`JsonDocument`** tool schemas).
+- Security model (API key lifecycle, authentication filter, secret storage).
+- CLI framework choice or mitigation strategy for Spectre warnings.
+
+- **`IEyeOfTheWorld`**, **`PatternSnapshot`**, **`DomainType`**, **`EyeOfTheWorldService`** heuristics, enumeration ignores, TOC caps, or **`Unknown`** recency ranking.
+- Grimoire data model (entities, constraints, indexes), **`IGrimoireRepository`** operations, or **`ArcanumDbContextFactory`** design-time wiring (§5.4.1–§5.4.3).
+- Daemon management (`IDaemonManager`, platform managers, `AddArcanumDaemonManagement`).
+- Package version changes (§3.4).
+
+---
+
+*End of design document.*

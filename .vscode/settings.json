@@ -1,0 +1,4 @@
+{
+  "csharp.debug.justMyCode": false,
+  "csharp.debug.suppressJITOptimizations": true
+}
