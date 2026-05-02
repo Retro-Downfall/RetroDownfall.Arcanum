@@ -24,6 +24,8 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
 
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Cli" />
+
   </ItemGroup>
 
   <ItemGroup>
@@ -63,6 +65,8 @@
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
 
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
+
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.5.0" />
 
   </ItemGroup>
 

@@ -25,60 +25,89 @@ public sealed class ArcanumDbContext(
     : DbContext(options)
 {
     public DbSet<Conversation> Conversations => Set<Conversation>();
+
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
+
     public DbSet<MageSetting> MageSettings => Set<MageSetting>();
+
     public DbSet<WorkspaceContext> WorkspaceContexts => Set<WorkspaceContext>();
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         _ = secretStore;
+
         if (optionsBuilder.IsConfigured)
         {
             return;
         }
+
         string dbPath = ArcanumPaths.GrimoireDatabaseFile;
+
         string connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
             Password = passphraseSource.Passphrase,
         }.ToString();
+
         optionsBuilder.UseSqlite(connectionString);
+
         optionsBuilder.UseModel(ArcanumDbContextModel.Instance);
     }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Conversation>(entity =>
         {
             entity.ToTable("Conversations");
+
             entity.HasKey(e => e.Id);
+
             entity.Property(e => e.Title).HasMaxLength(512).IsRequired();
+
             entity.HasIndex(e => e.CreatedAt);
+
             entity.HasMany(e => e.Messages)
                 .WithOne(m => m.Conversation!)
                 .HasForeignKey(m => m.ConversationId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
+
         modelBuilder.Entity<ChatMessage>(entity =>
         {
             entity.ToTable("ChatMessages");
+
             entity.HasKey(e => e.Id);
+
             entity.Property(e => e.Content).IsRequired();
+
             entity.Property(e => e.ModelUsed).HasMaxLength(256).IsRequired();
+
             entity.Property(e => e.Role).HasConversion<int>();
+
             entity.HasIndex(e => e.ConversationId);
         });
+
         modelBuilder.Entity<MageSetting>(entity =>
         {
             entity.ToTable("MageSettings");
+
             entity.HasKey(e => e.Key);
+
             entity.Property(e => e.Key).HasMaxLength(256).IsRequired();
+
             entity.Property(e => e.Value).IsRequired();
         });
+
         modelBuilder.Entity<WorkspaceContext>(entity =>
         {
             entity.ToTable("WorkspaceContexts");
+
             entity.HasKey(e => e.Id);
+
             entity.Property(e => e.RootPath).HasMaxLength(4096).IsRequired();
+
             entity.Property(e => e.ProjectSummary).IsRequired();
+
             entity.HasIndex(e => e.RootPath);
         });
     }

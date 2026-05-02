@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Workspace;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Pattern;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -89,6 +90,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
 
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
+
+        services.AddSingleton<McpConnectionManager>();
 
         return services;
     }

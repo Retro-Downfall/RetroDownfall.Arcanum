@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -24,7 +25,8 @@ public sealed class OllamaIntelligenceProvider(
     IChatClient chatClient,
     IOptions<ArcanumSettings> settings,
     ILogger<OllamaIntelligenceProvider> logger,
-    IGrimoireRepository grimoire) : IArcanumIntelligenceProvider
+    IGrimoireRepository grimoire,
+    McpConnectionManager mcpConnectionManager) : IArcanumIntelligenceProvider
 {
     private const int MaxToolInferenceRounds = 8;
 
@@ -98,7 +100,7 @@ public sealed class OllamaIntelligenceProvider(
 
         string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell);
 
-        List<AITool> toolSet = BuildToolSet(request.WorkingDirectory);
+        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request.WorkingDirectory, cancellationToken).ConfigureAwait(false);
 
         bool inferenceUsesTools = true;
 
@@ -362,7 +364,7 @@ public sealed class OllamaIntelligenceProvider(
 
         StringBuilder accumulator;
 
-        List<AITool> streamToolSet = BuildToolSet(request.WorkingDirectory);
+        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request.WorkingDirectory, cancellationToken).ConfigureAwait(false);
 
         bool streamUsesTools = true;
 
@@ -384,154 +386,154 @@ public sealed class OllamaIntelligenceProvider(
             {
                 List<ChatResponseUpdate> roundUpdates = [];
 
-            IAsyncEnumerator<ChatResponseUpdate> streamEnumerator = chatClient
-                .GetStreamingResponseAsync(chatMessages, streamChatOptions, cancellationToken)
-                .GetAsyncEnumerator(cancellationToken);
-
-            try
-            {
-                while (true)
-                {
-                    bool hasNext;
-
-                    try
-                    {
-                        hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        inferenceError = ex.Message;
-
-                        break;
-                    }
-
-                    if (!hasNext)
-                    {
-                        break;
-                    }
-
-                    ChatResponseUpdate update = streamEnumerator.Current;
-
-                    roundUpdates.Add(update);
-
-                    if (string.IsNullOrEmpty(update.Text))
-                    {
-                        continue;
-                    }
-
-                    _ = accumulator.Append(update.Text);
-
-                    if (assistantMessageId is { } aid)
-                    {
-                        try
-                        {
-                            await grimoire.AppendAssistantContentAsync(aid, update.Text, cancellationToken).ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogWarning(ex, "Grimoire could not append streaming token for model {ModelName}.", targetModel);
-                        }
-                    }
-
-                    yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
-                }
-            }
-            finally
-            {
-                await streamEnumerator.DisposeAsync().ConfigureAwait(false);
-            }
-
-            if (inferenceError is not null)
-            {
-                if (streamUsesTools
-
-                    && LooksLikeModelDoesNotSupportTools(inferenceError)
-
-                    && accumulator.Length == 0)
-                {
-                    logger.LogInformation(
-                        "Model {ModelName} does not support tools in Ollama; retrying stream without local tools.",
-                        targetModel);
-
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Status,
-                        "This Ollama model does not support tools; continuing without local tools.");
-
-                    streamUsesTools = false;
-
-                    inferenceError = null;
-
-                    streamOuterRestart = true;
-                }
-
-                break;
-            }
-
-            ChatResponse combinedRound = roundUpdates.ToChatResponse();
-
-            List<FunctionCallContent> toolCalls = CollectFunctionCalls(combinedRound)
-                .Where(static c => !c.InformationalOnly)
-                .ToList();
-
-            if (toolCalls.Count == 0)
-            {
-                break;
-            }
-
-            streamToolRoundCount++;
-
-            if (streamToolRoundCount > MaxToolInferenceRounds)
-            {
-                inferenceError = "Tool invocation limit reached.";
-
-                break;
-            }
-
-            foreach (FunctionCallContent fcc in toolCalls)
-            {
-                string toolCallData = FormatToolCallEventData(fcc);
-
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.ToolCall,
-                    fcc.Name,
-                    toolCallData);
-
-                string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
-
-                string resultText;
+                IAsyncEnumerator<ChatResponseUpdate> streamEnumerator = chatClient
+                    .GetStreamingResponseAsync(chatMessages, streamChatOptions, cancellationToken)
+                    .GetAsyncEnumerator(cancellationToken);
 
                 try
                 {
-                    resultText = await InvokeToolCallAsync(fcc, streamChatOptions, cancellationToken).ConfigureAwait(false);
+                    while (true)
+                    {
+                        bool hasNext;
+
+                        try
+                        {
+                            hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            inferenceError = ex.Message;
+
+                            break;
+                        }
+
+                        if (!hasNext)
+                        {
+                            break;
+                        }
+
+                        ChatResponseUpdate update = streamEnumerator.Current;
+
+                        roundUpdates.Add(update);
+
+                        if (string.IsNullOrEmpty(update.Text))
+                        {
+                            continue;
+                        }
+
+                        _ = accumulator.Append(update.Text);
+
+                        if (assistantMessageId is { } aid)
+                        {
+                            try
+                            {
+                                await grimoire.AppendAssistantContentAsync(aid, update.Text, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "Grimoire could not append streaming token for model {ModelName}.", targetModel);
+                            }
+                        }
+
+                        yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
+                    }
                 }
-                catch (Exception ex)
+                finally
                 {
-                    resultText = $"Error: {ex.Message}";
+                    await streamEnumerator.DisposeAsync().ConfigureAwait(false);
                 }
 
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.ToolResult,
-                    fcc.Name,
-                    resultText);
+                if (inferenceError is not null)
+                {
+                    if (streamUsesTools
 
-                chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [fcc]));
+                        && LooksLikeModelDoesNotSupportTools(inferenceError)
 
-                chatMessages.Add(
-                    new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(fcc.CallId, resultText)]));
+                        && accumulator.Length == 0)
+                    {
+                        logger.LogInformation(
+                            "Model {ModelName} does not support tools in Ollama; retrying stream without local tools.",
+                            targetModel);
 
-                await TryAppendToolInteractionToGrimoireAsync(
-                    boundConversationId,
-                    fcc.Name,
-                    argsSnapshot,
-                    resultText,
-                    targetModel,
-                    cancellationToken)
-                    .ConfigureAwait(false);
-            }
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Status,
+                            "This Ollama model does not support tools; continuing without local tools.");
+
+                        streamUsesTools = false;
+
+                        inferenceError = null;
+
+                        streamOuterRestart = true;
+                    }
+
+                    break;
+                }
+
+                ChatResponse combinedRound = roundUpdates.ToChatResponse();
+
+                List<FunctionCallContent> toolCalls = CollectFunctionCalls(combinedRound)
+                    .Where(static c => !c.InformationalOnly)
+                    .ToList();
+
+                if (toolCalls.Count == 0)
+                {
+                    break;
+                }
+
+                streamToolRoundCount++;
+
+                if (streamToolRoundCount > MaxToolInferenceRounds)
+                {
+                    inferenceError = "Tool invocation limit reached.";
+
+                    break;
+                }
+
+                foreach (FunctionCallContent fcc in toolCalls)
+                {
+                    string toolCallData = FormatToolCallEventData(fcc);
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.ToolCall,
+                        fcc.Name,
+                        toolCallData);
+
+                    string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
+
+                    string resultText;
+
+                    try
+                    {
+                        resultText = await InvokeToolCallAsync(fcc, streamChatOptions, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        resultText = $"Error: {ex.Message}";
+                    }
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.ToolResult,
+                        fcc.Name,
+                        resultText);
+
+                    chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [fcc]));
+
+                    chatMessages.Add(
+                        new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(fcc.CallId, resultText)]));
+
+                    await TryAppendToolInteractionToGrimoireAsync(
+                        boundConversationId,
+                        fcc.Name,
+                        argsSnapshot,
+                        resultText,
+                        targetModel,
+                        cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             if (streamOuterRestart)
@@ -694,14 +696,26 @@ public sealed class OllamaIntelligenceProvider(
         return list;
     }
 
-    private static List<AITool> BuildToolSet(string workingDirectory) =>
+    private async Task<List<AITool>> BuildToolSetWithMcpAsync(string workingDirectory, CancellationToken cancellationToken)
+    {
+        List<AITool> tools =
+        [
+            new ArcanumLocalTimeTool(),
+            new LoreSeekerTool(workingDirectory),
+            new RuneExecutorTool(workingDirectory),
+        ];
 
-    [
+        IReadOnlyList<AITool> mcpTools = await mcpConnectionManager
+            .GetAvailableToolsAsync(workingDirectory, cancellationToken)
+            .ConfigureAwait(false);
 
-        new ArcanumLocalTimeTool(),
-        new LoreSeekerTool(workingDirectory),
-        new RuneExecutorTool(workingDirectory),
-    ];
+        foreach (AITool t in mcpTools)
+        {
+            tools.Add(t);
+        }
+
+        return tools;
+    }
 
     private static ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools)
     {
