@@ -4,10 +4,8 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public static class ConfigurationBootstrapper
 {
-
     public static IConfigurationBuilder AddArcanumConfiguration(this IConfigurationBuilder builder)
     {
-
         string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "arcanum");
 
         Directory.CreateDirectory(configPath);
@@ -19,7 +17,5 @@ public static class ConfigurationBootstrapper
         builder.AddEnvironmentVariables(prefix: "ARCANUM_");
 
         return builder;
-
     }
-
 }

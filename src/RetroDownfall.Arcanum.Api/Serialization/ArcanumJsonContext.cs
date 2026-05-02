@@ -1,11 +1,7 @@
 using System.Text.Json.Serialization;
-
 using RetroDownfall.Arcanum.Core.Intelligence;
-
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
-
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Serialization;

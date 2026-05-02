@@ -1,16 +1,12 @@
 using System.Security.Cryptography;
-
 using Microsoft.AspNetCore.DataProtection;
-
 using Microsoft.Extensions.DependencyInjection;
-
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 public static class ArcanumMasterKeyBootstrapper
 {
-
     /// <summary>
 
     /// Ensures a master API key exists on disk before the generic host starts (required for Grimoire SQLCipher key derivation).
@@ -21,7 +17,6 @@ public static class ArcanumMasterKeyBootstrapper
 
     public static async Task<string?> EnsureMasterApiKeyExistsAsync(CancellationToken cancellationToken = default)
     {
-
         ServiceCollection services = new();
 
         services.AddDataProtection().SetApplicationName("ArcanumCore");
@@ -34,9 +29,7 @@ public static class ArcanumMasterKeyBootstrapper
 
         if (await store.GetApiKeyAsync().ConfigureAwait(false) is not null)
         {
-
             return null;
-
         }
 
         byte[] keyBytes = new byte[32];
@@ -48,7 +41,5 @@ public static class ArcanumMasterKeyBootstrapper
         await store.SaveApiKeyAsync(apiKey).ConfigureAwait(false);
 
         return apiKey;
-
     }
-
 }

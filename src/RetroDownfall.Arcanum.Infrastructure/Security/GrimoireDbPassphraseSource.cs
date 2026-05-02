@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 public sealed class GrimoireDbPassphraseSource : IGrimoireDbPassphraseSource
 {
-
     private string? _passphrase;
 
     public string Passphrase =>
@@ -11,11 +10,8 @@ public sealed class GrimoireDbPassphraseSource : IGrimoireDbPassphraseSource
 
     public void SetPassphrase(string passphrase)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(passphrase);
 
         _passphrase = passphrase;
-
     }
-
 }

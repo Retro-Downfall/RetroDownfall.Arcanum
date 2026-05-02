@@ -16,6 +16,8 @@ Enterprise-grade .NET 10 solution: shared **Core** library, **Api** class librar
 dotnet build RetroDownfall.Arcanum.slnx
 ```
 
+**C# formatting:** follow the blank-line conventions in [`ApiBootstrapper.cs`](src/RetroDownfall.Arcanum.Api/ApiBootstrapper.cs) (contiguous `using` directives, no blank line immediately after `{`, fluent `.` continuations without blank lines between parts, no blank lines before a lone closing `}` or `)` line, no blank lines inside a single multiline ternary or between comma-separated arguments, and at most one blank line between logical sections).
+
 ## Configuration
 
 Both **`serve`** (CLI) and **Api.DevHost** call `ConfigurationBootstrapper.AddArcanumConfiguration()` before `AddArcanumApiServices`, so settings load from a **central user directory**, not the process working directory.

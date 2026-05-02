@@ -1,70 +1,51 @@
 using System.Diagnostics;
-
 using System.Security.Cryptography;
-
 using System.Text;
-
 using Microsoft.AspNetCore.Http;
-
 using Microsoft.Extensions.Primitives;
-
 using RetroDownfall.Arcanum.Api.Serialization;
-
 using RetroDownfall.Arcanum.Core.Primitives;
-
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
 public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFilter
 {
-
     private byte[]? _cachedExpectedUtf8;
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-
         IHeaderDictionary headers = context.HttpContext.Request.Headers;
 
         string? headerValue = headers.TryGetValue(ArcanumApiHeaders.ApiKey, out StringValues apiKeyHeader) && apiKeyHeader.Count > 0
-
             ? apiKeyHeader[0]
-
             : null;
 
         byte[]? expectedUtf8 = _cachedExpectedUtf8;
 
         if (expectedUtf8 is null)
         {
-
             string? expected = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
             if (expected is null)
             {
-
                 return Unauthorized(context.HttpContext);
-
             }
 
             expectedUtf8 = Encoding.UTF8.GetBytes(expected);
 
             _cachedExpectedUtf8 = expectedUtf8;
-
         }
 
         if (string.IsNullOrEmpty(headerValue))
         {
-
             return Unauthorized(context.HttpContext);
-
         }
 
         int headerByteCount = Encoding.UTF8.GetByteCount(headerValue);
 
         Span<byte> headerUtf8 = headerByteCount <= 256
-
             ? stackalloc byte[headerByteCount]
-
             : new byte[headerByteCount];
 
         Encoding.UTF8.GetBytes(headerValue, headerUtf8);
@@ -72,24 +53,18 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFi
         if (expectedUtf8.Length != headerUtf8.Length
             || !CryptographicOperations.FixedTimeEquals(expectedUtf8, headerUtf8))
         {
-
             return Unauthorized(context.HttpContext);
-
         }
 
         return await next(context).ConfigureAwait(false);
-
     }
 
     private static IResult Unauthorized(HttpContext httpContext)
     {
-
         string? traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         ApiResponse<string> body = new(null, false, new Error("Unauthorized", "Invalid or missing API key."), traceId);
 
         return Results.Json(body, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status401Unauthorized);
-
     }
-
 }
