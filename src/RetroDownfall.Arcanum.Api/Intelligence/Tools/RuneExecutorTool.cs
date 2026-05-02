@@ -23,6 +23,10 @@ public sealed class RuneExecutorTool : AIFunction
             "arguments": {
               "type": "string",
               "description": "Full argument string passed to the executable."
+            },
+            "spellDirectory": {
+              "type": "string",
+              "description": "An optional relative path to a specific spell directory to execute the command within. Defaults to workspace root."
             }
           },
           "required": ["command", "arguments"],
@@ -55,7 +59,7 @@ public sealed class RuneExecutorTool : AIFunction
 
     public override string Description =>
 
-        "Executes a CLI command (e.g., python, bash, dotnet) in the workspace and returns the console output. Use this to run scripts, size trades, or build code.";
+        "Executes a CLI command (e.g., python, bash, dotnet) in the workspace and returns the console output. Use this to run scripts, size trades, or build code. Optional spellDirectory sets the process working directory to a path relative to the workspace (for encapsulated spell folders).";
 
     public override JsonElement JsonSchema => SchemaDocument.RootElement;
 
@@ -81,6 +85,45 @@ public sealed class RuneExecutorTool : AIFunction
             return argsError;
         }
 
+        string workingDir = _workspaceRoot;
+
+        if (ToolHelpers.TryGetOptionalStringArgument(arguments, "spellDirectory", out string? spellDirectory))
+        {
+            if (Path.IsPathRooted(spellDirectory))
+            {
+                return
+
+                    "The spellDirectory must be relative to the workspace (absolute paths are not allowed). Please use a path like `spells/kalshi-trade` under the project directory.";
+            }
+
+            string combined;
+
+            try
+            {
+                combined = Path.GetFullPath(Path.Combine(_workspaceRoot, spellDirectory));
+            }
+            catch (Exception)
+            {
+                return "That spell directory path could not be resolved. Please simplify the path and try again.";
+            }
+
+            if (!ToolHelpers.IsPathUnderWorkspace(_workspaceRoot, combined))
+            {
+                return
+
+                    "That spellDirectory would leave the workspace sandbox, so the command was not run. Please stay within the project directory.";
+            }
+
+            if (!Directory.Exists(combined))
+            {
+                return
+
+                    $"There is no directory at `{spellDirectory}` in the workspace (after resolving paths). Use a relative path to an existing spell folder.";
+            }
+
+            workingDir = combined;
+        }
+
         using var timeoutCts = new CancellationTokenSource(RunTimeout);
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -95,7 +138,7 @@ public sealed class RuneExecutorTool : AIFunction
             {
                 FileName = command,
                 Arguments = argumentsLine,
-                WorkingDirectory = _workspaceRoot,
+                WorkingDirectory = workingDir,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

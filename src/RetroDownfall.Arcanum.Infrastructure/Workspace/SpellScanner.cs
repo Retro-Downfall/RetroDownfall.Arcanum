@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Storage;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
 
 internal sealed record ParsedSpell(string Name, string Description, string FilePath, string FullContent);
@@ -13,34 +15,93 @@ internal static class SpellScanner
         "dist",
     };
 
-    internal static async Task<IReadOnlyList<ParsedSpell>> ScanAsync(string workingDirectory, CancellationToken cancellationToken)
+    internal static async Task<IReadOnlyList<ParsedSpell>> ScanAsync(string? workspaceRoot, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(workingDirectory))
-        {
-            return [];
-        }
+        string globalSpellsDir = Path.Combine(ArcanumPaths.GrimoireDirectory, "spells");
 
-        string root;
+        string globalRoot;
 
         try
         {
-            root = Path.GetFullPath(workingDirectory.Trim());
+            globalRoot = Path.GetFullPath(globalSpellsDir);
         }
         catch
         {
-            return [];
+            globalRoot = string.Empty;
         }
 
-        if (!Directory.Exists(root))
+        List<ParsedSpell> globalSpells = [];
+
+        if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
         {
-            return [];
+            globalSpells = await ScanTreeAsync(globalRoot, cancellationToken).ConfigureAwait(false);
         }
 
+        List<ParsedSpell> localSpells = [];
+
+        if (!string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            string localRoot;
+
+            try
+            {
+                localRoot = Path.GetFullPath(workspaceRoot.Trim());
+            }
+            catch
+            {
+                localRoot = string.Empty;
+            }
+
+            if (localRoot.Length > 0 && Directory.Exists(localRoot))
+            {
+                localSpells = await ScanTreeAsync(localRoot, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return MergeSpells(globalSpells, localSpells);
+    }
+
+    private static IReadOnlyList<ParsedSpell> MergeSpells(IReadOnlyList<ParsedSpell> globalSpells, IReadOnlyList<ParsedSpell> localSpells)
+    {
+        if (globalSpells.Count == 0)
+        {
+            return localSpells;
+        }
+
+        if (localSpells.Count == 0)
+        {
+            return globalSpells;
+        }
+
+        var localNameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ParsedSpell l in localSpells)
+        {
+            _ = localNameSet.Add(l.Name);
+        }
+
+        var merged = new List<ParsedSpell>(globalSpells.Count + localSpells.Count);
+
+        foreach (ParsedSpell g in globalSpells)
+        {
+            if (!localNameSet.Contains(g.Name))
+            {
+                merged.Add(g);
+            }
+        }
+
+        merged.AddRange(localSpells);
+
+        return merged;
+    }
+
+    private static async Task<List<ParsedSpell>> ScanTreeAsync(string rootFullPath, CancellationToken cancellationToken)
+    {
         var results = new List<ParsedSpell>();
 
         var queue = new Queue<string>();
 
-        queue.Enqueue(root);
+        queue.Enqueue(rootFullPath);
 
         while (queue.Count > 0)
         {
@@ -48,18 +109,23 @@ internal static class SpellScanner
 
             string currentDir = queue.Dequeue();
 
-            if (!IsPathUnderWorkspaceRoot(root, currentDir))
+            if (!IsPathUnderWorkspaceRoot(rootFullPath, currentDir))
             {
                 continue;
             }
 
             try
             {
-                foreach (string filePath in Directory.EnumerateFiles(currentDir, "*.spell.md"))
+                foreach (string filePath in Directory.EnumerateFiles(currentDir))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    if (!IsPathUnderWorkspaceRoot(root, filePath))
+                    if (!string.Equals(Path.GetFileName(filePath), "SPELL.md", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!IsPathUnderWorkspaceRoot(rootFullPath, filePath))
                     {
                         continue;
                     }
@@ -90,7 +156,7 @@ internal static class SpellScanner
 
                     string fullSub = Path.GetFullPath(subDir);
 
-                    if (!IsPathUnderWorkspaceRoot(root, fullSub))
+                    if (!IsPathUnderWorkspaceRoot(rootFullPath, fullSub))
                     {
                         continue;
                     }
@@ -143,16 +209,30 @@ internal static class SpellScanner
             return null;
         }
 
-        ExtractFrontmatterFields(fullText, filePath, out string name, out string description);
+        string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
+
+        ExtractFrontmatterFields(fullText, directoryFallbackName, out string name, out string description);
 
         return new ParsedSpell(name, description, filePath, fullText);
     }
 
-    private static void ExtractFrontmatterFields(string fullText, string filePath, out string name, out string description)
+    private static string GetSpellDirectoryFallbackName(string filePath)
     {
-        string fallbackName = Path.GetFileNameWithoutExtension(filePath);
+        string? dir = Path.GetDirectoryName(filePath);
 
-        name = fallbackName;
+        if (string.IsNullOrEmpty(dir))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return Path.GetFileName(trimmed);
+    }
+
+    private static void ExtractFrontmatterFields(string fullText, string directoryFallbackName, out string name, out string description)
+    {
+        name = directoryFallbackName;
 
         description = string.Empty;
 
@@ -205,7 +285,7 @@ internal static class SpellScanner
 
                 if (name.Length == 0)
                 {
-                    name = fallbackName;
+                    name = directoryFallbackName;
                 }
             }
             else if (yamlLine.StartsWith("description:", StringComparison.OrdinalIgnoreCase))

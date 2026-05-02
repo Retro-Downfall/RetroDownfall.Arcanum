@@ -84,18 +84,13 @@ public sealed class OllamaIntelligenceProvider(
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        IReadOnlyList<ParsedSpell> spells;
+        string? spellWorkspaceRoot = ToolHelpers.TryNormalizeWorkspace(request.WorkingDirectory, out string? spellRoot, out _)
+            ? spellRoot
+            : null;
 
-        if (ToolHelpers.TryNormalizeWorkspace(request.WorkingDirectory, out string? spellRoot, out _))
-        {
-            spells = await SpellScanner
-                .ScanAsync(spellRoot, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            spells = [];
-        }
+        IReadOnlyList<ParsedSpell> spells = await SpellScanner
+            .ScanAsync(spellWorkspaceRoot, cancellationToken)
+            .ConfigureAwait(false);
 
         ParsedSpell? activeSpell = await SemanticRouter
             .DetermineActiveSpellAsync(chatClient, prompt, spells, cancellationToken)
@@ -322,18 +317,13 @@ public sealed class OllamaIntelligenceProvider(
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        IReadOnlyList<ParsedSpell> streamSpells;
+        string? streamSpellWorkspaceRoot = ToolHelpers.TryNormalizeWorkspace(request.WorkingDirectory, out string? streamSpellRoot, out _)
+            ? streamSpellRoot
+            : null;
 
-        if (ToolHelpers.TryNormalizeWorkspace(request.WorkingDirectory, out string? streamSpellRoot, out _))
-        {
-            streamSpells = await SpellScanner
-                .ScanAsync(streamSpellRoot, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            streamSpells = [];
-        }
+        IReadOnlyList<ParsedSpell> streamSpells = await SpellScanner
+            .ScanAsync(streamSpellWorkspaceRoot, cancellationToken)
+            .ConfigureAwait(false);
 
         ParsedSpell? streamActiveSpell = await SemanticRouter
             .DetermineActiveSpellAsync(chatClient, prompt, streamSpells, cancellationToken)

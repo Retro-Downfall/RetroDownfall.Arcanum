@@ -86,6 +86,32 @@ internal static class ToolHelpers
         return true;
     }
 
+    internal static bool TryGetOptionalStringArgument(
+        AIFunctionArguments arguments,
+        string key,
+        [NotNullWhen(true)] out string? value)
+    {
+        if (!arguments.TryGetValue(key, out object? raw) || raw is null)
+        {
+            value = null;
+
+            return false;
+        }
+
+        string? coerced = CoerceToString(raw);
+
+        if (string.IsNullOrWhiteSpace(coerced))
+        {
+            value = null;
+
+            return false;
+        }
+
+        value = coerced.Trim();
+
+        return true;
+    }
+
     private static string? CoerceToString(object raw)
     {
         return raw switch
