@@ -32,7 +32,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
 
-        using HttpRequestMessage request = new (HttpMethod.Post, "api/intelligence/ping");
+        using HttpRequestMessage request = new(HttpMethod.Post, "api/intelligence/ping");
         request.Content = content;
 
         _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
@@ -114,7 +114,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
 
-        using HttpRequestMessage request = new (HttpMethod.Post, "api/intelligence/ping-stream");
+        using HttpRequestMessage request = new(HttpMethod.Post, "api/intelligence/ping-stream");
         request.Content = content;
 
         _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);

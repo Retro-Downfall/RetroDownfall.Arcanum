@@ -7,15 +7,11 @@ internal static class CodexReader
     internal static async Task<string?> ReadCodexAsync(string? workingDirectory, CancellationToken ct)
     {
         string globalPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md");
-
         string? globalContent = await TryReadAsync(globalPath, ct).ConfigureAwait(false);
-
         string? localContent = null;
-
         if (!string.IsNullOrWhiteSpace(workingDirectory))
         {
             string localPath = Path.Combine(workingDirectory, "CODEX.md");
-
             localContent = await TryReadAsync(localPath, ct).ConfigureAwait(false);
         }
 

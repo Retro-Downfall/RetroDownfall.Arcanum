@@ -21,7 +21,6 @@ public sealed class GrimoireDatabaseHostedService(
         "AOT",
         "IL3050",
         Justification = "EnsureCreatedAsync is RequiresDynamicCode; used only for first-run empty-database bootstrap with the compiled EF model—migrations and design-time model builds are not executed here.")]
-
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         Batteries_V2.Init();
@@ -32,6 +31,7 @@ public sealed class GrimoireDatabaseHostedService(
             Log.Fatal("Grimoire startup aborted: master API key is not present. Persist a key before enabling the database.");
             Environment.FailFast("Arcanum Grimoire requires the master API key.");
         }
+
         string passphrase = GrimoireKeyDerivation.DerivePassphraseFromApiKey(apiKey);
         passphraseSource.SetPassphrase(passphrase);
         string dbPath = ArcanumPaths.GrimoireDatabaseFile;
@@ -66,5 +66,6 @@ public sealed class GrimoireDatabaseHostedService(
             await db.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
         }
     }
+
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

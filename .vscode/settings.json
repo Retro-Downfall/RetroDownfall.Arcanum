@@ -1,4 +1,6 @@
 {
   "csharp.debug.justMyCode": false,
-  "csharp.debug.suppressJITOptimizations": true
+  "csharp.debug.suppressJITOptimizations": true,
+  "python-envs.defaultEnvManager": "ms-python.python:system",
+  "python-envs.pythonProjects": []
 }

@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </remarks>
 public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) : IAsyncDisposable
 {
-
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
     private const string NoWorkspaceKey = "__arcanum_no_workspace__";
@@ -42,16 +41,13 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
     /// </summary>
     public async Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default)
     {
-
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
 
         if (_mergedToolsByWorkspace.TryGetValue(workspaceKey, out IReadOnlyList<AITool>? cached))
         {
-
             return cached;
-
         }
 
         await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
@@ -64,12 +60,9 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
         try
         {
-
             if (_mergedToolsByWorkspace.TryGetValue(workspaceKey, out cached))
             {
-
                 return cached;
-
             }
 
             IReadOnlyList<AITool> merged = await BuildMergedToolsForWorkspaceAsync(workspaceKey, cancellationToken).ConfigureAwait(false);
@@ -77,52 +70,37 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
             _mergedToolsByWorkspace[workspaceKey] = merged;
 
             return merged;
-
         }
         finally
         {
-
             workspaceLock.Release();
-
         }
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
 
         foreach (List<McpClient> bucket in _clientsByPartition.Values)
         {
-
             for (int i = bucket.Count - 1; i >= 0; i--)
             {
-
                 try
                 {
-
                     await bucket[i].DisposeAsync().ConfigureAwait(false);
-
                 }
                 catch (Exception ex)
                 {
-
                     logger.LogWarning(ex, "Error disposing MCP client instance.");
-
                 }
-
             }
 
             bucket.Clear();
-
         }
 
         _clientsByPartition.Clear();
@@ -133,71 +111,52 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
         foreach (SemaphoreSlim slim in _workspaceInitLocks.Values)
         {
-
             slim.Dispose();
-
         }
 
         _workspaceInitLocks.Clear();
-
     }
 
     private static string NormalizeWorkspaceKey(string? workingDirectory)
     {
-
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-
             return NoWorkspaceKey;
-
         }
 
         try
         {
-
             return Path.GetFullPath(workingDirectory.Trim());
-
         }
         catch (Exception)
         {
-
             return NoWorkspaceKey;
-
         }
-
     }
 
     private static string GetGlobalMcpConfigPath()
     {
-
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".config",
             "arcanum",
             "mcp.json");
-
     }
 
     private async Task EnsureGlobalLoadedAsync(CancellationToken cancellationToken)
     {
-
         if (_globalInitialized)
         {
-
             return;
-
         }
 
         await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-
             if (_globalInitialized)
             {
-
                 return;
-
             }
 
             List<McpClient> globalClients = GetOrCreateClientList(GlobalPartitionKey);
@@ -206,33 +165,27 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
             if (!File.Exists(globalPath))
             {
-
                 FinalizeGlobalState([]);
 
                 return;
-
             }
 
             McpConfig? config = await ReadMcpConfigAsync(globalPath, cancellationToken).ConfigureAwait(false);
 
             if (config is null)
             {
-
                 FinalizeGlobalState([]);
 
                 return;
-
             }
 
             if (config.McpServers is null || config.McpServers.Count == 0)
             {
-
                 logger.LogInformation("MCP config at {ConfigPath} has no mcpServers entries.", globalPath);
 
                 FinalizeGlobalState([]);
 
                 return;
-
             }
 
             List<LoadedMcpTool> tagged = [];
@@ -246,40 +199,31 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                 .ConfigureAwait(false);
 
             FinalizeGlobalState(tagged);
-
         }
         finally
         {
-
             _globalInitLock.Release();
-
         }
-
     }
 
     private void FinalizeGlobalState(List<LoadedMcpTool> tagged)
     {
-
         Dictionary<string, LoadedMcpTool> byName = new(StringComparer.Ordinal);
 
         List<AITool> surface = [];
 
         foreach (LoadedMcpTool row in tagged)
         {
-
             string n = row.Tool.Name;
 
             if (byName.ContainsKey(n))
             {
-
                 continue;
-
             }
 
             byName[n] = row;
 
             surface.Add(row.Tool);
-
         }
 
         _globalFirstByToolName = byName;
@@ -287,42 +231,32 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
         _globalSurfaceTools = surface;
 
         _globalInitialized = true;
-
     }
 
     private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(string workspaceKey, CancellationToken cancellationToken)
     {
-
         if (workspaceKey == NoWorkspaceKey)
         {
-
             return _globalSurfaceTools;
-
         }
 
         string localPath = Path.Combine(workspaceKey, "mcp.json");
 
         if (!File.Exists(localPath))
         {
-
             return _globalSurfaceTools;
-
         }
 
         McpConfig? localConfig = await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
 
         if (localConfig is null)
         {
-
             return _globalSurfaceTools;
-
         }
 
         if (localConfig.McpServers is null || localConfig.McpServers.Count == 0)
         {
-
             return _globalSurfaceTools;
-
         }
 
         List<McpClient> localClients = GetOrCreateClientList(workspaceKey);
@@ -339,13 +273,10 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
         if (localTagged.Count == 0)
         {
-
             return _globalSurfaceTools;
-
         }
 
         return MergeGlobalAndLocal(_globalSurfaceTools, _globalFirstByToolName, localTagged);
-
     }
 
     private IReadOnlyList<AITool> MergeGlobalAndLocal(
@@ -353,52 +284,42 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
         IReadOnlyDictionary<string, LoadedMcpTool> globalByName,
         IReadOnlyList<LoadedMcpTool> localTagged)
     {
-
         List<AITool> merged = new(globalSurface.Count + localTagged.Count);
 
         Dictionary<string, int> indexByName = new(StringComparer.Ordinal);
 
         foreach (AITool t in globalSurface)
         {
-
             if (t is not AIFunction fn)
             {
-
                 merged.Add(t);
 
                 continue;
-
             }
 
             string name = fn.Name;
 
             if (indexByName.ContainsKey(name))
             {
-
                 continue;
-
             }
 
             indexByName[name] = merged.Count;
 
             merged.Add(t);
-
         }
 
         foreach (LoadedMcpTool localRow in localTagged)
         {
-
             string name = localRow.Tool.Name;
 
             if (!indexByName.TryGetValue(name, out int idx))
             {
-
                 indexByName[name] = merged.Count;
 
                 merged.Add(localRow.Tool);
 
                 continue;
-
             }
 
             McpClient? fallback = null;
@@ -406,9 +327,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
             if (globalByName.TryGetValue(name, out LoadedMcpTool globalRow)
                 && !McpServerRegistrationComparer.Equals(globalRow.Config, localRow.Config))
             {
-
                 fallback = globalRow.Client;
-
             }
 
             McpBridgeTool replacement = new(
@@ -420,40 +339,30 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                 fallbackLogger: logger);
 
             merged[idx] = replacement;
-
         }
 
         return merged;
-
     }
 
     private List<McpClient> GetOrCreateClientList(string partitionKey)
     {
-
         return _clientsByPartition.GetOrAdd(partitionKey, static _ => []);
-
     }
 
     private async Task<McpConfig?> ReadMcpConfigAsync(string configPath, CancellationToken cancellationToken)
     {
-
         try
         {
-
             byte[] utf8 = await File.ReadAllBytesAsync(configPath, cancellationToken).ConfigureAwait(false);
 
             return JsonSerializer.Deserialize(utf8, McpConfigJsonSerializerContext.Default.McpConfig);
-
         }
         catch (Exception ex)
         {
-
             logger.LogError(ex, "Failed to read or parse MCP config at {ConfigPath}.", configPath);
 
             return null;
-
         }
-
     }
 
     private async Task StartServersFromConfigAsync(
@@ -463,10 +372,8 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
         List<LoadedMcpTool> toolsSink,
         CancellationToken cancellationToken)
     {
-
         foreach (KeyValuePair<string, McpServerConfig> pair in config.McpServers!)
         {
-
             string serverName = pair.Key;
 
             McpServerConfig cfg = pair.Value;
@@ -475,18 +382,15 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
             if (string.IsNullOrWhiteSpace(command))
             {
-
                 logger.LogWarning("Skipping MCP server {ServerName} ({Scope}): missing command.", serverName, logScope);
 
                 continue;
-
             }
 
             McpClient? client = null;
 
             try
             {
-
                 string[] args = cfg.Args ?? [];
 
                 McpProcessTransport transport = new(
@@ -495,13 +399,11 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                     argumentList: args,
                     environment: cfg.Env)
                 {
-
                     OnStderrLine = line => logger.LogDebug(
                         "MCP server {ServerName} ({Scope}) stderr: {Line}",
                         serverName,
                         logScope,
                         line),
-
                 };
 
                 client = new McpClient(transport);
@@ -516,9 +418,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
                 foreach (McpBridgeTool t in tools)
                 {
-
                     toolsSink.Add(new LoadedMcpTool(t, cfg, clientsSink[^1]));
-
                 }
 
                 logger.LogInformation(
@@ -526,16 +426,12 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                     serverName,
                     logScope,
                     tools.Count);
-
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-
                 if (client is not null)
                 {
-
                     await client.DisposeAsync().ConfigureAwait(false);
-
                 }
 
                 logger.LogError(
@@ -543,13 +439,9 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                     "MCP server {ServerName} ({Scope}) failed to start or list tools; continuing with other servers.",
                     serverName,
                     logScope);
-
             }
-
         }
-
     }
 
     private readonly record struct LoadedMcpTool(McpBridgeTool Tool, McpServerConfig Config, McpClient Client);
-
 }

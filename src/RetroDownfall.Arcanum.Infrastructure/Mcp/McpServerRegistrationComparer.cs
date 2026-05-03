@@ -5,25 +5,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 public static class McpServerRegistrationComparer
 {
-
     /// <summary>
     /// Returns <see langword="true"/> if both registrations describe the same command, arguments, and environment bindings.
     /// </summary>
     public static bool Equals(McpServerConfig? a, McpServerConfig? b)
     {
-
         if (ReferenceEquals(a, b))
         {
-
             return true;
-
         }
 
         if (a is null || b is null)
         {
-
             return false;
-
         }
 
         string? cmdA = a.Command?.Trim();
@@ -32,9 +26,7 @@ public static class McpServerRegistrationComparer
 
         if (!string.Equals(cmdA, cmdB, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         string[] argsA = a.Args ?? [];
@@ -43,21 +35,15 @@ public static class McpServerRegistrationComparer
 
         if (argsA.Length != argsB.Length)
         {
-
             return false;
-
         }
 
         for (int i = 0; i < argsA.Length; i++)
         {
-
             if (!string.Equals(argsA[i], argsB[i], StringComparison.Ordinal))
             {
-
                 return false;
-
             }
-
         }
 
         Dictionary<string, string>? envA = a.Env;
@@ -66,16 +52,12 @@ public static class McpServerRegistrationComparer
 
         if (envA is null || envA.Count == 0)
         {
-
             return envB is null || envB.Count == 0;
-
         }
 
         if (envB is null || envB.Count != envA.Count)
         {
-
             return false;
-
         }
 
         string[] keys = new string[envA.Count];
@@ -86,18 +68,12 @@ public static class McpServerRegistrationComparer
 
         foreach (string k in keys)
         {
-
             if (!envB.TryGetValue(k, out string? vB) || !string.Equals(envA[k], vB, StringComparison.Ordinal))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
-
 }

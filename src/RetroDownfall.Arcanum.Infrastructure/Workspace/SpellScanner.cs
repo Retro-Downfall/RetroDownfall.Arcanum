@@ -3,7 +3,6 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
 
 internal sealed record ParsedSpell(string Name, string Description, string FilePath, string FullContent);
-
 internal static class SpellScanner
 {
     private static readonly HashSet<string> HeavyDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
@@ -14,13 +13,10 @@ internal static class SpellScanner
         "out",
         "dist",
     };
-
     internal static async Task<IReadOnlyList<ParsedSpell>> ScanAsync(string? workspaceRoot, CancellationToken cancellationToken)
     {
         string globalSpellsDir = Path.Combine(ArcanumPaths.GrimoireDirectory, "spells");
-
         string globalRoot;
-
         try
         {
             globalRoot = Path.GetFullPath(globalSpellsDir);
@@ -31,18 +27,15 @@ internal static class SpellScanner
         }
 
         List<ParsedSpell> globalSpells = [];
-
         if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
         {
             globalSpells = await ScanTreeAsync(globalRoot, cancellationToken).ConfigureAwait(false);
         }
 
         List<ParsedSpell> localSpells = [];
-
         if (!string.IsNullOrWhiteSpace(workspaceRoot))
         {
             string localRoot;
-
             try
             {
                 localRoot = Path.GetFullPath(workspaceRoot.Trim());
@@ -74,14 +67,12 @@ internal static class SpellScanner
         }
 
         var localNameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         foreach (ParsedSpell l in localSpells)
         {
             _ = localNameSet.Add(l.Name);
         }
 
         var merged = new List<ParsedSpell>(globalSpells.Count + localSpells.Count);
-
         foreach (ParsedSpell g in globalSpells)
         {
             if (!localNameSet.Contains(g.Name))
@@ -89,26 +80,19 @@ internal static class SpellScanner
                 merged.Add(g);
             }
         }
-
         merged.AddRange(localSpells);
-
         return merged;
     }
 
     private static async Task<List<ParsedSpell>> ScanTreeAsync(string rootFullPath, CancellationToken cancellationToken)
     {
         var results = new List<ParsedSpell>();
-
         var queue = new Queue<string>();
-
         queue.Enqueue(rootFullPath);
-
         while (queue.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
             string currentDir = queue.Dequeue();
-
             if (!IsPathUnderWorkspaceRoot(rootFullPath, currentDir))
             {
                 continue;
@@ -119,7 +103,6 @@ internal static class SpellScanner
                 foreach (string filePath in Directory.EnumerateFiles(currentDir))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
                     if (!string.Equals(Path.GetFileName(filePath), "SPELL.md", StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
@@ -129,9 +112,7 @@ internal static class SpellScanner
                     {
                         continue;
                     }
-
                     ParsedSpell? parsed = await TryParseSpellFileAsync(filePath, cancellationToken).ConfigureAwait(false);
-
                     if (parsed is not null)
                     {
                         results.Add(parsed);
@@ -141,9 +122,7 @@ internal static class SpellScanner
                 foreach (string subDir in Directory.EnumerateDirectories(currentDir).OrderBy(p => p, StringComparer.Ordinal))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
                     string name = Path.GetFileName(subDir);
-
                     if (name.Length == 0 || name[0] == '.')
                     {
                         continue;
@@ -155,12 +134,10 @@ internal static class SpellScanner
                     }
 
                     string fullSub = Path.GetFullPath(subDir);
-
                     if (!IsPathUnderWorkspaceRoot(rootFullPath, fullSub))
                     {
                         continue;
                     }
-
                     queue.Enqueue(fullSub);
                 }
             }
@@ -180,22 +157,17 @@ internal static class SpellScanner
     private static bool IsPathUnderWorkspaceRoot(string workspaceRootFull, string candidateFull)
     {
         char sep = Path.DirectorySeparatorChar;
-
         string normalizedRoot = workspaceRootFull.TrimEnd(sep);
-
         string prefix = normalizedRoot + sep;
-
         StringComparison cmp = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-
         return candidateFull.Equals(normalizedRoot, cmp) || candidateFull.StartsWith(prefix, cmp);
     }
 
     private static async Task<ParsedSpell?> TryParseSpellFileAsync(string filePath, CancellationToken cancellationToken)
     {
         string fullText;
-
         try
         {
             fullText = await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false);
@@ -210,70 +182,53 @@ internal static class SpellScanner
         }
 
         string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
-
         ExtractFrontmatterFields(fullText, directoryFallbackName, out string name, out string description);
-
         return new ParsedSpell(name, description, filePath, fullText);
     }
 
     private static string GetSpellDirectoryFallbackName(string filePath)
     {
         string? dir = Path.GetDirectoryName(filePath);
-
         if (string.IsNullOrEmpty(dir))
         {
             return string.Empty;
         }
 
         string trimmed = dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
         return Path.GetFileName(trimmed);
     }
 
     private static void ExtractFrontmatterFields(string fullText, string directoryFallbackName, out string name, out string description)
     {
         name = directoryFallbackName;
-
         description = string.Empty;
-
         ReadOnlySpan<char> text = fullText.AsSpan().TrimStart();
-
         if (!text.StartsWith("---".AsSpan(), StringComparison.Ordinal))
         {
             return;
         }
 
         int lineBreak = text.IndexOfAny('\r', '\n');
-
         if (lineBreak < 0)
         {
             return;
         }
-
         text = text.Slice(lineBreak).TrimStart("\r\n");
-
         var yamlLines = new List<string>();
-
         while (text.Length > 0)
         {
             lineBreak = text.IndexOfAny('\r', '\n');
-
             ReadOnlySpan<char> line = lineBreak < 0 ? text : text.Slice(0, lineBreak);
-
             ReadOnlySpan<char> trimmed = line.Trim();
-
             if (trimmed.SequenceEqual("---".AsSpan()))
             {
                 break;
             }
-
             yamlLines.Add(trimmed.ToString());
-
             if (lineBreak < 0)
             {
                 break;
             }
-
             text = text.Slice(lineBreak).TrimStart("\r\n");
         }
 
@@ -282,7 +237,6 @@ internal static class SpellScanner
             if (yamlLine.StartsWith("name:", StringComparison.OrdinalIgnoreCase))
             {
                 name = yamlLine["name:".Length..].Trim();
-
                 if (name.Length == 0)
                 {
                     name = directoryFallbackName;

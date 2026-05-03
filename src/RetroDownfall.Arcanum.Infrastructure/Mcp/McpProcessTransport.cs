@@ -166,7 +166,7 @@ internal sealed class McpProcessTransport : IAsyncDisposable
 
                 }
 
-                psi.Environment[kv.Key] = kv.Value ?? string.Empty;
+                psi.Environment[kv.Key] = kv.Value;
 
             }
 
@@ -218,7 +218,7 @@ internal sealed class McpProcessTransport : IAsyncDisposable
             StreamWriter stdin = process.StandardInput;
             await stdin.WriteAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
             await stdin.WriteAsync('\n').ConfigureAwait(false);
-            await stdin.FlushAsync().ConfigureAwait(false);
+            await stdin.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -248,7 +248,7 @@ internal sealed class McpProcessTransport : IAsyncDisposable
             StreamWriter stdin = process.StandardInput;
             await stdin.WriteAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
             await stdin.WriteAsync('\n').ConfigureAwait(false);
-            await stdin.FlushAsync().ConfigureAwait(false);
+            await stdin.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {

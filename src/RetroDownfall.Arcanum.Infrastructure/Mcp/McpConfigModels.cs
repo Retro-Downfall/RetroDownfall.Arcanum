@@ -7,11 +7,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 public sealed record McpConfig
 {
-
     [JsonPropertyName("mcpServers")]
-
     public Dictionary<string, McpServerConfig>? McpServers { get; init; }
-
 }
 
 /// <summary>
@@ -19,13 +16,11 @@ public sealed record McpConfig
 /// </summary>
 public sealed record McpServerConfig
 {
-
     public string? Command { get; init; }
 
     public string[]? Args { get; init; }
 
     public Dictionary<string, string>? Env { get; init; }
-
 }
 
 [JsonSourceGenerationOptions(

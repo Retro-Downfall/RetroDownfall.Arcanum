@@ -16,6 +16,8 @@ Enterprise-grade .NET 10 solution: shared **Core** library, **Api** class librar
 dotnet build RetroDownfall.Arcanum.slnx
 ```
 
+**C# blank lines (optional):** run [`scripts/align-csharp-blanklines.sh`](scripts/align-csharp-blanklines.sh) from the repo root after substantive edits so spacing stays consistent across `src/` (skips `Generated/`, `obj/`, `bin/`). It normalizes `using`/`namespace` gaps, member and doc-comment spacing, **sibling statements after `}`** (same rhythm as `ApiBootstrapper` / `McpBridgeTool`), collapses stacked empty lines, and keeps `else`/`catch`/`finally` tight on the preceding `}`. Use `python3 scripts/align_csharp_blanklines.py --check` for a dry run; see the script docstring for details.
+
 **C# formatting:** follow the blank-line conventions in [`ApiBootstrapper.cs`](src/RetroDownfall.Arcanum.Api/ApiBootstrapper.cs) (contiguous `using` directives, no blank line immediately after `{`, fluent `.` continuations without blank lines between parts, no blank lines before a lone closing `}` or `)` line, no blank lines inside a single multiline ternary or between comma-separated arguments, and at most one blank line between logical sections). For attributes on the same member or type, do not insert a blank line between consecutive attribute lines; do insert one blank line between the last attribute in that block and the following declaration (see `AskCommand.Settings` in [`AskCommand.cs`](src/RetroDownfall.Arcanum.Cli/Commands/AskCommand.cs)).
 
 ## Configuration

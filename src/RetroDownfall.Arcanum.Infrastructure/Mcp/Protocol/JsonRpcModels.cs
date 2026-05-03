@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -26,7 +25,6 @@ public sealed record JsonRpcRequest
 {
     [JsonPropertyName("jsonrpc")]
     public string JsonRpc { get; init; } = "2.0";
-
     [JsonPropertyName("method")]
     public required string Method { get; init; }
 
@@ -44,7 +42,6 @@ public sealed record JsonRpcResponse
 {
     [JsonPropertyName("jsonrpc")]
     public string JsonRpc { get; init; } = "2.0";
-
     [JsonPropertyName("result")]
     public JsonElement? Result { get; init; }
 
@@ -62,7 +59,6 @@ public sealed record JsonRpcNotification
 {
     [JsonPropertyName("jsonrpc")]
     public string JsonRpc { get; init; } = "2.0";
-
     [JsonPropertyName("method")]
     public required string Method { get; init; }
 

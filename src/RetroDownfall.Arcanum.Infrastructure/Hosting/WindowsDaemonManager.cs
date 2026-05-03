@@ -9,9 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 public sealed class WindowsDaemonManager : IDaemonManager
 {
     internal const string ServiceName = "ArcanumDaemon";
-
     internal const string NotInstalledMessage = "ArcanumDaemon is not installed.";
-
     private const int ErrorAccessDenied = 5;
 
     private const int ErrorServiceDoesNotExist = 1060;
@@ -31,19 +29,15 @@ public sealed class WindowsDaemonManager : IDaemonManager
     private const int ServicePausePending = 6;
 
     private const int ServicePaused = 7;
-
     private static readonly Error ElevationError = new(
         "DaemonElevationRequired",
         "Administrator privileges are required to manage Windows Services.");
-
     private static string ScExePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.System),
         "sc.exe");
-
     public async Task<Result> InstallAsync(CancellationToken cancellationToken)
     {
         string? processPath = Environment.ProcessPath;
-
         if (string.IsNullOrWhiteSpace(processPath))
         {
             return Result.Failure(new Error("DaemonProcessPath", "Could not resolve the current executable path."));
@@ -52,11 +46,9 @@ public sealed class WindowsDaemonManager : IDaemonManager
         string binPathArgument = string.Create(
             CultureInfo.InvariantCulture,
             $"binPath= \"\\\"{processPath}\\\" serve\"");
-
         RunOutcome createOutcome = await RunScAsync(
             ["create", ServiceName, binPathArgument, "start= auto"],
             cancellationToken).ConfigureAwait(false);
-
         if (createOutcome.FatalError is { } fatalCreate)
         {
             return Result.Failure(fatalCreate);
@@ -72,11 +64,9 @@ public sealed class WindowsDaemonManager : IDaemonManager
             return Result.Failure(
                 ToolError("DaemonScCreate", "sc create failed.", createOutcome.StdErr, createOutcome.ExitCode));
         }
-
         RunOutcome startOutcome = await RunScAsync(
             ["start", ServiceName],
             cancellationToken).ConfigureAwait(false);
-
         if (startOutcome.FatalError is { } fatalStart)
         {
             return Result.Failure(fatalStart);
@@ -101,7 +91,6 @@ public sealed class WindowsDaemonManager : IDaemonManager
         RunOutcome stopOutcome = await RunScAsync(
             ["stop", ServiceName],
             cancellationToken).ConfigureAwait(false);
-
         if (stopOutcome.FatalError is { } fatalStop)
         {
             return Result.Failure(fatalStop);
@@ -113,21 +102,16 @@ public sealed class WindowsDaemonManager : IDaemonManager
         }
 
         if (stopOutcome.ExitCode != 0
-
             && stopOutcome.ExitCode != ErrorServiceNotActive
-
             && stopOutcome.ExitCode != ErrorServiceDoesNotExist
-
             && !IndicatesServiceNotActive(stopOutcome.StdErr))
         {
             return Result.Failure(
                 ToolError("DaemonScStop", "sc stop failed.", stopOutcome.StdErr, stopOutcome.ExitCode));
         }
-
         RunOutcome deleteOutcome = await RunScAsync(
             ["delete", ServiceName],
             cancellationToken).ConfigureAwait(false);
-
         if (deleteOutcome.FatalError is { } fatalDelete)
         {
             return Result.Failure(fatalDelete);
@@ -157,7 +141,6 @@ public sealed class WindowsDaemonManager : IDaemonManager
         RunOutcome queryOutcome = await RunScAsync(
             ["query", ServiceName],
             cancellationToken).ConfigureAwait(false);
-
         if (queryOutcome.FatalError is { } fatal)
         {
             return Result<string>.Failure(fatal);
@@ -169,7 +152,6 @@ public sealed class WindowsDaemonManager : IDaemonManager
         }
 
         if (queryOutcome.ExitCode == ErrorServiceDoesNotExist
-
             || IndicatesServiceDoesNotExist(queryOutcome.StdErr, queryOutcome.ExitCode))
         {
             return Result<string>.Success(NotInstalledMessage);
@@ -208,35 +190,27 @@ public sealed class WindowsDaemonManager : IDaemonManager
     }
 
     /// <summary>
-
     /// Parses <c>dwCurrentState</c> from the fixed <c>STATE</c> line in <c>sc query</c> output (numeric only; localized text after the code is ignored).
-
     /// </summary>
-
     private static bool TryParseServiceStateCode(string stdout, out int stateCode)
     {
         stateCode = 0;
-
         foreach (string raw in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             string line = raw.Trim();
-
             if (!line.StartsWith("STATE", StringComparison.Ordinal))
             {
                 continue;
             }
 
             int colon = line.IndexOf(':', StringComparison.Ordinal);
-
             if (colon < 0 || colon + 1 >= line.Length)
             {
                 continue;
             }
 
             ReadOnlySpan<char> tail = line.AsSpan(colon + 1).TrimStart();
-
             int length = 0;
-
             while (length < tail.Length && char.IsAsciiDigit(tail[length]))
             {
                 length++;
@@ -250,7 +224,6 @@ public sealed class WindowsDaemonManager : IDaemonManager
             if (int.TryParse(tail[..length], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
             {
                 stateCode = parsed;
-
                 return true;
             }
         }
@@ -286,9 +259,7 @@ public sealed class WindowsDaemonManager : IDaemonManager
     private static Error ToolError(string code, string message, string stderr, int exitCode)
     {
         string trimmed = stderr.Trim();
-
         string suffix = string.IsNullOrEmpty(trimmed) ? $"Exit code {exitCode}." : trimmed;
-
         return new Error(code, $"{message} {suffix}".Trim());
     }
 
@@ -302,16 +273,13 @@ public sealed class WindowsDaemonManager : IDaemonManager
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-
         foreach (string argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
         }
 
         using var process = new Process();
-
         process.StartInfo = startInfo;
-
         try
         {
             process.Start();
@@ -334,9 +302,7 @@ public sealed class WindowsDaemonManager : IDaemonManager
         }
 
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-
         Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
         try
         {
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
@@ -351,9 +317,7 @@ public sealed class WindowsDaemonManager : IDaemonManager
         }
 
         string stdout = await stdoutTask.ConfigureAwait(false);
-
         string stderr = await stderrTask.ConfigureAwait(false);
-
         return new RunOutcome(process.ExitCode, stdout, stderr, null);
     }
 

@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 public sealed class GrimoireRepository : IGrimoireRepository
 {
     private readonly ArcanumDbContext _db;
-
     public GrimoireRepository(ArcanumDbContext db)
     {
         _db = db;
@@ -21,21 +20,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken = default)
     {
         Guid userMessageId = Guid.NewGuid();
-
         Guid assistantMessageId = Guid.NewGuid();
-
         DateTime now = DateTime.UtcNow;
-
         bool useExistingThread = conversationId is { } existingId
-
             && await _db.Conversations
                 .AnyAsync(c => c.Id == existingId, cancellationToken)
                 .ConfigureAwait(false);
-
         if (useExistingThread)
         {
             Guid cid = conversationId!.Value;
-
             _db.ChatMessages.Add(new ChatMessage
             {
                 Id = userMessageId,
@@ -45,7 +38,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = model,
                 Timestamp = now,
             });
-
             _db.ChatMessages.Add(new ChatMessage
             {
                 Id = assistantMessageId,
@@ -55,23 +47,17 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = model,
                 Timestamp = now,
             });
-
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
             return (cid, assistantMessageId);
         }
-
         // Stale or missing conversation id: start a new thread (same as null conversationId).
-
         Guid newConversationId = Guid.NewGuid();
-
         _db.Conversations.Add(new Conversation
         {
             Id = newConversationId,
             CreatedAt = now,
             Title = TruncateTitle(prompt),
         });
-
         _db.ChatMessages.Add(new ChatMessage
         {
             Id = userMessageId,
@@ -81,7 +67,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
             ModelUsed = model,
             Timestamp = now,
         });
-
         _db.ChatMessages.Add(new ChatMessage
         {
             Id = assistantMessageId,
@@ -91,9 +76,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             ModelUsed = model,
             Timestamp = now,
         });
-
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
         return (newConversationId, assistantMessageId);
     }
 
@@ -118,7 +101,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken = default)
     {
         DateTime now = DateTime.UtcNow;
-
         _ = await _db.ChatMessages
             .Where(m => m.Id == assistantMessageId)
             .ExecuteUpdateAsync(
@@ -138,17 +120,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken = default)
     {
         DateTime now = DateTime.UtcNow;
-
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
-
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
             string callLine = $"[ToolCall: {toolName}({arguments})]";
-
             string resultLine = $"[ToolResult: {result}]";
-
             _db.ChatMessages.Add(new ChatMessage
             {
                 Id = Guid.NewGuid(),
@@ -158,7 +135,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = modelUsed,
                 Timestamp = now,
             });
-
             _db.ChatMessages.Add(new ChatMessage
             {
                 Id = Guid.NewGuid(),
@@ -168,15 +144,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = modelUsed,
                 Timestamp = now,
             });
-
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
-
             throw;
         }
     }
@@ -188,13 +161,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken = default)
     {
         Guid conversationId = Guid.NewGuid();
-
         DateTime now = DateTime.UtcNow;
-
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
-
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
             _db.Conversations.Add(new Conversation
@@ -203,7 +172,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 CreatedAt = now,
                 Title = TruncateTitle(userPrompt),
             });
-
             _db.ChatMessages.Add(new ChatMessage
             {
                 Id = Guid.NewGuid(),
@@ -213,7 +181,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = modelUsed,
                 Timestamp = now,
             });
-
             _db.ChatMessages.Add(new ChatMessage
             {
                 Id = Guid.NewGuid(),
@@ -223,15 +190,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = modelUsed,
                 Timestamp = now,
             });
-
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
-
             throw;
         }
     }
@@ -268,9 +232,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
     private static string TruncateTitle(string prompt)
     {
         string trimmed = prompt.Trim();
-
         const int maxLen = 200;
-
         return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
     }
 }
