@@ -26,7 +26,7 @@ internal sealed class McpClient : IAsyncDisposable
 
     private bool _initialized;
 
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public McpClient(McpProcessTransport transport, McpJsonSerializerContext? jsonContext = null)
     {

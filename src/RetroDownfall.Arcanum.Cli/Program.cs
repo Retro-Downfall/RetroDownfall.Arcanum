@@ -73,16 +73,16 @@ internal static class Program
 
             config.AddBranch("daemon", daemon =>
             {
-                daemon.SetDescription("Manage the Arcanum background agent (macOS launchd).");
+                daemon.SetDescription("Manage the Arcanum background daemon.");
 
                 daemon.AddCommand<InstallCommand>("install")
-                    .WithDescription("Write the LaunchAgent plist and bootstrap the job in the per-user GUI domain.");
+                    .WithDescription("Install and start the Arcanum background daemon.");
 
                 daemon.AddCommand<UninstallCommand>("uninstall")
-                    .WithDescription("Run launchctl bootout for the plist, then delete the file when bootout succeeds.");
+                    .WithDescription("Stop and uninstall the Arcanum background daemon.");
 
                 daemon.AddCommand<StatusCommand>("status")
-                    .WithDescription("Show whether the launchd job is loaded and its PID when running.");
+                    .WithDescription("Show whether the Arcanum daemon is running.");
 
             });
 

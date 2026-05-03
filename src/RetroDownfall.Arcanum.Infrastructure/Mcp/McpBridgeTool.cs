@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -186,7 +187,7 @@ internal static class McpToolResultFormatter
             return result.GetRawText();
         }
 
-        System.Text.StringBuilder sb = new();
+        StringBuilder sb = new();
 
         foreach (JsonElement block in content.EnumerateArray())
         {

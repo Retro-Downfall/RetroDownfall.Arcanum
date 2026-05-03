@@ -7,4 +7,5 @@ public sealed record PingRequest(
     string? Model = null,
     string WorkingDirectory = "",
     PatternSnapshot? ContextSnapshot = null,
-    Guid? ConversationId = null);
+    Guid? ConversationId = null,
+    bool DisableMcpTools = false);

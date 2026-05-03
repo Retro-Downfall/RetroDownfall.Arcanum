@@ -13,6 +13,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// Global config is <c>~/.config/arcanum/mcp.json</c>. Workspace <c>mcp.json</c> is merged per normalized workspace root; duplicate tool names use the local registration.
 /// Merged tool lists and spawned processes are cached per workspace for the process lifetime.
 /// </para>
+/// <para>
+/// Spawned MCP clients are grouped by partition: one bucket for the global profile <c>mcp.json</c> and one per workspace root that started a local <c>mcp.json</c>.
+/// Empty or invalid <c>workingDirectory</c> resolves to a sentinel workspace key that reuses global tools only (no extra local partition).
+/// </para>
 /// </remarks>
 public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) : IAsyncDisposable
 {
@@ -26,7 +30,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
     private readonly ConcurrentDictionary<string, IReadOnlyList<AITool>> _mergedToolsByWorkspace = new(StringComparer.Ordinal);
 
-    private readonly ConcurrentDictionary<string, List<McpClient>> _clientsByPartition = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, McpPartitionClients> _partitionClients = new(StringComparer.Ordinal);
 
     private bool _globalInitialized;
 
@@ -34,7 +38,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
     private IReadOnlyList<AITool> _globalSurfaceTools = [];
 
-    private bool _disposed;
+    private volatile bool _disposed;
 
     /// <summary>
     /// Returns merged MCP bridge tools: global <c>mcp.json</c> plus workspace-local <c>mcp.json</c> when present.
@@ -86,13 +90,13 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
         _disposed = true;
 
-        foreach (List<McpClient> bucket in _clientsByPartition.Values)
+        foreach (McpPartitionClients partition in _partitionClients.Values)
         {
-            for (int i = bucket.Count - 1; i >= 0; i--)
+            for (int i = partition.Clients.Count - 1; i >= 0; i--)
             {
                 try
                 {
-                    await bucket[i].DisposeAsync().ConfigureAwait(false);
+                    await partition.Clients[i].DisposeAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -100,10 +104,10 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                 }
             }
 
-            bucket.Clear();
+            partition.Clients.Clear();
         }
 
-        _clientsByPartition.Clear();
+        _partitionClients.Clear();
 
         _mergedToolsByWorkspace.Clear();
 
@@ -214,16 +218,10 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
         foreach (LoadedMcpTool row in tagged)
         {
-            string n = row.Tool.Name;
-
-            if (byName.ContainsKey(n))
+            if (byName.TryAdd(row.Tool.Name, row))
             {
-                continue;
+                surface.Add(row.Tool);
             }
-
-            byName[n] = row;
-
-            surface.Add(row.Tool);
         }
 
         _globalFirstByToolName = byName;
@@ -299,12 +297,10 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
             string name = fn.Name;
 
-            if (indexByName.ContainsKey(name))
+            if (!indexByName.TryAdd(name, merged.Count))
             {
                 continue;
             }
-
-            indexByName[name] = merged.Count;
 
             merged.Add(t);
         }
@@ -322,12 +318,12 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                 continue;
             }
 
-            McpClient? fallback = null;
-
-            if (globalByName.TryGetValue(name, out LoadedMcpTool globalRow)
-                && !McpServerRegistrationComparer.Equals(globalRow.Config, localRow.Config))
+            if (!globalByName.TryGetValue(name, out LoadedMcpTool globalRow)
+                || McpServerRegistrationComparer.Equals(globalRow.Config, localRow.Config))
             {
-                fallback = globalRow.Client;
+                merged[idx] = localRow.Tool;
+
+                continue;
             }
 
             McpBridgeTool replacement = new(
@@ -335,7 +331,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
                 localRow.Tool.Description,
                 localRow.Tool.JsonSchema,
                 localRow.Client,
-                fallbackClient: fallback,
+                fallbackClient: globalRow.Client,
                 fallbackLogger: logger);
 
             merged[idx] = replacement;
@@ -346,7 +342,15 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
     private List<McpClient> GetOrCreateClientList(string partitionKey)
     {
-        return _clientsByPartition.GetOrAdd(partitionKey, static _ => []);
+        return _partitionClients.GetOrAdd(partitionKey, static _ => new McpPartitionClients()).Clients;
+    }
+
+    /// <summary>
+    /// Spawned <see cref="McpClient"/> instances for one partition (global sentinel or a workspace root path).
+    /// </summary>
+    private sealed class McpPartitionClients
+    {
+        public List<McpClient> Clients { get; } = [];
     }
 
     private async Task<McpConfig?> ReadMcpConfigAsync(string configPath, CancellationToken cancellationToken)

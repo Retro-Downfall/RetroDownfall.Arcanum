@@ -50,8 +50,6 @@ internal sealed class McpProcessTransport : IAsyncDisposable
 
     private readonly CancellationTokenSource _lifetimeCts = new();
 
-    private CancellationTokenSource? _runCts;
-
     private Process? _process;
 
     private Task? _stdoutTask;
@@ -60,7 +58,7 @@ internal sealed class McpProcessTransport : IAsyncDisposable
 
     private bool _started;
 
-    private bool _disposed;
+    private volatile bool _disposed;
 
     /// <summary>
     /// Optional callback when a line cannot be parsed as JSON-RPC or does not match a supported shape.
@@ -114,13 +112,9 @@ internal sealed class McpProcessTransport : IAsyncDisposable
             throw new InvalidOperationException("McpProcessTransport has already been started.");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         _started = true;
-
-        _runCts = CancellationTokenSource.CreateLinkedTokenSource(
-            _lifetimeCts.Token,
-            cancellationToken);
-
-        CancellationToken runToken = _runCts.Token;
 
         ProcessStartInfo psi = new()
         {
@@ -180,18 +174,16 @@ internal sealed class McpProcessTransport : IAsyncDisposable
         {
             process.Dispose();
 
-            _runCts.Dispose();
-
-            _runCts = null;
-
             throw new InvalidOperationException($"Failed to start process: {_fileName}");
         }
 
         _process = process;
 
-        _stdoutTask = Task.Run(() => ReadStdoutLoopAsync(runToken), runToken);
+        CancellationToken lifetimeToken = _lifetimeCts.Token;
 
-        _stderrTask = Task.Run(() => ReadStderrLoopAsync(runToken), runToken);
+        _stdoutTask = Task.Run(() => ReadStdoutLoopAsync(lifetimeToken), CancellationToken.None);
+
+        _stderrTask = Task.Run(() => ReadStderrLoopAsync(lifetimeToken), CancellationToken.None);
 
         return Task.CompletedTask;
     }
@@ -314,10 +306,6 @@ internal sealed class McpProcessTransport : IAsyncDisposable
             .ConfigureAwait(false);
 
         _lifetimeCts.Dispose();
-
-        _runCts?.Dispose();
-
-        _runCts = null;
 
         _writeLock.Dispose();
     }

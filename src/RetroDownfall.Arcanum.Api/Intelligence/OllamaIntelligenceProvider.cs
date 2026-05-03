@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -100,7 +99,7 @@ public sealed class OllamaIntelligenceProvider(
 
         string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell);
 
-        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, cancellationToken).ConfigureAwait(false);
 
         bool inferenceUsesTools = true;
 
@@ -364,7 +363,7 @@ public sealed class OllamaIntelligenceProvider(
 
         StringBuilder accumulator;
 
-        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, cancellationToken).ConfigureAwait(false);
 
         bool streamUsesTools = true;
 
@@ -696,14 +695,21 @@ public sealed class OllamaIntelligenceProvider(
         return list;
     }
 
-    private async Task<List<AITool>> BuildToolSetWithMcpAsync(string workingDirectory, CancellationToken cancellationToken)
+    private async Task<List<AITool>> BuildToolSetWithMcpAsync(PingRequest request, CancellationToken cancellationToken)
     {
+        string workingDirectory = request.WorkingDirectory;
+
         List<AITool> tools =
         [
             new ArcanumLocalTimeTool(),
             new LoreSeekerTool(workingDirectory),
             new RuneExecutorTool(workingDirectory),
         ];
+
+        if (request.DisableMcpTools)
+        {
+            return tools;
+        }
 
         IReadOnlyList<AITool> mcpTools = await mcpConnectionManager
             .GetAvailableToolsAsync(workingDirectory, cancellationToken)
@@ -762,15 +768,6 @@ public sealed class OllamaIntelligenceProvider(
         }
     }
 
-    [UnconditionalSuppressMessage(
-        "ReflectionAnalysis",
-        "IL2026:RequiresUnreferencedCode",
-        Justification = "Tool argument dictionaries are small JSON-serializable payloads from the model; keys/values are strings or primitives.")]
-    [UnconditionalSuppressMessage(
-        "AOT",
-        "IL3050:RequiresDynamicCode",
-        Justification = "Same as IL2026; Grimoire stores a diagnostic string snapshot of tool arguments.")]
-
     private static string SerializeToolArgumentsForGrimoire(FunctionCallContent fcc)
     {
         if (fcc.Arguments is null || fcc.Arguments.Count == 0)
@@ -778,7 +775,65 @@ public sealed class OllamaIntelligenceProvider(
             return string.Empty;
         }
 
-        return JsonSerializer.Serialize(fcc.Arguments);
+        using MemoryStream ms = new();
+
+        using (Utf8JsonWriter writer = new(ms))
+        {
+            writer.WriteStartObject();
+
+            foreach (KeyValuePair<string, object?> pair in fcc.Arguments)
+            {
+                writer.WritePropertyName(pair.Key);
+
+                WriteArgumentValue(writer, pair.Value);
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static void WriteArgumentValue(Utf8JsonWriter writer, object? value)
+    {
+        switch (value)
+        {
+            case null:
+                writer.WriteNullValue();
+                break;
+
+            case JsonElement je:
+                je.WriteTo(writer);
+                break;
+
+            case string s:
+                writer.WriteStringValue(s);
+                break;
+
+            case bool b:
+                writer.WriteBooleanValue(b);
+                break;
+
+            case int i:
+                writer.WriteNumberValue(i);
+                break;
+
+            case long l:
+                writer.WriteNumberValue(l);
+                break;
+
+            case double d:
+                writer.WriteNumberValue(d);
+                break;
+
+            case float f:
+                writer.WriteNumberValue(f);
+                break;
+
+            default:
+                writer.WriteStringValue(value.ToString());
+                break;
+        }
     }
 
     private static string FormatToolCallEventData(FunctionCallContent fcc)
@@ -818,18 +873,12 @@ public sealed class OllamaIntelligenceProvider(
             return $"No local tool registered for '{fcc.Name}'.";
         }
 
-        var argDict = new Dictionary<string, object?>();
-
-        if (fcc.Arguments is not null)
-        {
-            foreach (KeyValuePair<string, object?> pair in fcc.Arguments)
-            {
-                argDict[pair.Key] = pair.Value;
-            }
-        }
+        AIFunctionArguments args = fcc.Arguments is { Count: > 0 }
+            ? new AIFunctionArguments(fcc.Arguments)
+            : [];
 
         object? output = await func
-            .InvokeAsync(new AIFunctionArguments(argDict), cancellationToken)
+            .InvokeAsync(args, cancellationToken)
             .ConfigureAwait(false);
 
         return output switch

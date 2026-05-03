@@ -21,7 +21,7 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFi
             ? apiKeyHeader[0]
             : null;
 
-        byte[]? expectedUtf8 = _cachedExpectedUtf8;
+        byte[]? expectedUtf8 = Volatile.Read(ref _cachedExpectedUtf8);
 
         if (expectedUtf8 is null)
         {
@@ -34,7 +34,7 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFi
 
             expectedUtf8 = Encoding.UTF8.GetBytes(expected);
 
-            _cachedExpectedUtf8 = expectedUtf8;
+            Volatile.Write(ref _cachedExpectedUtf8, expectedUtf8);
         }
 
         if (string.IsNullOrEmpty(headerValue))
