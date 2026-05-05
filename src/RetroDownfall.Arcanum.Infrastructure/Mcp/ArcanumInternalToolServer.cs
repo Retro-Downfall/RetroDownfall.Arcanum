@@ -1,7 +1,11 @@
 using System.Buffers;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -11,6 +15,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed class ArcanumInternalToolServer
 {
+    private const int ListDirectoryMaxItems = 500;
+
+    private const string ListDirectoryTruncationSuffix =
+        "... [TRUNCATED: Max 500 items reached. Please use a more specific path.]";
+
     private static readonly JsonElement ReadFileChunkSchema = BuildSchema(static w =>
     {
         w.WriteString("type", "object");
@@ -65,17 +74,95 @@ internal sealed class ArcanumInternalToolServer
         w.WriteBoolean("additionalProperties", false);
     });
 
+    private static readonly JsonElement ListDirectorySchema = BuildSchema(static w =>
+    {
+        w.WriteString("type", "object");
+
+        w.WriteStartObject("properties");
+
+        WriteStringProperty(w, "path", "Absolute path to the directory to list.");
+
+        WriteBooleanProperty(w, "recursive", "When true, lists entries recursively; node_modules, bin, obj, and .git folders are skipped.");
+
+        w.WriteEndObject();
+
+        w.WriteStartArray("required");
+
+        w.WriteStringValue("path");
+
+        w.WriteEndArray();
+
+        w.WriteBoolean("additionalProperties", false);
+    });
+
+    private static readonly JsonElement ExecuteCommandSchema = BuildSchema(static w =>
+    {
+        w.WriteString("type", "object");
+
+        w.WriteStartObject("properties");
+
+        WriteStringProperty(w, "command", "Executable or binary name (no shell).");
+
+        WriteStringProperty(w, "arguments", "Command-line arguments as a single string (may be empty).");
+
+        WriteStringProperty(
+            w,
+            "workingDirectory",
+            "Optional absolute working directory. When set, must be a rooted path.");
+
+        w.WriteEndObject();
+
+        w.WriteStartArray("required");
+
+        w.WriteStringValue("command");
+
+        w.WriteStringValue("arguments");
+
+        w.WriteEndArray();
+
+        w.WriteBoolean("additionalProperties", false);
+    });
+
+    private static readonly JsonElement AskHumanSchema = BuildSchema(static w =>
+    {
+        w.WriteString("type", "object");
+
+        w.WriteStartObject("properties");
+
+        WriteStringProperty(w, "question", "The question or context to show the human operator.");
+
+        WriteStringProperty(
+            w,
+            "promptId",
+            "Unique correlation id for this prompt. Generate a new random UUID (RFC 4122) for every ask_human call.");
+
+        w.WriteEndObject();
+
+        w.WriteStartArray("required");
+
+        w.WriteStringValue("question");
+
+        w.WriteStringValue("promptId");
+
+        w.WriteEndArray();
+
+        w.WriteBoolean("additionalProperties", false);
+    });
+
     private readonly ChannelReader<string> _fromClient;
 
     private readonly ChannelWriter<string> _toClient;
 
     private readonly McpJsonSerializerContext _json;
 
+    private readonly IHumanPromptRegistry _humanPrompts;
+
     private readonly ILogger<ArcanumInternalToolServer>? _logger;
 
     internal ArcanumInternalToolServer(
         ChannelReader<string> fromClient,
         ChannelWriter<string> toClient,
+        IHumanPromptRegistry humanPromptRegistry,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -83,9 +170,13 @@ internal sealed class ArcanumInternalToolServer
 
         ArgumentNullException.ThrowIfNull(toClient);
 
+        ArgumentNullException.ThrowIfNull(humanPromptRegistry);
+
         _fromClient = fromClient;
 
         _toClient = toClient;
+
+        _humanPrompts = humanPromptRegistry;
 
         _logger = logger;
 
@@ -245,6 +336,27 @@ internal sealed class ArcanumInternalToolServer
                     Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
                     InputSchema = ReplaceTextBlockSchema,
                 },
+                new McpToolDefinitionWire
+                {
+                    Name = "list_directory",
+                    Description =
+                        "Lists files and folders under an absolute path. Optional recursion; skips node_modules, bin, obj, and .git; returns at most 500 paths.",
+                    InputSchema = ListDirectorySchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "execute_command",
+                    Description =
+                        "Runs a command without a shell (stdout/stderr captured, 60s timeout, process tree killed on timeout). Requires absolute workingDirectory when set.",
+                    InputSchema = ExecuteCommandSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "ask_human",
+                    Description =
+                        "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
+                    InputSchema = AskHumanSchema,
+                },
             ],
         };
 
@@ -283,10 +395,56 @@ internal sealed class ArcanumInternalToolServer
         {
             "read_file_chunk" => await ExecuteReadFileChunkAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "replace_text_block" => await ExecuteReplaceTextBlockAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "execute_command" => await ExecuteCommandAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "ask_human" => await ExecuteAskHumanAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             _ => ToolError($"Unknown tool: {call.Name}"),
         };
 
         return BuildToolsCallResponse(rpcId, result);
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteAskHumanAsync(JsonElement arguments, CancellationToken cancellationToken)
+    {
+        AskHumanParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.AskHumanParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for ask_human: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Question) || string.IsNullOrWhiteSpace(args.PromptId))
+        {
+            return ToolError("ask_human requires non-empty 'question' and 'promptId'.");
+        }
+
+        try
+        {
+            string answer = await _humanPrompts
+                .WaitForResponseAsync(args.PromptId.Trim(), cancellationToken)
+                .ConfigureAwait(false);
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = answer },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ToolError(ex.Message);
+        }
     }
 
     private JsonRpcResponse BuildToolsCallResponse(JsonElement rpcId, McpToolsCallResultWire result)
@@ -483,6 +641,388 @@ internal sealed class ArcanumInternalToolServer
         };
     }
 
+    private Task<McpToolsCallResultWire> ExecuteListDirectoryAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        ListDirectoryParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.ListDirectoryParams);
+        }
+        catch (JsonException ex)
+        {
+            return Task.FromResult(ToolError($"Invalid arguments for list_directory: {ex.Message}"));
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Path))
+        {
+            return Task.FromResult(ToolError("list_directory requires 'path'."));
+        }
+
+        if (!Path.IsPathRooted(args.Path))
+        {
+            return Task.FromResult(ToolError($"list_directory requires an absolute path; got: '{args.Path}'."));
+        }
+
+        string absolutePath;
+
+        try
+        {
+            absolutePath = Path.GetFullPath(args.Path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            return Task.FromResult(ToolError($"list_directory could not resolve path '{args.Path}': {ex.Message}"));
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (File.Exists(absolutePath) && !Directory.Exists(absolutePath))
+            {
+                return Task.FromResult(ToolError($"list_directory: path is not a directory: '{absolutePath}'."));
+            }
+
+            if (!Directory.Exists(absolutePath))
+            {
+                return Task.FromResult(ToolError($"list_directory: directory not found: '{absolutePath}'."));
+            }
+
+            List<string> lines = new(ListDirectoryMaxItems + 1);
+
+            bool truncated = false;
+
+            if (args.Recursive)
+            {
+                Queue<string> dirs = new();
+
+                dirs.Enqueue(absolutePath);
+
+                while (dirs.Count > 0 && !truncated)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    string dir = dirs.Dequeue();
+
+                    IEnumerable<string> entries;
+
+                    try
+                    {
+                        entries = Directory.EnumerateFileSystemEntries(dir, "*", SearchOption.TopDirectoryOnly);
+                    }
+                    catch (IOException ex)
+                    {
+                        return Task.FromResult(ToolError($"list_directory: I/O error listing '{dir}'. {ex.Message}"));
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        return Task.FromResult(ToolError($"list_directory: access denied listing '{dir}'. {ex.Message}"));
+                    }
+
+                    foreach (string entry in entries)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        string name = Path.GetFileName(entry);
+
+                        if (Directory.Exists(entry) && IsListDirectorySkipFolder(name))
+                        {
+                            continue;
+                        }
+
+                        if (lines.Count >= ListDirectoryMaxItems)
+                        {
+                            truncated = true;
+
+                            break;
+                        }
+
+                        lines.Add(entry);
+
+                        if (Directory.Exists(entry))
+                        {
+                            dirs.Enqueue(entry);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                IEnumerable<string> entries;
+
+                try
+                {
+                    entries = Directory.EnumerateFileSystemEntries(
+                        absolutePath,
+                        "*",
+                        SearchOption.TopDirectoryOnly);
+                }
+                catch (IOException ex)
+                {
+                    return Task.FromResult(ToolError($"list_directory: I/O error listing '{absolutePath}'. {ex.Message}"));
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    return Task.FromResult(
+                        ToolError($"list_directory: access denied listing '{absolutePath}'. {ex.Message}"));
+                }
+
+                foreach (string entry in entries)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    string name = Path.GetFileName(entry);
+
+                    if (Directory.Exists(entry) && IsListDirectorySkipFolder(name))
+                    {
+                        continue;
+                    }
+
+                    if (lines.Count >= ListDirectoryMaxItems)
+                    {
+                        truncated = true;
+
+                        break;
+                    }
+
+                    lines.Add(entry);
+                }
+            }
+
+            if (truncated)
+            {
+                lines.Add(ListDirectoryTruncationSuffix);
+            }
+
+            string joined = string.Join("\n", lines);
+
+            return Task.FromResult(
+                new McpToolsCallResultWire
+                {
+                    Content =
+                    [
+                        new McpToolContentTextWire { Text = joined },
+                    ],
+                    IsError = false,
+                });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            return Task.FromResult(ToolError($"list_directory: canceled. {ex.Message}"));
+        }
+        catch (IOException ex)
+        {
+            return Task.FromResult(ToolError($"list_directory: I/O error for '{absolutePath}'. {ex.Message}"));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Task.FromResult(ToolError($"list_directory: access denied for '{absolutePath}'. {ex.Message}"));
+        }
+    }
+
+    private static bool IsListDirectorySkipFolder(string name) =>
+        name is "node_modules" or "bin" or "obj" or ".git";
+
+    private async Task<McpToolsCallResultWire> ExecuteCommandAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        ExecuteCommandParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.ExecuteCommandParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for execute_command: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Command))
+        {
+            return ToolError("execute_command requires 'command' and 'arguments'.");
+        }
+
+        string argumentsLine = args.Arguments;
+
+        string? workingDirectory = string.IsNullOrWhiteSpace(args.WorkingDirectory) ? null : args.WorkingDirectory;
+
+        if (workingDirectory is not null)
+        {
+            if (!Path.IsPathRooted(workingDirectory))
+            {
+                return ToolError($"execute_command requires an absolute workingDirectory when set; got: '{workingDirectory}'.");
+            }
+
+            try
+            {
+                workingDirectory = Path.GetFullPath(workingDirectory);
+            }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+            {
+                return ToolError($"execute_command could not resolve workingDirectory '{args.WorkingDirectory}': {ex.Message}");
+            }
+        }
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = args.Command,
+
+            Arguments = argumentsLine,
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+
+            CreateNoWindow = true,
+        };
+
+        if (workingDirectory is not null)
+        {
+            psi.WorkingDirectory = workingDirectory;
+        }
+
+        using Process process = new();
+
+        process.StartInfo = psi;
+
+        using CancellationTokenSource timeoutCts = new(TimeSpan.FromSeconds(60));
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+
+        CancellationToken waitToken = linked.Token;
+
+        try
+        {
+            if (!process.Start())
+            {
+                return ToolError("execute_command: failed to start the process.");
+            }
+        }
+        catch (IOException ex)
+        {
+            return ToolError($"execute_command: I/O error starting process. {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return ToolError($"execute_command: access denied starting process. {ex.Message}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            return ToolError($"execute_command: canceled before start completed. {ex.Message}");
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ToolError($"execute_command: could not start process. {ex.Message}");
+        }
+        catch (Win32Exception ex)
+        {
+            return ToolError($"execute_command: could not start process. {ex.Message}");
+        }
+
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitToken);
+
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitToken);
+
+        try
+        {
+            await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex)
+        {
+            TryKillProcessEntireTree(process);
+
+            if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                return ToolError("execute_command: the command timed out after 60 seconds.");
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return ToolError($"execute_command: canceled. {ex.Message}");
+            }
+
+            return ToolError($"execute_command: canceled or timed out. {ex.Message}");
+        }
+
+        string stdout;
+
+        string stderr;
+
+        try
+        {
+            stdout = await stdoutTask.ConfigureAwait(false);
+
+            stderr = await stderrTask.ConfigureAwait(false);
+        }
+        catch (IOException ex)
+        {
+            return ToolError($"execute_command: I/O error reading process output. {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return ToolError($"execute_command: access denied reading process output. {ex.Message}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            return ToolError($"execute_command: canceled while reading output. {ex.Message}");
+        }
+
+        StringBuilder text = new();
+
+        text.AppendLine("--- stdout ---");
+
+        text.AppendLine(stdout);
+
+        text.AppendLine("--- stderr ---");
+
+        text.AppendLine(stderr);
+
+        text.Append("--- exit code ---\n");
+
+        text.Append(process.ExitCode);
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = text.ToString() },
+            ],
+            IsError = false,
+        };
+    }
+
+    private static void TryKillProcessEntireTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (Win32Exception)
+        {
+        }
+        catch (NotSupportedException)
+        {
+        }
+    }
+
     private static McpToolsCallResultWire ToolError(string text)
     {
         return new McpToolsCallResultWire
@@ -560,6 +1100,17 @@ internal sealed class ArcanumInternalToolServer
         w.WriteStartObject(name);
 
         w.WriteString("type", "integer");
+
+        w.WriteString("description", description);
+
+        w.WriteEndObject();
+    }
+
+    private static void WriteBooleanProperty(Utf8JsonWriter w, string name, string description)
+    {
+        w.WriteStartObject(name);
+
+        w.WriteString("type", "boolean");
 
         w.WriteString("description", description);
 

@@ -104,12 +104,17 @@ internal sealed class McpClient : IAsyncDisposable
             Params = parameters,
             Id = idElement,
         };
-        using CancellationTokenSource timeoutCts = new(timeout);
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token,
-            _disposeCts.Token);
+
+        bool noPerRequestTimeout = timeout == Timeout.InfiniteTimeSpan;
+
+        using CancellationTokenSource? timeoutCts = noPerRequestTimeout ? null : new CancellationTokenSource(timeout);
+
+        using CancellationTokenSource linked = timeoutCts is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token, _disposeCts.Token);
+
         CancellationToken waitToken = linked.Token;
+
         try
         {
             await _transport.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);

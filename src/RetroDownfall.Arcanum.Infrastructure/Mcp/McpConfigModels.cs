@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
-/// Root shape of a Cursor / Claude Desktop–style <c>mcp.json</c> file.
+/// Root shape of a standard <c>mcp.json</c> configuration file.
 /// </summary>
 public sealed record McpConfig
 {

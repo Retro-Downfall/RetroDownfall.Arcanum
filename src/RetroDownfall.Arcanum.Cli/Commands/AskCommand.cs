@@ -69,7 +69,8 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
                 string.IsNullOrWhiteSpace(settings.Model) ? null : settings.Model.Trim(),
                 cwd,
                 snapshot,
-                conversationId);
+                conversationId,
+                UnattendedMode: settings.Unattended);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
@@ -90,6 +91,15 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
                         break;
 
                     case IntelligenceEventType.ToolCall:
+
+                        if (await AskHumanToolCallStreamHandler
+                                .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, linked.Token)
+                                .ConfigureAwait(false))
+                        {
+                            break;
+                        }
+
+                        goto case IntelligenceEventType.ToolResult;
 
                     case IntelligenceEventType.ToolResult:
 
@@ -185,5 +195,9 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
         [CommandOption("-n|--new")]
         [Description("Start a new conversation thread, clearing the previous session.")]
         public bool New { get; init; }
+
+        [CommandOption("--unattended")]
+        [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
+        public bool Unattended { get; set; }
     }
 }

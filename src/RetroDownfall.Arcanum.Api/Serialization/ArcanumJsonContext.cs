@@ -8,9 +8,13 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(ApiResponse<string>))]
+[JsonSerializable(typeof(ApiResponse<bool>))]
 [JsonSerializable(typeof(Result<string>))]
+[JsonSerializable(typeof(Result<bool>))]
+[JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(Error))]
 [JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(SubmitHumanResponseRequest))]
 [JsonSerializable(typeof(PatternSnapshot))]
 [JsonSerializable(typeof(DomainType))]
 [JsonSerializable(typeof(IntelligenceEventType))]

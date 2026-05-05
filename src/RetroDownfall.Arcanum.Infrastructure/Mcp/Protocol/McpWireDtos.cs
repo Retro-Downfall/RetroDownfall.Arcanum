@@ -179,3 +179,42 @@ public sealed record ReplaceTextBlockParams
     public required string ReplacementText { get; init; }
 }
 
+/// <summary>
+/// Arguments accepted by the in-process <c>list_directory</c> tool.
+/// </summary>
+public sealed record ListDirectoryParams
+{
+    [JsonPropertyName("path")]
+    public required string Path { get; init; }
+
+    [JsonPropertyName("recursive")]
+    public bool Recursive { get; init; }
+}
+
+/// <summary>
+/// Arguments accepted by the in-process <c>execute_command</c> tool.
+/// </summary>
+public sealed record ExecuteCommandParams
+{
+    [JsonPropertyName("command")]
+    public required string Command { get; init; }
+
+    [JsonPropertyName("arguments")]
+    public required string Arguments { get; init; }
+
+    [JsonPropertyName("workingDirectory")]
+    public string? WorkingDirectory { get; init; }
+}
+
+/// <summary>
+/// Arguments accepted by the in-process <c>ask_human</c> tool.
+/// </summary>
+public sealed record AskHumanParams
+{
+    [JsonPropertyName("question")]
+    public required string Question { get; init; }
+
+    [JsonPropertyName("promptId")]
+    public required string PromptId { get; init; }
+}
+

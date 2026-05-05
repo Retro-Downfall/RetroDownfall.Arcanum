@@ -115,7 +115,8 @@ public sealed class ChatCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) 
                 snapshot,
                 conversationId,
                 settings.NoTools,
-                CliTerminalFormatting: true);
+                CliTerminalFormatting: true,
+                UnattendedMode: settings.Unattended);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {
@@ -145,6 +146,15 @@ public sealed class ChatCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) 
                         break;
 
                     case IntelligenceEventType.ToolCall:
+
+                        if (await AskHumanToolCallStreamHandler
+                                .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, perTurnCts.Token)
+                                .ConfigureAwait(false))
+                        {
+                            break;
+                        }
+
+                        goto case IntelligenceEventType.ToolResult;
 
                     case IntelligenceEventType.ToolResult:
 
@@ -268,5 +278,9 @@ public sealed class ChatCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) 
         [CommandOption("--no-tools")]
         [Description("Disable MCP-provided tools for this REPL session (built-in tools still apply).")]
         public bool NoTools { get; init; }
+
+        [CommandOption("--unattended")]
+        [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
+        public bool Unattended { get; set; }
     }
 }

@@ -9,4 +9,5 @@ public sealed record PingRequest(
     PatternSnapshot? ContextSnapshot = null,
     Guid? ConversationId = null,
     bool DisableMcpTools = false,
-    bool CliTerminalFormatting = false);
+    bool CliTerminalFormatting = false,
+    bool UnattendedMode = false);

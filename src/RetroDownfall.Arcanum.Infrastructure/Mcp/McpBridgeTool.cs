@@ -76,8 +76,12 @@ internal sealed class McpBridgeTool : AIFunction
     {
         JsonElement paramsElement = BuildToolsCallParamsElement(arguments);
 
+        TimeSpan? callTimeout = string.Equals(_name, "ask_human", StringComparison.Ordinal)
+            ? Timeout.InfiniteTimeSpan
+            : null;
+
         JsonElement result = await client
-            .SendRequestAsync("tools/call", paramsElement, cancellationToken)
+            .SendRequestAsync("tools/call", paramsElement, cancellationToken, callTimeout)
             .ConfigureAwait(false);
 
         if (result.TryGetProperty("isError", out JsonElement isError) && isError.ValueKind == JsonValueKind.True)

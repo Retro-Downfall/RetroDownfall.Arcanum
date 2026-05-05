@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -62,8 +63,12 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     /// Creates a client transport and matching <see cref="ArcanumInternalToolServer"/> sharing bounded line channels.
     /// </summary>
     public static (InProcessMcpTransport Transport, ArcanumInternalToolServer Server) CreatePair(
-        ILogger<ArcanumInternalToolServer>? logger = null)
+        IHumanPromptRegistry humanPromptRegistry,
+        ILogger<ArcanumInternalToolServer>? logger = null,
+        McpJsonSerializerContext? jsonContext = null)
     {
+        ArgumentNullException.ThrowIfNull(humanPromptRegistry);
+
         BoundedChannelOptions lineOptions = new(ChannelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -77,7 +82,12 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         InProcessMcpTransport transport = new(clientToServer.Writer, serverToClient.Reader);
 
-        ArcanumInternalToolServer server = new(clientToServer.Reader, serverToClient.Writer, logger);
+        ArcanumInternalToolServer server = new(
+            clientToServer.Reader,
+            serverToClient.Writer,
+            humanPromptRegistry,
+            logger,
+            jsonContext);
 
         return (transport, server);
     }

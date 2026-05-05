@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -111,7 +112,7 @@ public sealed class OllamaIntelligenceProvider(
 
                 PrependDynamicSystemMessage(chatMessages, builtSystemPrompt);
 
-                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, toolSet);
+                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, toolSet, request);
 
                 ChatResponse? response;
 
@@ -375,7 +376,7 @@ public sealed class OllamaIntelligenceProvider(
 
             accumulator = new StringBuilder(1024);
 
-            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamToolSet);
+            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamToolSet, request);
 
             int streamToolRoundCount = 0;
 
@@ -723,14 +724,31 @@ public sealed class OllamaIntelligenceProvider(
         return tools;
     }
 
-    private static ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools)
+    private static ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request)
     {
         if (!includeTools || tools is null)
         {
             return new ChatOptions();
         }
 
-        return new ChatOptions { Tools = tools };
+        if (!request.UnattendedMode)
+        {
+            return new ChatOptions { Tools = tools };
+        }
+
+        List<AITool> filtered = [];
+
+        foreach (AITool t in tools)
+        {
+            if (t is AIFunction fn && string.Equals(fn.Name, "ask_human", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            filtered.Add(t);
+        }
+
+        return new ChatOptions { Tools = filtered };
     }
 
     private static bool LooksLikeModelDoesNotSupportTools(string? message)
@@ -775,9 +793,9 @@ public sealed class OllamaIntelligenceProvider(
             return string.Empty;
         }
 
-        using MemoryStream ms = new();
+        ArrayBufferWriter<byte> buffer = new(256);
 
-        using (Utf8JsonWriter writer = new(ms))
+        using (Utf8JsonWriter writer = new(buffer))
         {
             writer.WriteStartObject();
 
@@ -791,7 +809,7 @@ public sealed class OllamaIntelligenceProvider(
             writer.WriteEndObject();
         }
 
-        return Encoding.UTF8.GetString(ms.ToArray());
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
     private static void WriteArgumentValue(Utf8JsonWriter writer, object? value)

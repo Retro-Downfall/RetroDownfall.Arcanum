@@ -31,11 +31,13 @@ public static class ApiBootstrapper
         Justification = "AddOpenApi pulls MVC model metadata with RequiresUnreferencedCode; Arcanum uses minimal APIs plus source-generated OpenAPI metadata—no controller-based model binding at runtime.")]
     [UnconditionalSuppressMessage(
         "AOT",
-        "IL2026",
-        Justification = "ILC attributes the same OpenAPI/Mvc.Abstractions ModelMetadata path as IL2026 during Native AOT publish; registration is bounded to MapOpenApi/Scalar and minimal APIs.")]
+        "IL3050",
+        Justification = "ILC attributes the OpenAPI/Mvc.Abstractions ModelMetadata path as RequiresDynamicCode during Native AOT publish; registration is bounded to MapOpenApi/Scalar and minimal APIs.")]
 
     public static IServiceCollection AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddSingleton<IHumanPromptRegistry, HumanPromptRegistry>();
+
         services.AddArcanumInfrastructure(configuration);
 
         services.AddSingleton<ApiKeyEndpointFilter>();
@@ -102,6 +104,34 @@ public static class ApiBootstrapper
                 : Results.Json(response, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status500InternalServerError);
         })
         .WithName("PostIntelligencePing");
+
+        apiGroup.MapPost(
+            "/intelligence/human-response",
+            async (HttpContext httpContext, IHumanPromptRegistry registry, CancellationToken cancellationToken) =>
+            {
+                SubmitHumanResponseRequest? body = await httpContext.Request
+                    .ReadFromJsonAsync(ArcanumJsonContext.Default.SubmitHumanResponseRequest, cancellationToken)
+                    .ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                if (body is null
+                    || string.IsNullOrWhiteSpace(body.PromptId)
+                    || string.IsNullOrWhiteSpace(body.Answer))
+                {
+                    Result<bool> invalid = Result<bool>.Failure(
+                        new Error("Validation.InvalidHumanResponse", "promptId and answer are required."));
+
+                    return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+                }
+
+                bool accepted = registry.TrySubmitResponse(body.PromptId.Trim(), body.Answer);
+
+                Result<bool> ok = Result<bool>.Success(accepted);
+
+                return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
+            })
+        .WithName("PostIntelligenceHumanResponse");
 
         apiGroup.MapPost("/intelligence/ping-stream", async (HttpContext httpContext, CancellationToken cancellationToken) =>
         {

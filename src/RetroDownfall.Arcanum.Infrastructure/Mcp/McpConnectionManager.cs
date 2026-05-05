@@ -2,11 +2,12 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
-/// Loads Cursor-style <c>mcp.json</c> from the user profile and from each workspace, spawns MCP servers, and exposes merged tools as <see cref="AITool"/>.
+/// Loads standard <c>mcp.json</c> from the user profile and from each workspace, spawns MCP servers, and exposes merged tools as <see cref="AITool"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -18,7 +19,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// Empty or invalid <c>workingDirectory</c> resolves to a sentinel workspace key that reuses global tools only (no extra local partition).
 /// </para>
 /// </remarks>
-public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) : IAsyncDisposable
+public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, IHumanPromptRegistry humanPromptRegistry)
+    : IAsyncDisposable
 {
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
@@ -365,7 +367,8 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
         List<LoadedMcpTool> tagged,
         CancellationToken cancellationToken)
     {
-        (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair();
+        (InProcessMcpTransport transport, ArcanumInternalToolServer server) =
+            InProcessMcpTransport.CreatePair(humanPromptRegistry);
 
         Task serverTask = Task.Run(() => server.RunAsync(CancellationToken.None), CancellationToken.None);
 
