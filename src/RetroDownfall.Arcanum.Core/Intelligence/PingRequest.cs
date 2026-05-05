@@ -8,4 +8,5 @@ public sealed record PingRequest(
     string WorkingDirectory = "",
     PatternSnapshot? ContextSnapshot = null,
     Guid? ConversationId = null,
-    bool DisableMcpTools = false);
+    bool DisableMcpTools = false,
+    bool CliTerminalFormatting = false);

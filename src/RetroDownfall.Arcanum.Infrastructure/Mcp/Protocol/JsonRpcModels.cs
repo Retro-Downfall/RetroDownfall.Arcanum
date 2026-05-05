@@ -75,7 +75,6 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(double))]
-[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
 [JsonSerializable(typeof(JsonRpcRequest))]
 [JsonSerializable(typeof(JsonRpcResponse))]
 [JsonSerializable(typeof(JsonRpcError))]
@@ -84,6 +83,5 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(McpClientCapabilities))]
 [JsonSerializable(typeof(McpClientInfo))]
 [JsonSerializable(typeof(McpToolsListParams))]
-[JsonSerializable(typeof(McpToolsCallParams))]
 [JsonSerializable(typeof(McpEmptyJsonObject))]
 public partial class McpJsonSerializerContext : JsonSerializerContext;

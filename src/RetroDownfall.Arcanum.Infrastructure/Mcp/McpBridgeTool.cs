@@ -1,9 +1,9 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -24,16 +24,13 @@ internal sealed class McpBridgeTool : AIFunction
 
     private readonly ILogger? _fallbackLogger;
 
-    private readonly McpJsonSerializerContext _json;
-
     public McpBridgeTool(
         string name,
         string description,
         JsonElement inputSchema,
         McpClient client,
         McpClient? fallbackClient = null,
-        ILogger? fallbackLogger = null,
-        McpJsonSerializerContext? jsonContext = null)
+        ILogger? fallbackLogger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(client);
@@ -43,7 +40,6 @@ internal sealed class McpBridgeTool : AIFunction
         _client = client;
         _fallbackClient = fallbackClient;
         _fallbackLogger = fallbackLogger;
-        _json = jsonContext ?? McpJsonSerializerContext.Default;
     }
 
     public override string Name => _name;
@@ -78,17 +74,7 @@ internal sealed class McpBridgeTool : AIFunction
 
     private async Task<object?> SendToolsCallAsync(McpClient client, AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
-        Dictionary<string, JsonElement> argsMap = BuildArgumentsMap(arguments, _json);
-
-        JsonElement argumentsElement = JsonSerializer.SerializeToElement(argsMap, _json.DictionaryStringJsonElement);
-
-        McpToolsCallParams callParams = new()
-        {
-            Name = _name,
-            Arguments = argumentsElement,
-        };
-
-        JsonElement paramsElement = JsonSerializer.SerializeToElement(callParams, _json.McpToolsCallParams);
+        JsonElement paramsElement = BuildToolsCallParamsElement(arguments);
 
         JsonElement result = await client
             .SendRequestAsync("tools/call", paramsElement, cancellationToken)
@@ -104,73 +90,115 @@ internal sealed class McpBridgeTool : AIFunction
         return McpToolResultFormatter.FormatContentText(result);
     }
 
-    private static Dictionary<string, JsonElement> BuildArgumentsMap(AIFunctionArguments arguments, McpJsonSerializerContext json)
+    private JsonElement BuildToolsCallParamsElement(AIFunctionArguments arguments)
     {
-        Dictionary<string, JsonElement> map = new(StringComparer.Ordinal);
+        ArrayBufferWriter<byte> buffer = new(512);
 
-        foreach (KeyValuePair<string, object?> pair in arguments)
+        using (Utf8JsonWriter writer = new(buffer))
         {
-            if (pair.Value is null)
+            writer.WriteStartObject();
+            writer.WriteString("name", _name);
+            writer.WritePropertyName("arguments");
+            writer.WriteStartObject();
+
+            foreach (KeyValuePair<string, object?> pair in arguments)
             {
-                continue;
+                if (pair.Value is null)
+                {
+                    continue;
+                }
+
+                writer.WritePropertyName(pair.Key);
+                WriteArgumentValue(writer, pair.Value);
             }
 
-            JsonElement valueElement = CoerceArgumentValue(pair.Value, json);
-
-            map[pair.Key] = valueElement;
+            writer.WriteEndObject();
+            writer.WriteEndObject();
         }
 
-        return map;
+        using JsonDocument doc = JsonDocument.Parse(buffer.WrittenMemory);
+
+        return doc.RootElement.Clone();
     }
 
-    private static JsonElement CoerceArgumentValue(object? raw, McpJsonSerializerContext json)
+    private static void WriteArgumentValue(Utf8JsonWriter writer, object value)
     {
-        switch (raw)
+        switch (value)
         {
             case JsonElement je:
-                return je.Clone();
+                je.WriteTo(writer);
+
+                break;
 
             case string s:
-                return JsonSerializer.SerializeToElement(s, json.String);
+                writer.WriteStringValue(s);
+
+                break;
 
             case bool b:
-                return JsonSerializer.SerializeToElement(b, json.Boolean);
+                writer.WriteBooleanValue(b);
+
+                break;
 
             case byte by:
-                return JsonSerializer.SerializeToElement((int)by, json.Int32);
+                writer.WriteNumberValue(by);
+
+                break;
 
             case short sh:
-                return JsonSerializer.SerializeToElement((int)sh, json.Int32);
+                writer.WriteNumberValue(sh);
+
+                break;
 
             case ushort us:
-                return JsonSerializer.SerializeToElement((int)us, json.Int32);
+                writer.WriteNumberValue(us);
+
+                break;
 
             case int i:
-                return JsonSerializer.SerializeToElement(i, json.Int32);
+                writer.WriteNumberValue(i);
+
+                break;
 
             case uint ui:
-                return JsonSerializer.SerializeToElement((long)ui, json.Int64);
+                writer.WriteNumberValue((long)ui);
+
+                break;
 
             case long l:
-                return JsonSerializer.SerializeToElement(l, json.Int64);
+                writer.WriteNumberValue(l);
+
+                break;
 
             case ulong ul:
-                return JsonSerializer.SerializeToElement((double)ul, json.Double);
+                writer.WriteNumberValue((double)ul);
+
+                break;
 
             case float f:
-                return JsonSerializer.SerializeToElement((double)f, json.Double);
+                writer.WriteNumberValue((double)f);
+
+                break;
 
             case double d:
-                return JsonSerializer.SerializeToElement(d, json.Double);
+                writer.WriteNumberValue(d);
+
+                break;
 
             case decimal m:
-                return JsonSerializer.SerializeToElement(m.ToString(CultureInfo.InvariantCulture), json.String);
+                writer.WriteStringValue(m.ToString(CultureInfo.InvariantCulture));
+
+                break;
 
             case Guid g:
-                return JsonSerializer.SerializeToElement(g.ToString("D"), json.String);
+                writer.WriteStringValue(g.ToString("D"));
+
+                break;
 
             default:
-                return JsonSerializer.SerializeToElement(raw?.ToString() ?? string.Empty, json.String);
+                writer.WriteStringValue(value.ToString() ?? string.Empty);
+
+                break;
         }
     }
 }

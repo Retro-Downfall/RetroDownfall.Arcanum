@@ -17,6 +17,8 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ServeCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(AskCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(AskCommand.Settings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ChatCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ChatCommand.Settings))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(LookCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(InstallCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(UninstallCommand))]
@@ -48,6 +50,8 @@ internal static class Program
 
         services.AddTransient<AskCommand>();
 
+        services.AddTransient<ChatCommand>();
+
         services.AddTransient<LookCommand>();
 
         services.AddTransient<InstallCommand>();
@@ -67,6 +71,9 @@ internal static class Program
 
             config.AddCommand<AskCommand>("ask")
                 .WithDescription("Ask the Mage (multi-word prompt: all words after ask, or after --; multi-turn via cli-session; --new for a fresh thread).");
+
+            config.AddCommand<ChatCommand>("chat")
+                .WithDescription("Interactive multi-turn REPL with the Mage (streamed plain text, swapped to rendered Markdown at end of turn).");
 
             config.AddCommand<LookCommand>("look")
                 .WithDescription("Eye of the World: situational snapshot of the current directory (domain + TOC).");

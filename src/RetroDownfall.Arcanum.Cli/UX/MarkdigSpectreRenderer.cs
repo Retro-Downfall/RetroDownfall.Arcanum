@@ -1,0 +1,274 @@
+using System.Text;
+using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
+using Spectre.Console;
+using Spectre.Console.Rendering;
+
+namespace RetroDownfall.Arcanum.Cli.UX;
+
+internal static class MarkdigSpectreRenderer
+{
+    public static IRenderable Render(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown))
+        {
+            return new Text(string.Empty);
+        }
+
+        MarkdownDocument doc;
+
+        try
+        {
+            doc = Markdown.Parse(markdown);
+        }
+        catch
+        {
+            return new Markup(Markup.Escape(markdown));
+        }
+
+        List<IRenderable> rows = new(doc.Count);
+
+        foreach (Block block in doc)
+        {
+            rows.Add(RenderBlock(block));
+        }
+
+        return rows.Count switch
+        {
+            0 => new Text(string.Empty),
+            1 => rows[0],
+            _ => new Rows(rows),
+        };
+    }
+
+    private static IRenderable RenderBlock(Block block)
+    {
+        try
+        {
+            return block switch
+            {
+                HeadingBlock h => RenderHeadingBlock(h),
+                FencedCodeBlock f => RenderFencedCodeBlock(f),
+                CodeBlock c => RenderCodeBlock(c),
+                ParagraphBlock p => new Markup(InlineToMarkup(p.Inline)),
+                ListBlock l => RenderListBlock(l),
+                _ => new Markup(Markup.Escape(BlockToFallbackText(block))),
+            };
+        }
+        catch
+        {
+            return new Markup(Markup.Escape(BlockToFallbackText(block)));
+        }
+    }
+
+    private static IRenderable RenderHeadingBlock(HeadingBlock heading)
+    {
+        string text = InlineToPlain(heading.Inline);
+
+        if (string.IsNullOrEmpty(text))
+        {
+            return new Text(string.Empty);
+        }
+
+        return new Markup($"[bold yellow]{Markup.Escape(text)}[/]");
+    }
+
+    private static IRenderable RenderFencedCodeBlock(FencedCodeBlock fence)
+    {
+        string code = fence.Lines.ToString();
+
+        Panel panel = new(new Text(code))
+        {
+            Border = BoxBorder.Rounded,
+        };
+
+        string? info = fence.Info;
+
+        if (!string.IsNullOrWhiteSpace(info))
+        {
+            panel.Header = new PanelHeader($"[cyan]{Markup.Escape(info)}[/]");
+        }
+
+        return panel;
+    }
+
+    private static IRenderable RenderCodeBlock(CodeBlock code)
+    {
+        string content = code.Lines.ToString();
+
+        return new Panel(new Text(content)) { Border = BoxBorder.Rounded };
+    }
+
+    private static IRenderable RenderListBlock(ListBlock list)
+    {
+        StringBuilder sb = new();
+
+        bool first = true;
+
+        foreach (Block child in list)
+        {
+            if (child is not ListItemBlock item)
+            {
+                continue;
+            }
+
+            if (!first)
+            {
+                sb.Append('\n');
+            }
+
+            first = false;
+
+            sb.Append("  - ");
+
+            sb.Append(ListItemToMarkup(item));
+        }
+
+        return new Markup(sb.ToString());
+    }
+
+    private static string ListItemToMarkup(ListItemBlock item)
+    {
+        StringBuilder sb = new();
+
+        bool first = true;
+
+        foreach (Block child in item)
+        {
+            if (!first)
+            {
+                sb.Append(' ');
+            }
+
+            first = false;
+
+            if (child is ParagraphBlock p)
+            {
+                sb.Append(InlineToMarkup(p.Inline));
+            }
+            else
+            {
+                sb.Append(Markup.Escape(BlockToFallbackText(child)));
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static string InlineToPlain(ContainerInline? container)
+    {
+        if (container is null)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder sb = new();
+
+        AppendInlinesPlain(container, sb);
+
+        return sb.ToString();
+    }
+
+    private static void AppendInlinesPlain(ContainerInline container, StringBuilder sb)
+    {
+        foreach (Inline inline in container)
+        {
+            switch (inline)
+            {
+                case LiteralInline lit:
+                    sb.Append(lit.Content.ToString());
+                    break;
+
+                case CodeInline code:
+                    sb.Append(code.Content);
+                    break;
+
+                case LineBreakInline:
+                    sb.Append(' ');
+                    break;
+
+                case ContainerInline child:
+                    AppendInlinesPlain(child, sb);
+                    break;
+
+                default:
+                    string raw = inline.ToString() ?? string.Empty;
+
+                    if (raw.Length > 0)
+                    {
+                        sb.Append(raw);
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    private static string InlineToMarkup(ContainerInline? container)
+    {
+        if (container is null)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder sb = new();
+
+        AppendInlinesMarkup(container, sb);
+
+        return sb.ToString();
+    }
+
+    private static void AppendInlinesMarkup(ContainerInline container, StringBuilder sb)
+    {
+        foreach (Inline inline in container)
+        {
+            switch (inline)
+            {
+                case LiteralInline lit:
+                    sb.Append(Markup.Escape(lit.Content.ToString()));
+                    break;
+
+                case EmphasisInline em:
+                    string tag = em.DelimiterCount >= 2 ? "bold" : "italic";
+
+                    sb.Append('[').Append(tag).Append(']');
+
+                    AppendInlinesMarkup(em, sb);
+
+                    sb.Append("[/]");
+
+                    break;
+
+                case CodeInline code:
+                    sb.Append(Markup.Escape($"`{code.Content}`"));
+                    break;
+
+                case LineBreakInline:
+                    sb.Append('\n');
+                    break;
+
+                case ContainerInline child:
+                    AppendInlinesMarkup(child, sb);
+                    break;
+
+                default:
+                    string raw = inline.ToString() ?? string.Empty;
+
+                    sb.Append(Markup.Escape(raw));
+
+                    break;
+            }
+        }
+    }
+
+    private static string BlockToFallbackText(Block block)
+    {
+        if (block is LeafBlock leaf && leaf.Lines.Count > 0)
+        {
+            return leaf.Lines.ToString();
+        }
+
+        return block.ToString() ?? string.Empty;
+    }
+}
