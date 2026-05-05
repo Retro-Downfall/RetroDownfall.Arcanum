@@ -24,6 +24,11 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
     private const string NoWorkspaceKey = "__arcanum_no_workspace__";
 
+    /// <summary>
+    /// Synthetic <see cref="McpServerConfig"/> for the in-process Arcanum MCP server (not from <c>mcp.json</c>).
+    /// </summary>
+    private static readonly McpServerConfig InternalMcpServerConfig = new() { Command = "arcanum-internal" };
+
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceInitLocks = new(StringComparer.Ordinal);
@@ -165,11 +170,15 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
             List<McpClient> globalClients = GetOrCreateClientList(GlobalPartitionKey);
 
+            List<LoadedMcpTool> tagged = [];
+
+            await StartInternalInProcessServerAsync(globalClients, tagged, cancellationToken).ConfigureAwait(false);
+
             string globalPath = GetGlobalMcpConfigPath();
 
             if (!File.Exists(globalPath))
             {
-                FinalizeGlobalState([]);
+                FinalizeGlobalState(tagged);
 
                 return;
             }
@@ -178,7 +187,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
 
             if (config is null)
             {
-                FinalizeGlobalState([]);
+                FinalizeGlobalState(tagged);
 
                 return;
             }
@@ -187,12 +196,10 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
             {
                 logger.LogInformation("MCP config at {ConfigPath} has no mcpServers entries.", globalPath);
 
-                FinalizeGlobalState([]);
+                FinalizeGlobalState(tagged);
 
                 return;
             }
-
-            List<LoadedMcpTool> tagged = [];
 
             await StartServersFromConfigAsync(
                     config,
@@ -351,6 +358,68 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger) :
     private sealed class McpPartitionClients
     {
         public List<McpClient> Clients { get; } = [];
+    }
+
+    private async Task StartInternalInProcessServerAsync(
+        List<McpClient> globalClients,
+        List<LoadedMcpTool> tagged,
+        CancellationToken cancellationToken)
+    {
+        (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair();
+
+        Task serverTask = Task.Run(() => server.RunAsync(CancellationToken.None), CancellationToken.None);
+
+        ObserveInternalServerTask(serverTask);
+
+        McpClient? client = null;
+
+        try
+        {
+            client = new McpClient(transport);
+
+            await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+            IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
+
+            globalClients.Add(client);
+
+            client = null;
+
+            foreach (McpBridgeTool t in tools)
+            {
+                tagged.Add(new LoadedMcpTool(t, InternalMcpServerConfig, globalClients[^1]));
+            }
+
+            logger.LogInformation(
+                "Started in-process Arcanum internal MCP server with {ToolCount} tools.",
+                tools.Count);
+        }
+        catch
+        {
+            if (client is not null)
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
+            }
+
+            throw;
+        }
+    }
+
+    private void ObserveInternalServerTask(Task serverTask)
+    {
+        _ = serverTask.ContinueWith(
+            t =>
+            {
+                if (t.IsFaulted && t.Exception is not null)
+                {
+                    logger.LogWarning(
+                        t.Exception.GetBaseException(),
+                        "Arcanum internal MCP server task ended with an exception.");
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default);
     }
 
     private async Task<McpConfig?> ReadMcpConfigAsync(string configPath, CancellationToken cancellationToken)

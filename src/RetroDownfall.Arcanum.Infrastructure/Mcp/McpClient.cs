@@ -11,7 +11,7 @@ internal sealed class McpClient : IAsyncDisposable
 {
     private const int MaxToolsListPages = 32;
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(60);
-    private readonly McpProcessTransport _transport;
+    private readonly IMcpTransport _transport;
 
     private readonly McpJsonSerializerContext _json;
 
@@ -28,7 +28,7 @@ internal sealed class McpClient : IAsyncDisposable
 
     private volatile bool _disposed;
 
-    public McpClient(McpProcessTransport transport, McpJsonSerializerContext? jsonContext = null)
+    public McpClient(IMcpTransport transport, McpJsonSerializerContext? jsonContext = null)
     {
         ArgumentNullException.ThrowIfNull(transport);
         _transport = transport;

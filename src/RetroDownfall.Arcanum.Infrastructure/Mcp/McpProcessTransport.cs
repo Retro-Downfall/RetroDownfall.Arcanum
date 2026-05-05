@@ -30,7 +30,7 @@ public readonly record struct McpInboundEnvelope(
 /// <summary>
 /// Spawns an MCP server subprocess and exchanges newline-delimited JSON-RPC 2.0 over redirected stdio.
 /// </summary>
-internal sealed class McpProcessTransport : IAsyncDisposable
+internal sealed class McpProcessTransport : IMcpTransport
 {
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
@@ -360,7 +360,7 @@ internal sealed class McpProcessTransport : IAsyncDisposable
 
                 try
                 {
-                    McpInboundEnvelope envelope = ParseInbound(line);
+                    McpInboundEnvelope envelope = McpInboundJsonRpc.ParseInbound(line, _json);
 
                     await _inbound.Writer.WriteAsync(envelope, cancellationToken).ConfigureAwait(false);
                 }
@@ -415,72 +415,4 @@ internal sealed class McpProcessTransport : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Parses one line of JSON using only source-generated <see cref="McpJsonSerializerContext"/> metadata.
-    /// </summary>
-    private McpInboundEnvelope ParseInbound(string line)
-    {
-        using JsonDocument doc = JsonDocument.Parse(line);
-
-        return ParseInboundCore(doc.RootElement);
-    }
-
-    private McpInboundEnvelope ParseInboundCore(JsonElement root)
-    {
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            throw new JsonException("Root JSON value must be an object.");
-        }
-
-        bool hasMethod = root.TryGetProperty("method", out _);
-
-        bool hasResult = root.TryGetProperty("result", out _);
-
-        bool hasError = root.TryGetProperty("error", out _);
-
-        bool hasId = root.TryGetProperty("id", out _);
-
-        if (hasResult || hasError)
-        {
-            if (!hasId)
-            {
-                throw new JsonException("JSON-RPC response requires an \"id\" member.");
-            }
-
-            JsonRpcResponse? response = JsonSerializer.Deserialize(root, _json.JsonRpcResponse);
-
-            if (response is null)
-            {
-                throw new JsonException("Failed to deserialize JsonRpcResponse.");
-            }
-
-            return new McpInboundEnvelope(McpInboundKind.Response, response, null, null);
-        }
-
-        if (hasMethod && !hasResult && !hasError)
-        {
-            if (!hasId)
-            {
-                JsonRpcNotification? notification = JsonSerializer.Deserialize(root, _json.JsonRpcNotification);
-
-                if (notification is null)
-                {
-                    throw new JsonException("Failed to deserialize JsonRpcNotification.");
-                }
-
-                return new McpInboundEnvelope(McpInboundKind.Notification, null, notification, null);
-            }
-
-            JsonRpcRequest? request = JsonSerializer.Deserialize(root, _json.JsonRpcRequest);
-
-            if (request is null)
-            {
-                throw new JsonException("Failed to deserialize JsonRpcRequest.");
-            }
-
-            return new McpInboundEnvelope(McpInboundKind.Request, null, null, request);
-        }
-
-        throw new JsonException("Line is not a recognized JSON-RPC response, notification, or request shape.");
-    }
 }
