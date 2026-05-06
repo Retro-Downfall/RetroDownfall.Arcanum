@@ -1,30 +1,6 @@
 {
   "version": "0.2.0",
-  "inputs": [
-    {
-      "id": "arcanumCliVerb",
-      "type": "promptString",
-      "description": "One argv token after the DLL (e.g. look, --help). For multi-token commands (ask, daemon status), pick a dedicated launch configuration or the task “Arcanum: CLI workspace shell”.",
-      "default": "look"
-    }
-  ],
   "configurations": [
-    {
-      "name": "Cli: serve (API on :5001)",
-      "type": "coreclr",
-      "request": "launch",
-      "preLaunchTask": "build-cli",
-      "program": "${workspaceFolder}/src/RetroDownfall.Arcanum.Cli/bin/Debug/net10.0/RetroDownfall.Arcanum.Cli.dll",
-      "args": ["serve"],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "stopAtEntry": false,
-      "justMyCode": false,
-      "logging": {
-        "moduleLoad": false
-      },
-      "suppressJITOptimizations": true
-    },
     {
       "name": "Api.DevHost: slim API",
       "type": "coreclr",
@@ -47,52 +23,32 @@
       }
     },
     {
-      "name": "Cli: ask gets local time (needs API :5001)",
+      "name": "Cli: Interactive Chat (External Terminal)",
       "type": "coreclr",
       "request": "launch",
       "preLaunchTask": "build-cli-wait-api-port",
       "program": "${workspaceFolder}/src/RetroDownfall.Arcanum.Cli/bin/Debug/net10.0/RetroDownfall.Arcanum.Cli.dll",
-      "args": ["ask", "local", "time"],
+      "args": [
+        "chat"
+      ],
       "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
+      "console": "externalTerminal",
       "stopAtEntry": false,
       "justMyCode": false,
+      "suppressJITOptimizations": true,
       "logging": {
         "moduleLoad": false
-      },
-      "suppressJITOptimizations": true
-    },
+      }
+    }
+  ],
+  "compounds": [
     {
-      "name": "Cli: daemon status",
-      "type": "coreclr",
-      "request": "launch",
-      "preLaunchTask": "build-cli",
-      "program": "${workspaceFolder}/src/RetroDownfall.Arcanum.Cli/bin/Debug/net10.0/RetroDownfall.Arcanum.Cli.dll",
-      "args": ["daemon", "status"],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "stopAtEntry": false,
-      "justMyCode": false,
-      "logging": {
-        "moduleLoad": false
-      },
-      "suppressJITOptimizations": true
-    },
-    {
-      "name": "Cli: custom verb (prompt)",
-      "type": "coreclr",
-      "request": "launch",
-      "preLaunchTask": "build-cli",
-      "program": "${workspaceFolder}/src/RetroDownfall.Arcanum.Cli/bin/Debug/net10.0/RetroDownfall.Arcanum.Cli.dll",
-      "args": ["${input:arcanumCliVerb}"],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "stopAtEntry": false,
-      "justMyCode": false,
-      "logging": {
-        "moduleLoad": false
-      },
-      "suppressJITOptimizations": true
+      "name": "Full Stack: API + External Chat",
+      "configurations": [
+        "Api.DevHost: slim API",
+        "Cli: Interactive Chat (External Terminal)"
+      ],
+      "stopAll": true
     }
   ]
 }
