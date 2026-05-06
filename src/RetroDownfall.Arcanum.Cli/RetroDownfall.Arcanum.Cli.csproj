@@ -8,6 +8,8 @@
 
     <IsAotCompatible>true</IsAotCompatible>
 
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+
     <EFOptimizeContext>false</EFOptimizeContext>
 
   </PropertyGroup>

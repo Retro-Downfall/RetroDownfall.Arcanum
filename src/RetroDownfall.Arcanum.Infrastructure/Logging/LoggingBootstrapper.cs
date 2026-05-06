@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Compact;
@@ -17,20 +19,31 @@ public static class LoggingBootstrapper
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "arcanum",
             "logs");
+
         Directory.CreateDirectory(logDirectory);
+
         string logFilePath = Path.Combine(logDirectory, "arcanum-api-.json");
-        services.AddSerilog((_, loggerConfiguration) =>
-            loggerConfiguration
-                .MinimumLevel.Information()
-                .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-                .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
-                .Enrich.FromLogContext()
-                .WriteTo.File(
-                    new CompactJsonFormatter(),
-                    logFilePath,
-                    rollingInterval: RollingInterval.Day,
-                    retainedFileCountLimit: 7,
-                    shared: true));
+
+        services.AddSerilog(
+            (serviceProvider, loggerConfiguration) =>
+            {
+                int retained = ArcanumSettingClamps.RetainedLogFileCount(
+                    serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Host.RetainedLogFileCount);
+
+                _ = loggerConfiguration
+                    .MinimumLevel.Information()
+                    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+                    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
+                    .Enrich.FromLogContext()
+                    .WriteTo.File(
+                        new CompactJsonFormatter(),
+                        logFilePath,
+                        rollingInterval: RollingInterval.Day,
+                        retainedFileCountLimit: retained,
+                        shared: true);
+            });
+
         return services;
     }
 }
+

@@ -14,10 +14,18 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(Error))]
 [JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(AttachedFileDto))]
+[JsonSerializable(typeof(List<AttachedFileDto>))]
 [JsonSerializable(typeof(SubmitHumanResponseRequest))]
 [JsonSerializable(typeof(PatternSnapshot))]
 [JsonSerializable(typeof(DomainType))]
 [JsonSerializable(typeof(IntelligenceEventType))]
 [JsonSerializable(typeof(IntelligenceEvent))]
+[JsonSerializable(typeof(McpServerStatusDto))]
+[JsonSerializable(typeof(WorkspaceArsenalDto))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceArsenalDto>))]
+[JsonSerializable(typeof(Result<WorkspaceArsenalDto>))]
+[JsonSerializable(typeof(List<McpServerStatusDto>))]
+[JsonSerializable(typeof(List<string>))]
 
 public partial class ArcanumJsonContext : JsonSerializerContext;

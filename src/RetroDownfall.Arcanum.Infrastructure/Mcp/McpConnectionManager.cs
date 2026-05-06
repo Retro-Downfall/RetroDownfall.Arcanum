@@ -1,8 +1,12 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -15,20 +19,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// Merged tool lists and spawned processes are cached per workspace for the process lifetime.
 /// </para>
 /// <para>
-/// Spawned MCP clients are grouped by partition: one bucket for the global profile <c>mcp.json</c> and one per workspace root that started a local <c>mcp.json</c>.
-/// Empty or invalid <c>workingDirectory</c> resolves to a sentinel workspace key that reuses global tools only (no extra local partition).
+/// The in-process Arcanum internal MCP server is started once per partition key (including a sentinel when no workspace is set) so <c>ask_human</c> remains available globally.
 /// </para>
 /// </remarks>
-public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, IHumanPromptRegistry humanPromptRegistry)
-    : IAsyncDisposable
+public sealed class McpConnectionManager(
+    ILogger<McpConnectionManager> logger,
+    IHumanPromptRegistry humanPromptRegistry,
+    IOptions<ArcanumSettings> settings) : IAsyncDisposable
 {
+
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
     private const string NoWorkspaceKey = "__arcanum_no_workspace__";
 
-    /// <summary>
-    /// Synthetic <see cref="McpServerConfig"/> for the in-process Arcanum MCP server (not from <c>mcp.json</c>).
-    /// </summary>
     private static readonly McpServerConfig InternalMcpServerConfig = new() { Command = "arcanum-internal" };
 
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
@@ -86,6 +89,90 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
         {
             workspaceLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Returns MCP server rows for the global profile plus the workspace partition (internal + workspace-local servers), in merge order.
+    /// </summary>
+    public async Task<List<McpServerStatusDto>> GetServerStatusesAsync(
+        string workingDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await GetAvailableToolsAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        List<McpServerStatusDto> result = [];
+
+        if (_partitionClients.TryGetValue(GlobalPartitionKey, out McpPartitionClients? globalPartition))
+        {
+            foreach (McpServerMetadata meta in globalPartition.Servers)
+            {
+                result.Add(ToStatusDto(meta));
+            }
+        }
+
+        string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
+
+        if (_partitionClients.TryGetValue(workspaceKey, out McpPartitionClients? workspacePartition))
+        {
+            foreach (McpServerMetadata meta in workspacePartition.Servers)
+            {
+                result.Add(ToStatusDto(meta));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Disposes all MCP clients, clears workspace caches and partition state (without disposing per-workspace <see cref="SemaphoreSlim"/> instances — callers may still be releasing them), resets global bootstrap flags, and immediately re-loads global <c>mcp.json</c>.
+    /// </summary>
+    public async Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            foreach (McpPartitionClients partition in _partitionClients.Values)
+            {
+                foreach (McpClient client in partition.Clients)
+                {
+                    try
+                    {
+                        await client.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Error disposing MCP client instance during reload.");
+                    }
+                }
+            }
+
+            _partitionClients.Clear();
+
+            _mergedToolsByWorkspace.Clear();
+
+            _workspaceInitLocks.Clear();
+
+            _globalInitialized = false;
+
+            _globalFirstByToolName = new(StringComparer.Ordinal);
+
+            _globalSurfaceTools = [];
+        }
+        finally
+        {
+            _globalInitLock.Release();
+        }
+
+        await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
+
+        logger.LogInformation(
+            "MCP connection manager reloaded (workspace hint: {WorkingDirectory}); global re-bootstrapped, all partitions cleared.",
+            string.IsNullOrWhiteSpace(workingDirectory) ? "(empty)" : workingDirectory);
     }
 
     public async ValueTask DisposeAsync()
@@ -154,6 +241,27 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
             "mcp.json");
     }
 
+    private int GetClampedExecuteCommandTimeoutSeconds()
+    {
+        return Math.Clamp(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+    }
+
+    private TimeSpan GetClampedMcpRequestTimeout()
+    {
+        return TimeSpan.FromSeconds(
+            ArcanumSettingClamps.McpRequestTimeoutSeconds(settings.Value.Intelligence.McpRequestTimeoutSeconds));
+    }
+
+    private int GetClampedMcpMaxPaginationPages()
+    {
+        return ArcanumSettingClamps.McpMaxPaginationPages(settings.Value.Intelligence.McpMaxPaginationPages);
+    }
+
+    private int GetClampedListDirectoryMaxPaths()
+    {
+        return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.Value.Intelligence.ListDirectoryMaxPaths);
+    }
+
     private async Task EnsureGlobalLoadedAsync(CancellationToken cancellationToken)
     {
         if (_globalInitialized)
@@ -170,11 +278,11 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
                 return;
             }
 
-            List<McpClient> globalClients = GetOrCreateClientList(GlobalPartitionKey);
+            McpPartitionClients globalPartition = GetOrCreatePartition(GlobalPartitionKey);
+
+            List<McpClient> globalClients = globalPartition.Clients;
 
             List<LoadedMcpTool> tagged = [];
-
-            await StartInternalInProcessServerAsync(globalClients, tagged, cancellationToken).ConfigureAwait(false);
 
             string globalPath = GetGlobalMcpConfigPath();
 
@@ -207,6 +315,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
                     config,
                     logScope: "global",
                     clientsSink: globalClients,
+                    serverMetadataSink: globalPartition.Servers,
                     toolsSink: tagged,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -242,48 +351,93 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
 
     private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(string workspaceKey, CancellationToken cancellationToken)
     {
-        if (workspaceKey == NoWorkspaceKey)
+        McpPartitionClients partition = _partitionClients.GetOrAdd(workspaceKey, static _ => new McpPartitionClients());
+
+        List<LoadedMcpTool> internalTagged = await EnsurePartitionInternalToolsAsync(partition, workspaceKey, cancellationToken).ConfigureAwait(false);
+
+        List<LoadedMcpTool> workspaceLocalTagged = [];
+
+        if (workspaceKey != NoWorkspaceKey)
         {
-            return _globalSurfaceTools;
+            string localPath = Path.Combine(workspaceKey, "mcp.json");
+
+            if (File.Exists(localPath))
+            {
+                McpConfig? localConfig = await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
+
+                if (localConfig?.McpServers is { Count: > 0 })
+                {
+                    await StartServersFromConfigAsync(
+                            localConfig,
+                            logScope: workspaceKey,
+                            clientsSink: partition.Clients,
+                            serverMetadataSink: partition.Servers,
+                            toolsSink: workspaceLocalTagged,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
         }
 
-        string localPath = Path.Combine(workspaceKey, "mcp.json");
+        return MergeInternalProfileAndLocal(internalTagged, workspaceLocalTagged);
+    }
 
-        if (!File.Exists(localPath))
+    private async Task<List<LoadedMcpTool>> EnsurePartitionInternalToolsAsync(
+        McpPartitionClients partition,
+        string workspaceKey,
+        CancellationToken cancellationToken)
+    {
+        if (partition.InternalServerStarted && partition.CachedInternalTools is { } cached)
         {
-            return _globalSurfaceTools;
+            return new List<LoadedMcpTool>(cached);
         }
 
-        McpConfig? localConfig = await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
+        List<LoadedMcpTool> internalTagged = [];
 
-        if (localConfig is null)
-        {
-            return _globalSurfaceTools;
-        }
-
-        if (localConfig.McpServers is null || localConfig.McpServers.Count == 0)
-        {
-            return _globalSurfaceTools;
-        }
-
-        List<McpClient> localClients = GetOrCreateClientList(workspaceKey);
-
-        List<LoadedMcpTool> localTagged = [];
-
-        await StartServersFromConfigAsync(
-                localConfig,
-                logScope: workspaceKey,
-                clientsSink: localClients,
-                toolsSink: localTagged,
+        await StartInternalInProcessServerForPartitionAsync(
+                partition,
+                workspaceKey,
+                internalTagged,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (localTagged.Count == 0)
+        partition.InternalServerStarted = true;
+
+        partition.CachedInternalTools = new List<LoadedMcpTool>(internalTagged);
+
+        return internalTagged;
+    }
+
+    private IReadOnlyList<AITool> MergeInternalProfileAndLocal(
+        IReadOnlyList<LoadedMcpTool> internalTagged,
+        IReadOnlyList<LoadedMcpTool> workspaceLocalTagged)
+    {
+        List<AITool> surface = [];
+
+        Dictionary<string, LoadedMcpTool> mergedByName = new(StringComparer.Ordinal);
+
+        foreach (LoadedMcpTool row in internalTagged)
         {
-            return _globalSurfaceTools;
+            if (mergedByName.TryAdd(row.Tool.Name, row))
+            {
+                surface.Add(row.Tool);
+            }
         }
 
-        return MergeGlobalAndLocal(_globalSurfaceTools, _globalFirstByToolName, localTagged);
+        foreach (KeyValuePair<string, LoadedMcpTool> kv in _globalFirstByToolName)
+        {
+            if (mergedByName.TryAdd(kv.Key, kv.Value))
+            {
+                surface.Add(kv.Value.Tool);
+            }
+        }
+
+        if (workspaceLocalTagged.Count == 0)
+        {
+            return surface;
+        }
+
+        return MergeGlobalAndLocal(surface, mergedByName, workspaceLocalTagged);
     }
 
     private IReadOnlyList<AITool> MergeGlobalAndLocal(
@@ -349,52 +503,96 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
         return merged;
     }
 
-    private List<McpClient> GetOrCreateClientList(string partitionKey)
+    private McpPartitionClients GetOrCreatePartition(string partitionKey)
     {
-        return _partitionClients.GetOrAdd(partitionKey, static _ => new McpPartitionClients()).Clients;
+        return _partitionClients.GetOrAdd(partitionKey, static _ => new McpPartitionClients());
     }
 
-    /// <summary>
-    /// Spawned <see cref="McpClient"/> instances for one partition (global sentinel or a workspace root path).
-    /// </summary>
     private sealed class McpPartitionClients
     {
+
         public List<McpClient> Clients { get; } = [];
+
+        public List<McpServerMetadata> Servers { get; } = [];
+
+        public bool InternalServerStarted { get; set; }
+
+        public IReadOnlyList<LoadedMcpTool>? CachedInternalTools { get; set; }
+
     }
 
-    private async Task StartInternalInProcessServerAsync(
-        List<McpClient> globalClients,
+    private sealed record McpServerMetadata(
+        string ServerName,
+        string Status,
+        List<string> ToolNames,
+        string? ErrorMessage);
+
+    private static McpServerStatusDto ToStatusDto(McpServerMetadata meta)
+    {
+        return new McpServerStatusDto(
+            meta.ServerName,
+            meta.Status,
+            meta.ToolNames.Count,
+            new List<string>(meta.ToolNames),
+            meta.ErrorMessage);
+    }
+
+    private async Task StartInternalInProcessServerForPartitionAsync(
+        McpPartitionClients partition,
+        string workspaceKey,
         List<LoadedMcpTool> tagged,
         CancellationToken cancellationToken)
     {
-        (InProcessMcpTransport transport, ArcanumInternalToolServer server) =
-            InProcessMcpTransport.CreatePair(humanPromptRegistry);
+        int timeoutSeconds = GetClampedExecuteCommandTimeoutSeconds();
 
-        Task serverTask = Task.Run(() => server.RunAsync(CancellationToken.None), CancellationToken.None);
+        TimeSpan executeTimeout = TimeSpan.FromSeconds(timeoutSeconds);
+
+        string? workspaceRoot = workspaceKey == NoWorkspaceKey ? null : workspaceKey;
+
+        int listDirectoryMaxPaths = GetClampedListDirectoryMaxPaths();
+
+        (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
+            humanPromptRegistry,
+            workspaceRoot,
+            executeTimeout,
+            timeoutSeconds,
+            listDirectoryMaxPaths,
+            logger: null);
+
+        Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);
 
         ObserveInternalServerTask(serverTask);
 
         McpClient? client = null;
 
+        List<McpClient> partitionClients = partition.Clients;
+
         try
         {
-            client = new McpClient(transport);
+            client = new McpClient(transport, GetClampedMcpRequestTimeout(), GetClampedMcpMaxPaginationPages());
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
             IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
-            globalClients.Add(client);
+            partitionClients.Add(client);
 
             client = null;
 
             foreach (McpBridgeTool t in tools)
             {
-                tagged.Add(new LoadedMcpTool(t, InternalMcpServerConfig, globalClients[^1]));
+                tagged.Add(new LoadedMcpTool(t, InternalMcpServerConfig, partitionClients[^1]));
             }
 
+            partition.Servers.Add(new McpServerMetadata(
+                "arcanum-internal",
+                "Online",
+                tools.Select(static t => t.Name).ToList(),
+                null));
+
             logger.LogInformation(
-                "Started in-process Arcanum internal MCP server with {ToolCount} tools.",
+                "Started in-process Arcanum internal MCP server for partition {Partition} with {ToolCount} tools.",
+                workspaceKey == NoWorkspaceKey ? "no-workspace" : workspaceKey,
                 tools.Count);
         }
         catch
@@ -445,6 +643,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
         McpConfig config,
         string logScope,
         List<McpClient> clientsSink,
+        List<McpServerMetadata> serverMetadataSink,
         List<LoadedMcpTool> toolsSink,
         CancellationToken cancellationToken)
     {
@@ -482,7 +681,7 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
                         line),
                 };
 
-                client = new McpClient(transport);
+                client = new McpClient(transport, GetClampedMcpRequestTimeout(), GetClampedMcpMaxPaginationPages());
 
                 await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
@@ -497,6 +696,12 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
                     toolsSink.Add(new LoadedMcpTool(t, cfg, clientsSink[^1]));
                 }
 
+                serverMetadataSink.Add(new McpServerMetadata(
+                    serverName,
+                    "Online",
+                    tools.Select(static t => t.Name).ToList(),
+                    null));
+
                 logger.LogInformation(
                     "Started MCP server {ServerName} ({Scope}) with {ToolCount} tools.",
                     serverName,
@@ -510,6 +715,14 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
                     await client.DisposeAsync().ConfigureAwait(false);
                 }
 
+                Exception baseEx = ex.GetBaseException();
+
+                serverMetadataSink.Add(new McpServerMetadata(
+                    serverName,
+                    "Failed",
+                    [],
+                    baseEx.Message));
+
                 logger.LogError(
                     ex,
                     "MCP server {ServerName} ({Scope}) failed to start or list tools; continuing with other servers.",
@@ -520,4 +733,5 @@ public sealed class McpConnectionManager(ILogger<McpConnectionManager> logger, I
     }
 
     private readonly record struct LoadedMcpTool(McpBridgeTool Tool, McpServerConfig Config, McpClient Client);
+
 }

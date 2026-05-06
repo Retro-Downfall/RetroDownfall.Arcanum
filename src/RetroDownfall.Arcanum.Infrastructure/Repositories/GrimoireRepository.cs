@@ -80,21 +80,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
         return (newConversationId, assistantMessageId);
     }
 
-    public Task AppendAssistantContentAsync(
-        Guid assistantMessageId,
-        string tokenChunk,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrEmpty(tokenChunk))
-        {
-            return Task.CompletedTask;
-        }
-
-        return _db.Database.ExecuteSqlInterpolatedAsync(
-            $"""UPDATE "ChatMessages" SET "Content" = IFNULL("Content", '') || {tokenChunk} WHERE "Id" = {assistantMessageId}""",
-            cancellationToken);
-    }
-
     public async Task FinalizeAssistantMessageAsync(
         Guid assistantMessageId,
         string fullContent,

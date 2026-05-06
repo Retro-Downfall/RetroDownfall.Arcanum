@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
@@ -10,4 +12,6 @@ public sealed record PingRequest(
     Guid? ConversationId = null,
     bool DisableMcpTools = false,
     bool CliTerminalFormatting = false,
-    bool UnattendedMode = false);
+    bool UnattendedMode = false,
+    List<AttachedFileDto>? AttachedFiles = null);
+

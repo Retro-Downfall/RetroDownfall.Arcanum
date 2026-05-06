@@ -30,6 +30,8 @@ public sealed class OllamaIntelligenceProvider(
 {
     private const int MaxToolInferenceRounds = 8;
 
+    private static readonly ArcanumLocalTimeTool _localTimeTool = new();
+
     public async Task<Result<string>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
     {
         string prompt = request.Prompt;
@@ -86,7 +88,10 @@ public sealed class OllamaIntelligenceProvider(
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        string? spellWorkspaceRoot = ToolHelpers.TryNormalizeWorkspace(request.WorkingDirectory, out string? spellRoot, out _)
+        string? spellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
+            request.WorkingDirectory,
+            out string? spellRoot,
+            out _)
             ? spellRoot
             : null;
 
@@ -94,11 +99,27 @@ public sealed class OllamaIntelligenceProvider(
             .ScanAsync(spellWorkspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
+        TimeSpan spellPreflight = TimeSpan.FromSeconds(
+            Math.Clamp(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds, 1, 600));
+
+        int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+            settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+        float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+            settings.Value.Intelligence.SemanticRouterTemperature);
+
         ParsedSpell? activeSpell = await SemanticRouter
-            .DetermineActiveSpellAsync(chatClient, prompt, spells, cancellationToken)
+            .DetermineActiveSpellAsync(
+                chatClient,
+                prompt,
+                spells,
+                spellPreflight,
+                routerMaxTokens,
+                routerTemperature,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell);
+        string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell, request.AttachedFiles);
 
         List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -319,7 +340,10 @@ public sealed class OllamaIntelligenceProvider(
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        string? streamSpellWorkspaceRoot = ToolHelpers.TryNormalizeWorkspace(request.WorkingDirectory, out string? streamSpellRoot, out _)
+        string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
+            request.WorkingDirectory,
+            out string? streamSpellRoot,
+            out _)
             ? streamSpellRoot
             : null;
 
@@ -327,11 +351,31 @@ public sealed class OllamaIntelligenceProvider(
             .ScanAsync(streamSpellWorkspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
+        TimeSpan streamSpellPreflight = TimeSpan.FromSeconds(
+            Math.Clamp(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds, 1, 600));
+
+        int streamRouterMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+            settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+        float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+            settings.Value.Intelligence.SemanticRouterTemperature);
+
         ParsedSpell? streamActiveSpell = await SemanticRouter
-            .DetermineActiveSpellAsync(chatClient, prompt, streamSpells, cancellationToken)
+            .DetermineActiveSpellAsync(
+                chatClient,
+                prompt,
+                streamSpells,
+                streamSpellPreflight,
+                streamRouterMaxTokens,
+                streamRouterTemperature,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        string streamBuiltSystemPrompt = SystemPromptBuilder.Build(request, streamCodexContent, streamActiveSpell);
+        string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
+            request,
+            streamCodexContent,
+            streamActiveSpell,
+            request.AttachedFiles);
 
         PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -426,18 +470,6 @@ public sealed class OllamaIntelligenceProvider(
                         }
 
                         _ = accumulator.Append(update.Text);
-
-                        if (assistantMessageId is { } aid)
-                        {
-                            try
-                            {
-                                await grimoire.AppendAssistantContentAsync(aid, update.Text, cancellationToken).ConfigureAwait(false);
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.LogWarning(ex, "Grimoire could not append streaming token for model {ModelName}.", targetModel);
-                            }
-                        }
 
                         yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
                     }
@@ -665,8 +697,6 @@ public sealed class OllamaIntelligenceProvider(
 
         var ordered = conversation.Messages.ToList();
 
-        ordered.Sort(static (a, b) => a.Timestamp.CompareTo(b.Timestamp));
-
         while (ordered.Count > 0
 
             && ordered[^1].Role == MessageRole.Assistant
@@ -700,12 +730,7 @@ public sealed class OllamaIntelligenceProvider(
     {
         string workingDirectory = request.WorkingDirectory;
 
-        List<AITool> tools =
-        [
-            new ArcanumLocalTimeTool(),
-            new LoreSeekerTool(workingDirectory),
-            new RuneExecutorTool(workingDirectory),
-        ];
+        List<AITool> tools = [_localTimeTool];
 
         if (request.DisableMcpTools)
         {

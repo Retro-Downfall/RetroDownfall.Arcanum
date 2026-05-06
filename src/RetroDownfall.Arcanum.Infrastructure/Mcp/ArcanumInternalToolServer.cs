@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -15,139 +16,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed class ArcanumInternalToolServer
 {
-    private const int ListDirectoryMaxItems = 500;
 
-    private const string ListDirectoryTruncationSuffix =
-        "... [TRUNCATED: Max 500 items reached. Please use a more specific path.]";
+    private const string WorkspaceNotConfiguredMessage =
+        "Workspace not configured. This tool requires a valid workspace.";
 
-    private static readonly JsonElement ReadFileChunkSchema = BuildSchema(static w =>
-    {
-        w.WriteString("type", "object");
-
-        w.WriteStartObject("properties");
-
-        WriteStringProperty(w, "path", "Absolute path to the file to read.");
-
-        WriteIntegerProperty(w, "startLine", "1-based inclusive starting line number.");
-
-        WriteIntegerProperty(w, "endLine", "1-based inclusive ending line number.");
-
-        w.WriteEndObject();
-
-        w.WriteStartArray("required");
-
-        w.WriteStringValue("path");
-
-        w.WriteStringValue("startLine");
-
-        w.WriteStringValue("endLine");
-
-        w.WriteEndArray();
-
-        w.WriteBoolean("additionalProperties", false);
-    });
-
-    private static readonly JsonElement ReplaceTextBlockSchema = BuildSchema(static w =>
-    {
-        w.WriteString("type", "object");
-
-        w.WriteStartObject("properties");
-
-        WriteStringProperty(w, "path", "Absolute path to the file to patch.");
-
-        WriteStringProperty(w, "exactSearchText", "Verbatim block of text to locate in the file, including whitespace and newlines.");
-
-        WriteStringProperty(w, "replacementText", "Replacement block of text. May be empty to delete the matched block.");
-
-        w.WriteEndObject();
-
-        w.WriteStartArray("required");
-
-        w.WriteStringValue("path");
-
-        w.WriteStringValue("exactSearchText");
-
-        w.WriteStringValue("replacementText");
-
-        w.WriteEndArray();
-
-        w.WriteBoolean("additionalProperties", false);
-    });
-
-    private static readonly JsonElement ListDirectorySchema = BuildSchema(static w =>
-    {
-        w.WriteString("type", "object");
-
-        w.WriteStartObject("properties");
-
-        WriteStringProperty(w, "path", "Absolute path to the directory to list.");
-
-        WriteBooleanProperty(w, "recursive", "When true, lists entries recursively; node_modules, bin, obj, and .git folders are skipped.");
-
-        w.WriteEndObject();
-
-        w.WriteStartArray("required");
-
-        w.WriteStringValue("path");
-
-        w.WriteEndArray();
-
-        w.WriteBoolean("additionalProperties", false);
-    });
-
-    private static readonly JsonElement ExecuteCommandSchema = BuildSchema(static w =>
-    {
-        w.WriteString("type", "object");
-
-        w.WriteStartObject("properties");
-
-        WriteStringProperty(w, "command", "Executable or binary name (no shell).");
-
-        WriteStringProperty(w, "arguments", "Command-line arguments as a single string (may be empty).");
-
-        WriteStringProperty(
-            w,
-            "workingDirectory",
-            "Optional absolute working directory. When set, must be a rooted path.");
-
-        w.WriteEndObject();
-
-        w.WriteStartArray("required");
-
-        w.WriteStringValue("command");
-
-        w.WriteStringValue("arguments");
-
-        w.WriteEndArray();
-
-        w.WriteBoolean("additionalProperties", false);
-    });
-
-    private static readonly JsonElement AskHumanSchema = BuildSchema(static w =>
-    {
-        w.WriteString("type", "object");
-
-        w.WriteStartObject("properties");
-
-        WriteStringProperty(w, "question", "The question or context to show the human operator.");
-
-        WriteStringProperty(
-            w,
-            "promptId",
-            "Unique correlation id for this prompt. Generate a new random UUID (RFC 4122) for every ask_human call.");
-
-        w.WriteEndObject();
-
-        w.WriteStartArray("required");
-
-        w.WriteStringValue("question");
-
-        w.WriteStringValue("promptId");
-
-        w.WriteEndArray();
-
-        w.WriteBoolean("additionalProperties", false);
-    });
+    private const string PathEscapesSandboxMessage =
+        "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
 
     private readonly ChannelReader<string> _fromClient;
 
@@ -159,10 +33,40 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly ILogger<ArcanumInternalToolServer>? _logger;
 
+    private readonly string? _workspaceRoot;
+
+    private readonly TimeSpan _executeCommandTimeout;
+
+    private readonly int _executeCommandTimeoutSeconds;
+
+    private readonly int _listDirectoryMaxPaths;
+
+    private readonly string _listDirectoryTruncationSuffix;
+
+    private readonly string _listDirectoryToolsListDescription;
+
+    private readonly JsonElement _readFileChunkSchema;
+
+    private readonly JsonElement _replaceTextBlockSchema;
+
+    private readonly JsonElement _writeFileSchema;
+
+    private readonly JsonElement _listDirectorySchema;
+
+    private readonly JsonElement _executeCommandSchema;
+
+    private readonly JsonElement _askHumanSchema;
+
+    private readonly string _executeCommandToolDescription;
+
     internal ArcanumInternalToolServer(
         ChannelReader<string> fromClient,
         ChannelWriter<string> toClient,
         IHumanPromptRegistry humanPromptRegistry,
+        string? workspaceRootNormalizedOrNull,
+        TimeSpan executeCommandTimeout,
+        int executeCommandTimeoutSecondsForDisplay,
+        int listDirectoryMaxPaths,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -171,6 +75,11 @@ internal sealed class ArcanumInternalToolServer
         ArgumentNullException.ThrowIfNull(toClient);
 
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
+
+        if (listDirectoryMaxPaths < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(listDirectoryMaxPaths));
+        }
 
         _fromClient = fromClient;
 
@@ -181,6 +90,38 @@ internal sealed class ArcanumInternalToolServer
         _logger = logger;
 
         _json = jsonContext ?? McpJsonSerializerContext.Default;
+
+        _workspaceRoot = string.IsNullOrWhiteSpace(workspaceRootNormalizedOrNull)
+            ? null
+            : workspaceRootNormalizedOrNull;
+
+        _executeCommandTimeout = executeCommandTimeout;
+
+        _executeCommandTimeoutSeconds = executeCommandTimeoutSecondsForDisplay;
+
+        _listDirectoryMaxPaths = listDirectoryMaxPaths;
+
+        _listDirectoryTruncationSuffix =
+            $"... [TRUNCATED: Max {listDirectoryMaxPaths} items reached. Please use a more specific path.]";
+
+        _listDirectoryToolsListDescription =
+            "Lists files and folders under a path relative to the workspace root. Optional recursion; skips node_modules, bin, obj, and .git; returns at most "
+            + $"{listDirectoryMaxPaths} paths.";
+
+        _readFileChunkSchema = BuildReadFileChunkSchema();
+
+        _replaceTextBlockSchema = BuildReplaceTextBlockSchema();
+
+        _writeFileSchema = BuildWriteFileSchema();
+
+        _listDirectorySchema = BuildListDirectorySchema();
+
+        _executeCommandSchema = BuildExecuteCommandSchema(_executeCommandTimeoutSeconds);
+
+        _askHumanSchema = BuildAskHumanSchema();
+
+        _executeCommandToolDescription =
+            $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout). Optional workingDirectory is relative to the workspace root.";
     }
 
     /// <summary>
@@ -328,34 +269,38 @@ internal sealed class ArcanumInternalToolServer
                 {
                     Name = "read_file_chunk",
                     Description = "Reads a specific range of lines from a file to avoid token exhaustion.",
-                    InputSchema = ReadFileChunkSchema,
+                    InputSchema = _readFileChunkSchema,
                 },
                 new McpToolDefinitionWire
                 {
                     Name = "replace_text_block",
                     Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
-                    InputSchema = ReplaceTextBlockSchema,
+                    InputSchema = _replaceTextBlockSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "write_file",
+                    Description = "Create a new file or completely overwrite an existing file",
+                    InputSchema = _writeFileSchema,
                 },
                 new McpToolDefinitionWire
                 {
                     Name = "list_directory",
-                    Description =
-                        "Lists files and folders under an absolute path. Optional recursion; skips node_modules, bin, obj, and .git; returns at most 500 paths.",
-                    InputSchema = ListDirectorySchema,
+                    Description = _listDirectoryToolsListDescription,
+                    InputSchema = _listDirectorySchema,
                 },
                 new McpToolDefinitionWire
                 {
                     Name = "execute_command",
-                    Description =
-                        "Runs a command without a shell (stdout/stderr captured, 60s timeout, process tree killed on timeout). Requires absolute workingDirectory when set.",
-                    InputSchema = ExecuteCommandSchema,
+                    Description = _executeCommandToolDescription,
+                    InputSchema = _executeCommandSchema,
                 },
                 new McpToolDefinitionWire
                 {
                     Name = "ask_human",
                     Description =
                         "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
-                    InputSchema = AskHumanSchema,
+                    InputSchema = _askHumanSchema,
                 },
             ],
         };
@@ -395,6 +340,7 @@ internal sealed class ArcanumInternalToolServer
         {
             "read_file_chunk" => await ExecuteReadFileChunkAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "replace_text_block" => await ExecuteReplaceTextBlockAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "write_file" => await ExecuteWriteFileAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "execute_command" => await ExecuteCommandAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "ask_human" => await ExecuteAskHumanAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
@@ -454,10 +400,78 @@ internal sealed class ArcanumInternalToolServer
         return new JsonRpcResponse { Id = rpcId, Result = element, Error = null };
     }
 
+    private McpToolsCallResultWire? TryRequireWorkspaceRoot()
+    {
+        if (string.IsNullOrWhiteSpace(_workspaceRoot))
+        {
+            return ToolError(WorkspaceNotConfiguredMessage);
+        }
+
+        return null;
+    }
+
+    private bool TryResolveSandboxedPath(
+        string relativePath,
+        [NotNullWhen(true)] out string? absolutePath,
+        out McpToolsCallResultWire? error)
+    {
+        absolutePath = null;
+
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            error = ToolError("A non-empty relativePath is required.");
+
+            return false;
+        }
+
+        if (Path.IsPathRooted(relativePath))
+        {
+            error = ToolError(
+                $"Paths must be relative to the workspace root; rooted paths are not allowed (got: '{relativePath}').");
+
+            return false;
+        }
+
+        string root = _workspaceRoot!;
+
+        string resolved;
+
+        try
+        {
+            resolved = Path.GetFullPath(Path.Combine(root, relativePath.Trim()));
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            error = ToolError($"Could not resolve relativePath '{relativePath}': {ex.Message}");
+
+            return false;
+        }
+
+        if (!ToolHelpers.IsPathUnderWorkspace(root, resolved))
+        {
+            error = ToolError(PathEscapesSandboxMessage);
+
+            return false;
+        }
+
+        absolutePath = resolved;
+
+        return true;
+    }
+
     private async Task<McpToolsCallResultWire> ExecuteReadFileChunkAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
+        McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         ReadFileChunkParams? args;
 
         try
@@ -469,14 +483,9 @@ internal sealed class ArcanumInternalToolServer
             return ToolError($"Invalid arguments for read_file_chunk: {ex.Message}");
         }
 
-        if (args is null || string.IsNullOrWhiteSpace(args.Path))
+        if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return ToolError("read_file_chunk requires 'path', 'startLine', and 'endLine'.");
-        }
-
-        if (!Path.IsPathRooted(args.Path))
-        {
-            return ToolError($"read_file_chunk requires an absolute path; got: '{args.Path}'.");
+            return ToolError("read_file_chunk requires 'relativePath', 'startLine', and 'endLine'.");
         }
 
         if (args.StartLine < 1 || args.EndLine < args.StartLine)
@@ -485,15 +494,9 @@ internal sealed class ArcanumInternalToolServer
                 $"read_file_chunk requires 1 <= startLine <= endLine; got startLine={args.StartLine}, endLine={args.EndLine}.");
         }
 
-        string absolutePath;
-
-        try
+        if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
-            absolutePath = Path.GetFullPath(args.Path);
-        }
-        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            return ToolError($"read_file_chunk could not resolve path '{args.Path}': {ex.Message}");
+            return resolveErr!;
         }
 
         int take = args.EndLine - args.StartLine + 1;
@@ -544,6 +547,13 @@ internal sealed class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
+        McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         ReplaceTextBlockParams? args;
 
         try
@@ -555,14 +565,9 @@ internal sealed class ArcanumInternalToolServer
             return ToolError($"Invalid arguments for replace_text_block: {ex.Message}");
         }
 
-        if (args is null || string.IsNullOrWhiteSpace(args.Path))
+        if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return ToolError("replace_text_block requires 'path', 'exactSearchText', and 'replacementText'.");
-        }
-
-        if (!Path.IsPathRooted(args.Path))
-        {
-            return ToolError($"replace_text_block requires an absolute path; got: '{args.Path}'.");
+            return ToolError("replace_text_block requires 'relativePath', 'exactSearchText', and 'replacementText'.");
         }
 
         if (args.ExactSearchText.Length == 0)
@@ -570,15 +575,9 @@ internal sealed class ArcanumInternalToolServer
             return ToolError("replace_text_block: 'exactSearchText' must be non-empty.");
         }
 
-        string absolutePath;
-
-        try
+        if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
-            absolutePath = Path.GetFullPath(args.Path);
-        }
-        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            return ToolError($"replace_text_block could not resolve path '{args.Path}': {ex.Message}");
+            return resolveErr!;
         }
 
         string content;
@@ -641,10 +640,90 @@ internal sealed class ArcanumInternalToolServer
         };
     }
 
+    private async Task<McpToolsCallResultWire> ExecuteWriteFileAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+            return gate;
+        }
+
+        WriteFileParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.WriteFileParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for write_file: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
+        {
+            return ToolError("write_file requires 'relativePath' and 'content'.");
+        }
+
+        if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
+        {
+            return resolveErr!;
+        }
+
+        string? parentDir = Path.GetDirectoryName(absolutePath);
+
+        if (!string.IsNullOrEmpty(parentDir))
+        {
+            try
+            {
+                Directory.CreateDirectory(parentDir);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return ToolError($"write_file: access denied creating directory for '{absolutePath}'. {ex.Message}");
+            }
+            catch (IOException ex)
+            {
+                return ToolError($"write_file: I/O error creating directory for '{absolutePath}'. {ex.Message}");
+            }
+        }
+
+        try
+        {
+            await File.WriteAllTextAsync(absolutePath, args.Content, cancellationToken).ConfigureAwait(false);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return ToolError($"write_file: access denied writing '{absolutePath}'. {ex.Message}");
+        }
+        catch (IOException ex)
+        {
+            return ToolError($"write_file: I/O error writing '{absolutePath}'. {ex.Message}");
+        }
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = $"Wrote file '{absolutePath}'." },
+            ],
+            IsError = false,
+        };
+    }
+
     private Task<McpToolsCallResultWire> ExecuteListDirectoryAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
+        McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+            return Task.FromResult(gate);
+        }
+
         ListDirectoryParams? args;
 
         try
@@ -656,25 +735,14 @@ internal sealed class ArcanumInternalToolServer
             return Task.FromResult(ToolError($"Invalid arguments for list_directory: {ex.Message}"));
         }
 
-        if (args is null || string.IsNullOrWhiteSpace(args.Path))
+        if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return Task.FromResult(ToolError("list_directory requires 'path'."));
+            return Task.FromResult(ToolError("list_directory requires 'relativePath'."));
         }
 
-        if (!Path.IsPathRooted(args.Path))
+        if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
-            return Task.FromResult(ToolError($"list_directory requires an absolute path; got: '{args.Path}'."));
-        }
-
-        string absolutePath;
-
-        try
-        {
-            absolutePath = Path.GetFullPath(args.Path);
-        }
-        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            return Task.FromResult(ToolError($"list_directory could not resolve path '{args.Path}': {ex.Message}"));
+            return Task.FromResult(resolveErr!);
         }
 
         try
@@ -691,7 +759,7 @@ internal sealed class ArcanumInternalToolServer
                 return Task.FromResult(ToolError($"list_directory: directory not found: '{absolutePath}'."));
             }
 
-            List<string> lines = new(ListDirectoryMaxItems + 1);
+            List<string> lines = new(_listDirectoryMaxPaths + 1);
 
             bool truncated = false;
 
@@ -733,7 +801,7 @@ internal sealed class ArcanumInternalToolServer
                             continue;
                         }
 
-                        if (lines.Count >= ListDirectoryMaxItems)
+                        if (lines.Count >= _listDirectoryMaxPaths)
                         {
                             truncated = true;
 
@@ -781,7 +849,7 @@ internal sealed class ArcanumInternalToolServer
                         continue;
                     }
 
-                    if (lines.Count >= ListDirectoryMaxItems)
+                    if (lines.Count >= _listDirectoryMaxPaths)
                     {
                         truncated = true;
 
@@ -794,7 +862,7 @@ internal sealed class ArcanumInternalToolServer
 
             if (truncated)
             {
-                lines.Add(ListDirectoryTruncationSuffix);
+                lines.Add(_listDirectoryTruncationSuffix);
             }
 
             string joined = string.Join("\n", lines);
@@ -834,6 +902,13 @@ internal sealed class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
+        McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         ExecuteCommandParams? args;
 
         try
@@ -852,22 +927,33 @@ internal sealed class ArcanumInternalToolServer
 
         string argumentsLine = args.Arguments;
 
-        string? workingDirectory = string.IsNullOrWhiteSpace(args.WorkingDirectory) ? null : args.WorkingDirectory;
+        string root = _workspaceRoot!;
 
-        if (workingDirectory is not null)
+        string workingDir;
+
+        if (string.IsNullOrWhiteSpace(args.WorkingDirectory))
         {
-            if (!Path.IsPathRooted(workingDirectory))
+            workingDir = root;
+        }
+        else
+        {
+            if (Path.IsPathRooted(args.WorkingDirectory))
             {
-                return ToolError($"execute_command requires an absolute workingDirectory when set; got: '{workingDirectory}'.");
+                return ToolError(
+                    "execute_command: workingDirectory must be relative to the workspace root; absolute paths are not allowed.");
             }
 
-            try
+            if (!TryResolveSandboxedPath(args.WorkingDirectory.Trim(), out string? resolvedCwd, out McpToolsCallResultWire? cwdErr))
             {
-                workingDirectory = Path.GetFullPath(workingDirectory);
+                return cwdErr!;
             }
-            catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+
+            workingDir = resolvedCwd;
+
+            if (!Directory.Exists(workingDir))
             {
-                return ToolError($"execute_command could not resolve workingDirectory '{args.WorkingDirectory}': {ex.Message}");
+                return ToolError(
+                    $"execute_command: workingDirectory does not exist or is not a directory: '{args.WorkingDirectory}'.");
             }
         }
 
@@ -884,18 +970,15 @@ internal sealed class ArcanumInternalToolServer
             RedirectStandardError = true,
 
             CreateNoWindow = true,
-        };
 
-        if (workingDirectory is not null)
-        {
-            psi.WorkingDirectory = workingDirectory;
-        }
+            WorkingDirectory = workingDir,
+        };
 
         using Process process = new();
 
         process.StartInfo = psi;
 
-        using CancellationTokenSource timeoutCts = new(TimeSpan.FromSeconds(60));
+        using CancellationTokenSource timeoutCts = new(_executeCommandTimeout);
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -945,7 +1028,8 @@ internal sealed class ArcanumInternalToolServer
 
             if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                return ToolError("execute_command: the command timed out after 60 seconds.");
+                return ToolError(
+                    $"execute_command: the command timed out after {_executeCommandTimeoutSeconds} seconds.");
             }
 
             if (cancellationToken.IsCancellationRequested)
@@ -1066,6 +1150,191 @@ internal sealed class ArcanumInternalToolServer
         };
     }
 
+    private static JsonElement BuildReadFileChunkSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "relativePath",
+                "Path to the file relative to the workspace root (not an absolute path).");
+
+            WriteIntegerProperty(w, "startLine", "1-based inclusive starting line number.");
+
+            WriteIntegerProperty(w, "endLine", "1-based inclusive ending line number.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("relativePath");
+
+            w.WriteStringValue("startLine");
+
+            w.WriteStringValue("endLine");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildReplaceTextBlockSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "relativePath",
+                "Path to the file relative to the workspace root (not an absolute path).");
+
+            WriteStringProperty(w, "exactSearchText", "Verbatim block of text to locate in the file, including whitespace and newlines.");
+
+            WriteStringProperty(w, "replacementText", "Replacement block of text. May be empty to delete the matched block.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("relativePath");
+
+            w.WriteStringValue("exactSearchText");
+
+            w.WriteStringValue("replacementText");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildWriteFileSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "relativePath",
+                "Path to the file relative to the workspace root (not an absolute path).");
+
+            WriteStringProperty(w, "content", "Full file contents. Replaces the entire file if it already exists.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("relativePath");
+
+            w.WriteStringValue("content");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildListDirectorySchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "relativePath",
+                "Directory path relative to the workspace root (use '.' for the workspace root).");
+
+            WriteBooleanProperty(w, "recursive", "When true, lists entries recursively; node_modules, bin, obj, and .git folders are skipped.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("relativePath");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildExecuteCommandSchema(int timeoutSeconds)
+    {
+        return BuildSchema(w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "command",
+                $"Executable or binary name (no shell). The host enforces a {timeoutSeconds} second timeout.");
+
+            WriteStringProperty(w, "arguments", "Command-line arguments as a single string (may be empty).");
+
+            WriteStringProperty(
+                w,
+                "workingDirectory",
+                "Optional working directory relative to the workspace root. When omitted, the process runs in the workspace root. Must not be an absolute path.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("command");
+
+            w.WriteStringValue("arguments");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildAskHumanSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(w, "question", "The question or context to show the human operator.");
+
+            WriteStringProperty(
+                w,
+                "promptId",
+                "Unique correlation id for this prompt. Generate a new random UUID (RFC 4122) for every ask_human call.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("question");
+
+            w.WriteStringValue("promptId");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
     private static JsonElement BuildSchema(Action<Utf8JsonWriter> writeBody)
     {
         ArrayBufferWriter<byte> buffer = new(512);
@@ -1116,4 +1385,5 @@ internal sealed class ArcanumInternalToolServer
 
         w.WriteEndObject();
     }
+
 }

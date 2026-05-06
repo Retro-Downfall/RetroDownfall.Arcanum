@@ -9,8 +9,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed class McpClient : IAsyncDisposable
 {
-    private const int MaxToolsListPages = 32;
-    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(60);
+    private readonly TimeSpan _defaultRequestTimeout;
+
+    private readonly int _maxToolsListPages;
+
     private readonly IMcpTransport _transport;
 
     private readonly McpJsonSerializerContext _json;
@@ -28,10 +30,25 @@ internal sealed class McpClient : IAsyncDisposable
 
     private volatile bool _disposed;
 
-    public McpClient(IMcpTransport transport, McpJsonSerializerContext? jsonContext = null)
+    public McpClient(
+        IMcpTransport transport,
+        TimeSpan defaultRequestTimeout,
+        int maxToolsListPages,
+        McpJsonSerializerContext? jsonContext = null)
     {
         ArgumentNullException.ThrowIfNull(transport);
+
+        if (maxToolsListPages < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxToolsListPages));
+        }
+
         _transport = transport;
+
+        _defaultRequestTimeout = defaultRequestTimeout;
+
+        _maxToolsListPages = maxToolsListPages;
+
         _json = jsonContext ?? McpJsonSerializerContext.Default;
     }
 
@@ -62,7 +79,7 @@ internal sealed class McpClient : IAsyncDisposable
                 },
             };
             JsonElement initElement = JsonSerializer.SerializeToElement(initParams, _json.McpInitializeParams);
-            _ = await SendRequestAsync("initialize", initElement, cancellationToken, DefaultRequestTimeout)
+            _ = await SendRequestAsync("initialize", initElement, cancellationToken, _defaultRequestTimeout)
                 .ConfigureAwait(false);
             JsonRpcNotification initialized = new()
             {
@@ -89,7 +106,7 @@ internal sealed class McpClient : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
-        TimeSpan timeout = requestTimeout ?? DefaultRequestTimeout;
+        TimeSpan timeout = requestTimeout ?? _defaultRequestTimeout;
         string id = Guid.NewGuid().ToString("N");
         TaskCompletionSource<JsonElement> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!_pending.TryAdd(id, tcs))
@@ -142,14 +159,14 @@ internal sealed class McpClient : IAsyncDisposable
 
         List<McpBridgeTool> tools = [];
         string? cursor = null;
-        for (int page = 0; page < MaxToolsListPages; page++)
+        for (int page = 0; page < _maxToolsListPages; page++)
         {
             JsonElement? listParams = cursor is null
                 ? null
                 : JsonSerializer.SerializeToElement(new McpToolsListParams { Cursor = cursor },
                     _json.McpToolsListParams);
             JsonElement pageResult =
-                await SendRequestAsync("tools/list", listParams, cancellationToken, DefaultRequestTimeout)
+                await SendRequestAsync("tools/list", listParams, cancellationToken, _defaultRequestTimeout)
                     .ConfigureAwait(false);
             if (!pageResult.TryGetProperty("tools", out JsonElement toolsArray) ||
                 toolsArray.ValueKind != JsonValueKind.Array)

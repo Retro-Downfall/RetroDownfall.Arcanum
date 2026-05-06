@@ -1,5 +1,9 @@
 using System.Text;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
+
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -8,7 +12,11 @@ internal static class SystemPromptBuilder
 {
     private const string BasePersona = "You are an autonomous developer assistant running as a local background daemon. You have access to local system tools and must use them when necessary to fulfill the operator's request.";
 
-    internal static string Build(PingRequest request, string? codexContent, ParsedSpell? activeSpell = null)
+    internal static string Build(
+        PingRequest request,
+        string? codexContent,
+        ParsedSpell? activeSpell = null,
+        List<AttachedFileDto>? attachedFiles = null)
     {
         var sb = new StringBuilder(512);
 
@@ -69,6 +77,34 @@ internal static class SystemPromptBuilder
             sb.AppendLine();
 
             sb.Append(activeSpell.FullContent);
+        }
+
+        if (attachedFiles is { Count: > 0 })
+        {
+            sb.AppendLine();
+
+            sb.AppendLine("### Attached Files for this Turn");
+
+            sb.AppendLine();
+
+            foreach (AttachedFileDto attachedFile in attachedFiles)
+            {
+                sb.Append("#### ");
+
+                sb.AppendLine(attachedFile.RelativePath);
+
+                sb.AppendLine();
+
+                sb.AppendLine("```");
+
+                sb.Append(attachedFile.Content);
+
+                sb.AppendLine();
+
+                sb.AppendLine("```");
+
+                sb.AppendLine();
+            }
         }
 
         if (request.CliTerminalFormatting)

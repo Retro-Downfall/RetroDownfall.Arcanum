@@ -176,6 +176,173 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
     }
 
+    public async Task<Result<string>> ReloadMcpAsync(PingRequest request, CancellationToken cancellationToken)
+    {
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<string>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PingRequest);
+
+        using ByteArrayContent content = new(json);
+
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, "api/mcp/reload");
+
+        httpRequest.Content = content;
+
+        _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client
+                .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<string>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (envelope is null)
+                {
+                    return Result<string>.Failure(new Error("Api.InvalidResponse", "Empty or invalid response from API."));
+                }
+
+                if (!envelope.IsSuccess)
+                {
+                    Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
+
+                    return Result<string>.Failure(err);
+                }
+
+                return Result<string>.Success(envelope.Data ?? string.Empty);
+            }
+
+            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<string>.Failure(envelope.Error.Value);
+            }
+
+            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+            return Result<string>.Failure(new Error("Api.HttpError", fallback));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<string>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<string>.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+    }
+
+    public async Task<Result<WorkspaceArsenalDto>> GetWorkspaceArsenalAsync(PingRequest request, CancellationToken cancellationToken)
+    {
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<WorkspaceArsenalDto>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PingRequest);
+
+        using ByteArrayContent content = new(json);
+
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, "api/intelligence/arsenal");
+
+        httpRequest.Content = content;
+
+        _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client
+                .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<WorkspaceArsenalDto>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseWorkspaceArsenalDto);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (envelope is null)
+                {
+                    return Result<WorkspaceArsenalDto>.Failure(new Error("Api.InvalidResponse", "Empty or invalid response from API."));
+                }
+
+                if (!envelope.IsSuccess)
+                {
+                    Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
+
+                    return Result<WorkspaceArsenalDto>.Failure(err);
+                }
+
+                if (envelope.Data is null)
+                {
+                    return Result<WorkspaceArsenalDto>.Failure(new Error("Api.InvalidResponse", "Arsenal payload was empty."));
+                }
+
+                return Result<WorkspaceArsenalDto>.Success(envelope.Data);
+            }
+
+            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<WorkspaceArsenalDto>.Failure(envelope.Error.Value);
+            }
+
+            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+            return Result<WorkspaceArsenalDto>.Failure(new Error("Api.HttpError", fallback));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<WorkspaceArsenalDto>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<WorkspaceArsenalDto>.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+    }
+
     public async IAsyncEnumerable<IntelligenceEvent> AskStreamAsync(
         PingRequest body,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -278,7 +445,16 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                     continue;
                 }
 
-                IntelligenceEvent? item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent);
+                IntelligenceEvent? item;
+
+                try
+                {
+                    item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent);
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
 
                 if (item is not null)
                 {

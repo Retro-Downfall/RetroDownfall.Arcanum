@@ -154,8 +154,8 @@ public sealed record McpToolsCallResultWire
 /// </summary>
 public sealed record ReadFileChunkParams
 {
-    [JsonPropertyName("path")]
-    public required string Path { get; init; }
+    [JsonPropertyName("relativePath")]
+    public required string RelativePath { get; init; }
 
     [JsonPropertyName("startLine")]
     public required int StartLine { get; init; }
@@ -169,8 +169,8 @@ public sealed record ReadFileChunkParams
 /// </summary>
 public sealed record ReplaceTextBlockParams
 {
-    [JsonPropertyName("path")]
-    public required string Path { get; init; }
+    [JsonPropertyName("relativePath")]
+    public required string RelativePath { get; init; }
 
     [JsonPropertyName("exactSearchText")]
     public required string ExactSearchText { get; init; }
@@ -180,12 +180,19 @@ public sealed record ReplaceTextBlockParams
 }
 
 /// <summary>
+/// Arguments accepted by the in-process <c>write_file</c> tool.
+/// </summary>
+public sealed record WriteFileParams(
+    [property: JsonPropertyName("relativePath")] string RelativePath,
+    [property: JsonPropertyName("content")] string Content);
+
+/// <summary>
 /// Arguments accepted by the in-process <c>list_directory</c> tool.
 /// </summary>
 public sealed record ListDirectoryParams
 {
-    [JsonPropertyName("path")]
-    public required string Path { get; init; }
+    [JsonPropertyName("relativePath")]
+    public required string RelativePath { get; init; }
 
     [JsonPropertyName("recursive")]
     public bool Recursive { get; init; }

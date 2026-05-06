@@ -31,6 +31,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
     private volatile bool _disposed;
 
+    internal CancellationToken LifetimeCancellation => _lifetimeCts.Token;
+
     internal InProcessMcpTransport(
         ChannelWriter<string> toServer,
         ChannelReader<string> fromServer,
@@ -64,6 +66,10 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     /// </summary>
     public static (InProcessMcpTransport Transport, ArcanumInternalToolServer Server) CreatePair(
         IHumanPromptRegistry humanPromptRegistry,
+        string? workspaceRootNormalizedOrNull,
+        TimeSpan executeCommandTimeout,
+        int executeCommandTimeoutSecondsForDisplay,
+        int listDirectoryMaxPaths,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -86,6 +92,10 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             clientToServer.Reader,
             serverToClient.Writer,
             humanPromptRegistry,
+            workspaceRootNormalizedOrNull,
+            executeCommandTimeout,
+            executeCommandTimeoutSecondsForDisplay,
+            listDirectoryMaxPaths,
             logger,
             jsonContext);
 

@@ -1,4 +1,5 @@
 <Solution>
+  <Platform Name="Any CPU" />
 
   <Project Path="src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj" />
 

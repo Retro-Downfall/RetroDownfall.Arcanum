@@ -8,12 +8,14 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 internal static class SemanticRouter
 {
-    private static readonly TimeSpan PreflightTimeout = TimeSpan.FromSeconds(4);
 
     internal static async Task<ParsedSpell?> DetermineActiveSpellAsync(
         IChatClient client,
         string userPrompt,
         IReadOnlyList<ParsedSpell> availableSpells,
+        TimeSpan preflightTimeout,
+        int maxOutputTokens,
+        float temperature,
         CancellationToken cancellationToken)
     {
         if (availableSpells.Count == 0)
@@ -50,13 +52,13 @@ internal static class SemanticRouter
 
         var routerOptions = new ChatOptions
         {
-            MaxOutputTokens = 10,
-            Temperature = 0f,
+            MaxOutputTokens = maxOutputTokens,
+            Temperature = temperature,
         };
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        timeoutCts.CancelAfter(PreflightTimeout);
+        timeoutCts.CancelAfter(preflightTimeout);
 
         ChatResponse response;
 

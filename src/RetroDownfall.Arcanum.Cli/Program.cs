@@ -1,10 +1,14 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -34,11 +38,27 @@ internal static class Program
     {
         ServiceCollection services = new();
 
+        ConfigurationManager configuration = new();
+
+        configuration.AddArcanumConfiguration();
+
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
         services.AddDataProtection().SetApplicationName("ArcanumCore");
 
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
 
-        services.AddHttpClient("ArcanumApi", client => client.BaseAddress = new Uri("http://localhost:5001/"));
+        services.AddHttpClient(
+            "ArcanumApi",
+            (serviceProvider, client) =>
+            {
+                int port = ArcanumSettingClamps.HostPort(
+                    serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Host.Port);
+
+                client.BaseAddress = new Uri($"http://localhost:{port}/");
+
+                client.Timeout = Timeout.InfiniteTimeSpan;
+            });
 
         services.AddSingleton<ArcanumApiClient>();
 
@@ -67,7 +87,8 @@ internal static class Program
         app.Configure(config =>
         {
             config.AddCommand<ServeCommand>("serve")
-                .WithDescription("Hosts the Arcanum Minimal API on http://localhost:5001.");
+                .WithDescription(
+                    "Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).");
 
             config.AddCommand<AskCommand>("ask")
                 .WithDescription("Ask the Mage (multi-word prompt: all words after ask, or after --; multi-turn via cli-session; --new for a fresh thread).");

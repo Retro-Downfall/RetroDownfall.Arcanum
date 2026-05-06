@@ -12,6 +12,8 @@
 
     <PublishAot>true</PublishAot>
 
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+
     <!-- Keep false: MSBuild precompiled-query pass fails on some LINQ (e.g. ordered Include); compiled model comes from `dotnet ef dbcontext optimize`. -->
 
     <EFOptimizeContext>false</EFOptimizeContext>

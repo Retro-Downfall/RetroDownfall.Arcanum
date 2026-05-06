@@ -10,11 +10,6 @@ public interface IGrimoireRepository
         string model,
         CancellationToken cancellationToken = default);
 
-    Task AppendAssistantContentAsync(
-        Guid assistantMessageId,
-        string tokenChunk,
-        CancellationToken cancellationToken = default);
-
     Task FinalizeAssistantMessageAsync(
         Guid assistantMessageId,
         string fullContent,

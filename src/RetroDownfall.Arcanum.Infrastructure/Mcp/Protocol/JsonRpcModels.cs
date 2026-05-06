@@ -97,6 +97,7 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(McpToolDefinitionWire[]))]
 [JsonSerializable(typeof(ReadFileChunkParams))]
 [JsonSerializable(typeof(ReplaceTextBlockParams))]
+[JsonSerializable(typeof(WriteFileParams))]
 [JsonSerializable(typeof(ListDirectoryParams))]
 [JsonSerializable(typeof(ExecuteCommandParams))]
 [JsonSerializable(typeof(AskHumanParams))]

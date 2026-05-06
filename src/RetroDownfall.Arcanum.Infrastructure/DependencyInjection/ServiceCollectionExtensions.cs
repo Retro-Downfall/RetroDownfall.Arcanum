@@ -59,9 +59,11 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArcanumInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddArcanumEyeOfTheWorld();
-        services.AddArcanumSerilog();
         services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        services.AddArcanumEyeOfTheWorld();
+
+        services.AddArcanumSerilog();
         services.AddDataProtection().SetApplicationName("ArcanumCore");
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();

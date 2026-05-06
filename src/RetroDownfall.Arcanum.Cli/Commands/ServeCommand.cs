@@ -1,5 +1,8 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using System.Globalization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
@@ -23,22 +26,26 @@ public sealed class ServeCommand : AsyncCommand
 
         builder.Host.UseSystemd();
 
-        builder.WebHost.ConfigureKestrel(static options =>
-        {
-            if (ShouldBindArcanumHostAny())
-            {
-                options.ListenAnyIP(5001);
-            }
-            else
-            {
-                options.ListenLocalhost(5001);
-            }
+        builder.Configuration.AddArcanumConfiguration();
 
-        });
+        builder.WebHost.ConfigureKestrel(
+            (WebHostBuilderContext ctx, KestrelServerOptions options) =>
+            {
+                int configuredPort = ReadConfiguredHostPort(ctx.Configuration);
+
+                int port = ArcanumSettingClamps.HostPort(configuredPort);
+
+                if (ShouldBindArcanumHostAny())
+                {
+                    options.ListenAnyIP(port);
+                }
+                else
+                {
+                    options.ListenLocalhost(port);
+                }
+            });
 
         builder.Logging.ClearProviders();
-
-        builder.Configuration.AddArcanumConfiguration();
 
         builder.Services.AddArcanumApiServices(builder.Configuration);
 
@@ -67,6 +74,20 @@ public sealed class ServeCommand : AsyncCommand
         }
 
         return 0;
+    }
+
+    private static int ReadConfiguredHostPort(IConfiguration configuration)
+    {
+        string? raw = configuration["Arcanum:Host:Port"];
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return new HostSettings().Port;
+        }
+
+        return int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+            ? parsed
+            : new HostSettings().Port;
     }
 
     private static bool ShouldBindArcanumHostAny()

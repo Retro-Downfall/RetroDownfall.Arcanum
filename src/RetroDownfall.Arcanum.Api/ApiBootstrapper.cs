@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
@@ -17,6 +19,8 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Workspace;
 using Scalar.AspNetCore;
 
 namespace RetroDownfall.Arcanum.Api;
@@ -46,11 +50,24 @@ public static class ApiBootstrapper
 
         services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
 
+        services.AddHttpClient(
+            "Ollama",
+            (sp, client) =>
+            {
+                ArcanumSettings settings = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+                client.BaseAddress = new Uri(settings.Ollama.Endpoint);
+
+                client.Timeout = Timeout.InfiniteTimeSpan;
+            });
+
         services.AddScoped<OllamaApiClient>(sp =>
         {
+            IHttpClientFactory factory = sp.GetRequiredService<IHttpClientFactory>();
+
             ArcanumSettings settings = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value;
 
-            return new OllamaApiClient(settings.Ollama.Endpoint, defaultModel: string.Empty);
+            return new OllamaApiClient(factory.CreateClient("Ollama"), settings.Ollama.DefaultModel);
         });
 
         services.AddScoped<IOllamaApiClient>(sp => sp.GetRequiredService<OllamaApiClient>());
@@ -162,23 +179,86 @@ public static class ApiBootstrapper
 
             ArrayBufferWriter<byte> eventBuffer = new(256);
 
-            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(body, ct).ConfigureAwait(false))
+            try
             {
+                await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(body, ct).ConfigureAwait(false))
+                {
+                    eventBuffer.ResetWrittenCount();
+
+                    await using (Utf8JsonWriter jsonWriter = new(eventBuffer))
+                    {
+                        JsonSerializer.Serialize(jsonWriter, ev, ArcanumJsonContext.Default.IntelligenceEvent);
+                    }
+
+                    eventBuffer.Write(NewlineBytes);
+
+                    await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, ct).ConfigureAwait(false);
+
+                    await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                IntelligenceEvent errorEvent = new(IntelligenceEventType.Error, ex.Message);
+
                 eventBuffer.ResetWrittenCount();
 
                 await using (Utf8JsonWriter jsonWriter = new(eventBuffer))
                 {
-                    JsonSerializer.Serialize(jsonWriter, ev, ArcanumJsonContext.Default.IntelligenceEvent);
+                    JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
                 }
 
                 eventBuffer.Write(NewlineBytes);
 
-                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, ct).ConfigureAwait(false);
+                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None).ConfigureAwait(false);
 
-                await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
             }
 
         })
         .WithName("PostIntelligencePingStream");
+
+        apiGroup.MapPost("/mcp/reload", async (PingRequest? body, McpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
+        {
+            string workingDirectory = body?.WorkingDirectory ?? string.Empty;
+
+            await mcp.ReloadAsync(workingDirectory, ct).ConfigureAwait(false);
+
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            Result<string> ok = Result<string>.Success("MCP partitions cleared; global re-bootstrapped.");
+
+            return Results.Ok(ApiResponse<string>.FromResult(ok, traceId));
+        })
+        .WithName("PostMcpReload");
+
+        apiGroup.MapPost("/intelligence/arsenal", async (PingRequest? body, McpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
+        {
+            string workingDirectory = body?.WorkingDirectory ?? string.Empty;
+
+            string? spellRoot = ToolHelpers.TryNormalizeWorkspace(workingDirectory, out string? root, out _)
+                ? root
+                : null;
+
+            IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(spellRoot, ct).ConfigureAwait(false);
+
+            List<string> spellNames = spells.Select(static s => s.Name).ToList();
+
+            List<string> nativeTools = ["GetLocalSystemTime"];
+
+            List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(workingDirectory, ct).ConfigureAwait(false);
+
+            WorkspaceArsenalDto dto = new(spellNames, nativeTools, servers);
+
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            Result<WorkspaceArsenalDto> arsenalOk = Result<WorkspaceArsenalDto>.Success(dto);
+
+            return Results.Ok(ApiResponse<WorkspaceArsenalDto>.FromResult(arsenalOk, traceId));
+        })
+        .WithName("PostIntelligenceArsenal");
     }
 }

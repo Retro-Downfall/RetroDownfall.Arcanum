@@ -1,13 +1,19 @@
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Pattern;
 
-public sealed class EyeOfTheWorldService : IEyeOfTheWorld
+public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : IEyeOfTheWorld
 {
-    private const int MaxFilesToEnumerate = 50_000;
 
-    private const int MaxTocLines = 20;
+    private readonly int _maxEnumerationSteps = ArcanumSettingClamps.MaxEnumerationSteps(
+        settings.Value.Perception.MaxEnumerationSteps);
+
+    private readonly int _maxTocLines = ArcanumSettingClamps.MaxTableOfContentsLines(
+        settings.Value.Perception.MaxTableOfContentsLines);
+
     private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
     {
         "bin",
@@ -20,6 +26,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         "dist",
         "build",
     };
+
     public Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(directoryPath))
@@ -39,6 +46,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
                 [$"Path: directory not found ({root})"]));
         }
         ScanResult scan = ScanWorkspace(root, cancellationToken);
+
         DomainType domain = ClassifyDomain(scan);
         string[] threads = domain == DomainType.Unknown
             ? BuildUnknownToc(scan)
@@ -46,7 +54,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         return Task.FromResult(new PatternSnapshot(domain, root, threads));
     }
 
-    private static ScanResult ScanWorkspace(string root, CancellationToken cancellationToken)
+    private ScanResult ScanWorkspace(string root, CancellationToken cancellationToken)
     {
         ScanResult result = new();
         EnumerationOptions options = new()
@@ -60,7 +68,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
             foreach (string fullPath in Directory.EnumerateFiles(root, "*", options))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (result.EnumerationSteps >= MaxFilesToEnumerate)
+                if (result.EnumerationSteps >= _maxEnumerationSteps)
                 {
                     result.EnumerationTruncated = true;
                     break;
@@ -257,7 +265,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         return DomainType.Unknown;
     }
 
-    private static string[] BuildSignatureToc(ScanResult scan, DomainType domain)
+    private string[] BuildSignatureToc(ScanResult scan, DomainType domain)
     {
         List<string> lines = [];
         void AddBucket(List<string> paths, string labelPrefix)
@@ -282,7 +290,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
             AddBucket(scan.NotesNear, "Note: ");
         }
 
-        if (domain == DomainType.SoftwareEngineering && lines.Count < MaxTocLines)
+        if (domain == DomainType.SoftwareEngineering && lines.Count < _maxTocLines)
         {
             AddBucket(scan.AdminNear, "Document: ");
             AddBucket(scan.NotesNear, "Note: ");
@@ -290,7 +298,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 
         List<string> deduped = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        int lineBudget = scan.EnumerationTruncated ? MaxTocLines - 1 : MaxTocLines;
+        int lineBudget = scan.EnumerationTruncated ? _maxTocLines - 1 : _maxTocLines;
         foreach (string line in lines)
         {
             string key = line[(line.IndexOf(':') + 1)..].TrimStart();
@@ -307,18 +315,18 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 
         if (scan.EnumerationTruncated)
         {
-            deduped.Add($"Scan: truncated after {MaxFilesToEnumerate} files");
+            deduped.Add($"Scan: truncated after {_maxEnumerationSteps} files");
         }
 
         return [.. deduped];
     }
 
-    private static string[] BuildUnknownToc(ScanResult scan)
+    private string[] BuildUnknownToc(ScanResult scan)
     {
         if (scan.AllFiles.Count == 0)
         {
             return scan.EnumerationTruncated
-                ? [$"Scan: truncated after {MaxFilesToEnumerate} files"]
+                ? [$"Scan: truncated after {_maxEnumerationSteps} files"]
                 : ["File: (no files enumerated)"];
         }
 
@@ -330,7 +338,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         });
         List<string> lines = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        int fileBudget = scan.EnumerationTruncated ? MaxTocLines - 1 : MaxTocLines;
+        int fileBudget = scan.EnumerationTruncated ? _maxTocLines - 1 : _maxTocLines;
         foreach (FileRec rec in sorted)
         {
             if (!seen.Add(rec.RelativePath))
@@ -346,7 +354,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 
         if (scan.EnumerationTruncated)
         {
-            lines.Add($"Scan: truncated after {MaxFilesToEnumerate} files");
+            lines.Add($"Scan: truncated after {_maxEnumerationSteps} files");
         }
 
         return [.. lines];
