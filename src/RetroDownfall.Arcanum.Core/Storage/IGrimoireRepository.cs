@@ -40,8 +40,17 @@ public interface IGrimoireRepository
         Guid id,
         CancellationToken cancellationToken = default);
 
+    Task<ConversationDetailDto?> GetConversationDetailAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
+    Task<List<ConversationMessageDto>?> GetConversationMessagesAsync(
+        Guid conversationId,
+        CancellationToken cancellationToken = default);
+
     Task<List<Guid>> GetConversationsNeedingSummarizationAsync(
         int threshold,
+        DateTime idleCutoff,
         CancellationToken cancellationToken = default);
 
     Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default);
@@ -49,6 +58,10 @@ public interface IGrimoireRepository
     Task ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default);
 
     Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default);
+
+    Task<List<LoreDto>> ListLoreAsync(CancellationToken cancellationToken = default);
+
+    Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default);
 
     Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default);
 }

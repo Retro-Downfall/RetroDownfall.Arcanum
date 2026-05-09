@@ -1,13 +1,17 @@
+using System.Diagnostics;
+using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
-using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
-using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -55,6 +59,37 @@ public sealed class ServeCommand : AsyncCommand
         }
 
         WebApplication app = builder.Build();
+
+        app.Use(async (context, next) =>
+        {
+            try
+            {
+                await next(context);
+            }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Unhandled exception on {Method} {Path}", context.Request.Method, context.Request.Path);
+
+                if (!context.Response.HasStarted)
+                {
+                    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+
+                    context.Response.ContentType = "application/json";
+
+                    string traceId = Activity.Current?.Id ?? context.TraceIdentifier;
+
+                    ApiResponse<string> body = new(null, false, new Error("Internal", "An internal error occurred."), traceId);
+
+                    await context.Response.WriteAsJsonAsync(
+                        body,
+                        ArcanumJsonContext.Default.ApiResponseString,
+                        cancellationToken: CancellationToken.None);
+                }
+            }
+        });
 
         app.MapArcanumEndpoints();
 

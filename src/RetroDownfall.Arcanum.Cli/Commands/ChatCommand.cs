@@ -42,6 +42,8 @@ public sealed class ChatCommand(
         "/history",
         "/resume",
         "/delete",
+        "/rest",
+        "/log",
         "/attach",
     };
 
@@ -479,6 +481,81 @@ public sealed class ChatCommand(
             return (true, false);
         }
 
+        if (verb.Equals("/rest", StringComparison.OrdinalIgnoreCase))
+        {
+            Guid? activeConversationId = CliSessionManager.GetLastConversationId();
+
+            if (activeConversationId is null)
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]No active conversation. Send a message first or use /resume to bind a session.[/]");
+
+                return (true, false);
+            }
+
+            Result restResult = await apiClient
+                .RestAsync(activeConversationId.Value, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (restResult.IsFailure)
+            {
+                AnsiConsole.MarkupLine($"[red]{Markup.Escape(restResult.Error.Message)}[/]");
+
+                return (true, false);
+            }
+
+            AnsiConsole.MarkupLine("[grey]Initiating long rest... Memory consolidation queued.[/]");
+
+            AnsiConsole.Write(new Rule().RuleStyle(new Style(foreground: Color.Grey)));
+
+            return (true, false);
+        }
+
+        if (verb.Equals("/log", StringComparison.OrdinalIgnoreCase))
+        {
+            Guid? logConversationId = CliSessionManager.GetLastConversationId();
+
+            if (logConversationId is null)
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]No active conversation. Send a message first or use /resume to bind a session.[/]");
+
+                return (true, false);
+            }
+
+            Result<ConversationDetailDto> logResult = await apiClient
+                .GetConversationAsync(logConversationId.Value, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (logResult.IsFailure)
+            {
+                AnsiConsole.MarkupLine($"[red]{Markup.Escape(logResult.Error.Message)}[/]");
+
+                return (true, false);
+            }
+
+            ConversationDetailDto detail = logResult.Value;
+
+            if (string.IsNullOrWhiteSpace(detail.Summary))
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]No campaign log exists for this session yet. Type /rest to trigger consolidation.[/]");
+
+                return (true, false);
+            }
+
+            Panel logPanel = new(new Markup(Markup.Escape(detail.Summary)))
+            {
+                Header = new PanelHeader("[bold cyan]Campaign Log[/]"),
+                Border = BoxBorder.Rounded,
+                BorderStyle = new Style(foreground: Color.Cyan),
+            };
+
+            AnsiConsole.Write(logPanel);
+
+            return (true, false);
+        }
+
         if (verb.Equals("/attach", StringComparison.OrdinalIgnoreCase))
         {
             RunAttachBrowser(stagedFiles, Environment.CurrentDirectory, MaxAttachFileSizeBytes);
@@ -577,6 +654,10 @@ public sealed class ChatCommand(
         table.AddRow("/resume [cyan]<id>[/]", "Continue a past conversation (full Guid or 8-char hex prefix).");
 
         table.AddRow("/delete [cyan]<id>[/]", "Delete a conversation from Grimoire (full Guid or 8-char prefix).");
+
+        table.AddRow("/rest", "Manually trigger memory consolidation for the current session.");
+
+        table.AddRow("/log", "View the Campaign Log (summarized history) for this session.");
 
         table.AddRow("/model [cyan]<name>[/]", "Override model for subsequent turns.");
 

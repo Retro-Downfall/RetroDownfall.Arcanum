@@ -50,8 +50,7 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFi
 
         Encoding.UTF8.GetBytes(headerValue, headerUtf8);
 
-        if (expectedUtf8.Length != headerUtf8.Length
-            || !CryptographicOperations.FixedTimeEquals(expectedUtf8, headerUtf8))
+        if (!CryptographicOperations.FixedTimeEquals(expectedUtf8, headerUtf8))
         {
             return Unauthorized(context.HttpContext);
         }

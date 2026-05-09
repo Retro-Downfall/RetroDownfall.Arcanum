@@ -72,6 +72,7 @@ public static class ServiceCollectionExtensions
         services.AddDbContext<ArcanumDbContext>();
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
         services.AddSingleton<CampaignLoggerQueue>();
+        services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());
         services.AddHostedService<CampaignLoggerBackgroundService>();
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
         services.AddSingleton<McpConnectionManager>();

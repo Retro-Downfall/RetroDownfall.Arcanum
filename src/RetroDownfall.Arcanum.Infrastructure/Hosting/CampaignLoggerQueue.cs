@@ -1,8 +1,9 @@
 using System.Threading.Channels;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
-internal sealed class CampaignLoggerQueue
+internal sealed class CampaignLoggerQueue : ICampaignLoggerQueue
 {
 
     private readonly Channel<Guid> _channel = Channel.CreateBounded<Guid>(

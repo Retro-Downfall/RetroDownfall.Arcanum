@@ -402,7 +402,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return BuildToolsCallResponse(rpcId, ToolError($"tools/call params were not valid JSON: {ex.Message}"));
+            _logger?.LogError(ex, "tools/call params deserialization failed.");
+
+            return BuildToolsCallResponse(rpcId, ToolError("tools/call params were not valid JSON."));
         }
 
         if (call is null || string.IsNullOrWhiteSpace(call.Name))
@@ -448,7 +450,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for ask_human: {ex.Message}");
+            _logger?.LogError(ex, "ask_human argument deserialization failed.");
+
+            return ToolError("Invalid arguments for ask_human.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Question) || string.IsNullOrWhiteSpace(args.PromptId))
@@ -477,7 +481,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (InvalidOperationException ex)
         {
-            return ToolError(ex.Message);
+            _logger?.LogError(ex, "ask_human registration failed.");
+
+            return ToolError("ask_human: an internal error occurred.");
         }
     }
 
@@ -491,7 +497,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for read_lore: {ex.Message}");
+            _logger?.LogError(ex, "read_lore argument deserialization failed.");
+
+            return ToolError("Invalid arguments for read_lore.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Key))
@@ -542,7 +550,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for scribe_lore: {ex.Message}");
+            _logger?.LogError(ex, "scribe_lore argument deserialization failed.");
+
+            return ToolError("Invalid arguments for scribe_lore.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Key) || string.IsNullOrWhiteSpace(args.Value))
@@ -593,7 +603,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for delete_lore: {ex.Message}");
+            _logger?.LogError(ex, "delete_lore argument deserialization failed.");
+
+            return ToolError("Invalid arguments for delete_lore.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Key))
@@ -648,7 +660,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for search_archives: {ex.Message}");
+            _logger?.LogError(ex, "search_archives argument deserialization failed.");
+
+            return ToolError("Invalid arguments for search_archives.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Query))
@@ -742,7 +756,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
         {
-            error = ToolError($"Could not resolve relativePath '{relativePath}': {ex.Message}");
+            _logger?.LogError(ex, "Path resolution failed for relative path.");
+
+            error = ToolError("Could not resolve the specified relative path.");
 
             return false;
         }
@@ -778,7 +794,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for read_file_chunk: {ex.Message}");
+            _logger?.LogError(ex, "read_file_chunk argument deserialization failed.");
+
+            return ToolError("Invalid arguments for read_file_chunk.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
@@ -814,19 +832,27 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (FileNotFoundException ex)
         {
-            return ToolError($"read_file_chunk: file not found: '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "read_file_chunk: file not found.");
+
+            return ToolError("read_file_chunk: the specified file was not found.");
         }
         catch (DirectoryNotFoundException ex)
         {
-            return ToolError($"read_file_chunk: directory not found for '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "read_file_chunk: directory not found.");
+
+            return ToolError("read_file_chunk: the specified directory was not found.");
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ToolError($"read_file_chunk: access denied reading '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "read_file_chunk: access denied.");
+
+            return ToolError("read_file_chunk: access denied.");
         }
         catch (IOException ex)
         {
-            return ToolError($"read_file_chunk: I/O error reading '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "read_file_chunk: I/O error.");
+
+            return ToolError("read_file_chunk: an I/O error occurred. See server logs.");
         }
 
         string joined = string.Join("\n", selected);
@@ -860,7 +886,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for replace_text_block: {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block argument deserialization failed.");
+
+            return ToolError("Invalid arguments for replace_text_block.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
@@ -886,19 +914,27 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (FileNotFoundException ex)
         {
-            return ToolError($"replace_text_block: file not found: '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block: file not found.");
+
+            return ToolError("replace_text_block: the specified file was not found.");
         }
         catch (DirectoryNotFoundException ex)
         {
-            return ToolError($"replace_text_block: directory not found for '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block: directory not found.");
+
+            return ToolError("replace_text_block: the specified directory was not found.");
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ToolError($"replace_text_block: access denied reading '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block: access denied reading.");
+
+            return ToolError("replace_text_block: access denied.");
         }
         catch (IOException ex)
         {
-            return ToolError($"replace_text_block: I/O error reading '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block: I/O error reading.");
+
+            return ToolError("replace_text_block: an I/O error occurred. See server logs.");
         }
 
         if (!content.Contains(args.ExactSearchText, StringComparison.Ordinal))
@@ -917,11 +953,15 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ToolError($"replace_text_block: access denied writing '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block: access denied writing.");
+
+            return ToolError("replace_text_block: access denied writing.");
         }
         catch (IOException ex)
         {
-            return ToolError($"replace_text_block: I/O error writing '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "replace_text_block: I/O error writing.");
+
+            return ToolError("replace_text_block: an I/O error occurred writing. See server logs.");
         }
 
         string text = occurrences == 1
@@ -957,7 +997,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for write_file: {ex.Message}");
+            _logger?.LogError(ex, "write_file argument deserialization failed.");
+
+            return ToolError("Invalid arguments for write_file.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
@@ -980,11 +1022,15 @@ internal sealed class ArcanumInternalToolServer
             }
             catch (UnauthorizedAccessException ex)
             {
-                return ToolError($"write_file: access denied creating directory for '{absolutePath}'. {ex.Message}");
+                _logger?.LogError(ex, "write_file: access denied creating directory.");
+
+                return ToolError("write_file: access denied creating directory.");
             }
             catch (IOException ex)
             {
-                return ToolError($"write_file: I/O error creating directory for '{absolutePath}'. {ex.Message}");
+                _logger?.LogError(ex, "write_file: I/O error creating directory.");
+
+                return ToolError("write_file: an I/O error occurred creating directory. See server logs.");
             }
         }
 
@@ -994,11 +1040,15 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ToolError($"write_file: access denied writing '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "write_file: access denied writing.");
+
+            return ToolError("write_file: access denied.");
         }
         catch (IOException ex)
         {
-            return ToolError($"write_file: I/O error writing '{absolutePath}'. {ex.Message}");
+            _logger?.LogError(ex, "write_file: I/O error writing.");
+
+            return ToolError("write_file: an I/O error occurred. See server logs.");
         }
 
         return new McpToolsCallResultWire
@@ -1030,7 +1080,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return Task.FromResult(ToolError($"Invalid arguments for list_directory: {ex.Message}"));
+            _logger?.LogError(ex, "list_directory argument deserialization failed.");
+
+            return Task.FromResult(ToolError("Invalid arguments for list_directory."));
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
@@ -1081,11 +1133,15 @@ internal sealed class ArcanumInternalToolServer
                     }
                     catch (IOException ex)
                     {
-                        return Task.FromResult(ToolError($"list_directory: I/O error listing '{dir}'. {ex.Message}"));
+                        _logger?.LogError(ex, "list_directory: I/O error listing subdirectory.");
+
+                        return Task.FromResult(ToolError("list_directory: an I/O error occurred. See server logs."));
                     }
                     catch (UnauthorizedAccessException ex)
                     {
-                        return Task.FromResult(ToolError($"list_directory: access denied listing '{dir}'. {ex.Message}"));
+                        _logger?.LogError(ex, "list_directory: access denied listing subdirectory.");
+
+                        return Task.FromResult(ToolError("list_directory: access denied."));
                     }
 
                     foreach (string entry in entries)
@@ -1128,12 +1184,15 @@ internal sealed class ArcanumInternalToolServer
                 }
                 catch (IOException ex)
                 {
-                    return Task.FromResult(ToolError($"list_directory: I/O error listing '{absolutePath}'. {ex.Message}"));
+                    _logger?.LogError(ex, "list_directory: I/O error listing root.");
+
+                    return Task.FromResult(ToolError("list_directory: an I/O error occurred. See server logs."));
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    return Task.FromResult(
-                        ToolError($"list_directory: access denied listing '{absolutePath}'. {ex.Message}"));
+                    _logger?.LogError(ex, "list_directory: access denied listing root.");
+
+                    return Task.FromResult(ToolError("list_directory: access denied."));
                 }
 
                 foreach (string entry in entries)
@@ -1179,17 +1238,21 @@ internal sealed class ArcanumInternalToolServer
         {
             throw;
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException)
         {
-            return Task.FromResult(ToolError($"list_directory: canceled. {ex.Message}"));
+            return Task.FromResult(ToolError("list_directory: operation was canceled."));
         }
         catch (IOException ex)
         {
-            return Task.FromResult(ToolError($"list_directory: I/O error for '{absolutePath}'. {ex.Message}"));
+            _logger?.LogError(ex, "list_directory: I/O error.");
+
+            return Task.FromResult(ToolError("list_directory: an I/O error occurred. See server logs."));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return Task.FromResult(ToolError($"list_directory: access denied for '{absolutePath}'. {ex.Message}"));
+            _logger?.LogError(ex, "list_directory: access denied.");
+
+            return Task.FromResult(ToolError("list_directory: access denied."));
         }
     }
 
@@ -1215,7 +1278,9 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            return ToolError($"Invalid arguments for execute_command: {ex.Message}");
+            _logger?.LogError(ex, "execute_command argument deserialization failed.");
+
+            return ToolError("Invalid arguments for execute_command.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Command))
@@ -1293,23 +1358,31 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (IOException ex)
         {
-            return ToolError($"execute_command: I/O error starting process. {ex.Message}");
+            _logger?.LogError(ex, "execute_command: I/O error starting process.");
+
+            return ToolError("execute_command: failed to start the process.");
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ToolError($"execute_command: access denied starting process. {ex.Message}");
+            _logger?.LogError(ex, "execute_command: access denied starting process.");
+
+            return ToolError("execute_command: access denied starting the process.");
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException)
         {
-            return ToolError($"execute_command: canceled before start completed. {ex.Message}");
+            return ToolError("execute_command: canceled before start completed.");
         }
         catch (InvalidOperationException ex)
         {
-            return ToolError($"execute_command: could not start process. {ex.Message}");
+            _logger?.LogError(ex, "execute_command: could not start process.");
+
+            return ToolError("execute_command: failed to start the process.");
         }
         catch (Win32Exception ex)
         {
-            return ToolError($"execute_command: could not start process. {ex.Message}");
+            _logger?.LogError(ex, "execute_command: could not start process.");
+
+            return ToolError("execute_command: failed to start the process.");
         }
 
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitToken);
@@ -1320,7 +1393,7 @@ internal sealed class ArcanumInternalToolServer
         {
             await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException)
         {
             TryKillProcessEntireTree(process);
 
@@ -1332,10 +1405,10 @@ internal sealed class ArcanumInternalToolServer
 
             if (cancellationToken.IsCancellationRequested)
             {
-                return ToolError($"execute_command: canceled. {ex.Message}");
+                return ToolError("execute_command: canceled.");
             }
 
-            return ToolError($"execute_command: canceled or timed out. {ex.Message}");
+            return ToolError("execute_command: canceled or timed out.");
         }
 
         string stdout;
@@ -1350,15 +1423,19 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (IOException ex)
         {
-            return ToolError($"execute_command: I/O error reading process output. {ex.Message}");
+            _logger?.LogError(ex, "execute_command: I/O error reading process output.");
+
+            return ToolError("execute_command: failed to read process output.");
         }
         catch (UnauthorizedAccessException ex)
         {
-            return ToolError($"execute_command: access denied reading process output. {ex.Message}");
+            _logger?.LogError(ex, "execute_command: access denied reading process output.");
+
+            return ToolError("execute_command: access denied reading process output.");
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException)
         {
-            return ToolError($"execute_command: canceled while reading output. {ex.Message}");
+            return ToolError("execute_command: canceled while reading output.");
         }
 
         StringBuilder text = new();

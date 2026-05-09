@@ -259,6 +259,40 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .ConfigureAwait(false);
     }
 
+    public async Task<ConversationDetailDto?> GetConversationDetailAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        return await _db.Conversations
+            .AsNoTracking()
+            .Where(c => c.Id == id)
+            .Select(c => new ConversationDetailDto(c.Id, c.Title, c.CreatedAt, c.Summary))
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<List<ConversationMessageDto>?> GetConversationMessagesAsync(
+        Guid conversationId,
+        CancellationToken cancellationToken = default)
+    {
+        bool exists = await _db.Conversations
+            .AnyAsync(c => c.Id == conversationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!exists)
+        {
+            return null;
+        }
+
+        return await _db.ChatMessages
+            .AsNoTracking()
+            .Where(m => m.ConversationId == conversationId)
+            .OrderBy(m => m.Timestamp)
+            .Select(m => new ConversationMessageDto(m.Id, m.Role, m.Content, m.ModelUsed, m.Timestamp))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default)
     {
         return await _db.MageSettings
@@ -300,6 +334,26 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .Where(s => s.Key == key)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false) > 0;
+    }
+
+    public async Task<List<LoreDto>> ListLoreAsync(CancellationToken cancellationToken = default)
+    {
+        return await _db.MageSettings
+            .AsNoTracking()
+            .OrderBy(m => m.Key)
+            .Select(m => new LoreDto(m.Key, m.Value, m.UpdatedAt))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default)
+    {
+        return await _db.MageSettings
+            .AsNoTracking()
+            .Where(m => m.Key == key)
+            .Select(m => new LoreDto(m.Key, m.Value, m.UpdatedAt))
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default)
@@ -377,10 +431,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     public async Task<List<Guid>> GetConversationsNeedingSummarizationAsync(
         int threshold,
+        DateTime idleCutoff,
         CancellationToken cancellationToken = default)
     {
         return await _db.Conversations
-            .Where(c => c.Messages.Count(m => m.Timestamp > (c.LastSummarizedMessageAt ?? DateTime.MinValue)) > threshold)
+            .AsNoTracking()
+            .Where(c =>
+                c.Messages.Count(m => m.Timestamp > (c.LastSummarizedMessageAt ?? DateTime.MinValue)) > threshold
+                || (c.Messages.Any(m => m.Timestamp > (c.LastSummarizedMessageAt ?? DateTime.MinValue))
+                    && c.Messages.Max(m => (DateTime?)m.Timestamp) < idleCutoff))
             .Select(c => c.Id)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

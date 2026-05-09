@@ -1,11 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Threading;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
+using RetroDownfall.Arcanum.Cli.Commands.Lore;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -27,6 +27,10 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(InstallCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(UninstallCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(StatusCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreListCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreGetCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreSetCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreDeleteCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ArcanumApiClient))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CliTypeRegistrar))]
     [UnconditionalSuppressMessage(
@@ -80,6 +84,14 @@ internal static class Program
 
         services.AddTransient<StatusCommand>();
 
+        services.AddTransient<LoreListCommand>();
+
+        services.AddTransient<LoreGetCommand>();
+
+        services.AddTransient<LoreSetCommand>();
+
+        services.AddTransient<LoreDeleteCommand>();
+
         CliTypeRegistrar registrar = new(services);
 
         CommandApp app = new(registrar);
@@ -112,6 +124,23 @@ internal static class Program
                 daemon.AddCommand<StatusCommand>("status")
                     .WithDescription("Show whether the Arcanum daemon is running.");
 
+            });
+
+            config.AddBranch("lore", lore =>
+            {
+                lore.SetDescription("Manage Grimoire explicit memory (lore) directly.");
+
+                lore.AddCommand<LoreListCommand>("list")
+                    .WithDescription("List all scribed lore keys.");
+
+                lore.AddCommand<LoreGetCommand>("get")
+                    .WithDescription("Read a specific lore entry by key.");
+
+                lore.AddCommand<LoreSetCommand>("set")
+                    .WithDescription("Create or update a lore entry.");
+
+                lore.AddCommand<LoreDeleteCommand>("delete")
+                    .WithDescription("Delete a lore entry.");
             });
 
         });

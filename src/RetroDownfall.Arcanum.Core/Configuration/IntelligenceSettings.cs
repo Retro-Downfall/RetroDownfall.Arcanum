@@ -25,6 +25,10 @@ public sealed record IntelligenceSettings
 
     public int CampaignLogThreshold { get; init; } = 25;
 
+    public int CampaignLogIdleTimeoutMinutes { get; init; } = 240;
+
+    public int CampaignLogSweepIntervalMinutes { get; init; } = 15;
+
 }
 
 

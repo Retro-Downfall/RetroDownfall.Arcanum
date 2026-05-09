@@ -35,7 +35,9 @@ internal static class SpellScanner
         List<ParsedSpell> globalSpells = [];
         if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
         {
-            globalSpells = await ScanTreeAsync(globalRoot, cancellationToken).ConfigureAwait(false);
+            globalSpells = await Task.Run(
+                () => ScanTreeAsync(globalRoot, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
         }
 
         List<ParsedSpell> localSpells = [];
@@ -53,7 +55,9 @@ internal static class SpellScanner
 
             if (localRoot.Length > 0 && Directory.Exists(localRoot))
             {
-                localSpells = await ScanTreeAsync(localRoot, cancellationToken).ConfigureAwait(false);
+                localSpells = await Task.Run(
+                    () => ScanTreeAsync(localRoot, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 

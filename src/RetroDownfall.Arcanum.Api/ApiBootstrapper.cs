@@ -1,9 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Text.Json;
-using System.Threading;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
@@ -18,6 +16,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Pattern;
+using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
@@ -83,11 +83,11 @@ public static class ApiBootstrapper
 
     public static void MapArcanumEndpoints(this WebApplication app)
     {
-        app.MapOpenApi();
-
-        app.MapScalarApiReference();
-
         var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
+
+        apiGroup.MapOpenApi();
+
+        apiGroup.MapScalarApiReference();
 
         apiGroup.MapGet("/health", (HttpContext httpContext) =>
         {
@@ -272,6 +272,34 @@ public static class ApiBootstrapper
         .WithName("PostIntelligenceArsenal");
 
         apiGroup.MapGet(
+            "/perception/look",
+            async (string? directory, IEyeOfTheWorld eye, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                string path = string.IsNullOrWhiteSpace(directory) ? Environment.CurrentDirectory : directory;
+
+                string resolved = Path.GetFullPath(path);
+
+                if (!Directory.Exists(resolved))
+                {
+                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<PatternSnapshot> invalid = Result<PatternSnapshot>.Failure(
+                        new Error("Perception.InvalidPath", "The specified directory does not exist or is inaccessible."));
+
+                    return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
+                }
+
+                PatternSnapshot snapshot = await eye.PerceivePatternAsync(resolved, cancellationToken).ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<PatternSnapshot> ok = Result<PatternSnapshot>.Success(snapshot);
+
+                return Results.Ok(ApiResponse<PatternSnapshot>.FromResult(ok, traceId));
+            })
+        .WithName("GetPerceptionLook");
+
+        apiGroup.MapGet(
             "/conversations",
             async (int? take, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
             {
@@ -292,6 +320,56 @@ public static class ApiBootstrapper
             })
         .WithName("GetConversations");
 
+        apiGroup.MapGet(
+            "/conversations/{id:guid}",
+            async (Guid id, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                ConversationDetailDto? detail =
+                    await grimoire.GetConversationDetailAsync(id, cancellationToken).ConfigureAwait(false);
+
+                if (detail is null)
+                {
+                    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<ConversationDetailDto> notFound = Result<ConversationDetailDto>.Failure(
+                        new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+
+                    return Results.NotFound(ApiResponse<ConversationDetailDto>.FromResult(notFound, traceId));
+                }
+
+                string okTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<ConversationDetailDto> ok = Result<ConversationDetailDto>.Success(detail);
+
+                return Results.Ok(ApiResponse<ConversationDetailDto>.FromResult(ok, okTraceId));
+            })
+        .WithName("GetConversation");
+
+        apiGroup.MapGet(
+            "/conversations/{id:guid}/messages",
+            async (Guid id, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                List<ConversationMessageDto>? messages =
+                    await grimoire.GetConversationMessagesAsync(id, cancellationToken).ConfigureAwait(false);
+
+                if (messages is null)
+                {
+                    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<List<ConversationMessageDto>> notFound = Result<List<ConversationMessageDto>>.Failure(
+                        new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+
+                    return Results.NotFound(ApiResponse<List<ConversationMessageDto>>.FromResult(notFound, traceId));
+                }
+
+                string okTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<List<ConversationMessageDto>> ok = Result<List<ConversationMessageDto>>.Success(messages);
+
+                return Results.Ok(ApiResponse<List<ConversationMessageDto>>.FromResult(ok, okTraceId));
+            })
+        .WithName("GetConversationMessages");
+
         apiGroup.MapDelete(
             "/conversations/{id:guid}",
             async (Guid id, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
@@ -311,5 +389,143 @@ public static class ApiBootstrapper
                 return Results.NoContent();
             })
         .WithName("DeleteConversation");
+
+        apiGroup.MapPost(
+            "/conversations/{id:guid}/rest",
+            async (Guid id, ICampaignLoggerQueue queue, CancellationToken cancellationToken) =>
+            {
+                await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
+
+                return Results.Accepted();
+            })
+        .WithName("PostConversationRest");
+
+        apiGroup.MapGet(
+            "/lore",
+            async (IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                List<LoreDto> list =
+                    await grimoire.ListLoreAsync(cancellationToken).ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<List<LoreDto>> ok = Result<List<LoreDto>>.Success(list);
+
+                return Results.Ok(ApiResponse<List<LoreDto>>.FromResult(ok, traceId));
+            })
+        .WithName("GetLore");
+
+        apiGroup.MapGet(
+            "/lore/{key}",
+            async (string key, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                string normalizedKey = key.Trim();
+
+                if (normalizedKey.Length == 0 || normalizedKey.Length > 256)
+                {
+                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<LoreDto> invalid = Result<LoreDto>.Failure(
+                        new Error("Validation.InvalidKey", "Key must be between 1 and 256 characters."));
+
+                    return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, badTraceId));
+                }
+
+                LoreDto? lore = await grimoire.GetLoreAsync(normalizedKey, cancellationToken).ConfigureAwait(false);
+
+                if (lore is null)
+                {
+                    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<LoreDto> notFound = Result<LoreDto>.Failure(
+                        new Error("Grimoire.LoreNotFound", "No lore exists with that key."));
+
+                    return Results.NotFound(ApiResponse<LoreDto>.FromResult(notFound, traceId));
+                }
+
+                string okTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<LoreDto> ok = Result<LoreDto>.Success(lore);
+
+                return Results.Ok(ApiResponse<LoreDto>.FromResult(ok, okTraceId));
+            })
+        .WithName("GetLoreByKey");
+
+        apiGroup.MapPost(
+            "/lore",
+            async (HttpContext httpContext, IGrimoireRepository grimoire, CancellationToken cancellationToken) =>
+            {
+                UpsertLoreRequest? body = await httpContext.Request
+                    .ReadFromJsonAsync(ArcanumJsonContext.Default.UpsertLoreRequest, cancellationToken)
+                    .ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                if (body is null
+                    || string.IsNullOrWhiteSpace(body.Key)
+                    || string.IsNullOrWhiteSpace(body.Value))
+                {
+                    Result<LoreDto> invalid = Result<LoreDto>.Failure(
+                        new Error("Validation.InvalidLore", "Key and value are required."));
+
+                    return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
+                }
+
+                string trimmedKey = body.Key.Trim();
+
+                if (trimmedKey.Length > 256)
+                {
+                    Result<LoreDto> invalid = Result<LoreDto>.Failure(
+                        new Error("Validation.InvalidKey", "Key must not exceed 256 characters."));
+
+                    return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
+                }
+
+                await grimoire.ScribeLoreAsync(trimmedKey, body.Value, cancellationToken).ConfigureAwait(false);
+
+                LoreDto? saved = await grimoire.GetLoreAsync(trimmedKey, cancellationToken).ConfigureAwait(false);
+
+                if (saved is null)
+                {
+                    Result<LoreDto> failed = Result<LoreDto>.Failure(
+                        new Error("Grimoire.LorePersistFailed", "Lore was not found after save."));
+
+                    return Results.Json(
+                        ApiResponse<LoreDto>.FromResult(failed, traceId),
+                        ArcanumJsonContext.Default.ApiResponseLoreDto,
+                        statusCode: StatusCodes.Status500InternalServerError);
+                }
+
+                Result<LoreDto> ok = Result<LoreDto>.Success(saved);
+
+                return Results.Ok(ApiResponse<LoreDto>.FromResult(ok, traceId));
+            })
+        .WithName("UpsertLore");
+
+        apiGroup.MapDelete(
+            "/lore/{key}",
+            async (string key, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                string normalizedKey = key.Trim();
+
+                if (normalizedKey.Length == 0 || normalizedKey.Length > 256)
+                {
+                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<bool> invalid = Result<bool>.Failure(
+                        new Error("Validation.InvalidKey", "Key must be between 1 and 256 characters."));
+
+                    return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, badTraceId));
+                }
+
+                bool removed = await grimoire.DeleteLoreAsync(normalizedKey, cancellationToken).ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<bool> ok = Result<bool>.Success(removed);
+
+                return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
+            })
+        .WithName("DeleteLore");
     }
 }

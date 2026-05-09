@@ -8,7 +8,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Until summarization persists <c>Conversation.LastSummarizedMessageAt</c>, the resilience pass may re-enqueue the same ids on every host start when they still exceed the threshold.
+/// Until summarization persists <c>Conversation.LastSummarizedMessageAt</c>, hybrid sweeps may re-enqueue the same ids while they still match the threshold or idle rule.
 /// </summary>
 internal sealed class CampaignLoggerBackgroundService(
     IServiceScopeFactory scopeFactory,
@@ -24,20 +24,87 @@ internal sealed class CampaignLoggerBackgroundService(
 
         int threshold = options.Value.Intelligence.CampaignLogThreshold;
 
-        await using (AsyncServiceScope resilienceScope = scopeFactory.CreateAsyncScope())
+        int sweepMinutes = Math.Max(1, options.Value.Intelligence.CampaignLogSweepIntervalMinutes);
+
+        Task sweepTask = Task.Run(
+            () => RunSweepLoopAsync(threshold, sweepMinutes, stoppingToken),
+            CancellationToken.None);
+
+        Task consumeTask = ConsumeQueueAsync(stoppingToken);
+
+        await Task.WhenAll(sweepTask, consumeTask).ConfigureAwait(false);
+    }
+
+    private async Task RunSweepLoopAsync(int threshold, int sweepMinutes, CancellationToken stoppingToken)
+    {
+        try
         {
-            IGrimoireRepository repository = resilienceScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+            using PeriodicTimer timer = new(TimeSpan.FromMinutes(sweepMinutes));
 
-            List<Guid> ids = await repository
-                .GetConversationsNeedingSummarizationAsync(threshold, stoppingToken)
-                .ConfigureAwait(false);
-
-            foreach (Guid id in ids)
+            try
             {
-                await queue.QueueAsync(id, stoppingToken).ConfigureAwait(false);
+                await RunSweepAsync(threshold, stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                hostLogger.LogError(ex, "Campaign Logger initial sweep failed; will retry on next interval.");
+            }
+
+            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    await RunSweepAsync(threshold, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    hostLogger.LogError(ex, "Campaign Logger sweep iteration failed; will retry on next interval.");
+                }
             }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+    }
 
+    private async Task RunSweepAsync(int threshold, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        int idleMinutes = options.Value.Intelligence.CampaignLogIdleTimeoutMinutes;
+
+        DateTime idleCutoff = DateTime.UtcNow.AddMinutes(-idleMinutes);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IGrimoireRepository repository = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+        List<Guid> ids = await repository
+            .GetConversationsNeedingSummarizationAsync(threshold, idleCutoff, cancellationToken)
+            .ConfigureAwait(false);
+
+        hostLogger.LogInformation(
+            "Campaign Logger sweep executed. Found {Count} sessions to consolidate.",
+            ids.Count);
+
+        foreach (Guid id in ids)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ConsumeQueueAsync(CancellationToken stoppingToken)
+    {
         await foreach (
             Guid conversationId in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))
         {
