@@ -1,6 +1,6 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-public sealed class OllamaSettings
+public sealed record OllamaSettings
 {
     public string Endpoint { get; init; } = "http://localhost:11434";
 

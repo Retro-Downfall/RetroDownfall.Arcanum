@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -69,6 +70,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     public static (InProcessMcpTransport Transport, ArcanumInternalToolServer Server) CreatePair(
         IHumanPromptRegistry humanPromptRegistry,
         IServiceScopeFactory scopeFactory,
+        IUnseenServantPacer pacer,
         string? workspaceRootNormalizedOrNull,
         TimeSpan executeCommandTimeout,
         int executeCommandTimeoutSecondsForDisplay,
@@ -80,6 +82,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
 
         ArgumentNullException.ThrowIfNull(scopeFactory);
+
+        ArgumentNullException.ThrowIfNull(pacer);
 
         ArgumentNullException.ThrowIfNull(intelligenceSettings);
 
@@ -101,6 +105,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             serverToClient.Writer,
             humanPromptRegistry,
             scopeFactory,
+            pacer,
             workspaceRootNormalizedOrNull,
             executeCommandTimeout,
             executeCommandTimeoutSecondsForDisplay,

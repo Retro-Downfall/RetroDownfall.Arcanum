@@ -67,5 +67,12 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(OpenAiDelta))]
 [JsonSerializable(typeof(OpenAiErrorDetail))]
 [JsonSerializable(typeof(OpenAiErrorResponse))]
+[JsonSerializable(typeof(UnseenServantJobStatusDto))]
+[JsonSerializable(typeof(UnseenServantJobStatusDto[]))]
+[JsonSerializable(typeof(AdjustInitiativeRequestDto))]
+[JsonSerializable(typeof(ApiResponse<UnseenServantJobStatusDto[]>))]
+[JsonSerializable(typeof(Result<UnseenServantJobStatusDto[]>))]
+[JsonSerializable(typeof(ApiResponse<UnseenServantJobStatusDto>))]
+[JsonSerializable(typeof(Result<UnseenServantJobStatusDto>))]
 
 public partial class ArcanumJsonContext : JsonSerializerContext;

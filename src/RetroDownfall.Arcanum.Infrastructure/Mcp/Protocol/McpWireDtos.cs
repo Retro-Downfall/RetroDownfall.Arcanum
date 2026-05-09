@@ -235,3 +235,16 @@ public sealed record DeleteLoreParams([property: JsonPropertyName("key")] string
 
 public sealed record SearchArchivesParams([property: JsonPropertyName("query")] string Query);
 
+/// <summary>
+/// Arguments accepted by the in-process <c>adjust_initiative</c> tool (Unseen Servant dynamic polling).
+/// </summary>
+public sealed record AdjustInitiativeArgs
+{
+
+    [JsonPropertyName("job_name")]
+    public required string JobName { get; init; }
+
+    [JsonPropertyName("interval_minutes")]
+    public required int IntervalMinutes { get; init; }
+}
+

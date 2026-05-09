@@ -125,27 +125,44 @@ public sealed class OllamaIntelligenceProvider(
             .ScanAsync(spellWorkspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
-        TimeSpan spellPreflight = TimeSpan.FromSeconds(
-            Math.Clamp(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds, 1, 600));
+        ParsedSpell? activeSpell;
 
-        int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-            settings.Value.Intelligence.SemanticRouterMaxTokens);
+        if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+        {
+            if (!TryResolveOverrideSpell(request.OverrideSpellName, spells, out ParsedSpell? overridePick))
+            {
+                return Result<string>.Failure(
+                    new Error(
+                        "Validation.SpellOverride",
+                        $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
+            }
 
-        float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-            settings.Value.Intelligence.SemanticRouterTemperature);
+            activeSpell = overridePick;
+        }
+        else
+        {
+            TimeSpan spellPreflight = TimeSpan.FromSeconds(
+                ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
 
-        string semanticProbe = GetSemanticRouterUserProbe(request);
+            int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+                settings.Value.Intelligence.SemanticRouterMaxTokens);
 
-        ParsedSpell? activeSpell = await SemanticRouter
-            .DetermineActiveSpellAsync(
-                chatClient,
-                semanticProbe,
-                spells,
-                spellPreflight,
-                routerMaxTokens,
-                routerTemperature,
-                cancellationToken)
-            .ConfigureAwait(false);
+            float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+                settings.Value.Intelligence.SemanticRouterTemperature);
+
+            string semanticProbe = GetSemanticRouterUserProbe(request);
+
+            activeSpell = await SemanticRouter
+                .DetermineActiveSpellAsync(
+                    chatClient,
+                    semanticProbe,
+                    spells,
+                    spellPreflight,
+                    routerMaxTokens,
+                    routerTemperature,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell, request.AttachedFiles);
 
@@ -401,27 +418,45 @@ public sealed class OllamaIntelligenceProvider(
             .ScanAsync(streamSpellWorkspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
-        TimeSpan streamSpellPreflight = TimeSpan.FromSeconds(
-            Math.Clamp(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds, 1, 600));
+        ParsedSpell? streamActiveSpell;
 
-        int streamRouterMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-            settings.Value.Intelligence.SemanticRouterMaxTokens);
+        if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+        {
+            if (!TryResolveOverrideSpell(request.OverrideSpellName, streamSpells, out ParsedSpell? streamOverridePick))
+            {
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name.");
 
-        float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-            settings.Value.Intelligence.SemanticRouterTemperature);
+                yield break;
+            }
 
-        string streamSemanticProbe = GetSemanticRouterUserProbe(request);
+            streamActiveSpell = streamOverridePick;
+        }
+        else
+        {
+            TimeSpan streamSpellPreflight = TimeSpan.FromSeconds(
+                ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
 
-        ParsedSpell? streamActiveSpell = await SemanticRouter
-            .DetermineActiveSpellAsync(
-                chatClient,
-                streamSemanticProbe,
-                streamSpells,
-                streamSpellPreflight,
-                streamRouterMaxTokens,
-                streamRouterTemperature,
-                cancellationToken)
-            .ConfigureAwait(false);
+            int streamRouterMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+                settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+            float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+                settings.Value.Intelligence.SemanticRouterTemperature);
+
+            string streamSemanticProbe = GetSemanticRouterUserProbe(request);
+
+            streamActiveSpell = await SemanticRouter
+                .DetermineActiveSpellAsync(
+                    chatClient,
+                    streamSemanticProbe,
+                    streamSpells,
+                    streamSpellPreflight,
+                    streamRouterMaxTokens,
+                    streamRouterTemperature,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
             request,
@@ -797,6 +832,63 @@ public sealed class OllamaIntelligenceProvider(
         return "\u200b";
     }
 
+    private static bool TryResolveOverrideSpell(
+        string? overrideSpellName,
+        IReadOnlyList<ParsedSpell> spells,
+        out ParsedSpell? matched)
+    {
+        matched = null;
+
+        if (string.IsNullOrWhiteSpace(overrideSpellName))
+        {
+            return false;
+        }
+
+        string needle = overrideSpellName.Trim();
+
+        for (int i = 0; i < spells.Count; i++)
+        {
+            ParsedSpell s = spells[i];
+
+            if (string.Equals(s.Name, needle, StringComparison.OrdinalIgnoreCase))
+            {
+                matched = s;
+
+                return true;
+            }
+
+            string leaf = GetSpellDirectoryLeafName(s.DirectoryPath);
+
+            if (string.Equals(leaf, needle, StringComparison.OrdinalIgnoreCase))
+            {
+                matched = s;
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string GetSpellDirectoryLeafName(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            string trimmed = directoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            return Path.GetFileName(trimmed);
+        }
+        catch (ArgumentException)
+        {
+            return string.Empty;
+        }
+    }
+
     private static List<MeAiChatMessage> BuildInitialMeAiChatMessages(
         PingRequest request,
         Conversation? thread,
@@ -891,7 +983,7 @@ public sealed class OllamaIntelligenceProvider(
 
         if (activeSpell?.AvailableScripts is { Count: > 0 })
         {
-            int sec = Math.Clamp(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+            int sec = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds);
 
             string scriptsRoot = Path.Combine(activeSpell.DirectoryPath, "scripts");
 
@@ -917,7 +1009,7 @@ public sealed class OllamaIntelligenceProvider(
 
     private ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request)
     {
-        int numCtx = settings.Value.Ollama.ContextWindowLimit;
+        int numCtx = ArcanumSettingClamps.ContextWindowLimit(settings.Value.Ollama.ContextWindowLimit);
 
         var options = new ChatOptions();
 

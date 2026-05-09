@@ -17,6 +17,9 @@ public sealed class ArcanumSettings
 
     public SecuritySettings Security { get; init; } = new();
 
+    public DaemonSettings Daemon { get; init; } = new();
+
 }
+
 
 

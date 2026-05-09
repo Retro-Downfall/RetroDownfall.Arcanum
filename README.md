@@ -40,8 +40,8 @@ Settings live in a per-user directory (created on first run):
 
 | OS | Path |
 |----|------|
-| Windows | `%APPDATA%\arcanum\` |
-| macOS | `~/Library/Application Support/arcanum/` |
+| Windows | `%USERPROFILE%\.config\arcanum\` |
+| macOS | `~/.config/arcanum/` |
 | Linux | `~/.config/arcanum/` |
 
 Place an optional `arcanum.json` in that directory. Environment variable override prefix: `ARCANUM_` (double underscores for nesting, e.g. `ARCANUM_Arcanum__Ollama__Endpoint`).
@@ -49,6 +49,7 @@ Place an optional `arcanum.json` in that directory. Environment variable overrid
 | Setting | Purpose |
 |---------|---------|
 | `Arcanum:Host:EnableEnterpriseTelemetry` | When `true`, Serilog also writes structured JSON logs to the console (for log shippers). Rolling JSON file logs are always enabled. |
+| `Arcanum:Daemon:Jobs` | **Unseen Servant**: JSON array of scheduled headless inference jobs when the API host is running. Each object supports `name` (string), `intervalMinutes` (int, clamped 1–10080), `targetSpell` (string: matches a spell’s YAML `name` or the parent folder of `SPELL.md`), and `enabled` (bool, default `true`). Jobs use an empty `WorkingDirectory` so spells resolve from the global spell tree under your Arcanum config directory (`spells/`). **Phase 2 (Adaptive initiative):** while a job runs headlessly, the in-process MCP tool `adjust_initiative` (`job_name`, `interval_minutes`) can change that job’s polling interval for the lifetime of the process; values are clamped to 1–10080 minutes and are not persisted across restarts. The kickoff prompt includes the current effective interval. |
 
 - The Grimoire (`WorkspaceContexts` table) stores JSON `PatternSnapshot` baselines to power Chronosync Reporting.
 
@@ -70,6 +71,16 @@ Minimal example:
     },
     "Cli": {
       "Theme": "SystemDefault"
+    },
+    "Daemon": {
+      "Jobs": [
+        {
+          "name": "Example sweep",
+          "intervalMinutes": 60,
+          "targetSpell": "MySpellFolderName",
+          "enabled": false
+        }
+      ]
     }
   }
 }
@@ -154,6 +165,8 @@ All endpoints require the API key via header `X-Arcanum-Key` or `Authorization: 
 | GET | `/api/lore/{key}` | Get a lore entry |
 | POST | `/api/lore` | Create/update a lore entry |
 | DELETE | `/api/lore/{key}` | Delete a lore entry |
+| GET | `/api/daemon/jobs` | List Unseen Servant daemon jobs (base vs effective interval, enabled flag) |
+| POST | `/api/daemon/jobs/{name}/initiative` | Set dynamic polling interval for a job (`intervalMinutes` in JSON body); returns updated job status |
 | GET | `/api/perception/look?directory={path}` | Remote Eye of the World snapshot |
 | GET | `/api/openapi/v1.json` | OpenAPI specification |
 | GET | `/api/scalar` | Scalar interactive API docs |

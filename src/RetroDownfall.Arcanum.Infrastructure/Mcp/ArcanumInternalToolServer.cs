@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -11,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -36,6 +36,8 @@ internal sealed class ArcanumInternalToolServer
     private readonly IHumanPromptRegistry _humanPrompts;
 
     private readonly IServiceScopeFactory _scopeFactory;
+
+    private readonly IUnseenServantPacer _pacer;
 
     private readonly ILogger<ArcanumInternalToolServer>? _logger;
 
@@ -71,6 +73,8 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly JsonElement _searchArchivesSchema;
 
+    private readonly JsonElement _adjustInitiativeSchema;
+
     private readonly IntelligenceSettings _settings;
 
     private readonly string _executeCommandToolDescription;
@@ -80,6 +84,7 @@ internal sealed class ArcanumInternalToolServer
         ChannelWriter<string> toClient,
         IHumanPromptRegistry humanPromptRegistry,
         IServiceScopeFactory scopeFactory,
+        IUnseenServantPacer pacer,
         string? workspaceRootNormalizedOrNull,
         TimeSpan executeCommandTimeout,
         int executeCommandTimeoutSecondsForDisplay,
@@ -96,6 +101,8 @@ internal sealed class ArcanumInternalToolServer
 
         ArgumentNullException.ThrowIfNull(scopeFactory);
 
+        ArgumentNullException.ThrowIfNull(pacer);
+
         ArgumentNullException.ThrowIfNull(intelligenceSettings);
 
         if (listDirectoryMaxPaths < 1)
@@ -110,6 +117,8 @@ internal sealed class ArcanumInternalToolServer
         _humanPrompts = humanPromptRegistry;
 
         _scopeFactory = scopeFactory;
+
+        _pacer = pacer;
 
         _logger = logger;
 
@@ -153,6 +162,8 @@ internal sealed class ArcanumInternalToolServer
         _deleteLoreSchema = BuildDeleteLoreSchema();
 
         _searchArchivesSchema = BuildSearchArchivesSchema();
+
+        _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
         _executeCommandToolDescription =
             $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout). Optional workingDirectory is relative to the workspace root.";
@@ -329,6 +340,13 @@ internal sealed class ArcanumInternalToolServer
             },
             new McpToolDefinitionWire
             {
+                Name = "adjust_initiative",
+                Description =
+                    "Dynamically adjusts the polling interval (in minutes) for a background Unseen Servant job based on current conditions.",
+                InputSchema = _adjustInitiativeSchema,
+            },
+            new McpToolDefinitionWire
+            {
                 Name = "ask_human",
                 Description =
                     "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
@@ -429,6 +447,7 @@ internal sealed class ArcanumInternalToolServer
             "write_file" => await ExecuteWriteFileAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "execute_command" => await ExecuteCommandAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "adjust_initiative" => await ExecuteAdjustInitiativeAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "ask_human" => await ExecuteAskHumanAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "read_lore" => await ExecuteReadLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
@@ -485,6 +504,50 @@ internal sealed class ArcanumInternalToolServer
 
             return ToolError("ask_human: an internal error occurred.");
         }
+    }
+
+    private Task<McpToolsCallResultWire> ExecuteAdjustInitiativeAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+
+        AdjustInitiativeArgs? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.AdjustInitiativeArgs);
+        }
+        catch (JsonException ex)
+        {
+            _logger?.LogError(ex, "adjust_initiative argument deserialization failed.");
+
+            return Task.FromResult(ToolError("Invalid arguments for adjust_initiative."));
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.JobName))
+        {
+            return Task.FromResult(ToolError("adjust_initiative requires a non-empty 'job_name'."));
+        }
+
+        string jobName = args.JobName.Trim();
+
+        int clamped = ArcanumSettingClamps.UnseenServantIntervalMinutes(args.IntervalMinutes);
+
+        _pacer.SetDynamicInterval(jobName, args.IntervalMinutes);
+
+        string text =
+            $"Unseen Servant job '{jobName}' polling interval set to {clamped} minutes (clamped to allowed range).";
+
+        return Task.FromResult(
+            new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = text },
+                ],
+                IsError = false,
+            });
     }
 
     private async Task<McpToolsCallResultWire> ExecuteReadLoreAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -562,15 +625,13 @@ internal sealed class ArcanumInternalToolServer
 
         string key = args.Key.Trim();
 
-        string value = args.Value.Trim();
-
         try
         {
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             IGrimoireRepository repo = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
 
-            await repo.ScribeLoreAsync(key, value, cancellationToken).ConfigureAwait(false);
+            await repo.ScribeLoreAsync(key, args.Value, cancellationToken).ConfigureAwait(false);
 
             return new McpToolsCallResultWire
             {
@@ -672,7 +733,14 @@ internal sealed class ArcanumInternalToolServer
 
         string query = args.Query.Trim();
 
-        int maxResults = Math.Max(1, _settings.ArchiveSearchMaxResults);
+        int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(_settings.ArchiveSearchMaxQueryLength);
+
+        if (query.Length > maxQueryLen)
+        {
+            query = query[..maxQueryLen];
+        }
+
+        int maxResults = ArcanumSettingClamps.ArchiveSearchMaxResults(_settings.ArchiveSearchMaxResults);
 
         try
         {
@@ -1804,6 +1872,38 @@ internal sealed class ArcanumInternalToolServer
             w.WriteStartArray("required");
 
             w.WriteStringValue("query");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildAdjustInitiativeSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "job_name",
+                "Unseen Servant job name as configured under Arcanum:Daemon:Jobs (the 'name' field).");
+
+            WriteIntegerProperty(
+                w,
+                "interval_minutes",
+                "New polling interval in minutes (clamped by the host to the allowed range).");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("job_name");
+
+            w.WriteStringValue("interval_minutes");
 
             w.WriteEndArray();
 

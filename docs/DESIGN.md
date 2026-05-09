@@ -47,7 +47,7 @@ Package versions are tracked in `.csproj` files (the source of truth). All first
 
 ### 3.4 Configuration reference (`ArcanumSettings`)
 
-Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` (see `README.md`). Environment variables use prefix `ARCANUM_` with nested `__` segments.
+Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` (see `README.md`). The config file lives alongside the Grimoire in `ArcanumPaths.GrimoireDirectory` (`~/.config/arcanum/` on macOS and Linux, `%USERPROFILE%\.config\arcanum\` on Windows). Environment variables use prefix `ARCANUM_` with nested `__` segments.
 
 | Configuration path | Type | Default | Purpose |
 |--------------------|------|---------|---------|
@@ -59,6 +59,7 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Ollama:DefaultModel` | `string` | `llama3.2` | Model id when `PingRequest.model` is omitted. |
 | `Arcanum:Ollama:ContextWindowLimit` | `int` | `8192` | Ollama `num_ctx` and `chat` Mana bar denominator. |
 | `Arcanum:Bureau:Enabled` | `bool` | `false` | Placeholder for future Bureau integration. |
+| `Arcanum:Daemon:Jobs` | array | `[]` | Unseen Servant background jobs (see `README.md`). Each entry: `name`, `intervalMinutes`, `targetSpell`, `enabled` (default `true`). Phase 2: runtime overrides via **`IUnseenServantPacer`** and MCP **`adjust_initiative`** (§5.5.2). |
 | `Arcanum:Intelligence:ExecuteCommandTimeoutSeconds` | `int` | `30` | Hard timeout for MCP `execute_command` and `run_spell_script`. |
 | `Arcanum:Intelligence:SemanticRouterPreflightTimeoutSeconds` | `int` | `15` | Max wait for spell-router preflight call. |
 | `Arcanum:Intelligence:SemanticRouterMaxTokens` | `int` | `50` | Spell-router preflight `MaxOutputTokens`. |
@@ -96,9 +97,9 @@ All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When
 **Namespace areas:**
 
 - **`Primitives/`** — `Error` (readonly record struct), `Result` / `Result<T>` (success/failure with implicit conversions), `ApiResponse<T>` (sealed record wire envelope).
-- **`Configuration/`** — `ArcanumSettings` (root options), `ConfigurationBootstrapper` (loads `arcanum.json` + `ARCANUM_` env vars).
+- **`Configuration/`** — `ArcanumSettings` (root options), `DaemonSettings` / `UnseenServantJob`, `ConfigurationBootstrapper` (loads `arcanum.json` + `ARCANUM_` env vars).
 - **`Security/`** — `ISecretStore` (API key read/write contract; concrete implementation in Infrastructure).
-- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`), `PingRequest` (sealed record carrying `Prompt`, optional `StatelessMessages` as `List<CoreChatMessage>` for stateless multi-turn without Grimoire history, model, workspace path, context snapshot, conversation id, attached files, optional `ChronosyncDelta`, and behavioral flags), `CoreChatMessage`, `IntelligenceEvent` / `IntelligenceEventType`, `AttachedFileDto`.
+- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`), `PingRequest` (sealed record carrying `Prompt`, optional `StatelessMessages` as `List<CoreChatMessage>` for stateless multi-turn without Grimoire history, model, workspace path, context snapshot, conversation id, attached files, optional `ChronosyncDelta`, optional `OverrideSpellName` to load a specific spell without semantic routing, and behavioral flags), `CoreChatMessage`, `IntelligenceEvent` / `IntelligenceEventType`, `AttachedFileDto`.
 - **`Storage/`** — `ArcanumPaths`, POCO entities (`Conversation`, `ChatMessage`, `MageSetting`, `WorkspaceContext`), `IGrimoireRepository`, `ICampaignLoggerQueue`.
 - **`Chronosync/`** — `ChronosyncReport`, `IChronosyncEngine` (temporal workspace delta vs Grimoire baseline).
 - **`Serialization/`** — `GrimoireJsonContext` (source-generated `PatternSnapshot` JSON for Grimoire columns; distinct from Api `ArcanumJsonContext`).
@@ -130,7 +131,7 @@ All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When
 
 All file/directory tools require **relative paths** under the partition workspace root; rooted paths and escapes are rejected. Lore and archive tools resolve `IGrimoireRepository` via `IServiceScopeFactory` per call.
 
-**Other key types:** `AddArcanumInfrastructure` (DI extension wiring all infrastructure services), `AddArcanumEyeOfTheWorld` (narrow registration for perception only), `AddArcanumThemeDetection` (registers `IThemeDetector` → `ThemeDetector`: Windows `AppsUseLightTheme` registry read with `[UnconditionalSuppressMessage("AOT","IL3050")]`, macOS CoreFoundation `CFPreferencesCopyAppValue` for `AppleInterfaceStyle` with `IntPtr`/`CFRelease` string marshalling, Linux `GTK_THEME` / `COLORFGBG` heuristics, dark fallback on failure), `LoggingBootstrapper`, `DataProtectionSecretStore`, `ArcanumMasterKeyBootstrapper`, `GrimoireKeyDerivation`, `ArcanumDbContext` (compiled model), `GrimoireRepository`, `ChronosyncEngine`, `GrimoireDatabaseHostedService`, `CampaignLoggerQueue` / `CampaignLoggerBackgroundService`, `PhysicalWorkspaceScanner`, `EyeOfTheWorldService`, `CodexReader` (cascades global + local `CODEX.md`), `SpellScanner` (discovers `SPELL.md` files with YAML frontmatter, no YamlDotNet).
+**Other key types:** `AddArcanumInfrastructure` (DI extension wiring all infrastructure services, including **`IUnseenServantPacer`** for Unseen Servant interval overrides), `AddArcanumDaemonServices` (`UnseenServantService` — §5.5), `AddArcanumEyeOfTheWorld` (narrow registration for perception only), `AddArcanumThemeDetection` (registers `IThemeDetector` → `ThemeDetector`: Windows `AppsUseLightTheme` registry read with `[UnconditionalSuppressMessage("AOT","IL3050")]`, macOS CoreFoundation `CFPreferencesCopyAppValue` for `AppleInterfaceStyle` with `IntPtr`/`CFRelease` string marshalling, Linux `GTK_THEME` / `COLORFGBG` heuristics, dark fallback on failure), `LoggingBootstrapper`, `DataProtectionSecretStore`, `ArcanumMasterKeyBootstrapper`, `GrimoireKeyDerivation`, `ArcanumDbContext` (compiled model), `GrimoireRepository`, `ChronosyncEngine`, `GrimoireDatabaseHostedService`, `CampaignLoggerQueue` / `CampaignLoggerBackgroundService`, `PhysicalWorkspaceScanner`, `EyeOfTheWorldService`, `CodexReader` (cascades global + local `CODEX.md`), `SpellScanner` (discovers `SPELL.md` files with YAML frontmatter, no YamlDotNet).
 
 **MSBuild:** `IsTrimmable`, `PublishAot` (library signal for IL analysis), `EnableConfigurationBindingGenerator`.
 
@@ -161,6 +162,8 @@ All file/directory tools require **relative paths** under the partition workspac
 | GET | `/api/lore/{key}` | Get lore by key. |
 | POST | `/api/lore` | Upsert lore entry. |
 | DELETE | `/api/lore/{key}` | Delete lore entry. |
+| GET | `/api/daemon/jobs` | List Unseen Servant jobs with base and effective polling intervals. |
+| POST | `/api/daemon/jobs/{name}/initiative` | Set adaptive initiative (dynamic interval) for a job by name; returns updated status. |
 
 All routes return `ApiResponse<T>` envelopes except `POST /v1/chat/completions`, which uses OpenAI-shaped JSON. The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (section 11), including the OpenAPI document and Scalar reference UI on `/api` (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need a valid API key like any other `/api` caller).
 
@@ -223,7 +226,7 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 4. Kestrel: `ListenLocalhost(port)` unless `ARCANUM_HOST_ANY` is set (§7).
 5. `ClearProviders()` so Serilog replaces default logging.
 6. `AddArcanumConfiguration()` loads `arcanum.json` + env vars.
-7. `AddArcanumApiServices(configuration)` registers all services (§8.3).
+7. `AddArcanumApiServices(configuration)` registers all services (§8.3), including `AddArcanumDaemonServices` for the Unseen Servant (§5.5).
 8. `ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync` **before** `Build()`.
 9. `Build()` → `MapArcanumEndpoints()` → `RunAsync()`. `Log.CloseAndFlush()` in `finally`.
 
@@ -257,6 +260,28 @@ Arcanum’s **Session-Based Consolidation model of AI memory** spans two layers:
 #### 5.4.3 Design-time factory (`ArcanumDbContextFactory`)
 
 `IDesignTimeDbContextFactory<ArcanumDbContext>` for `dotnet ef` tooling — uses `ARCANUM_GRIMOIRE_DEV_KEY` (fallback placeholder), a temp-directory database, and a no-op `ISecretStore`.
+
+### 5.5 Unseen Servant
+
+The **Unseen Servant** is a proactive background scheduler for headless inference when the HTTP host is running (`serve` or `Api.DevHost`). `AddArcanumDaemonServices` registers **`UnseenServantService`**, an ASP.NET Core **`BackgroundService`** in Infrastructure.
+
+#### 5.5.1 Phase 1 — schedule and execution
+
+**Schedule:** A **`PeriodicTimer`** ticks every **one minute**. For each configured **`UnseenServantJob`** under `Arcanum:Daemon:Jobs`, the service checks the effective interval in minutes (see §5.5.2; clamped via **`ArcanumSettingClamps.UnseenServantIntervalMinutes`**) against an in-memory **`ConcurrentDictionary`** of last completion times. Jobs are **not** persisted across process restarts: on cold start, every enabled job is treated as due on the **first** tick after startup (no watermark on disk).
+
+**Execution:** Due jobs are dispatched with **`Task.Run`** so long inference does not block the timer loop. A per-key **`_runningJobs`** guard prevents overlapping runs for the same job. Each run creates a **new DI scope** (`IServiceScopeFactory.CreateAsyncScope`), resolves **`IArcanumIntelligenceProvider`**, and calls **`ExecutePromptAsync`** with a kickoff prompt that includes the current effective polling interval, **`UnattendedMode: true`**, **`OverrideSpellName`** set from `targetSpell`, and **`WorkingDirectory`** empty so **`SpellScanner`** discovers global spells under `~/.config/arcanum/spells/`. The host **`stoppingToken`** is passed through to **`ExecutePromptAsync`** so shutdown cancels in-flight work. A **`finally`** block always records **`lastRun`** and clears the running guard so a failing job (for example Ollama unreachable) does not tight-loop every minute.
+
+**Shutdown:** Dispatched `Task.Run` jobs are not tracked in a registry or awaited during `StopAsync`. When the host shuts down, the main timer loop exits and the `stoppingToken` cooperatively cancels in-flight `ExecutePromptAsync` calls. Spawned tasks may run briefly after the loop exits; `RunJobAsync` has comprehensive `catch`/`finally` handling so unobserved exceptions do not leak. This is an intentional simplification — a full task-tracking registry is not justified given the cooperative cancellation path.
+
+**Spell selection:** When **`PingRequest.OverrideSpellName`** is set, **`OllamaIntelligenceProvider`** resolves the spell by frontmatter **`name`** or parent folder name (same convention as spell discovery) and **skips** the **`SemanticRouter`** preflight; otherwise routing behaves as before.
+
+#### 5.5.2 Phase 2 — Adaptive initiative (dynamic polling)
+
+**`IUnseenServantPacer`** (singleton, registered in **`AddArcanumInfrastructure`**) holds process-local interval overrides in a **`ConcurrentDictionary<string, int>`** (`StringComparer.Ordinal`). **`SetDynamicInterval(jobName, intervalMinutes)`** trims `jobName`, clamps **`intervalMinutes`** with **`ArcanumSettingClamps.UnseenServantIntervalMinutes`**, and stores the result under the trimmed job name. **`GetEffectiveInterval(job)`** returns a clamped value: it prefers an override keyed by the composite **`$"{job.Name}\0{job.TargetSpell}"`** (aligned with the scheduler’s per-job tracking key), else an override keyed by trimmed **`job.Name`**, else **`job.IntervalMinutes`**. **`UnseenServantService`** applies the clamp again when computing the wait so scheduling and prompts stay consistent.
+
+**MCP:** The in-process server (**`ArcanumInternalToolServer`**) exposes **`adjust_initiative`** (`job_name`, `interval_minutes`). The server receives **`IUnseenServantPacer`** at construction (singleton, threaded through **`InProcessMcpTransport.CreatePair`** and **`McpConnectionManager`**) and calls **`SetDynamicInterval`** synchronously. Tool arguments deserialize through **`McpJsonSerializerContext`** (**`AdjustInitiativeArgs`**) for Native AOT safety.
+
+**HTTP (Phase 3):** External clients use the same pacer via **`GET /api/daemon/jobs`** (returns **`UnseenServantJobStatusDto[]`**) and **`POST /api/daemon/jobs/{name}/initiative`** with body **`AdjustInitiativeRequestDto`**; responses use **`ArcanumJsonContext`** and the usual **`ApiKeyEndpointFilter`** on `/api`.
 
 ---
 
@@ -303,6 +328,7 @@ public sealed record ApiResponse<T>(T? Data, bool IsSuccess, Error? Error, strin
 `ApiBootstrapper.AddArcanumApiServices(IServiceCollection, IConfiguration)` registers:
 
 - `AddArcanumInfrastructure` (Serilog, options, Data Protection, secrets, Grimoire, workspace, Eye of the World, Chronosync engine, MCP).
+- `AddArcanumDaemonServices` (`UnseenServantService` hosted scheduler; §5.5).
 - `ApiKeyEndpointFilter` (singleton).
 - OpenAPI + JSON options (ArcanumJsonContext at head of resolver chain).
 - Named `HttpClient("Ollama")` with `Timeout = InfiniteTimeSpan`.

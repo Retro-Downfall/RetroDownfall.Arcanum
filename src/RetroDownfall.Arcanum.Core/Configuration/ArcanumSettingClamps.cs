@@ -34,4 +34,21 @@ public static class ArcanumSettingClamps
 
     public static int ArchiveSearchMaxQueryLength(int value) => Math.Clamp(value, 32, 4096);
 
+    public static int UnseenServantIntervalMinutes(int value) => Math.Clamp(value, 1, 10_080);
+
+    public static int CampaignLogThreshold(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int CampaignLogIdleTimeoutMinutes(int value) => Math.Clamp(value, 1, 43_200);
+
+    public static int CampaignLogSweepIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);
+
+    public static int ArchiveSearchMaxResults(int value) => Math.Clamp(value, 1, 100);
+
+    public static int ContextWindowLimit(int value) => Math.Clamp(value, 256, 2_097_152);
+
+    public static int ExecuteCommandTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
+
+    public static int SemanticRouterPreflightTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
+
 }
+

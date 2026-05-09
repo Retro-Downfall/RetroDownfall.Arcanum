@@ -15,5 +15,6 @@ public sealed record PingRequest(
     bool UnattendedMode = false,
     List<AttachedFileDto>? AttachedFiles = null,
     ChronosyncReport? ChronosyncDelta = null,
-    List<CoreChatMessage>? StatelessMessages = null);
+    List<CoreChatMessage>? StatelessMessages = null,
+    string? OverrideSpellName = null);
 

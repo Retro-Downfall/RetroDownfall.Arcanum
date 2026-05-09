@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 internal sealed class CampaignLoggerBackgroundService(
     IServiceScopeFactory scopeFactory,
     CampaignLoggerQueue queue,
-    IOptions<ArcanumSettings> options,
+    IOptionsMonitor<ArcanumSettings> options,
     ILogger<CampaignLoggerBackgroundService> hostLogger)
     : BackgroundService
 {
@@ -23,12 +23,8 @@ internal sealed class CampaignLoggerBackgroundService(
     {
         await Task.Yield();
 
-        int threshold = options.Value.Intelligence.CampaignLogThreshold;
-
-        int sweepMinutes = Math.Max(1, options.Value.Intelligence.CampaignLogSweepIntervalMinutes);
-
         Task sweepTask = Task.Run(
-            () => RunSweepLoopAsync(threshold, sweepMinutes, stoppingToken),
+            () => RunSweepLoopAsync(stoppingToken),
             CancellationToken.None);
 
         Task consumeTask = ConsumeQueueAsync(stoppingToken);
@@ -36,14 +32,20 @@ internal sealed class CampaignLoggerBackgroundService(
         await Task.WhenAll(sweepTask, consumeTask).ConfigureAwait(false);
     }
 
-    private async Task RunSweepLoopAsync(int threshold, int sweepMinutes, CancellationToken stoppingToken)
+    private async Task RunSweepLoopAsync(CancellationToken stoppingToken)
     {
         try
         {
+            int sweepMinutes = ArcanumSettingClamps.CampaignLogSweepIntervalMinutes(
+                options.CurrentValue.Intelligence.CampaignLogSweepIntervalMinutes);
+
             using PeriodicTimer timer = new(TimeSpan.FromMinutes(sweepMinutes));
 
             try
             {
+                int threshold = ArcanumSettingClamps.CampaignLogThreshold(
+                    options.CurrentValue.Intelligence.CampaignLogThreshold);
+
                 await RunSweepAsync(threshold, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -59,6 +61,9 @@ internal sealed class CampaignLoggerBackgroundService(
             {
                 try
                 {
+                    int threshold = ArcanumSettingClamps.CampaignLogThreshold(
+                        options.CurrentValue.Intelligence.CampaignLogThreshold);
+
                     await RunSweepAsync(threshold, stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -80,7 +85,8 @@ internal sealed class CampaignLoggerBackgroundService(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        int idleMinutes = options.Value.Intelligence.CampaignLogIdleTimeoutMinutes;
+        int idleMinutes = ArcanumSettingClamps.CampaignLogIdleTimeoutMinutes(
+            options.CurrentValue.Intelligence.CampaignLogIdleTimeoutMinutes);
 
         DateTime idleCutoff = DateTime.UtcNow.AddMinutes(-idleMinutes);
 
@@ -106,42 +112,52 @@ internal sealed class CampaignLoggerBackgroundService(
 
     private async Task ConsumeQueueAsync(CancellationToken stoppingToken)
     {
-        await foreach (
-            Guid conversationId in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+        try
         {
-            try
+            await foreach (
+                Guid conversationId in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))
             {
-                await using AsyncServiceScope iterationScope = scopeFactory.CreateAsyncScope();
-
-                IGrimoireRepository grimoire =
-                    iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
-
-                if (!await grimoire
-                        .ConversationExistsAsync(conversationId, stoppingToken)
-                        .ConfigureAwait(false))
+                try
                 {
-                    hostLogger.LogWarning(
-                        "Campaign Logger: Conversation {ConversationId} no longer exists; skipping.",
+                    await using AsyncServiceScope iterationScope = scopeFactory.CreateAsyncScope();
+
+                    IGrimoireRepository grimoire =
+                        iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+                    if (!await grimoire
+                            .ConversationExistsAsync(conversationId, stoppingToken)
+                            .ConfigureAwait(false))
+                    {
+                        hostLogger.LogWarning(
+                            "Campaign Logger: Conversation {ConversationId} no longer exists; skipping.",
+                            conversationId);
+
+                        continue;
+                    }
+
+                    await grimoire
+                        .AdvanceCampaignLogWatermarkAsync(conversationId, stoppingToken)
+                        .ConfigureAwait(false);
+
+                    hostLogger.LogInformation(
+                        "Campaign Logger: Advanced campaign log watermark for conversation {ConversationId}.",
                         conversationId);
-
-                    continue;
                 }
-
-                await grimoire
-                    .AdvanceCampaignLogWatermarkAsync(conversationId, stoppingToken)
-                    .ConfigureAwait(false);
-
-                hostLogger.LogInformation(
-                    "Campaign Logger: Advanced campaign log watermark for conversation {ConversationId}.",
-                    conversationId);
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    hostLogger.LogError(
+                        ex,
+                        "Campaign Logger: Failed processing conversation {ConversationId}",
+                        conversationId);
+                }
             }
-            catch (Exception ex)
-            {
-                hostLogger.LogError(
-                    ex,
-                    "Campaign Logger: Failed processing conversation {ConversationId}",
-                    conversationId);
-            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -27,6 +28,7 @@ public sealed class McpConnectionManager(
     ILogger<McpConnectionManager> logger,
     IHumanPromptRegistry humanPromptRegistry,
     IServiceScopeFactory scopeFactory,
+    IUnseenServantPacer pacer,
     IOptions<ArcanumSettings> settings) : IAsyncDisposable
 {
 
@@ -568,6 +570,7 @@ public sealed class McpConnectionManager(
         (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
             humanPromptRegistry,
             scopeFactory,
+            pacer,
             workspaceRoot,
             executeTimeout,
             timeoutSeconds,

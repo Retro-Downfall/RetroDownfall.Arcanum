@@ -11,7 +11,7 @@ public sealed class GrimoireCliInitialization(
 {
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
-    private bool _completed;
+    private volatile bool _completed;
 
     public async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {

@@ -22,6 +22,7 @@ using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
 using Scalar.AspNetCore;
@@ -46,6 +47,8 @@ public static class ApiBootstrapper
         services.AddSingleton<IHumanPromptRegistry, HumanPromptRegistry>();
 
         services.AddArcanumInfrastructure(configuration);
+
+        services.AddArcanumDaemonServices();
 
         services.AddSingleton<ApiKeyEndpointFilter>();
 
@@ -566,5 +569,88 @@ public static class ApiBootstrapper
                 return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
             })
         .WithName("DeleteLore");
+
+        RouteGroupBuilder daemon = apiGroup.MapGroup("/daemon");
+
+        daemon.MapGet(
+            "/jobs",
+            (IOptionsMonitor<ArcanumSettings> settings, IUnseenServantPacer pacer, HttpContext httpContext) =>
+            {
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                UnseenServantJobStatusDto[] dtos = (settings.CurrentValue.Daemon?.Jobs ?? [])
+                    .Select(job => new UnseenServantJobStatusDto(
+                        job.Name,
+                        job.TargetSpell,
+                        job.IntervalMinutes,
+                        pacer.GetEffectiveInterval(job),
+                        job.Enabled))
+                    .ToArray();
+
+                Result<UnseenServantJobStatusDto[]> ok = Result<UnseenServantJobStatusDto[]>.Success(dtos);
+
+                return Results.Ok(ApiResponse<UnseenServantJobStatusDto[]>.FromResult(ok, traceId));
+            })
+        .WithName("GetDaemonJobs");
+
+        daemon.MapPost(
+            "/jobs/{name}/initiative",
+            async (
+                string name,
+                HttpContext httpContext,
+                IUnseenServantPacer pacer,
+                IOptionsMonitor<ArcanumSettings> settings,
+                CancellationToken cancellationToken) =>
+            {
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                AdjustInitiativeRequestDto? body = await httpContext.Request
+                    .ReadFromJsonAsync(ArcanumJsonContext.Default.AdjustInitiativeRequestDto, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (body is null)
+                {
+                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
+                        new Error("Validation.InvalidBody", "Request body is required."));
+
+                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
+                }
+
+                string trimmedName = name.Trim();
+
+                if (trimmedName.Length == 0)
+                {
+                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
+                        new Error("Validation.InvalidJobName", "Job name must not be empty."));
+
+                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
+                }
+
+                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
+
+                UnseenServantJob? configured = (settings.CurrentValue.Daemon?.Jobs ?? []).FirstOrDefault(
+                    job => string.Equals(job.Name.Trim(), trimmedName, StringComparison.Ordinal));
+
+                UnseenServantJob jobForInterval = configured
+                    ?? new UnseenServantJob
+                    {
+                        Name = trimmedName,
+                        TargetSpell = string.Empty,
+                        IntervalMinutes = 60,
+                        Enabled = false,
+                    };
+
+                UnseenServantJobStatusDto dto = new(
+                    jobForInterval.Name,
+                    jobForInterval.TargetSpell,
+                    jobForInterval.IntervalMinutes,
+                    pacer.GetEffectiveInterval(jobForInterval),
+                    jobForInterval.Enabled);
+
+                Result<UnseenServantJobStatusDto> ok = Result<UnseenServantJobStatusDto>.Success(dto);
+
+                return Results.Ok(ApiResponse<UnseenServantJobStatusDto>.FromResult(ok, traceId));
+            })
+        .WithName("PostDaemonJobInitiative");
     }
 }

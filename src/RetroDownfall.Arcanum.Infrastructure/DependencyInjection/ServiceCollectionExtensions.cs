@@ -89,6 +89,16 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Registers the Unseen Servant background scheduler (minute-based headless inference jobs).
+    /// </summary>
+    public static IServiceCollection AddArcanumDaemonServices(this IServiceCollection services)
+    {
+        services.AddHostedService<UnseenServantService>();
+
+        return services;
+    }
+
+    /// <summary>
     /// Registers Serilog file logging, Data Protection, the secret store, encrypted Grimoire database, and workspace scanning.
     /// </summary>
     public static IServiceCollection AddArcanumInfrastructure(this IServiceCollection services, IConfiguration configuration)
@@ -110,6 +120,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());
         services.AddHostedService<CampaignLoggerBackgroundService>();
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
+        services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
         services.AddSingleton<McpConnectionManager>();
         return services;
     }
