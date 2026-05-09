@@ -32,32 +32,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 afterSaveBehavior: PropertySaveBehavior.Throw,
                 sentinel: new Guid("00000000-0000-0000-0000-000000000000"));
 
-            var lastScanned = runtimeEntityType.AddProperty(
-                "LastScanned",
-                typeof(DateTime),
-                propertyInfo: typeof(WorkspaceContext).GetProperty("LastScanned", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                fieldInfo: typeof(WorkspaceContext).GetField("<LastScanned>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                sentinel: new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified));
+            var createdAt = runtimeEntityType.AddProperty(
+                "CreatedAt",
+                typeof(DateTimeOffset),
+                propertyInfo: typeof(WorkspaceContext).GetProperty("CreatedAt", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WorkspaceContext).GetField("<CreatedAt>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)));
 
-            var projectSummary = runtimeEntityType.AddProperty(
-                "ProjectSummary",
+            var serializedSnapshot = runtimeEntityType.AddProperty(
+                "SerializedSnapshot",
                 typeof(string),
-                propertyInfo: typeof(WorkspaceContext).GetProperty("ProjectSummary", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                fieldInfo: typeof(WorkspaceContext).GetField("<ProjectSummary>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+                propertyInfo: typeof(WorkspaceContext).GetProperty("SerializedSnapshot", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WorkspaceContext).GetField("<SerializedSnapshot>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly));
 
-            var rootPath = runtimeEntityType.AddProperty(
-                "RootPath",
+            var workspacePath = runtimeEntityType.AddProperty(
+                "WorkspacePath",
                 typeof(string),
-                propertyInfo: typeof(WorkspaceContext).GetProperty("RootPath", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
-                fieldInfo: typeof(WorkspaceContext).GetField("<RootPath>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                propertyInfo: typeof(WorkspaceContext).GetProperty("WorkspacePath", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(WorkspaceContext).GetField("<WorkspacePath>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 maxLength: 4096);
+            workspacePath.AddAnnotation("Relational:ColumnName", "RootPath");
 
             var key = runtimeEntityType.AddKey(
                 new[] { id });
             runtimeEntityType.SetPrimaryKey(key);
 
             var index = runtimeEntityType.AddIndex(
-                new[] { rootPath });
+                new[] { workspacePath, createdAt });
 
             return runtimeEntityType;
         }

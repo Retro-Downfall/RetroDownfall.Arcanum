@@ -83,9 +83,12 @@ public sealed class ArcanumDbContext(
         {
             entity.ToTable("WorkspaceContexts");
             entity.HasKey(e => e.Id);
-            entity.Property(e => e.RootPath).HasMaxLength(4096).IsRequired();
-            entity.Property(e => e.ProjectSummary).IsRequired();
-            entity.HasIndex(e => e.RootPath);
+            entity.Property(e => e.WorkspacePath)
+                .HasColumnName("RootPath")
+                .HasMaxLength(4096)
+                .IsRequired();
+            entity.Property(e => e.SerializedSnapshot).IsRequired();
+            entity.HasIndex(e => new { e.WorkspacePath, e.CreatedAt });
         });
     }
 }

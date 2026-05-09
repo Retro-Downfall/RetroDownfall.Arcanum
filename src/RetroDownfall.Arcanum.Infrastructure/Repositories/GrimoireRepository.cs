@@ -501,6 +501,25 @@ public sealed class GrimoireRepository : IGrimoireRepository
     public Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         _db.Conversations.AnyAsync(c => c.Id == conversationId, cancellationToken);
 
+    public async Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)
+    {
+        _db.WorkspaceContexts.Add(context);
+
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(
+        string workspacePath,
+        CancellationToken cancellationToken = default)
+    {
+        return await _db.WorkspaceContexts
+            .AsNoTracking()
+            .Where(w => w.WorkspacePath == workspacePath)
+            .OrderByDescending(w => w.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task AdvanceCampaignLogWatermarkAsync(Guid conversationId, CancellationToken cancellationToken = default)
     {
         bool exists = await _db.Conversations

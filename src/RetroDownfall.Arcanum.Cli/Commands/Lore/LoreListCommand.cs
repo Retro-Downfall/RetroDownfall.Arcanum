@@ -1,5 +1,6 @@
 using System.Globalization;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
@@ -7,7 +8,7 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 
-public sealed class LoreListCommand(ArcanumApiClient apiClient) : AsyncCommand
+public sealed class LoreListCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
 {
     private const int SnippetMaxLength = 50;
 
@@ -17,7 +18,7 @@ public sealed class LoreListCommand(ArcanumApiClient apiClient) : AsyncCommand
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result.Error.Message)}[/]");
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
 
             return 1;
         }

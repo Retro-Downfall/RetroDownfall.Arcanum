@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
@@ -6,7 +7,7 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 
-public sealed class LoreSetCommand(ArcanumApiClient apiClient) : AsyncCommand
+public sealed class LoreSetCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
 {
     [CommandArgument(0, "<KEY>")]
     public required string Key { get; init; }
@@ -21,12 +22,13 @@ public sealed class LoreSetCommand(ArcanumApiClient apiClient) : AsyncCommand
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result.Error.Message)}[/]");
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
 
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]Successfully scribed lore for '{Markup.Escape(Key)}'.[/]");
+        AnsiConsole.MarkupLine(
+            themePalette.HighlightMarkup(Markup.Escape($"Successfully scribed lore for '{Key}'.")));
 
         return 0;
     }

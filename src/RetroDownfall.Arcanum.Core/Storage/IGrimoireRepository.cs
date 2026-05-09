@@ -71,4 +71,8 @@ public interface IGrimoireRepository
     Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default);
 
     Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default);
+
+    Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default);
+
+    Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default);
 }

@@ -1,14 +1,16 @@
 # Retro Downfall Arcanum
 
-Enterprise-grade .NET 10 solution: shared **Core** library, **Api** class library (Minimal API endpoint mapping), and **Cli** console that runs Spectre commands or hosts a Native AOT–friendly slim Minimal API.
-
-## Documentation
-
-- [DESIGN.md](docs/DESIGN.md) — architecture, design decisions, tradeoffs, and extension guidelines for senior engineers.
+A .NET 10 local-first AI assistant with an encrypted conversation store, MCP tool integration, and a rich terminal REPL — powered by Ollama.
 
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- [Ollama](https://ollama.com/) installed and running locally (default endpoint `http://localhost:11434`)
+- Pull the default model before first use:
+
+```bash
+ollama pull llama3.2
+```
 
 ## Build
 
@@ -16,115 +18,76 @@ Enterprise-grade .NET 10 solution: shared **Core** library, **Api** class librar
 dotnet build RetroDownfall.Arcanum.slnx
 ```
 
-**NuGet / Grimoire / AOT:** Top-level dependency versions are bumped when newer **stable** releases appear on NuGet.org. **Grimoire** deliberately stays on **`SQLitePCLRaw.bundle_e_sqlcipher` 2.1.x** (see SQLitePCL.raw **v3** migration notes: the **3.x** line is not a drop-in path for this free SQLCipher bundle). After changing packages, re-run **`dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release`** so Native AOT stays healthy (see **Native AOT publish** below).
+## First-run setup
 
-**C# blank lines (optional):** run [`scripts/align-csharp-blanklines.sh`](scripts/align-csharp-blanklines.sh) from the repo root after substantive edits so spacing stays consistent across `src/` (skips `Generated/`, `obj/`, `bin/`). It normalizes `using`/`namespace` gaps, member and doc-comment spacing, **sibling statements after `}`** (same rhythm as `ApiBootstrapper` / `McpBridgeTool`), collapses stacked empty lines, and keeps `else`/`catch`/`finally` tight on the preceding `}`. Use `python3 scripts/align_csharp_blanklines.py --check` for a dry run; see the script docstring for details.
+Arcanum requires an API key for all `/api` routes (header `X-Arcanum-Key`). On first startup the key is generated automatically:
 
-**C# formatting:** follow the blank-line conventions in [`ApiBootstrapper.cs`](src/RetroDownfall.Arcanum.Api/ApiBootstrapper.cs) (contiguous `using` directives, no blank line immediately after `{`, fluent `.` continuations without blank lines between parts, no blank lines before a lone closing `}` or `)` line, no blank lines inside a single multiline ternary or between comma-separated arguments, and at most one blank line between logical sections). For attributes on the same member or type, do not insert a blank line between consecutive attribute lines; do insert one blank line between the last attribute in that block and the following declaration (see `AskCommand.Settings` in [`AskCommand.cs`](src/RetroDownfall.Arcanum.Cli/Commands/AskCommand.cs)).
+```bash
+dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- serve
+```
+
+The raw Base64 key prints to stdout once. It is encrypted via ASP.NET Core Data Protection and stored at `{ApplicationData}/arcanum/security.dat`. To regenerate, delete `security.dat` and restart.
+
+For F5 debugging without Spectre, use the DevHost instead:
+
+```bash
+dotnet run --project src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj
+```
 
 ## Configuration
 
-Both **`serve`** (CLI) and **Api.DevHost** call `ConfigurationBootstrapper.AddArcanumConfiguration()` before `AddArcanumApiServices`, so settings load from a **central user directory**, not the process working directory.
+Settings live in a per-user directory (created on first run):
 
-**Directory:** `{ApplicationData}/arcanum` (created on startup if missing).
+| OS | Path |
+|----|------|
+| Windows | `%APPDATA%\arcanum\` |
+| macOS | `~/Library/Application Support/arcanum/` |
+| Linux | `~/.config/arcanum/` |
 
-- **Windows:** `%APPDATA%\arcanum\` (roaming application data).
-- **macOS:** `~/Library/Application Support/arcanum/`.
-- **Linux:** `~/.config/arcanum/` (per `Environment.SpecialFolder.ApplicationData`).
+Place an optional `arcanum.json` in that directory. Environment variable override prefix: `ARCANUM_` (double underscores for nesting, e.g. `ARCANUM_Arcanum__Ollama__Endpoint`).
 
-**File:** `arcanum.json` in that folder (optional). Reload on change is enabled. Root JSON property **`Arcanum`** maps to `IOptions<ArcanumSettings>` (host, Ollama, Bureau, Intelligence, perception, CLI limits — see [DESIGN.md §3.4](docs/DESIGN.md) for the full configuration catalog).
+- The Grimoire (`WorkspaceContexts` table) stores JSON `PatternSnapshot` baselines to power Chronosync Reporting.
 
-**Logs:** `{ApplicationData}/arcanum/logs/` (created on startup). The API registers **Serilog** programmatically (no `appsettings` Serilog binding): one **compact JSON** object per line via **`Serilog.Formatting.Compact.CompactJsonFormatter`**, written to rolling files named like **`arcanum-api-YYYYMMDD.json`**. Files roll **daily**; retention defaults to **seven** rolling files (**`Arcanum:Host:RetainedLogFileCount`**, clamped when applied). **`serve`** and **Api.DevHost** call **`WebApplicationBuilder.Logging.ClearProviders()`** before service registration so the default ASP.NET Core console loggers are not used, and **`Serilog.Log.CloseAndFlush()`** runs when the host exits.
-
-Example `arcanum.json`:
+Minimal example:
 
 ```json
 {
   "Arcanum": {
     "Host": {
-      "Port": 5001,
-      "RetainedLogFileCount": 7
-    },
-    "Security": {
-      "MaxApiKeyHeaderUtf16Chars": 512
+      "Port": 5001
     },
     "Ollama": {
       "Endpoint": "http://localhost:11434",
-      "DefaultModel": "phi4",
+      "DefaultModel": "llama3.2",
       "ContextWindowLimit": 8192
     },
-    "Bureau": {
-      "Enabled": false
-    },
-    "Intelligence": {
-      "ExecuteCommandTimeoutSeconds": 30,
-      "SemanticRouterPreflightTimeoutSeconds": 15,
-      "SemanticRouterMaxTokens": 50,
-      "SemanticRouterTemperature": 0,
-      "McpRequestTimeoutSeconds": 60,
-      "McpMaxPaginationPages": 32,
-      "ListDirectoryMaxPaths": 500,
-      "EnableLoreSystem": true,
-      "EnableArchiveSearch": true,
-      "ArchiveSearchMaxResults": 5,
-      "ArchiveSearchMaxQueryLength": 512,
-      "CampaignLogThreshold": 25,
-      "CampaignLogIdleTimeoutMinutes": 240,
-      "CampaignLogSweepIntervalMinutes": 15
-    },
-    "Perception": {
-      "MaxEnumerationSteps": 50000,
-      "MaxTableOfContentsLines": 20
-    },
     "Cli": {
-      "MaxAttachFileSizeBytes": 1048576,
-      "MaxAttachedFilesPerRequest": 32,
-      "MaxAttachedFileRelativePathChars": 4096
+      "Theme": "SystemDefault"
     }
   }
 }
 ```
 
-**Environment variables:** prefix `ARCANUM_`. Use double underscores for nesting after the prefix (for example, `ARCANUM_Arcanum__Ollama__Endpoint` overrides the Ollama endpoint in the `Arcanum` section). **`ARCANUM_Arcanum__Ollama__ContextWindowLimit`** sets the Ollama **`num_ctx`** cap (must match the CLI’s **`arcanum chat`** Mana bar denominator when both read the same config).
+## Database migrations (EF Core)
 
-Strongly typed binding uses the **configuration binding source generator** (`EnableConfigurationBindingGenerator` on the **Api**, **Infrastructure**, and **Cli** projects) for AOT-friendly options registration wherever `Configure<ArcanumSettings>` runs. **Do not** add an explicit NuGet `PackageReference` to `Microsoft.Extensions.Configuration.Binder` on the Api project: `Microsoft.AspNetCore.App` already brings it in, and a duplicate reference triggers NuGet package-pruning warnings (for example NU1510).
+The Grimoire (encrypted SQLite via SQLCipher) uses EF Core 10 with a compiled model under `src/RetroDownfall.Arcanum.Infrastructure/Generated/`. Beyond conversations and lore, the Grimoire persists workspace state for Chronosync (see Configuration above).
 
-## Grimoire (encrypted local SQLite)
-
-The **Mage’s Grimoire** is a local-first persistence layer (conversation history and future RAG metadata) backed by **EF Core 10** and **SQLCipher**-enabled SQLite.
-
-**Database file:** `{UserProfile}/.config/arcanum/arcanum.db` (see `ArcanumPaths.GrimoireDatabaseFile` in Core). The directory is created on first use.
-
-**Encryption:** The file is encrypted with **SQLCipher** via **`SQLitePCLRaw.bundle_e_sqlcipher`** (aligned with **SQLitePCLRaw 2.1.x** required by **Microsoft.Data.Sqlite** in EF 10). At host startup, **`SQLitePCL.Batteries_V2.Init()`** runs before any connection opens.
-
-**Passphrase:** The SQLCipher password is **not** the raw master API key. It is derived with **HKDF-SHA256** from the UTF-8 master key using fixed salt/info strings (`GrimoireKeyDerivation` in Infrastructure). **Existing** Grimoire files created with the previous HMAC-based derivation must be recreated or re-encrypted after this change.
-
-**Startup:** An **`IHostedService`** derives the passphrase from **`ISecretStore`**, then:
-
-- If the database file **already exists** but cannot be opened (wrong key, corruption, or tampering), the process logs a **fatal** Serilog event and terminates (**`Environment.FailFast`**).
-- If the file **does not** exist, **`Database.MigrateAsync`** applies the **`InitialCreate`** migration (creates **`arcanum.db`**, application tables, and **`__EFMigrationsHistory`**). Schema evolution is explicit EF Core migrations under **`src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/`**.
-
-**Legacy Grimoire files** created before migrations (for example with **`EnsureCreatedAsync`** only) have **no** **`__EFMigrationsHistory`** row. Applying **`InitialCreate`** against that file will fail because tables already exist. Operators should **back up and remove** the old **`arcanum.db`**, or (advanced) manually stamp **`__EFMigrationsHistory`** for the migration id once the schema matches.
-
-**Inference persistence:** `OllamaIntelligenceProvider` injects **`IGrimoireRepository`**. Both **`POST /api/intelligence/ping-stream`** and **`POST /api/intelligence/ping`** begin a Grimoire turn with **`BeginAssistantReplyAsync`** (new **`Conversation`** or append to an existing one), send chat history plus the new user prompt to **`IChatClient`**, then finalize the assistant row. **`ping-stream`** also **appends each streamed token** during generation and emits a **`conversationBound`** event (see Streaming endpoint) so clients can store the canonical **`conversationId`**. Optional **`conversationId`** on **`PingRequest`** continues a thread: prior **`ChatMessage`** rows are loaded into the model context. Stale or unknown ids start a **new** conversation. The **`ask`** CLI persists that id in **`~/.config/arcanum/cli-session.txt`** (same directory as **`arcanum.db`**) and sends it on the next request; **`arcanum ask -n`** / **`--new`** deletes the file and starts a fresh thread. When **`workingDirectory`** is set, the API merges a **global** codex from **`~/.config/arcanum/CODEX.md`** with an optional **local** **`./CODEX.md`** under **`workingDirectory`** and builds a **dynamic `ChatRole.System`** message (base persona, **`contextSnapshot`** workspace summary, and the merged **`### Master Codex (CODEX.md)`** section). When both files are present, the local file is appended after the global content under a **`### Local Workspace Spells`** sub-header so operator-defined rules cascade Global → Local. Modular spell directories (**`[spell-name]/SPELL.md`**, e.g. **`spells/kalshi-trade/SPELL.md`**) are discovered under that directory (**`SPELL.md`** filename is case-insensitive); optional sibling **`scripts/`** holds executable helpers (**`.py`**, **`.js`**, **`.sh`**, **`.ps1`**, or extensionless files run directly). Only **immediate file names** in **`scripts/`** are listed in the dynamic prompt under **`### Available Spell Scripts`**. YAML frontmatter may include **`name:`** and **`description:`** (if **`name:`** is missing or empty, the spell’s routing name defaults to the **parent folder** name). A **fast pre-flight** model call picks at most one spell whose full markdown is appended under **`### Active Operational Spell`** (see **`docs/DESIGN.md`** §10.2.2). That system message is **prepended only to the in-memory** message list sent to **`IChatClient`**; it is **not** persisted as a Grimoire row. Persistence failures are logged as warnings and do not cancel inference.
-
-**Tool calls:** When the model requests a registered **`Microsoft.Extensions.AI`** tool, the provider runs a bounded multi-round loop, emits **`toolCall`** / **`toolResult`** NDJSON events, appends **`ChatRole.Assistant`** / **`ChatRole.Tool`** turns to the in-memory chat, and persists a bracketed pair of rows via **`AppendToolInteractionAsync`**: an assistant line **`[ToolCall: name(args)]`** and a system line **`[ToolResult: …]`** so the next Grimoire-backed turn reloads tool context as plain text. Built-in **`AIFunction`** tools: **`GetLocalSystemTime`** (Native AOT–friendly hand-authored JSON schema) and **`run_spell_script`** when the **active** spell lists **`scripts/`** files — runs **`Process`** with **`UseShellExecute = false`**, **`WorkingDirectory`** fixed to that spell’s **`scripts/`** folder, **`script_name`** as a **bare file name** only (no path traversal), extension-based runners (**`python`** / **`python3`**, **`node`**, **`bash`**, **`pwsh -File`**, or direct execute), optional **`arguments`** tokenized into **`ArgumentList`** without a shell, stdout/stderr capture, and the same hard timeout as MCP **`execute_command`** (**`Arcanum:Intelligence:ExecuteCommandTimeoutSeconds`**, default **30s**, clamped **1–600**, **`Kill(entireProcessTree: true)`** on overrun). Workspace file reads, writes, directory listing, and MCP command execution come from **MCP** **`McpBridgeTool`** entries backed by the in-process **`ArcanumInternalToolServer`** (**`read_file_chunk`**, **`replace_text_block`**, **`write_file`** (full-file create/overwrite under the same **`relativePath`** sandbox as reads; creates parent directories first), **`list_directory`** with **`relativePath`** under **`workingDirectory`**; **`execute_command`** with optional relative **`workingDirectory`** and the same configurable timeout). If **`workingDirectory`** is empty, internal file/exec tools return a **`ToolError`**; **`ask_human`** still works (see MCP paragraph below). **`run_spell_script`** is **not** part of MCP and may target spell roots outside **`workingDirectory`** (for example global spells under **`~/.config/arcanum/spells/`**).
-
-**MCP servers (standard `mcp.json` + in-process Arcanum):** **`McpConnectionManager`** loads global **`~/.config/arcanum/mcp.json`** once into a **profile partition**, then for each **`GetAvailableToolsAsync`** key starts one **in-process** MCP server (**`ArcanumInternalToolServer`**) scoped to that partition (**including a no-workspace sentinel** so **`ask_human`** registers when **`workingDirectory`** is empty). Native tools include **`read_file_chunk`**, **`replace_text_block`**, **`write_file`** (same workspace-relative sandbox as reads; rejects rooted paths and sandbox escapes; creates missing parent directories), **`list_directory`** (relative paths, optional recursion, bounded listing), **`execute_command`** (captured stdout/stderr; timeout **`Arcanum:Intelligence:ExecuteCommandTimeoutSeconds`**, default **30**, clamped **1–600**), and **`ask_human`** (human-in-the-loop: the model supplies **`question`** and a fresh UUID **`promptId`**; the daemon waits on **`IHumanPromptRegistry`** until **`POST /api/intelligence/human-response`** or the **`arcanum ask` / `arcanum chat`** client posts the answer; **`McpClient`** uses no per-request timeout for **`tools/call`** of **`ask_human`** while **`HttpContext.RequestAborted`** still cancels). When **`Arcanum:Intelligence:EnableLoreSystem`** is **`true`** (default), **`read_lore`**, **`scribe_lore`**, and **`delete_lore`** register against the encrypted Grimoire (**`MageSettings`**). When **`Arcanum:Intelligence:EnableArchiveSearch`** is **`true`** (default), **`search_archives`** registers (SQLite FTS5 over **`ChatMessages`**; each call returns at most **`Arcanum:Intelligence:ArchiveSearchMaxResults`** rows, default **5**, clamped **1–500** in the repository). Workspace **`mcp.json`** is merged when present. External servers use the same JSON-RPC framing over **stdio** (**`McpProcessTransport`**). Both transports implement **`IMcpTransport`**; **`McpClient`** is transport-agnostic. The merged tool list is **cached per partition key** (including when there is no workspace **`mcp.json`**, so the inference loop does not rescan disk every request). The JSON shape matches common desktop hosts: top-level **`mcpServers`** map, each entry with **`command`**, **`args`** (array), and optional **`env`** (string map). Duplicate tool names use the **local** registration; if a duplicate exists in both files, **`tools/call`** may **fall back** to the global MCP client once after a local failure **only** when the global and local **server launch recipes** differ (same command/args/env keeps only the local tool with no fallback). If an external server fails to start (bad binary, missing dependency, etc.), it is logged and the rest still load. **`DisposeAsync`** disposes **every** **`McpClient`** in every partition (closing stdio children and completing in-process channels). Optional **`PingRequest.disableMcpTools`** (default **`false`**) skips merging MCP tools for that request; **`GetLocalSystemTime`** and (when applicable) **`run_spell_script`** still apply. Optional **`PingRequest.unattendedMode`** (default **`false`**) omits **`ask_human`** from the tool list so automated runs never block for a human. If Ollama rejects tool use (for example **`phi4`** with **`…does not support tools`**), **`OllamaIntelligenceProvider`** retries once **without** registering tools so chat still completes; streaming emits a **`status`** line when that downgrade happens.
-
-**Master API key before host:** [`ArcanumMasterKeyBootstrapper`](src/RetroDownfall.Arcanum.Infrastructure/Security/ArcanumMasterKeyBootstrapper.cs) runs in **`serve`** and **Api.DevHost** *before* **`WebApplicationBuilder.Build()`** so the Grimoire hosted service always sees a stored key when the host starts.
-
-**Infrastructure entry point:** [`AddArcanumInfrastructure(IConfiguration)`](src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs) registers Serilog file logging ([`LoggingBootstrapper`](src/RetroDownfall.Arcanum.Infrastructure/Logging/LoggingBootstrapper.cs)), Data Protection, [`DataProtectionSecretStore`](src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs), the Grimoire database, [`IWorkspaceScanner`](src/RetroDownfall.Arcanum.Core/Workspace/IWorkspaceScanner.cs) ([`PhysicalWorkspaceScanner`](src/RetroDownfall.Arcanum.Infrastructure/Workspace/PhysicalWorkspaceScanner.cs)), and **[`IEyeOfTheWorld`](src/RetroDownfall.Arcanum.Core/Pattern/IEyeOfTheWorld.cs)** ([`EyeOfTheWorldService`](src/RetroDownfall.Arcanum.Infrastructure/Pattern/EyeOfTheWorldService.cs)) via **`AddArcanumEyeOfTheWorld`**. For **Windows Service**, **launchd**, or **systemd user** lifecycle only (no EF/Serilog/Grimoire), the CLI uses narrow **[`AddArcanumDaemonManagement`](src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs)** to register **[`IDaemonManager`](src/RetroDownfall.Arcanum.Core/Hosting/IDaemonManager.cs)** ([`WindowsDaemonManager`](src/RetroDownfall.Arcanum.Infrastructure/Hosting/WindowsDaemonManager.cs) on Windows, [`MacOsDaemonManager`](src/RetroDownfall.Arcanum.Infrastructure/Hosting/MacOsDaemonManager.cs) on macOS, [`LinuxDaemonManager`](src/RetroDownfall.Arcanum.Infrastructure/Hosting/LinuxDaemonManager.cs) on Linux; other OSes throw **`PlatformNotSupportedException`** from **`AddArcanumDaemonManagement`**). **`Microsoft.Extensions.Hosting.WindowsServices`** and **`Microsoft.Extensions.Hosting.Systemd`** are referenced on **Infrastructure**, **Api**, and **Cli** so **`serve`** can call **`UseWindowsService`** / **`UseSystemd`** with aligned package versions for the target framework. **`Microsoft.EntityFrameworkCore.Tasks`** is referenced for tooling alignment; **`EFOptimizeContext`** / precompiled queries stay **off** so CI and **PublishAot** do not run conflicting MSBuild passes (the compiled model is produced with **`dotnet ef`** below).
-
-**Design-time / compiled model:** The repo includes a source-generated **compiled EF model** under `src/RetroDownfall.Arcanum.Infrastructure/Generated/` (AOT-friendly **`UseModel`**). After changing entities or `OnModelCreating`, add or update a migration, then regenerate the compiled model:
+After changing entities or `OnModelCreating`:
 
 ```bash
 dotnet tool restore
-ARCANUM_GRIMOIRE_DEV_KEY='your-local-dev-secret' dotnet ef migrations add <Name> \
+```
+
+```bash
+ARCANUM_GRIMOIRE_DEV_KEY=dev-key-placeholder dotnet ef migrations add YourMigrationName \
   --project src/RetroDownfall.Arcanum.Infrastructure \
   --startup-project src/RetroDownfall.Arcanum.Infrastructure \
-  --output-dir Data/Migrations
-ARCANUM_GRIMOIRE_DEV_KEY='your-local-dev-secret' dotnet ef dbcontext optimize \
+  --output-dir Data/Migrations \
+  --context ArcanumDbContext
+```
+
+```bash
+ARCANUM_GRIMOIRE_DEV_KEY=dev-key-placeholder dotnet ef dbcontext optimize \
   --project src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj \
   --startup-project src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj \
   --output-dir Generated \
@@ -132,170 +95,75 @@ ARCANUM_GRIMOIRE_DEV_KEY='your-local-dev-secret' dotnet ef dbcontext optimize \
   --context ArcanumDbContext
 ```
 
-(`ARCANUM_GRIMOIRE_DEV_KEY` is recommended for **`dotnet ef`** / **`IDesignTimeDbContextFactory`** so your design-time DB uses a known key. MSBuild uses a compile-time placeholder when the variable is unset.)
+Commit both the new migration and the regenerated `Generated/` sources.
 
-**`ChatMessages` full-text search:** Migration **`AddChatMessagesFts`** creates SQLite **`ChatMessages_fts`** (FTS5) plus triggers so inserts/updates/deletes on **`ChatMessages`** stay indexed. Applying that migration (or creating a fresh DB after it ships) is required for **`search_archives`** to work.
+## MCP configuration
 
-**`ChatMessages` index:** The EF model defines a **composite index** on **`(ConversationId, Timestamp)`** so conversation-ordered history queries stay efficient. New databases receive it via migrations. For a file created **before** a migration that introduced that index, open the file with any SQLCipher-capable SQLite client using your derived passphrase (or recreate the DB) and run:
+Wire external MCP servers via `~/.config/arcanum/mcp.json` using the standard `mcpServers` schema (`command`, `args`, optional `env`). Workspace-local `mcp.json` is merged when present.
 
-```sql
-CREATE INDEX IF NOT EXISTS IX_ChatMessages_ConversationId_Timestamp ON ChatMessages(ConversationId, Timestamp);
-```
+## CLI reference
 
-## Intelligence (Ollama + Microsoft.Extensions.AI)
+All commands use `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj --` as the prefix. After a Native AOT publish, substitute the binary name (e.g. `arcanum`).
 
-The API hosts an **Ollama**-backed pipeline via **OllamaSharp** and **`IChatClient`** from **Microsoft.Extensions.AI**. The Core library defines **`IArcanumIntelligenceProvider`**; the Api project implements **`OllamaIntelligenceProvider`**, which lists local models, **pulls** a missing model when needed, then runs inference using the official chat abstraction. Model name matching is **case-insensitive** and handles Ollama's `:latest` tag convention (e.g. requesting `phi4` matches `phi4:latest` locally, avoiding an unnecessary re-download).
+| Command | Description |
+|---------|-------------|
+| `serve` | Host the API on localhost:5001 |
+| `ask <prompt>` | Single-turn query (streams response via NDJSON) |
+| `ask <prompt> -n` | Start a new conversation thread |
+| `ask <prompt> -m <model>` | Override the model for this request |
+| `chat` | Interactive multi-turn REPL with Markdig rendering |
+| `chat --new` | Start REPL with a fresh conversation |
+| `chat --no-tools` | Disable MCP tools for the session |
+| `look` | Print Eye of the World workspace snapshot (domain + TOC) |
+| `lore list` | List all operator memory entries |
+| `lore get <key>` | Show a specific lore value |
+| `lore set <key> <value>` | Create or update a lore entry |
+| `lore delete <key>` | Remove a lore entry |
+| `daemon install` | Install as background service (Windows/macOS/Linux) |
+| `daemon status` | Check daemon status |
+| `daemon uninstall` | Remove background service |
 
-**Packages:** `RetroDownfall.Arcanum.Core` references **Microsoft.Extensions.AI.Abstractions**. `RetroDownfall.Arcanum.Api` references **OllamaSharp** and **Microsoft.Extensions.AI** (for `ChatClientExtensions` chat message lists).
+**Chat slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model <name>`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/attach`.
 
-**Grimoire MCP toggles (`Arcanum:Intelligence`):** **`EnableLoreSystem`** (default **`true`**) controls whether **`read_lore`**, **`scribe_lore`**, and **`delete_lore`** appear on **`tools/list`** and accept **`tools/call`**. **`EnableArchiveSearch`** (default **`true`**) controls **`search_archives`**. **`ArchiveSearchMaxResults`** (default **`5`**) is the per-call cap passed into the FTS query (clamped **1–500** in **`GrimoireRepository`**). **`ArchiveSearchMaxQueryLength`** (default **`512`**, clamped **32–4096**) caps the raw query string length before FTS sanitization. **`search_archives`** queries are **token-sanitized** for FTS5; malformed input returns an operator-safe message instead of surfacing raw SQLite errors. **Campaign Log consolidation** uses a **hybrid** trigger: **`CampaignLogThreshold`** (default **`25`**) is the message-count **safety valve** (un-summarized **`ChatMessages`** after **`LastSummarizedMessageAt`**). **`CampaignLogIdleTimeoutMinutes`** (default **`240`**) supplies a **natural break**—conversations with pending un-summarized messages whose latest message timestamp is older than that UTC window are also selected. **`CampaignLogSweepIntervalMinutes`** (default **`15`**) controls how often **`CampaignLoggerBackgroundService`** runs the repository query and enqueues ids (plus one immediate sweep at host start). Dequeued work **advances** **`LastSummarizedMessageAt`** to the latest message time (watermark) so the same thread is not swept forever. Operators can enqueue a specific thread with **`POST /api/conversations/{id}/rest`** (**`202 Accepted`** when the id exists; **`404`** when it does not). Override via configuration or environment variables with the **`ARCANUM_`** prefix (for example **`ARCANUM_Arcanum__Intelligence__EnableArchiveSearch=false`**).
+## API reference
 
-**Session-Based Consolidation (AI memory):** The three levers above mirror how people organize memory: cap runaway detail (threshold), consolidate after a quiet period (idle), or deliberately “close” a session (**`/rest`**). See **DESIGN.md** section 8.7 for the full architecture note.
+All endpoints require header `X-Arcanum-Key`. Default base: `http://localhost:5001`.
 
-**Runtime:** [Ollama](https://ollama.com/) must be running and reachable at `Arcanum:Ollama:Endpoint` (default `http://localhost:11434`). The first request for a model that is not yet local can **download** it and may take a long time.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Health check |
+| POST | `/api/intelligence/ping` | Buffered single-turn inference |
+| POST | `/api/intelligence/ping-stream` | Streaming inference (NDJSON) |
+| POST | `/api/intelligence/human-response` | Complete an `ask_human` tool call |
+| POST | `/api/intelligence/arsenal` | List active tools and MCP servers |
+| POST | `/api/mcp/reload` | Reload MCP server connections |
+| GET | `/api/conversations` | List conversations |
+| GET | `/api/conversations/{id}` | Get conversation detail |
+| GET | `/api/conversations/{id}/messages` | Get ordered message history |
+| DELETE | `/api/conversations/{id}` | Delete a conversation |
+| POST | `/api/conversations/{id}/rest` | Enqueue Campaign Log consolidation |
+| GET | `/api/lore` | List all lore entries |
+| GET | `/api/lore/{key}` | Get a lore entry |
+| POST | `/api/lore` | Create/update a lore entry |
+| DELETE | `/api/lore/{key}` | Delete a lore entry |
+| GET | `/api/perception/look?directory={path}` | Remote Eye of the World snapshot |
+| GET | `/api/openapi/v1.json` | OpenAPI specification |
+| GET | `/api/scalar` | Scalar interactive API docs |
 
-**Test endpoint:** `POST /api/intelligence/ping` (same **`X-Arcanum-Key`** requirement as other `/api` routes). JSON body uses **`PingRequest`** (camelCase): required **`prompt`**; optional **`model`**; optional **`workingDirectory`** (operator cwd anchor; when set, the server merges the **global** **`~/.config/arcanum/CODEX.md`** with an optional **local** **`CODEX.md`** only when that path resolves **inside** the normalized workspace directory — **`..`** escapes are ignored for the local file; defaults to empty if omitted; the same value scopes workspace filesystem tools (**`read_file_chunk`**, **`replace_text_block`**, **`write_file`**, **`list_directory`**, **`execute_command`**, etc.) to that workspace root; **`read_lore`**, **`scribe_lore`**, and **`delete_lore`** persist explicit operator lore in the encrypted Grimoire (**`MageSettings`**) and are not tied to the workspace root; **`search_archives`** queries archived **`ChatMessages`** via FTS5 when **`Arcanum:Intelligence:EnableArchiveSearch`** is enabled). A sample global codex (including Lore) is in **[`docs/CODEX.template.md`](docs/CODEX.template.md)** for merging into **`~/.config/arcanum/CODEX.md`**; **`SPELL.md`** spells are always discovered under **`~/.config/arcanum/spells/`** and merged with spells under a normalized **`workingDirectory`** when present; if the same spell **`name`** exists in both trees (**case-insensitive**), the **workspace** spell wins; optional **`contextSnapshot`** (Eye of the World **`PatternSnapshot`**: **`domain`**, **`rootPath`**, **`threads`** — included in that system prompt when present); optional **`conversationId`** (GUID string) to continue a Grimoire thread; optional **`disableMcpTools`** (boolean, default **`false`** when omitted) to omit MCP **`mcp.json`** tools for that request while keeping built-in tools (**`GetLocalSystemTime`** and **`run_spell_script`** when the routed spell lists **`scripts/`**); optional **`cliTerminalFormatting`** (boolean, default **`false`** when omitted) — when **`true`**, **`SystemPromptBuilder.Build`** appends a final **`### Output Formatting Directive`** block instructing the model to emit **only** Headings, Bold, Italic, and Code Blocks (no tables, blockquotes, inline HTML, or complex nested lists), so the **`arcanum chat`** REPL can swap streamed plain tokens for a Markdig-rendered AST without breaking on out-of-grammar elements; optional **`unattendedMode`** (boolean, default **`false`**) to strip **`ask_human`** from the merged tool list for that request; optional **`attachedFiles`** (array of **`{ "relativePath": "…", "content": "…" }`**) — the **server** enforces **`Arcanum:Cli:MaxAttachedFilesPerRequest`** (default **32**, clamped **1–256**), **`Arcanum:Cli:MaxAttachedFileRelativePathChars`** (default **4096**, clamped **256–8192**), and UTF-8 size limits per **`Arcanum:Cli:MaxAttachFileSizeBytes`** (and a total payload budget); file bodies are merged into the **ephemeral** dynamic system prompt (**`### Attached Files for this Turn`**) for that request only and are **not** duplicated in Grimoire user rows when clients keep bodies out of **`prompt`** (see **`arcanum chat`** **`/attach`**). Example: `{ "prompt": "Say hello in one sentence.", "model": "phi4" }`. When **`model`** is omitted, the server uses `Arcanum:Ollama:DefaultModel`. Response envelope: `ApiResponse<string>` where `data` is the model text on success. HTTP status: **200** on success, **400** for invalid/missing prompt or invalid attachments, **500** when inference or model retrieval fails.
+## Native AOT publish
 
-**Human response webhook:** `POST /api/intelligence/human-response` (same API key). JSON body **`{ "promptId": "<uuid>", "answer": "…" }`** (**`SubmitHumanResponseRequest`**). Completes the in-flight **`ask_human`** wait when **`promptId`** matches; response **`ApiResponse<bool>`** with **`data: true`** when a waiter was signaled, **`false`** when no matching prompt was registered.
-
-**Streaming endpoint:** `POST /api/intelligence/ping-stream` uses the same **`PingRequest`** body shape and API key. The response is **NDJSON** (`Content-Type: application/x-ndjson`): one JSON object per line, each a source-generated **`IntelligenceEvent`** (`type`: `status` \| `conversationBound` \| `token` \| `toolCall` \| `toolResult` \| `result` \| `error`, `message`, optional `data`). After Grimoire begins the turn, a **`conversationBound`** line carries the canonical conversation id in **`data`** (message text is `"Conversation started"`). Status lines report local model checks, download progress, and generation; during inference the server emits many **`token`** lines with incremental assistant text in **`data`** (and an empty `message`); **`toolCall`** / **`toolResult`** lines carry diagnostic text in **`data`** (and often the tool name in **`message`**) when local tools run between model rounds — for **`ask_human`**, a **`toolCall`** line is emitted **before** the server blocks on the MCP tool so a client can **`POST /api/intelligence/human-response`** (or the **`arcanum ask` / `chat`** CLI can prompt and submit) without racing the default MCP **`tools/call`** timeout; a final **`result`** line carries **total token usage** (input + output from the model’s last completion round) as a decimal string in **`data`** — assemble assistant text only from streamed **`token`** lines; **`error`** lines describe failures without requiring a buffered `ApiResponse` envelope. Closing the HTTP connection or canceling the request aborts **`HttpContext.RequestAborted`**, which is linked into **`StreamPromptAsync`** and **`IChatClient.GetStreamingResponseAsync`**, so Ollama generation stops promptly and frees GPU work.
-
-**MCP reload:** `POST /api/mcp/reload` accepts a **`PingRequest`** body (typically **`prompt`** empty; **`workingDirectory`** set to the operator cwd). Response **`ApiResponse<string>`** with **`data`** confirming reload. **`McpConnectionManager.ReloadAsync`** disposes **all** MCP **`McpClient`** instances, clears partition and merged-tool caches, **disposes** per-workspace **`SemaphoreSlim`** locks, resets global bootstrap flags, and immediately re-reads **`~/.config/arcanum/mcp.json`**.
-
-**Workspace arsenal:** `POST /api/intelligence/arsenal` accepts **`PingRequest`** (**`workingDirectory`** scopes spell scan and MCP partition status). Response **`ApiResponse<WorkspaceArsenalDto>`** (**`activeSpells`**, **`nativeTools`** — at minimum **`GetLocalSystemTime`**; **`run_spell_script`** is registered only during inference when a spell with **`scripts/`** is active, so it may not appear here — **`mcpServers`** as **`McpServerStatusDto`** rows: **`serverName`**, **`status`** (**`Online`** / **`Failed`**), **`toolCount`**, **`providedTools`**, optional **`errorMessage`**). Shapes are registered on **`ArcanumJsonContext`** for Native AOT.
-
-Example (replace `YOUR_KEY`):
-
-```bash
-curl -sS -X POST "http://localhost:5001/api/intelligence/ping" \
-  -H "X-Arcanum-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"Reply with only: pong"}'
-```
-
-Streaming (NDJSON lines to stdout):
-
-```bash
-curl -sS -N -X POST "http://localhost:5001/api/intelligence/ping-stream" \
-  -H "X-Arcanum-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"Reply with only: pong"}'
-```
-
-`OllamaApiClient`, `IOllamaApiClient`, `IChatClient`, and `IArcanumIntelligenceProvider` are registered as **scoped** so concurrent requests do not share mutable `SelectedModel` on one client instance. The API registers a named **`IHttpClientFactory`** client (**`Ollama`**) with **`HttpClient.Timeout = InfiniteTimeSpan`** so long local inference or model pulls are not cut off by the default **100s** limit; the CLI’s **`ArcanumApi`** named client uses the same infinite timeout toward **`serve`**. **`IArcanumIntelligenceProvider`** exposes **`ExecutePromptAsync`** / **`StreamPromptAsync`** taking a full **`PingRequest`** for the buffered and NDJSON streaming pipelines used by **`ping`**, **`ping-stream`**, and the CLI **`ask`** command.
-
-## Local API security
-
-The HTTP surface is **loopback-only** and **keyed** for zero-trust local use.
-
-**Listen address:** By default, **`serve`** ([`ServeCommand`](src/RetroDownfall.Arcanum.Cli/Commands/ServeCommand.cs)) and **Api.DevHost** ([`Program.cs`](src/RetroDownfall.Arcanum.Api.DevHost/Program.cs)) use `ListenLocalhost(5001)` so the host is not reachable from LAN interfaces. For container images, set **`ARCANUM_HOST_ANY`** to **`1`** or **`true`** so **`serve`** uses `ListenAnyIP(5001)` instead.
-
-**API key:** Routes under **`/api`** (for example `GET /api/health`, `GET /api/conversations`, `GET /api/conversations/{id}`, `GET /api/conversations/{id}/messages`, `DELETE /api/conversations/{id}`, `POST /api/conversations/{id}/rest`, `GET /api/lore`, `GET /api/lore/{key}`, `POST /api/lore`, `DELETE /api/lore/{key}`, `GET /api/perception/look?directory={path}`, `POST /api/intelligence/ping`, `POST /api/intelligence/ping-stream`, `POST /api/intelligence/human-response`, `POST /api/mcp/reload`, `POST /api/intelligence/arsenal`) require header **`X-Arcanum-Key`** with the current master key. Values longer than **`Arcanum:Security:MaxApiKeyHeaderUtf16Chars`** (default **512**, clamped **128–8192**) are rejected with **401** before key comparison. **Lore HTTP** (`/api/lore`…) gives the operator full CRUD on **`MageSettings`** regardless of **`Arcanum:Intelligence:EnableLoreSystem`** (that toggle affects MCP **`read_lore`** / **`scribe_lore`** / **`delete_lore`** only). Requests without a valid key receive **401** with a source-generated JSON body: `ApiResponse<string>` and `Error` code **`Unauthorized`** (serialized via [`ArcanumJsonContext`](src/RetroDownfall.Arcanum.Api/Serialization/ArcanumJsonContext.cs)).
-
-**Storage:** The key is encrypted with **ASP.NET Core Data Protection** (`SetApplicationName("ArcanumCore")`, protector purpose **`Arcanum.Core.ApiKey`**) and persisted as **`security.dat`** next to your Arcanum config:
-
-`{ApplicationData}/arcanum/security.dat`
-
-On **first** startup, if no key exists, **`serve`** generates a cryptographically random 32-byte key (Base64), saves it through [`ISecretStore`](src/RetroDownfall.Arcanum.Core/Security/ISecretStore.cs) / [`DataProtectionSecretStore`](src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs), and prints a green confirmation via Spectre Console. **Api.DevHost** performs the same bootstrap and also prints the raw key once to the console so you can copy it for tools like `curl` during F5 debugging. Integrated clients should resolve **`ISecretStore`** from DI and call **`GetApiKeyAsync()`** instead of persisting secrets in user scripts.
-
-OpenAPI and Scalar are now served under the **`/api`** group and **require** the same **`X-Arcanum-Key`** header as other authenticated endpoints.
-
-## CLI
-
-Show help when no arguments are passed:
+Self-contained binary (example for Apple Silicon):
 
 ```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj
+dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release -r osx-arm64
 ```
 
-Host the API on `http://localhost:5001`:
-
-```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- serve
-```
-
-Ask the Mage a question (requires **`serve`** on `http://localhost:5001` so the API key exists under the same Data Protection app name). Each HTTP request still carries one user **`prompt`**; the CLI can **continue the last Grimoire conversation** by reading **`~/.config/arcanum/cli-session.txt`** and sending optional **`conversationId`** on **`PingRequest`**. After **`PerceivePatternAsync`**, the stream may include a silent **`conversationBound`** line: the CLI parses the GUID from **`data`** and overwrites the session file (no console output). Use **`-n` / `--new`** to clear that file and omit **`conversationId`** so the next reply starts a new thread. Before each request the CLI resolves **`Environment.CurrentDirectory`**, runs **`IEyeOfTheWorld.PerceivePatternAsync`**, and sends **`workingDirectory`** and **`contextSnapshot`** so the daemon-hosted API receives the operator’s spatial context (the API process cwd is not the shell cwd). The CLI then calls **`POST /api/intelligence/ping-stream`** via **`ArcanumApiClient.AskStreamAsync(PingRequest, …)`**, reading the response body as **NDJSON** (one UTF-8 JSON object per line) and deserializing each line with [`ArcanumJsonContext`](src/RetroDownfall.Arcanum.Api/Serialization/ArcanumJsonContext.cs) to match the server’s **`application/x-ndjson`** writer. When a **`toolCall`** line targets **`ask_human`**, the CLI parses **`question`** / **`promptId`** from the event **`data`**, prompts with Spectre (**`arcanum chat`**) or **`AnsiConsole.Ask`** for **`ask`**, then **`POST`s** **`/api/intelligence/human-response`** so inference can continue; **`--unattended`** skips the prompt and sends a fixed system stub while still setting **`PingRequest.unattendedMode`** so the server does not offer **`ask_human`** to the model. **`status`** lines are printed to **stderr** (dim markup); assistant **`token`** chunks are written to **stdout** with **`AnsiConsole.Write`** so output matches the model (no extra newlines per chunk). A linked **`CancellationTokenSource`** hooks **`Console.CancelKeyPress`** (graceful cancel) and is passed to **`HttpClient`**, so Ctrl+C aborts the stream, propagates cancellation to the API and Ollama, and exits with code **130** (POSIX interrupt). Exit **0** is success, **1** is an error. Model defaults to `Arcanum:Ollama:DefaultModel` unless you pass **`-m` / `--model`**.
-
-The **`ask`** command takes one logical prompt built from **all** positional words after **`ask`**, and also appends tokens from **`--`** onward (Spectre’s **raw remaining arguments**), so unquoted multi-word prompts work (for example **`arcanum ask local time`**) and the common shell pattern **`arcanum ask -- local time`** passes **`local time`** as the prompt instead of failing with “missing required argument”.
-
-```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- ask "Summarize arcana in one line."
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- ask local time
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- ask -- local time
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- ask "Hello" -m phi4
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- ask "Unrelated question; start a new thread" --new
-```
-
-**Interactive REPL (`chat`):** A premium multi-turn REPL built on **Spectre.Console** (`AsyncCommand<ChatCommand.Settings>`). The prompt is **`[bold blue]Mage[/] >`**, or a yellow **`[N file(s) staged]`** prefix plus **`Mage >`** when files are queued from **`/attach`** ([`ChatCommand`](src/RetroDownfall.Arcanum.Cli/Commands/ChatCommand.cs)); **Mana bar** (context usage): before each **`Mage >`** prompt, **`AnsiConsole.MarkupLine`** draws a 20-cell **`█`/`░`** bar from the last turn’s **`result`** NDJSON **`data`** (total tokens) compared to **`Arcanum:Ollama:ContextWindowLimit`** (the same bound passed to Ollama as **`num_ctx`**). Each turn re-resolves **`Environment.CurrentDirectory`** so **`cd`** between turns is honored, runs **`IEyeOfTheWorld.PerceivePatternAsync`**, and sends **`PingRequest`** to **`POST /api/intelligence/ping-stream`** with **`cliTerminalFormatting: true`** so the daemon constrains the model to terminal-friendly Markdown (Headings / Bold / Italic / Code Blocks). **Slash commands** are matched only on a **strict first-token whitelist** (`/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model`, `/look`, `/tools`, `/mcp`, `/arsenal`, `/history`, `/resume`, `/delete`, `/rest`, `/log`, `/attach`) so absolute paths such as **`/Users/you/file.txt`** are **not** mistaken for commands and are sent to the model unchanged. **`/help`** prints a Spectre **`Table`**; **`/new`** clears the session file mid-REPL (dim *Started new conversation.*); **`/history`** calls **`GET /api/conversations`** and prints a silver-bordered table (sky-blue headers: ID, Updated, Snippet) or a dim silver *No past conversations found.* when the list is empty; **`/resume <id>`** stores the Grimoire conversation id in **`cli-session.txt`** (full Guid or unique **8-character** hex prefix from **`/history`**; ambiguous prefixes print a red error asking for the full Guid); **`/delete <id>`** calls **`DELETE /api/conversations/{id}`** and clears the session file when the active conversation was deleted; **`/rest`** (active session only) calls **`POST /api/conversations/{id}/rest`** to enqueue Campaign Log consolidation, prints a grey status line, then a grey Spectre **`Rule`**; **`/log`** (active session only) calls **`GET /api/conversations/{id}`** via **`ArcanumApiClient.GetConversationAsync`** and shows **`Conversation.Summary`**: yellow guidance when empty, otherwise a cyan-bordered **`Panel`** (**Campaign Log**) with **`Markup.Escape`** on the summary body; **`/model <name>`** overrides the model for later turns; **`/look`** prints an Eye of the World snapshot (same markup as **`look`**); **`/tools`** toggles MCP tools (**`PingRequest.disableMcpTools`**); **`/mcp reload`** calls **`POST /api/mcp/reload`**; **`/arsenal`** calls **`POST /api/intelligence/arsenal`** and renders a Spectre **`Tree`** (**Arcanum Arsenal**); **`/attach`** opens a **`SelectionPrompt`** file browser (type-to-search) to stage **one file per invocation** up to **1 MiB** each; the next turn sends full file text on the wire as **`PingRequest.attachedFiles`** (paths relative to **`workingDirectory`**) so **`SystemPromptBuilder`** can inject it into the **ephemeral** system prompt, while the persisted user **`prompt`** only gains a **`[Attached Files: …]`** footer with those relative paths (later turns use **`read_file_chunk`**). You can also **inline stage** paths with **`@relativeOrName`** tokens (regex: start of line or whitespace, then **`@`** and a non-whitespace path segment): if that path resolves under the current **`Environment.CurrentDirectory`**, exists, and is ≤ **1 MiB**, it is added to the same staging set and the token is stripped from the prompt (oversized files print a red warning and the token is still removed); missing paths leave the **`@`** token in the prompt. If you press Enter with only staged files (no typed text), the user message defaults to **`Please review the attached files.`** **`/exit`** / **`/quit`** leave the REPL; **`/clear`** clears the screen. Options: **`-m` / `--model`** (initial model override), **`-n` / `--new`** (calls **`CliSessionManager.ClearSession()`** **once** at startup), **`--no-tools`** (initial **`DisableMcpTools`**), **`--unattended`**. Each turn allocates a per-turn **`CancellationTokenSource`** linked to the command token, attaches **`Console.CancelKeyPress`** (**`e.Cancel = true`**, cancel CTS), unsubscribes in **`finally`** — Ctrl+C cancels the **in-flight** turn (prints **`<Cancelled>`** in yellow and re-prompts). Streaming uses **swap-at-the-end** rendering: while tokens arrive, each chunk is appended to a **`StringBuilder`** and printed via **`AnsiConsole.Markup(Markup.Escape(chunk))`** for fast plain output, with a per-turn line counter tracking **`\n`** and naive terminal-width wrap (**`AnsiConsole.Profile.Width`**); on a clean stream end the CLI calls **`AnsiConsole.Cursor.Move(CursorDirection.Up, linesPrinted)`**, writes **`"\r\u001b[0J"`** (carriage return + CSI 0J — erase from cursor to end of screen) so Spectre does not re-escape the ANSI, and finally calls **`AnsiConsole.Write(MarkdigSpectreRenderer.Render(fullText))`** to render the assistant turn through a hand-written, reflection-free Markdig AST walker (see [`UX/MarkdigSpectreRenderer.cs`](src/RetroDownfall.Arcanum.Cli/UX/MarkdigSpectreRenderer.cs)). The renderer maps **`HeadingBlock`** to **`[bold yellow]`**, wraps **`FencedCodeBlock`** in a **`Panel`** with **`BoxBorder.Rounded`** and a **`[cyan]`** language header (omitted when the fence has no info string), maps **`ParagraphBlock`** inlines to Spectre markup (**`EmphasisInline.DelimiterCount >= 2`** → **`[bold]`**, otherwise **`[italic]`**; **`CodeInline`** wraps in backticks; **`LineBreakInline`** becomes **`\n`**), flattens **`ListBlock`** to **`"  - "`** lines, and falls back to **`Markup.Escape(...)`** plain text for any unknown block (tables, blockquotes, inline HTML) so the renderer never throws. Status / tool-call diagnostics still go to stderr so they do not pollute the swap region. **Cancellation skips the swap**: the partial plain text remains visible and the loop continues.
-
-```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- chat
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- chat -m phi4
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- chat --new
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- chat --no-tools
-```
-
-**Eye of the World (`look`):** classifies the **current working directory** into a **`DomainType`** (for example software engineering, administration, research, or unknown) and prints a **bounded table of contents** (up to 20 lines) so agents get concrete filenames without a deep parse. **`IEyeOfTheWorld`** / **`EyeOfTheWorldService`** live in Core / Infrastructure; the CLI registers only **`AddArcanumEyeOfTheWorld()`** (not the full Grimoire stack). When the domain is **Unknown**, the TOC ranks files by **last write time (newest first)**, then **creation time**, so recently touched files surface first.
-
-```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- look
-```
-
-**Grimoire lore (`lore`):** Direct CRUD on explicit operator memory (**`MageSettings`**) via **`GET` / `POST` / `DELETE /api/lore`** (requires **`serve`** and **`X-Arcanum-Key`** — same as other authenticated CLI calls). Subcommands: **`lore list`** (table of keys, UTC updated time, value snippet), **`lore get <key>`** (full value in a panel), **`lore set <key> <value>`** (create or update; **quote** the value in the shell when it contains spaces), **`lore delete <key>`** (reports when nothing was removed). This path is independent of **`Arcanum:Intelligence:EnableLoreSystem`** (that toggle affects MCP **`read_lore`** / **`scribe_lore`** / **`delete_lore`** only).
-
-```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- lore list
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- lore get my-key
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- lore set my-key "A longer value with spaces."
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- lore delete my-key
-```
-
-**Background agent (`daemon`):** On **Windows** (elevated shell), **`daemon install`** runs **`sc create ArcanumDaemon`** with **`binPath=`** set to **`Environment.ProcessPath`** and arguments **`serve`**, **`start= auto`**, then **`sc start ArcanumDaemon`**. **`serve`** registers **`UseWindowsService`** with service name **`ArcanumDaemon`** so the same binary honors SCM lifetime when running as a service. **`daemon uninstall`** runs **`sc stop`** then **`sc delete`** ( **`sc stop`** when the service is already inactive is treated as success). **`daemon status`** uses **`sc query`**; **`GetStatusAsync`** reads only the numeric **`STATE`** code from **`sc`** output ( **`4`** = running, **`1`** = stopped) because the human-readable state text is **localized** by Windows. Missing service (**1060**) returns success with **`ArcanumDaemon is not installed.`** so **`daemon status`** exits **0**. On **macOS**, the same verbs drive the per-user LaunchAgent at **`~/Library/LaunchAgents/com.retrodownfall.arcanum.plist`**: install writes the plist ( **`Environment.ProcessPath`** + **`serve`**, **`RunAtLoad`**, **`KeepAlive`**) then runs **`launchctl bootstrap gui/<UID> <plist>`** (UID from **`/usr/bin/id -u`**). Uninstall runs **`launchctl bootout gui/<UID> <plist>`** then deletes the plist on success. **`daemon status`** exits **0** when the job is absent, printing **`Daemon is not currently loaded`**. On **Linux**, **`LinuxDaemonManager`** installs a **systemd user** unit at **`~/.config/systemd/user/arcanum.service`** (**`ExecStart=`** **`Environment.ProcessPath`** **`serve`**, **`Restart=always`**, **`WantedBy=default.target`**), runs **`systemctl --user daemon-reload`**, then **`systemctl --user enable --now arcanum.service`**. Uninstall runs **`systemctl --user disable --now arcanum.service`** (ignores errors such as a missing unit), deletes the unit file, then **`daemon-reload`**. **`daemon status`** maps **`ActiveState=active`** to **`Arcanum daemon is running.`** and otherwise returns **`Daemon is not currently loaded.`** (including when the unit file is absent). **`serve`** also calls **`UseSystemd()`** so the generic host receives **systemd** notifications when appropriate (no-op off Linux). In **containers** (**`/.dockerenv`** or **`DOTNET_RUNNING_IN_CONTAINER=true`**), **`daemon install` / `uninstall` / `status`** fail with **`ContainerUnsupported`** and a message to run **`arcanum serve`** as the entrypoint. On OSes outside the Windows / macOS / Linux triad, **`AddArcanumDaemonManagement`** throws **`PlatformNotSupportedException`** at startup.
-
-```bash
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- daemon install
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- daemon status
-dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- daemon uninstall
-```
-
-Health check (replace `YOUR_KEY` with the value from `ISecretStore` / DevHost first-run output, or delete `security.dat` and restart DevHost once to regenerate and print a new key):
-
-```bash
-curl -H "X-Arcanum-Key: YOUR_KEY" http://localhost:5001/api/health
-```
-
-OpenAPI document (Microsoft.AspNetCore.OpenApi) and Scalar UI (served from the same `serve` host, requires **`X-Arcanum-Key`**):
-
-- Specification: `http://localhost:5001/api/openapi/v1.json`
-- Interactive reference: `http://localhost:5001/api/scalar` or `http://localhost:5001/api/scalar/v1`
-
-Response (camelCase, source-generated `ApiResponse<string>` envelope):
-
-```json
-{
-  "data": "Arcanum API is online",
-  "isSuccess": true,
-  "error": null,
-  "traceId": "0HMVH2Q7..."
-}
-```
-
-## Native AOT publish (CLI)
+Other RIDs: `osx-x64`, `linux-x64`, `linux-arm64`, `win-x64`. Framework-dependent (no RID):
 
 ```bash
 dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release
 ```
 
-First-party **EF Core** trim/AOT diagnostics are addressed with **`[UnconditionalSuppressMessage]`** on **`ArcanumDbContext`** (**`IL3050`**, **`IL2026`**) and **`GrimoireDatabaseHostedService.StartAsync`** (**`IL3050`** for **`MigrateAsync`**), plus **`[UnconditionalSuppressMessage]`** on **`AddArcanumApiServices`** (**`IL2026`** for OpenAPI/Mvc metadata). **`Program.Main`** keeps **`[UnconditionalSuppressMessage("AOT", "IL3050")]`** for **Spectre** **`CommandApp`** construction, and **`DynamicDependency`** covers **`ServeCommand`**, **`AskCommand`** (including **`AskCommand.Settings`** with **`DynamicallyAccessedMemberTypes.All`**), **`ChatCommand`** (and **`ChatCommand.Settings`**), **`LookCommand`**, the **`lore`** branch commands (**`LoreListCommand`**, **`LoreGetCommand`**, **`LoreSetCommand`**, **`LoreDeleteCommand`** with **`DynamicallyAccessedMemberTypes.All`** on each), daemon commands, **`ArcanumApiClient`**, and **`CliTypeRegistrar`**. **`TrimmerRootAssembly`** still roots **`Spectre.Console.Cli`**. Grouped third-party ILC warnings (**`IL2104`**, **`IL3053`**, **`IL3002`**, **`IL3000`**, **`IL2026`**) that have no valid first-party suppression site are filtered **only for the ILC step** via **`<IlcArg Include="--nowarn:…" />`** in the **Cli** project (Roslyn/IDE still report trim issues in your code). On **macOS**, **`dotnet publish`** may still print **`EXEC : warning`** lines from **Apple clang** about missing **`.pcm`** module cache paths embedded in static runtime libraries; those are **not** IL diagnostics—the publish succeeds and the native binary is unaffected.
+## Further reading
 
-## Layout
-
-| Project | Role |
-|--------|------|
-| `src/RetroDownfall.Arcanum.Core` | Shared domain primitives under `Primitives/`; strongly typed settings and `ConfigurationBootstrapper` under `Configuration/` (`ArcanumSettings`, centralized JSON + `ARCANUM_` env); **`Security/`** (`ISecretStore` contract only); **`Hosting/`** (**`IDaemonManager`**); **`Intelligence/`** (`IArcanumIntelligenceProvider`, `PingRequest`, DTOs under **`Intelligence/Models/`** such as **`IntelligenceEvent`**, **`ConversationSummaryDto`**, **`ConversationDetailDto`**, **`ConversationMessageDto`**); **`Storage/`** (Grimoire POCOs, **`ArcanumPaths`**, **`IGrimoireRepository`**); **`Workspace/`** (`IWorkspaceScanner`); **`Pattern/`** (`IEyeOfTheWorld`, **`DomainType`**, **`PatternSnapshot`**). |
-| `src/RetroDownfall.Arcanum.Infrastructure` | OS / persistence: **`AddArcanumInfrastructure`**, **`AddArcanumEyeOfTheWorld`**, **`AddArcanumDaemonManagement`** ( **`IDaemonManager`** → Windows **[`WindowsDaemonManager`](src/RetroDownfall.Arcanum.Infrastructure/Hosting/WindowsDaemonManager.cs)** / macOS **[`MacOsDaemonManager`](src/RetroDownfall.Arcanum.Infrastructure/Hosting/MacOsDaemonManager.cs)** / Linux **[`LinuxDaemonManager`](src/RetroDownfall.Arcanum.Infrastructure/Hosting/LinuxDaemonManager.cs)** ), Serilog rolling JSON ([`Logging/`](src/RetroDownfall.Arcanum.Infrastructure/Logging/)), Data Protection + [`DataProtectionSecretStore`](src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs), [`ArcanumMasterKeyBootstrapper`](src/RetroDownfall.Arcanum.Infrastructure/Security/ArcanumMasterKeyBootstrapper.cs), EF Core **SQLCipher** (`ArcanumDbContext`, **`Data/Migrations/`** Grimoire migrations, `GrimoireRepository`, `GrimoireDatabaseHostedService`, HKDF passphrase), [`PhysicalWorkspaceScanner`](src/RetroDownfall.Arcanum.Infrastructure/Workspace/PhysicalWorkspaceScanner.cs), **[`Pattern/EyeOfTheWorldService`](src/RetroDownfall.Arcanum.Infrastructure/Pattern/EyeOfTheWorldService.cs)**, and generated compiled model under **`Generated/`**. **MCP client foundation (Native AOT):** JSON-RPC 2.0 DTOs, MCP wire DTOs (**[`McpWireDtos.cs`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/Protocol/McpWireDtos.cs)**), shared line parser **[`McpInboundJsonRpc`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpInboundJsonRpc.cs)**, and source-generated **[`McpJsonSerializerContext`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/Protocol/JsonRpcModels.cs)**; internal **[`IMcpTransport`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/IMcpTransport.cs)** with stdio **[`McpProcessTransport`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpProcessTransport.cs)** (UTF-8 stdin/stdout/stderr, bounded inbound channel) and in-process **[`InProcessMcpTransport`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/InProcessMcpTransport.cs)** + **[`ArcanumInternalToolServer`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/ArcanumInternalToolServer.cs)** (**`Channel<string>`** NDJSON, no subprocess); internal **[`McpClient`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpClient.cs)** over **`IMcpTransport`** (JSON-RPC **id** correlation, **`initialize`** / **`notifications/initialized`**, **`tools/list`**, **`SendRequestAsync`** with default **60s** timeout); internal **[`McpBridgeTool`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpBridgeTool.cs)** (**`Microsoft.Extensions.AI`** **`AIFunction`** → **`tools/call`**; **`params`** JSON is written with **`Utf8JsonWriter`**, not **`JsonSerializer`**, for Native AOT safety); public **[`McpConnectionManager`](src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpConnectionManager.cs)** (bootstraps internal MCP first, then **`mcp.json`** servers). Packages include **`Microsoft.EntityFrameworkCore.Sqlite.Core`**, **`SQLitePCLRaw.bundle_e_sqlcipher`**, **`Microsoft.EntityFrameworkCore.Tasks`** (with **`EFOptimizeContext`** disabled—see Grimoire section), **`Microsoft.EntityFrameworkCore.Design`** (private), **`Serilog.AspNetCore`**, **`Microsoft.Extensions.Hosting.WindowsServices`**, **`Microsoft.Extensions.Hosting.Systemd`**, **`Microsoft.Extensions.AI`**. Class library is **`IsTrimmable`** / **`PublishAot`**-marked for Native AOT alignment. |
-| `src/RetroDownfall.Arcanum.Api` | HTTP surface: `AddArcanumApiServices(IConfiguration)` calls **`AddArcanumInfrastructure`** (Serilog, secrets, Grimoire, workspace scanner) then registers Ollama, OpenAPI, JSON options, and `MapArcanumEndpoints` (OpenAPI/Scalar + **`/api`** route group with `ApiKeyEndpointFilter`, **`GET /api/conversations`**, **`GET /api/conversations/{id}`** (**`ApiResponse<ConversationDetailDto>`**: **`id`**, **`title`**, **`createdAt`**, **`summary`**), **`GET /api/conversations/{id}/messages`** (**`ApiResponse<List<ConversationMessageDto>>`**, ordered thread history), **`DELETE /api/conversations/{id}`**, **`POST /api/conversations/{id}/rest`**, **`GET /api/lore`**, **`GET /api/lore/{key}`**, **`POST /api/lore`**, **`DELETE /api/lore/{key}`**, **`POST /api/intelligence/ping`**, NDJSON **`POST /api/intelligence/ping-stream`**), `Intelligence/OllamaIntelligenceProvider`, and `ArcanumJsonContext` under `Serialization/`. Hosts must **`ClearProviders()`** before service registration so Serilog replaces default logging. References **`Microsoft.Extensions.Hosting.WindowsServices`** and **`Microsoft.Extensions.Hosting.Systemd`** for version alignment with **Cli** / **Infrastructure** ( **`UseWindowsService`** / **`UseSystemd`** are invoked from **`ServeCommand`**, not from this class library). |
-| `src/RetroDownfall.Arcanum.Api.DevHost` | Debug-only console host (no Spectre) for F5 on the API stack from VS Code; references **Api**, **Core**, and **Infrastructure** (for [`ArcanumMasterKeyBootstrapper`](src/RetroDownfall.Arcanum.Infrastructure/Security/ArcanumMasterKeyBootstrapper.cs)); same configuration and **loopback + API key** bootstrap as `serve`, printing the generated key once on first run for developer convenience. |
-| `src/RetroDownfall.Arcanum.Cli` | Entry point: Spectre `CommandApp` with MS DI (**DataProtection** + **`ISecretStore`** via [`DataProtectionSecretStore`](src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs) from **Infrastructure** so pre-`serve` resolution matches the API host, **`AddArcanumEyeOfTheWorld`**, **`AddArcanumDaemonManagement`**, named **`HttpClient` "ArcanumApi"`**, **`ArcanumApiClient`**). **`serve`** hosts the slim API (`AsyncCommand`) and calls **`UseWindowsService`** (**`Microsoft.Extensions.Hosting.WindowsServices`**, service name **`ArcanumDaemon`**) and **`UseSystemd()`** (**`Microsoft.Extensions.Hosting.Systemd`**). Kestrel uses **`ARCANUM_HOST_ANY`** (**`1`** / **`true`**) to choose **`ListenAnyIP(5001)`** vs loopback. **`ask`** injects **`IEyeOfTheWorld`**, builds **`PingRequest`** (spatial fields + optional **`conversationId`** from **`CliSessionManager`** / **`~/.config/arcanum/cli-session.txt`**; **`--new`** clears it), persists ids from **`conversationBound`** on the NDJSON stream, then streams **`/api/intelligence/ping-stream`** with **`X-Arcanum-Key`** (`HttpCompletionOption.ResponseHeadersRead` + line-delimited NDJSON via **`JsonSerializer.Deserialize`** per line), prints **`status`** on stderr and live **`token`** text on stdout, then a trailing newline after streamed output (errors on stderr; exit **0** / **1** / **130** on Ctrl+C). **`chat`** is the multi-turn REPL ([`ChatCommand`](src/RetroDownfall.Arcanum.Cli/Commands/ChatCommand.cs)) — same **`AskStreamAsync`** plumbing but sends **`cliTerminalFormatting: true`**, intercepts **`/exit`** / **`/clear`**, runs a per-turn **`CancellationTokenSource`** so Ctrl+C cancels only the in-flight turn (prints **`<Cancelled>`** and re-prompts), and on clean completion erases the streamed plain block via **`AnsiConsole.Cursor.Move(CursorDirection.Up, n)` + `\r\u001b[0J`** before re-rendering through the AOT-safe Markdig walker [`MarkdigSpectreRenderer`](src/RetroDownfall.Arcanum.Cli/UX/MarkdigSpectreRenderer.cs) (Headings → **`[bold yellow]`**, **`FencedCodeBlock`** → rounded **`Panel`** with cyan language header, paragraph emphasis → bold/italic Spectre markup, fallback to escaped plain text for tables/blockquotes/HTML so it never throws). **`look`** runs **`IEyeOfTheWorld`** on **`Environment.CurrentDirectory`** and prints domain + TOC (Spectre markup: silver labels, sky-blue values). **`lore list` / `get` / `set` / `delete`** ([`Commands/Lore/`](src/RetroDownfall.Arcanum.Cli/Commands/Lore/)) call **`ArcanumApiClient`** **`ListLoreAsync`**, **`GetLoreAsync`**, **`UpsertLoreAsync`**, **`DeleteLoreAsync`** against **`/api/lore`** (source-generated JSON only). **`ArcanumApiClient`** also exposes **`GetConversationMessagesAsync`** (**`GET /api/conversations/{id}/messages`**, **`List<ConversationMessageDto>`** via **`ArcanumJsonContext`**) for API-first clients that need the full ordered thread. **`daemon install` / `uninstall` / `status`** resolve **`IDaemonManager`** (Windows **`sc`** / macOS launchd / Linux **`systemctl --user`**; see CLI section). Adds **`Markdig`** as a **`PackageReference`** (used only for AST parsing — the renderer is hand-written so no reflection-heavy Markdig.* extensions or Spectre.Console.Markdown packages enter the AOT graph). Project references **Core**, **Api**, and **Infrastructure**. |
-
-Solution file: `RetroDownfall.Arcanum.slnx` (XML SLNX format).
+- [DESIGN.md](docs/DESIGN.md) — architecture, encryption, MCP internals, tool-call lifecycle, and extension guidelines.

@@ -2,15 +2,18 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -19,7 +22,12 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 public sealed class ChatCommand(
     IEyeOfTheWorld eye,
     ArcanumApiClient apiClient,
-    IOptions<ArcanumSettings> arcanumSettings) : AsyncCommand<ChatCommand.Settings>
+    IOptions<ArcanumSettings> arcanumSettings,
+    IThemePalette themePalette,
+    CliSessionManager cliSession,
+    MarkdigSpectreRenderer markdig,
+    IGrimoireCliInitialization grimoireBootstrapper,
+    IServiceScopeFactory scopeFactory) : AsyncCommand<ChatCommand.Settings>
 {
 
     private long MaxAttachFileSizeBytes =>
@@ -51,12 +59,16 @@ public sealed class ChatCommand(
     {
         if (settings.New)
         {
-            CliSessionManager.ClearSession();
+            cliSession.ClearSession();
         }
 
         IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
 
-        AnsiConsole.MarkupLine("[dim]Arcanum chat — [bold]/help[/] for slash commands, [bold]/exit[/] to quit, Ctrl+C to cancel a turn.[/]");
+        await grimoireBootstrapper.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLine(
+            themePalette.MutedMarkup(
+                Markup.Escape("Arcanum chat — /help for slash commands, /exit to quit, Ctrl+C to cancel a turn.")));
 
         SessionMut session = new()
         {
@@ -75,8 +87,8 @@ public sealed class ChatCommand(
             string raw;
 
             string promptMarkup = stagedFiles.Count > 0
-                ? $"[yellow][[{stagedFiles.Count} file(s) staged]]][/] [bold blue]Mage[/] >"
-                : "[bold blue]Mage[/] >";
+                ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedFiles.Count} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
+                : $"{themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >";
 
             RenderManaBarLine(lastTokenUsage.Value, arcanumSettings.Value.Ollama.ContextWindowLimit);
 
@@ -195,11 +207,12 @@ public sealed class ChatCommand(
                     }
                     catch (IOException ex)
                     {
-                        AnsiConsole.MarkupLine($"[red]{Markup.Escape(file)}:[/] {Markup.Escape(ex.Message)}");
+                        AnsiConsole.MarkupLine(
+                            $"{themePalette.ErrorMarkup(Markup.Escape(file + ":"))} {themePalette.TextMarkup(Markup.Escape(ex.Message))}");
                     }
                     catch (UnauthorizedAccessException ex)
                     {
-                        AnsiConsole.MarkupLine($"[red]{Markup.Escape(file)}:[/] {Markup.Escape(ex.Message)}");
+                        AnsiConsole.MarkupLine($"{themePalette.ErrorMarkup(Markup.Escape(file + ":"))} {themePalette.TextMarkup(Markup.Escape(ex.Message))}");
                     }
                 }
 
@@ -267,9 +280,9 @@ public sealed class ChatCommand(
 
         if (verb.Equals("/new", StringComparison.OrdinalIgnoreCase))
         {
-            CliSessionManager.ClearSession();
+            cliSession.ClearSession();
 
-            AnsiConsole.MarkupLine("[dim]Started new conversation.[/]");
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Started new conversation.")));
 
             return (true, false);
         }
@@ -278,14 +291,16 @@ public sealed class ChatCommand(
         {
             if (string.IsNullOrWhiteSpace(tail))
             {
-                AnsiConsole.MarkupLine("[yellow]Usage:[/] [grey]/model <name>[/]");
+                AnsiConsole.MarkupLine(
+                    $"{themePalette.HighlightMarkup(Markup.Escape("Usage:"))} {themePalette.MutedMarkup(Markup.Escape("/model <name>"))}");
 
                 return (true, false);
             }
 
             session.CurrentModel = tail.Trim();
 
-            AnsiConsole.MarkupLine($"[cyan]Model override:[/] {Markup.Escape(session.CurrentModel)}");
+            AnsiConsole.MarkupLine(
+                $"{themePalette.HighlightMarkup(Markup.Escape("Model override:"))} {themePalette.TextMarkup(Markup.Escape(session.CurrentModel!))}");
 
             return (true, false);
         }
@@ -296,7 +311,7 @@ public sealed class ChatCommand(
                 .PerceivePatternAsync(Environment.CurrentDirectory, cancellationToken)
                 .ConfigureAwait(false);
 
-            PatternSnapshotMarkup.WritePatternSnapshot(snapshot);
+            PatternSnapshotMarkup.WritePatternSnapshot(snapshot, themePalette);
 
             return (true, false);
         }
@@ -306,7 +321,8 @@ public sealed class ChatCommand(
             session.DisableTools = !session.DisableTools;
 
             AnsiConsole.MarkupLine(
-                $"[yellow]MCP tools {(session.DisableTools ? "disabled" : "enabled")}.[/]");
+                themePalette.HighlightMarkup(
+                    Markup.Escape($"MCP tools {(session.DisableTools ? "disabled" : "enabled")}.")));
 
             return (true, false);
         }
@@ -315,7 +331,8 @@ public sealed class ChatCommand(
         {
             if (!tail.Equals("reload", StringComparison.OrdinalIgnoreCase))
             {
-                AnsiConsole.MarkupLine("[yellow]Usage:[/] [grey]/mcp reload[/]");
+                AnsiConsole.MarkupLine(
+                    $"{themePalette.HighlightMarkup(Markup.Escape("Usage:"))} {themePalette.MutedMarkup(Markup.Escape("/mcp reload"))}");
 
                 return (true, false);
             }
@@ -329,11 +346,11 @@ public sealed class ChatCommand(
 
             if (reloadResult.IsSuccess)
             {
-                AnsiConsole.MarkupLine($"[green]{Markup.Escape(reloadResult.Value)}[/]");
+                AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape(reloadResult.Value)));
             }
             else
             {
-                AnsiConsole.MarkupLine($"[red]{Markup.Escape(reloadResult.Error.Message)}[/]");
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(reloadResult.Error.Message)));
             }
 
             return (true, false);
@@ -351,7 +368,7 @@ public sealed class ChatCommand(
 
             if (arsenalResult.IsFailure)
             {
-                AnsiConsole.MarkupLine($"[red]{Markup.Escape(arsenalResult.Error.Message)}[/]");
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(arsenalResult.Error.Message)));
 
                 return (true, false);
             }
@@ -368,14 +385,14 @@ public sealed class ChatCommand(
 
             if (historyResult.IsFailure)
             {
-                AnsiConsole.MarkupLine($"[red]{Markup.Escape(historyResult.Error.Message)}[/]");
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(historyResult.Error.Message)));
 
                 return (true, false);
             }
 
             if (historyResult.Value.Count == 0)
             {
-                AnsiConsole.MarkupLine("[dim silver]No past conversations found.[/]");
+                AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No past conversations found.")));
 
                 return (true, false);
             }
@@ -384,13 +401,13 @@ public sealed class ChatCommand(
 
             historyTable.Border(TableBorder.Rounded);
 
-            historyTable.BorderColor(Color.Silver);
+            historyTable.BorderColor(themePalette.Muted);
 
-            historyTable.AddColumn("[bold skyblue]ID[/]");
+            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("ID")));
 
-            historyTable.AddColumn("[bold skyblue]Updated[/]");
+            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Updated")));
 
-            historyTable.AddColumn("[bold skyblue]Snippet[/]");
+            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Snippet")));
 
             foreach (ConversationSummaryDto row in historyResult.Value)
             {
@@ -413,7 +430,8 @@ public sealed class ChatCommand(
         {
             if (string.IsNullOrWhiteSpace(tail))
             {
-                AnsiConsole.MarkupLine("[yellow]Usage:[/] [grey]/resume <id>[/]");
+                AnsiConsole.MarkupLine(
+                    $"{themePalette.HighlightMarkup(Markup.Escape("Usage:"))} {themePalette.MutedMarkup(Markup.Escape("/resume <id>"))}");
 
                 return (true, false);
             }
@@ -431,9 +449,9 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            CliSessionManager.SaveConversationId(resumeId);
+            cliSession.SaveConversationId(resumeId);
 
-            AnsiConsole.MarkupLine("[dim]Resumed conversation.[/]");
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Resumed conversation.")));
 
             return (true, false);
         }
@@ -442,7 +460,8 @@ public sealed class ChatCommand(
         {
             if (string.IsNullOrWhiteSpace(tail))
             {
-                AnsiConsole.MarkupLine("[yellow]Usage:[/] [grey]/delete <id>[/]");
+                AnsiConsole.MarkupLine(
+                    $"{themePalette.HighlightMarkup(Markup.Escape("Usage:"))} {themePalette.MutedMarkup(Markup.Escape("/delete <id>"))}");
 
                 return (true, false);
             }
@@ -464,31 +483,33 @@ public sealed class ChatCommand(
 
             if (deleteResult.IsFailure)
             {
-                AnsiConsole.MarkupLine($"[red]{Markup.Escape(deleteResult.Error.Message)}[/]");
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(deleteResult.Error.Message)));
 
                 return (true, false);
             }
 
-            Guid? active = CliSessionManager.GetLastConversationId();
+            Guid? active = cliSession.GetLastConversationId();
 
             if (active == deleteId)
             {
-                CliSessionManager.ClearSession();
+                cliSession.ClearSession();
             }
 
-            AnsiConsole.MarkupLine("[dim]Conversation deleted.[/]");
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Conversation deleted.")));
 
             return (true, false);
         }
 
         if (verb.Equals("/rest", StringComparison.OrdinalIgnoreCase))
         {
-            Guid? activeConversationId = CliSessionManager.GetLastConversationId();
+            Guid? activeConversationId = cliSession.GetLastConversationId();
 
             if (activeConversationId is null)
             {
                 AnsiConsole.MarkupLine(
-                    "[yellow]No active conversation. Send a message first or use /resume to bind a session.[/]");
+                    themePalette.HighlightMarkup(
+                        Markup.Escape(
+                            "No active conversation. Send a message first or use /resume to bind a session.")));
 
                 return (true, false);
             }
@@ -499,26 +520,28 @@ public sealed class ChatCommand(
 
             if (restResult.IsFailure)
             {
-                AnsiConsole.MarkupLine($"[red]{Markup.Escape(restResult.Error.Message)}[/]");
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(restResult.Error.Message)));
 
                 return (true, false);
             }
 
-            AnsiConsole.MarkupLine("[grey]Initiating long rest... Memory consolidation queued.[/]");
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Initiating long rest... Memory consolidation queued.")));
 
-            AnsiConsole.Write(new Rule().RuleStyle(new Style(foreground: Color.Grey)));
+            AnsiConsole.Write(new Rule().RuleStyle(themePalette.MutedStyle()));
 
             return (true, false);
         }
 
         if (verb.Equals("/log", StringComparison.OrdinalIgnoreCase))
         {
-            Guid? logConversationId = CliSessionManager.GetLastConversationId();
+            Guid? logConversationId = cliSession.GetLastConversationId();
 
             if (logConversationId is null)
             {
                 AnsiConsole.MarkupLine(
-                    "[yellow]No active conversation. Send a message first or use /resume to bind a session.[/]");
+                    themePalette.HighlightMarkup(
+                        Markup.Escape(
+                            "No active conversation. Send a message first or use /resume to bind a session.")));
 
                 return (true, false);
             }
@@ -529,7 +552,7 @@ public sealed class ChatCommand(
 
             if (logResult.IsFailure)
             {
-                AnsiConsole.MarkupLine($"[red]{Markup.Escape(logResult.Error.Message)}[/]");
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(logResult.Error.Message)));
 
                 return (true, false);
             }
@@ -539,16 +562,18 @@ public sealed class ChatCommand(
             if (string.IsNullOrWhiteSpace(detail.Summary))
             {
                 AnsiConsole.MarkupLine(
-                    "[yellow]No campaign log exists for this session yet. Type /rest to trigger consolidation.[/]");
+                    themePalette.HighlightMarkup(
+                        Markup.Escape(
+                            "No campaign log exists for this session yet. Type /rest to trigger consolidation.")));
 
                 return (true, false);
             }
 
             Panel logPanel = new(new Markup(Markup.Escape(detail.Summary)))
             {
-                Header = new PanelHeader("[bold cyan]Campaign Log[/]"),
+                Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Campaign Log"))),
                 Border = BoxBorder.Rounded,
-                BorderStyle = new Style(foreground: Color.Cyan),
+                BorderStyle = themePalette.HighlightStyle(),
             };
 
             AnsiConsole.Write(logPanel);
@@ -584,7 +609,7 @@ public sealed class ChatCommand(
 
             if (listResult.IsFailure)
             {
-                return (false, default, $"[red]{Markup.Escape(listResult.Error.Message)}[/]");
+                return (false, default, themePalette.ErrorMarkup(Markup.Escape(listResult.Error.Message)));
             }
 
             List<ConversationSummaryDto> matches = listResult.Value
@@ -593,7 +618,7 @@ public sealed class ChatCommand(
 
             if (matches.Count == 0)
             {
-                return (false, default, "[red]No conversation matches that ID.[/]");
+                return (false, default, themePalette.ErrorMarkup(Markup.Escape("No conversation matches that ID.")));
             }
 
             if (matches.Count > 1)
@@ -601,7 +626,8 @@ public sealed class ChatCommand(
                 return (
                     false,
                     default,
-                    "[red]Multiple conversations match that ID. Please provide the full Guid.[/]");
+                    themePalette.ErrorMarkup(
+                        Markup.Escape("Multiple conversations match that ID. Please provide the full Guid.")));
             }
 
             return (true, matches[0].Id, null);
@@ -610,7 +636,8 @@ public sealed class ChatCommand(
         return (
             false,
             default,
-            "[red]Invalid id. Provide a full Guid or the first 8 hex characters (no dashes).[/]");
+            themePalette.ErrorMarkup(
+                Markup.Escape("Invalid id. Provide a full Guid or the first 8 hex characters (no dashes).")));
     }
 
     private static bool IsEightCharHexDigitPrefix(string t)
@@ -631,15 +658,15 @@ public sealed class ChatCommand(
         return true;
     }
 
-    private static void RenderHelp()
+    private void RenderHelp()
     {
         Table table = new();
 
         table.Border(TableBorder.Rounded);
 
-        table.AddColumn("[grey]Command[/]");
+        table.AddColumn(themePalette.MutedMarkup(Markup.Escape("Command")));
 
-        table.AddColumn("[grey]Description[/]");
+        table.AddColumn(themePalette.MutedMarkup(Markup.Escape("Description")));
 
         table.AddRow("/exit, /quit", "Leave the REPL.");
 
@@ -651,21 +678,35 @@ public sealed class ChatCommand(
 
         table.AddRow("/history", "List recent conversations (time travel).");
 
-        table.AddRow("/resume [cyan]<id>[/]", "Continue a past conversation (full Guid or 8-char hex prefix).");
+        table.AddRow(
+            "/resume " + themePalette.HighlightMarkup(Markup.Escape("<id>")),
+            "Continue a past conversation (full Guid or 8-char hex prefix).");
 
-        table.AddRow("/delete [cyan]<id>[/]", "Delete a conversation from Grimoire (full Guid or 8-char prefix).");
+        table.AddRow(
+            "/delete " + themePalette.HighlightMarkup(Markup.Escape("<id>")),
+            "Delete a conversation from Grimoire (full Guid or 8-char prefix).");
 
         table.AddRow("/rest", "Manually trigger memory consolidation for the current session.");
 
         table.AddRow("/log", "View the Campaign Log (summarized history) for this session.");
 
-        table.AddRow("/model [cyan]<name>[/]", "Override model for subsequent turns.");
+        table.AddRow(
+            "/model " + themePalette.HighlightMarkup(Markup.Escape("<name>")),
+            "Override model for subsequent turns.");
 
         table.AddRow("/look", "Eye of the World snapshot for the current directory.");
 
-        table.AddRow("/tools", "Toggle MCP tools ([cyan]PingRequest.disableMcpTools[/]).");
+        table.AddRow(
+            "/tools",
+            "Toggle MCP tools ("
+                + themePalette.HighlightMarkup(Markup.Escape("PingRequest.disableMcpTools"))
+                + ").");
 
-        table.AddRow("/mcp reload", "Daemon: dispose MCP partitions, re-bootstrap global [cyan]mcp.json[/].");
+        table.AddRow(
+            "/mcp reload",
+            "Daemon: dispose MCP partitions, re-bootstrap global "
+                + themePalette.HighlightMarkup(Markup.Escape("mcp.json"))
+                + ".");
 
         table.AddRow("/arsenal", "Daemon: spells, native tools, and MCP server status.");
 
@@ -674,25 +715,31 @@ public sealed class ChatCommand(
         AnsiConsole.Write(table);
     }
 
-    private static void WriteCannotStageTooLarge(string fileName, long maxAttachFileSizeBytes)
+    private void WriteCannotStageTooLarge(string fileName, long maxAttachFileSizeBytes)
     {
         AnsiConsole.MarkupLine(
-            $"[red]Cannot stage {Markup.Escape(fileName)}: File exceeds the configured limit ({maxAttachFileSizeBytes} bytes).[/]");
+            themePalette.ErrorMarkup(
+                Markup.Escape(
+                    $"Cannot stage {fileName}: File exceeds the configured limit ({maxAttachFileSizeBytes} bytes).")));
     }
 
-    private static string FormatBrowseItem(BrowseItem item)
+    private string FormatBrowseItem(BrowseItem item)
     {
         return item.Kind switch
         {
-            BrowseKind.Up => "[blue].. (Up one directory)[/]",
-            BrowseKind.Directory => $"[blue]{Markup.Escape(Path.GetFileName(item.FullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))}/[/]",
+            BrowseKind.Up => themePalette.HighlightMarkup(Markup.Escape(".. (Up one directory)")),
+            BrowseKind.Directory => themePalette.HighlightMarkup(
+                Markup.Escape(
+                    Path.GetFileName(
+                        item.FullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                    + "/")),
             BrowseKind.File => Markup.Escape(Path.GetFileName(item.FullPath)),
-            BrowseKind.Cancel => "[red]< Cancel >[/]",
+            BrowseKind.Cancel => themePalette.ErrorMarkup(Markup.Escape("< Cancel >")),
             _ => "?",
         };
     }
 
-    private static void RunAttachBrowser(HashSet<string> stagedFiles, string initialDirectory, long maxAttachFileSizeBytes)
+    private void RunAttachBrowser(HashSet<string> stagedFiles, string initialDirectory, long maxAttachFileSizeBytes)
     {
         string currentBrowseDir = Path.GetFullPath(initialDirectory);
 
@@ -714,7 +761,7 @@ public sealed class ChatCommand(
 
                 if (parent is null)
                 {
-                    AnsiConsole.MarkupLine("[red]Access denied; cannot go up.[/]");
+                    AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Access denied; cannot go up.")));
 
                     break;
                 }
@@ -748,7 +795,8 @@ public sealed class ChatCommand(
             choices.Add(new BrowseItem(BrowseKind.Cancel, string.Empty));
 
             SelectionPrompt<BrowseItem> selection = new SelectionPrompt<BrowseItem>()
-                .Title($"[cyan]Browsing:[/] {Markup.Escape(currentBrowseDir)}\n[grey](Type to search, Enter to select)[/]")
+                .Title(
+                    $"{themePalette.HighlightMarkup(Markup.Escape("Browsing:"))} {themePalette.TextMarkup(Markup.Escape(currentBrowseDir))}\n{themePalette.MutedMarkup(Markup.Escape("(Type to search, Enter to select)"))}")
                 .PageSize(15)
                 .UseConverter(FormatBrowseItem)
                 .EnableSearch();
@@ -801,7 +849,7 @@ public sealed class ChatCommand(
                     }
                     catch (IOException ex)
                     {
-                        AnsiConsole.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+                        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ex.Message)));
 
                         continue;
                     }
@@ -815,7 +863,8 @@ public sealed class ChatCommand(
 
                     stagedFiles.Add(full);
 
-                    AnsiConsole.MarkupLine($"[green]Staged:[/] {Markup.Escape(name)}");
+                    AnsiConsole.MarkupLine(
+                        $"{themePalette.HighlightMarkup(Markup.Escape("Staged:"))} {themePalette.TextMarkup(Markup.Escape(name))}");
 
                     return;
                 }
@@ -841,15 +890,15 @@ public sealed class ChatCommand(
 
     private readonly record struct BrowseItem(BrowseKind Kind, string FullPath);
 
-    private static void RenderArsenalTree(WorkspaceArsenalDto dto)
+    private void RenderArsenalTree(WorkspaceArsenalDto dto)
     {
-        Tree root = new("[bold magenta]Arcanum Arsenal[/]");
+        Tree root = new(themePalette.HeadingBoldMarkup(Markup.Escape("Arcanum Arsenal")));
 
-        TreeNode spellsNode = root.AddNode("[bold]Spells[/]");
+        TreeNode spellsNode = root.AddNode(themePalette.HeadingBoldMarkup(Markup.Escape("Spells")));
 
         if (dto.ActiveSpells.Count == 0)
         {
-            spellsNode.AddNode("[grey]<none>[/]");
+            spellsNode.AddNode(themePalette.MutedMarkup(Markup.Escape("<none>")));
         }
         else
         {
@@ -859,11 +908,11 @@ public sealed class ChatCommand(
             }
         }
 
-        TreeNode nativeNode = root.AddNode("[bold]Native Tools[/]");
+        TreeNode nativeNode = root.AddNode(themePalette.HeadingBoldMarkup(Markup.Escape("Native Tools")));
 
         if (dto.NativeTools.Count == 0)
         {
-            nativeNode.AddNode("[grey]<none>[/]");
+            nativeNode.AddNode(themePalette.MutedMarkup(Markup.Escape("<none>")));
         }
         else
         {
@@ -873,26 +922,27 @@ public sealed class ChatCommand(
             }
         }
 
-        TreeNode mcpNode = root.AddNode("[bold]Connected MCP Servers[/]");
+        TreeNode mcpNode = root.AddNode(themePalette.HeadingBoldMarkup(Markup.Escape("Connected MCP Servers")));
 
         if (dto.McpServers.Count == 0)
         {
-            mcpNode.AddNode("[grey]<none>[/]");
+            mcpNode.AddNode(themePalette.MutedMarkup(Markup.Escape("<none>")));
         }
         else
         {
             foreach (McpServerStatusDto srv in dto.McpServers)
             {
-                string color = string.Equals(srv.Status, "Online", StringComparison.OrdinalIgnoreCase)
-                    ? "green"
-                    : "red";
+                string namePart = string.Equals(srv.Status, "Online", StringComparison.OrdinalIgnoreCase)
+                    ? themePalette.HighlightMarkup(Markup.Escape(srv.ServerName))
+                    : themePalette.ErrorMarkup(Markup.Escape(srv.ServerName));
 
-                TreeNode srvNode = mcpNode.AddNode(
-                    $"[{color}]{Markup.Escape(srv.ServerName)}[/] [grey]({srv.ToolCount} tools)[/]");
+                string suffix = themePalette.MutedMarkup(Markup.Escape($" ({srv.ToolCount} tools)"));
+
+                TreeNode srvNode = mcpNode.AddNode($"{namePart} {suffix}");
 
                 if (!string.IsNullOrWhiteSpace(srv.ErrorMessage))
                 {
-                    srvNode.AddNode($"[red]{Markup.Escape(srv.ErrorMessage!)}[/]");
+                    srvNode.AddNode(themePalette.ErrorMarkup(Markup.Escape(srv.ErrorMessage!)));
                 }
 
                 foreach (string tool in srv.ProvidedTools)
@@ -907,7 +957,7 @@ public sealed class ChatCommand(
         AnsiConsole.WriteLine();
     }
 
-    private static void RenderManaBarLine(int usedTokens, int contextWindowLimit)
+    private void RenderManaBarLine(int usedTokens, int contextWindowLimit)
     {
         double limit = Math.Max(1, contextWindowLimit);
 
@@ -927,10 +977,16 @@ public sealed class ChatCommand(
 
         string emptyStr = new('░', barWidth - filled);
 
-        string barHostColor = pct < 75.0 ? "green" : (pct <= 90.0 ? "yellow" : "red");
+        Color fillColor = pct < 75.0
+            ? themePalette.Highlight
+            : pct <= 90.0 ? themePalette.Heading : themePalette.Error;
+
+        string fillTag = fillColor.ToMarkup();
+
+        string mutedTag = themePalette.Muted.ToMarkup();
 
         string line =
-            $"[grey]Mana:[/] [[[{barHostColor}]{filledStr}[/][grey]{emptyStr}[/]] {displayPct}% ({usedTokens}/{contextWindowLimit})";
+            $"{themePalette.MutedMarkup(Markup.Escape("Mana:"))} [[[{fillTag}]{filledStr}[/][{mutedTag}]{emptyStr}[/]] {displayPct}% ({usedTokens}/{contextWindowLimit})";
 
         AnsiConsole.MarkupLine(line);
     }
@@ -985,7 +1041,16 @@ public sealed class ChatCommand(
                 .PerceivePatternAsync(cwd, perTurnCts.Token)
                 .ConfigureAwait(false);
 
-            Guid? conversationId = CliSessionManager.GetLastConversationId();
+            ChronosyncReport chronosyncDelta;
+
+            await using (AsyncServiceScope chronosyncScope = scopeFactory.CreateAsyncScope())
+            {
+                IChronosyncEngine chronosync = chronosyncScope.ServiceProvider.GetRequiredService<IChronosyncEngine>();
+
+                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot).ConfigureAwait(false);
+            }
+
+            Guid? conversationId = cliSession.GetLastConversationId();
 
             PingRequest ping = new(
                 prompt,
@@ -996,7 +1061,8 @@ public sealed class ChatCommand(
                 session.DisableTools,
                 CliTerminalFormatting: true,
                 UnattendedMode: settings.Unattended,
-                AttachedFiles: attachedFiles);
+                AttachedFiles: attachedFiles,
+                ChronosyncDelta: chronosyncDelta);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {
@@ -1004,7 +1070,7 @@ public sealed class ChatCommand(
                 {
                     case IntelligenceEventType.Status:
 
-                        stderrConsole.MarkupLine($"[dim]{Markup.Escape(evt.Message)}[/]");
+                        stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(evt.Message)));
 
                         break;
 
@@ -1028,7 +1094,7 @@ public sealed class ChatCommand(
                     case IntelligenceEventType.ToolCall:
 
                         AskHumanResult humanResult = await AskHumanToolCallStreamHandler
-                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, perTurnCts.Token)
+                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, themePalette, perTurnCts.Token)
                             .ConfigureAwait(false);
 
                         if (humanResult == AskHumanResult.SubmitFailed)
@@ -1049,7 +1115,7 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.ToolResult:
 
-                        stderrConsole.MarkupLine($"[grey]{Markup.Escape(evt.Data ?? evt.Message)}[/]");
+                        stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));
 
                         break;
 
@@ -1057,7 +1123,7 @@ public sealed class ChatCommand(
 
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
-                            CliSessionManager.SaveConversationId(boundId);
+                            cliSession.SaveConversationId(boundId);
                         }
 
                         break;
@@ -1078,7 +1144,8 @@ public sealed class ChatCommand(
 
                         AnsiConsole.WriteLine();
 
-                        AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(evt.Message)}");
+                        AnsiConsole.MarkupLine(
+                            themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(evt.Message)));
 
                         errored = true;
 
@@ -1104,7 +1171,7 @@ public sealed class ChatCommand(
         {
             AnsiConsole.WriteLine();
 
-            AnsiConsole.MarkupLine("[yellow]<Cancelled>[/]");
+            AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape("<Cancelled>")));
 
             return;
         }
@@ -1133,7 +1200,7 @@ public sealed class ChatCommand(
             Console.Write("\r\u001b[0J");
         }
 
-        AnsiConsole.Write(MarkdigSpectreRenderer.Render(body));
+        AnsiConsole.Write(markdig.Render(body));
 
         AnsiConsole.WriteLine();
     }

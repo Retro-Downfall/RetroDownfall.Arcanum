@@ -1,11 +1,12 @@
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 
-public sealed class LoreDeleteCommand(ArcanumApiClient apiClient) : AsyncCommand
+public sealed class LoreDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
 {
     [CommandArgument(0, "<KEY>")]
     public required string Key { get; init; }
@@ -16,19 +17,20 @@ public sealed class LoreDeleteCommand(ArcanumApiClient apiClient) : AsyncCommand
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result.Error.Message)}[/]");
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
 
             return 1;
         }
 
         if (result.Value)
         {
-            AnsiConsole.MarkupLine($"[grey]Deleted lore for '{Markup.Escape(Key)}'.[/]");
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Deleted lore for '{Key}'.")));
         }
         else
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]No lore entry found for '{Markup.Escape(Key)}'; nothing was deleted.[/]");
+                themePalette.HighlightMarkup(
+                    Markup.Escape($"No lore entry found for '{Key}'; nothing was deleted.")));
         }
 
         return 0;

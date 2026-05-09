@@ -6,13 +6,15 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 internal static class PatternSnapshotMarkup
 {
 
-    public static void WritePatternSnapshot(PatternSnapshot snapshot)
+    public static void WritePatternSnapshot(PatternSnapshot snapshot, IThemePalette palette)
     {
-        AnsiConsole.MarkupLine($"[#C0C0C0]Domain:[/] [#87CEEB]{Markup.Escape(snapshot.Domain.ToString())}[/]");
+        AnsiConsole.MarkupLine(
+            palette.MutedLabelMarkup(Markup.Escape("Domain:"), Markup.Escape(snapshot.Domain.ToString())));
 
-        AnsiConsole.MarkupLine($"[#C0C0C0]Root:[/] [#87CEEB]{Markup.Escape(snapshot.RootPath)}[/]");
+        AnsiConsole.MarkupLine(
+            palette.MutedLabelMarkup(Markup.Escape("Root:"), Markup.Escape(snapshot.RootPath)));
 
-        AnsiConsole.MarkupLine("[#C0C0C0]Table of contents[/]");
+        AnsiConsole.MarkupLine(palette.HeadingBoldMarkup(Markup.Escape("Table of contents")));
 
         foreach (string thread in snapshot.Threads)
         {
@@ -25,11 +27,11 @@ internal static class PatternSnapshotMarkup
                 string rest = thread[(colon + 1)..].TrimStart();
 
                 AnsiConsole.MarkupLine(
-                    $"[#C0C0C0]{Markup.Escape(label)}[/] [#87CEEB]{Markup.Escape(rest)}[/]");
+                    $"{palette.MutedMarkup(Markup.Escape(label))} {palette.HighlightMarkup(Markup.Escape(rest))}");
             }
             else
             {
-                AnsiConsole.MarkupLine($"[#87CEEB]{Markup.Escape(thread)}[/]");
+                AnsiConsole.MarkupLine(palette.HighlightMarkup(Markup.Escape(thread)));
             }
         }
     }

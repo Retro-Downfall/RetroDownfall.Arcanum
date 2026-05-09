@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
@@ -5,22 +6,23 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Daemon;
 
-public sealed class UninstallCommand(IDaemonManager daemonManager) : AsyncCommand
+public sealed class UninstallCommand(IDaemonManager daemonManager, IThemePalette themePalette) : AsyncCommand
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("[#C0C0C0]Removing launchd agent…[/]");
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Removing launchd agent…")));
 
         Result result = await daemonManager.UninstallAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(result.Error.Message)}");
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(result.Error.Message)));
 
             return 1;
         }
 
-        AnsiConsole.MarkupLine("[#87CEEB]Daemon uninstall finished.[/]");
+        AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape("Daemon uninstall finished.")));
 
         return 0;
     }

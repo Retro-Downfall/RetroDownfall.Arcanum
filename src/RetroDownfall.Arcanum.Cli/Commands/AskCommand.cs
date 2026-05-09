@@ -1,16 +1,26 @@
 using System.ComponentModel;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
-public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) : AsyncCommand<AskCommand.Settings>
+public sealed class AskCommand(
+    IEyeOfTheWorld eye,
+    ArcanumApiClient apiClient,
+    IThemePalette palette,
+    CliSessionManager session,
+    IGrimoireCliInitialization grimoireBootstrapper,
+    IServiceScopeFactory scopeFactory) : AsyncCommand<AskCommand.Settings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
@@ -18,7 +28,11 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
         if (string.IsNullOrWhiteSpace(prompt))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] Prompt is required. Examples: [grey]arcanum ask What time is it?[/] or [grey]arcanum ask -- local time[/]");
+            AnsiConsole.MarkupLine(
+                palette.ErrorLabelMarkup(
+                    Markup.Escape("Error:"),
+                    Markup.Escape(
+                        "Prompt is required. Examples: arcanum ask What time is it? or arcanum ask -- local time")));
 
             return 1;
         }
@@ -56,15 +70,26 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
                 .PerceivePatternAsync(cwd, linked.Token)
                 .ConfigureAwait(false);
 
+            await grimoireBootstrapper.EnsureInitializedAsync(linked.Token).ConfigureAwait(false);
+
+            ChronosyncReport chronosyncDelta;
+
+            await using (AsyncServiceScope chronosyncScope = scopeFactory.CreateAsyncScope())
+            {
+                IChronosyncEngine chronosync = chronosyncScope.ServiceProvider.GetRequiredService<IChronosyncEngine>();
+
+                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot).ConfigureAwait(false);
+            }
+
             Guid? conversationId = null;
 
             if (settings.New)
             {
-                CliSessionManager.ClearSession();
+                session.ClearSession();
             }
             else
             {
-                conversationId = CliSessionManager.GetLastConversationId();
+                conversationId = session.GetLastConversationId();
             }
 
             PingRequest ping = new(
@@ -73,7 +98,8 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
                 cwd,
                 snapshot,
                 conversationId,
-                UnattendedMode: settings.Unattended);
+                UnattendedMode: settings.Unattended,
+                ChronosyncDelta: chronosyncDelta);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
@@ -81,7 +107,7 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
                 {
                     case IntelligenceEventType.Status:
 
-                        stderrConsole.MarkupLine($"[dim]{Markup.Escape(evt.Message)}[/]");
+                        stderrConsole.MarkupLine(palette.MutedMarkup(Markup.Escape(evt.Message)));
 
                         break;
 
@@ -100,7 +126,7 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
                     case IntelligenceEventType.ToolCall:
 
                         AskHumanResult humanResult = await AskHumanToolCallStreamHandler
-                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, linked.Token)
+                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, palette, linked.Token)
                             .ConfigureAwait(false);
 
                         if (humanResult == AskHumanResult.SubmitFailed)
@@ -117,7 +143,7 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
                     case IntelligenceEventType.ToolResult:
 
-                        stderrConsole.MarkupLine($"[grey]{Markup.Escape(evt.Data ?? evt.Message)}[/]");
+                        stderrConsole.MarkupLine(palette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));
 
                         break;
 
@@ -125,7 +151,7 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
-                            CliSessionManager.SaveConversationId(boundId);
+                            session.SaveConversationId(boundId);
                         }
 
                         break;
@@ -138,7 +164,8 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
                     case IntelligenceEventType.Error:
 
-                        stderrConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(evt.Message)}");
+                        stderrConsole.MarkupLine(
+                            palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(evt.Message)));
 
                         return 1;
                 }
@@ -155,7 +182,8 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
         if (finalText is null)
         {
-            stderrConsole.MarkupLine("[red]Error:[/] Stream ended without a result.");
+            stderrConsole.MarkupLine(
+                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("Stream ended without a result.")));
 
             return 1;
         }

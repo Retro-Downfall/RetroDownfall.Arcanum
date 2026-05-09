@@ -4,9 +4,9 @@ public sealed class WorkspaceContext
 {
     public Guid Id { get; set; }
 
-    public string RootPath { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
 
-    public string ProjectSummary { get; set; } = string.Empty;
+    public string WorkspacePath { get; set; } = string.Empty;
 
-    public DateTime LastScanned { get; set; }
+    public string SerializedSnapshot { get; set; } = string.Empty;
 }

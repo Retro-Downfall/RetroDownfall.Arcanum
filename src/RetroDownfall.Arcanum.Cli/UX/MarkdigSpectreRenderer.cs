@@ -7,9 +7,10 @@ using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.UX;
 
-internal static class MarkdigSpectreRenderer
+public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 {
-    public static IRenderable Render(string markdown)
+
+    public IRenderable Render(string markdown)
     {
         if (string.IsNullOrEmpty(markdown))
         {
@@ -42,7 +43,7 @@ internal static class MarkdigSpectreRenderer
         };
     }
 
-    private static IRenderable RenderBlock(Block block)
+    private IRenderable RenderBlock(Block block)
     {
         try
         {
@@ -62,7 +63,7 @@ internal static class MarkdigSpectreRenderer
         }
     }
 
-    private static IRenderable RenderHeadingBlock(HeadingBlock heading)
+    private IRenderable RenderHeadingBlock(HeadingBlock heading)
     {
         string text = InlineToPlain(heading.Inline);
 
@@ -71,36 +72,41 @@ internal static class MarkdigSpectreRenderer
             return new Text(string.Empty);
         }
 
-        return new Markup($"[bold yellow]{Markup.Escape(text)}[/]");
+        return new Markup(palette.HeadingBoldMarkup(Markup.Escape(text)));
     }
 
-    private static IRenderable RenderFencedCodeBlock(FencedCodeBlock fence)
+    private IRenderable RenderFencedCodeBlock(FencedCodeBlock fence)
     {
         string code = fence.Lines.ToString();
 
         Panel panel = new(new Text(code))
         {
             Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: palette.Muted),
         };
 
         string? info = fence.Info;
 
         if (!string.IsNullOrWhiteSpace(info))
         {
-            panel.Header = new PanelHeader($"[cyan]{Markup.Escape(info)}[/]");
+            panel.Header = new PanelHeader(palette.HighlightMarkup(Markup.Escape(info)));
         }
 
         return panel;
     }
 
-    private static IRenderable RenderCodeBlock(CodeBlock code)
+    private IRenderable RenderCodeBlock(CodeBlock code)
     {
         string content = code.Lines.ToString();
 
-        return new Panel(new Text(content)) { Border = BoxBorder.Rounded };
+        return new Panel(new Text(content))
+        {
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(foreground: palette.Muted),
+        };
     }
 
-    private static IRenderable RenderListBlock(ListBlock list)
+    private IRenderable RenderListBlock(ListBlock list)
     {
         StringBuilder sb = new();
 
@@ -128,7 +134,7 @@ internal static class MarkdigSpectreRenderer
         return new Markup(sb.ToString());
     }
 
-    private static string ListItemToMarkup(ListItemBlock item)
+    private string ListItemToMarkup(ListItemBlock item)
     {
         StringBuilder sb = new();
 
@@ -205,7 +211,7 @@ internal static class MarkdigSpectreRenderer
         }
     }
 
-    private static string InlineToMarkup(ContainerInline? container)
+    private string InlineToMarkup(ContainerInline? container)
     {
         if (container is null)
         {
@@ -219,7 +225,7 @@ internal static class MarkdigSpectreRenderer
         return sb.ToString();
     }
 
-    private static void AppendInlinesMarkup(ContainerInline container, StringBuilder sb)
+    private void AppendInlinesMarkup(ContainerInline container, StringBuilder sb)
     {
         foreach (Inline inline in container)
         {
@@ -271,4 +277,5 @@ internal static class MarkdigSpectreRenderer
 
         return block.ToString() ?? string.Empty;
     }
+
 }

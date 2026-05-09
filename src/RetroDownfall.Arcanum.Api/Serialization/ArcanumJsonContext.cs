@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -15,6 +16,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(Error))]
 [JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(ChronosyncReport))]
+[JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(AttachedFileDto))]
 [JsonSerializable(typeof(List<AttachedFileDto>))]
 [JsonSerializable(typeof(SubmitHumanResponseRequest))]

@@ -1,14 +1,16 @@
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Storage;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
-internal static class CliSessionManager
+public sealed class CliSessionManager(IThemePalette palette)
 {
-    private static string SessionFilePath =>
+
+    private string SessionFilePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
 
-    public static Guid? GetLastConversationId()
+    public Guid? GetLastConversationId()
     {
         try
         {
@@ -28,19 +30,19 @@ internal static class CliSessionManager
         }
         catch (IOException)
         {
-            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+            WarnSessionIo();
 
             return null;
         }
         catch (UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+            WarnSessionIo();
 
             return null;
         }
     }
 
-    public static void SaveConversationId(Guid id)
+    public void SaveConversationId(Guid id)
     {
         try
         {
@@ -50,15 +52,15 @@ internal static class CliSessionManager
         }
         catch (IOException)
         {
-            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+            WarnSessionIo();
         }
         catch (UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+            WarnSessionIo();
         }
     }
 
-    public static void ClearSession()
+    public void ClearSession()
     {
         try
         {
@@ -69,11 +71,15 @@ internal static class CliSessionManager
         }
         catch (IOException)
         {
-            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+            WarnSessionIo();
         }
         catch (UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+            WarnSessionIo();
         }
     }
+
+    private void WarnSessionIo() =>
+        AnsiConsole.MarkupLine(palette.MutedMarkup(Markup.Escape("Warning: Could not save/load session state.")));
+
 }

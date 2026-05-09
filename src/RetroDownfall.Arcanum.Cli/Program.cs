@@ -8,10 +8,12 @@ using RetroDownfall.Arcanum.Cli.Commands.Daemon;
 using RetroDownfall.Arcanum.Cli.Commands.Lore;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Theme;
 using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli;
@@ -33,6 +35,8 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreDeleteCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ArcanumApiClient))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CliTypeRegistrar))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CliSessionManager))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(MarkdigSpectreRenderer))]
     [UnconditionalSuppressMessage(
         "AOT",
         "IL3050",
@@ -48,9 +52,41 @@ internal static class Program
 
         services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
 
+        services.AddArcanumThemeDetection();
+
+        services.AddSingleton<IThemePalette>(sp =>
+        {
+            ArcanumSettings arc = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+            CliSettings cli = arc.Cli;
+
+            bool useDark = cli.Theme switch
+            {
+                ArcanumTheme.Light => false,
+                ArcanumTheme.Dark => true,
+                _ => sp.GetRequiredService<IThemeDetector>().SystemPrefersDark,
+            };
+
+            ThemeColors tc = cli.ThemeColors;
+
+            ThemeSemanticColors sem = useDark ? tc.Dark : tc.Light;
+
+            ThemeColors builtin = new();
+
+            ThemeSemanticColors fb = useDark ? builtin.Dark : builtin.Light;
+
+            return new ConfiguredThemePalette(sem, fb);
+        });
+
+        services.AddSingleton<CliSessionManager>();
+
+        services.AddSingleton<MarkdigSpectreRenderer>();
+
         services.AddDataProtection().SetApplicationName("ArcanumCore");
 
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
+
+        services.AddArcanumGrimoireForCli();
 
         services.AddHttpClient(
             "ArcanumApi",

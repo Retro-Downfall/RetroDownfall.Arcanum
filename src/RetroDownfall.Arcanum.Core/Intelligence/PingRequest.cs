@@ -1,5 +1,5 @@
+using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
@@ -13,5 +13,6 @@ public sealed record PingRequest(
     bool DisableMcpTools = false,
     bool CliTerminalFormatting = false,
     bool UnattendedMode = false,
-    List<AttachedFileDto>? AttachedFiles = null);
+    List<AttachedFileDto>? AttachedFiles = null,
+    ChronosyncReport? ChronosyncDelta = null);
 

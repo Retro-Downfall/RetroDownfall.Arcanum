@@ -9,4 +9,9 @@ public sealed record CliSettings
 
     public int MaxAttachedFileRelativePathChars { get; init; } = 4096;
 
+    public ArcanumTheme Theme { get; init; } = ArcanumTheme.SystemDefault;
+
+    public ThemeColors ThemeColors { get; init; } = new();
+
 }
+

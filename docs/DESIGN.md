@@ -77,6 +77,8 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Cli:MaxAttachFileSizeBytes` | `long` | `1048576` | Per-file staging limit for `chat /attach`. |
 | `Arcanum:Cli:MaxAttachedFilesPerRequest` | `int` | `32` | Max attached files per inference request. |
 | `Arcanum:Cli:MaxAttachedFileRelativePathChars` | `int` | `4096` | Max `RelativePath` length per attachment. |
+| `Arcanum:Cli:Theme` | `ArcanumTheme` | `SystemDefault` | CLI appearance: `Light`, `Dark`, or `SystemDefault` (uses `IThemeDetector` once at process start). |
+| `Arcanum:Cli:ThemeColors` | object | Core defaults | Nested `Light` / `Dark`, each with `Text`, `Heading`, `Highlight`, `Error`, `Muted` as `#RRGGBB` strings (Spectre palette is built in **Cli**). |
 
 All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When adding a property to `ArcanumSettings`, extend this table in the same change set.
 
@@ -95,8 +97,10 @@ All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When
 - **`Primitives/`** — `Error` (readonly record struct), `Result` / `Result<T>` (success/failure with implicit conversions), `ApiResponse<T>` (sealed record wire envelope).
 - **`Configuration/`** — `ArcanumSettings` (root options), `ConfigurationBootstrapper` (loads `arcanum.json` + `ARCANUM_` env vars).
 - **`Security/`** — `ISecretStore` (API key read/write contract; concrete implementation in Infrastructure).
-- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`), `PingRequest` (sealed record carrying prompt, model, workspace path, context snapshot, conversation id, attached files, and behavioral flags), `IntelligenceEvent` / `IntelligenceEventType`, `AttachedFileDto`.
+- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`), `PingRequest` (sealed record carrying prompt, model, workspace path, context snapshot, conversation id, attached files, optional `ChronosyncDelta`, and behavioral flags), `IntelligenceEvent` / `IntelligenceEventType`, `AttachedFileDto`.
 - **`Storage/`** — `ArcanumPaths`, POCO entities (`Conversation`, `ChatMessage`, `MageSetting`, `WorkspaceContext`), `IGrimoireRepository`, `ICampaignLoggerQueue`.
+- **`Chronosync/`** — `ChronosyncReport`, `IChronosyncEngine` (temporal workspace delta vs Grimoire baseline).
+- **`Serialization/`** — `GrimoireJsonContext` (source-generated `PatternSnapshot` JSON for Grimoire columns; distinct from Api `ArcanumJsonContext`).
 - **`Pattern/`** — `IEyeOfTheWorld`, `DomainType`, `PatternSnapshot`.
 - **`Workspace/`** — `IWorkspaceScanner`.
 
@@ -125,7 +129,7 @@ All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When
 
 All file/directory tools require **relative paths** under the partition workspace root; rooted paths and escapes are rejected. Lore and archive tools resolve `IGrimoireRepository` via `IServiceScopeFactory` per call.
 
-**Other key types:** `AddArcanumInfrastructure` (DI extension wiring all infrastructure services), `AddArcanumEyeOfTheWorld` (narrow registration for perception only), `LoggingBootstrapper`, `DataProtectionSecretStore`, `ArcanumMasterKeyBootstrapper`, `GrimoireKeyDerivation`, `ArcanumDbContext` (compiled model), `GrimoireRepository`, `GrimoireDatabaseHostedService`, `CampaignLoggerQueue` / `CampaignLoggerBackgroundService`, `PhysicalWorkspaceScanner`, `EyeOfTheWorldService`, `CodexReader` (cascades global + local `CODEX.md`), `SpellScanner` (discovers `SPELL.md` files with YAML frontmatter, no YamlDotNet).
+**Other key types:** `AddArcanumInfrastructure` (DI extension wiring all infrastructure services), `AddArcanumEyeOfTheWorld` (narrow registration for perception only), `AddArcanumThemeDetection` (registers `IThemeDetector` → `ThemeDetector`: Windows `AppsUseLightTheme` registry read with `[UnconditionalSuppressMessage("AOT","IL3050")]`, macOS CoreFoundation `CFPreferencesCopyAppValue` for `AppleInterfaceStyle` with `IntPtr`/`CFRelease` string marshalling, Linux `GTK_THEME` / `COLORFGBG` heuristics, dark fallback on failure), `LoggingBootstrapper`, `DataProtectionSecretStore`, `ArcanumMasterKeyBootstrapper`, `GrimoireKeyDerivation`, `ArcanumDbContext` (compiled model), `GrimoireRepository`, `ChronosyncEngine`, `GrimoireDatabaseHostedService`, `CampaignLoggerQueue` / `CampaignLoggerBackgroundService`, `PhysicalWorkspaceScanner`, `EyeOfTheWorldService`, `CodexReader` (cascades global + local `CODEX.md`), `SpellScanner` (discovers `SPELL.md` files with YAML frontmatter, no YamlDotNet).
 
 **MSBuild:** `IsTrimmable`, `PublishAot` (library signal for IL analysis), `EnableConfigurationBindingGenerator`.
 
@@ -157,7 +161,7 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/lore` | Upsert lore entry. |
 | DELETE | `/api/lore/{key}` | Delete lore entry. |
 
-All routes return `ApiResponse<T>` envelopes. The `/api` group is protected by `ApiKeyEndpointFilter` (§11). OpenAPI and Scalar are mapped outside the key-protected group.
+All routes return `ApiResponse<T>` envelopes. The `/api` group is protected by `ApiKeyEndpointFilter` (§11), including the OpenAPI document and Scalar reference UI (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need `X-Arcanum-Key` like any other `/api` caller).
 
 **Key types:** `ApiBootstrapper` (`AddArcanumApiServices` / `MapArcanumEndpoints`), `OllamaIntelligenceProvider` (§10), `SemanticRouter` (§10.2.2), `ArcanumLocalTimeTool` / `ArcanumSpellScriptTool` (sealed `AIFunction` with static `JsonDocument` schemas), `ApiKeyEndpointFilter` (§11), `ArcanumJsonContext` (§8.2).
 
@@ -172,13 +176,13 @@ All routes return `ApiResponse<T>` envelopes. The `/api` group is protected by `
 | Command | Purpose |
 |---------|---------|
 | `serve` | Builds `WebApplication` with slim defaults, configures Kestrel, registers API services, runs the host (§5.3). |
-| `ask` | Single-prompt streaming inference via NDJSON. Resolves cwd, runs Eye of the World, sends `PingRequest` with workspace context and optional conversation continuation. |
+| `ask` | Single-prompt streaming inference via NDJSON. Resolves cwd, runs Eye of the World and Chronosync (scoped `IChronosyncEngine`), sends `PingRequest` with workspace context, `ChronosyncDelta`, and optional conversation continuation. |
 | `chat` | Interactive multi-turn REPL with Mana bar, slash commands (`/exit`, `/clear`, `/help`, `/new`, `/model`, `/look`, `/tools`, `/mcp`, `/arsenal`, `/history`, `/resume`, `/delete`, `/rest`, `/log`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering via `MarkdigSpectreRenderer`. |
 | `look` | Prints `PatternSnapshot` from Eye of the World (no HTTP dependency). |
 | `lore list\|get\|set\|delete` | CRUD on `MageSettings` via `/api/lore`. |
 | `daemon install\|uninstall\|status` | OS-specific background service lifecycle (Windows `sc`, macOS `launchd`, Linux `systemctl --user`). |
 
-**Key types:** `ArcanumApiClient` (wraps `IHttpClientFactory` + `ISecretStore`; handles NDJSON streaming, conversation management, lore, and MCP operations via `ArcanumJsonContext`), `CliSessionManager` (plain-text `cli-session.txt` for conversation id persistence), `MarkdigSpectreRenderer` (AOT-safe AST walker — no reflection, no `Markdig.Renderers.*`), `CliTypeRegistrar` / `CliTypeResolver` (Spectre DI bridge).
+**Key types:** `ArcanumApiClient` (wraps `IHttpClientFactory` + `ISecretStore`; handles NDJSON streaming, conversation management, lore, and MCP operations via `ArcanumJsonContext`), `CliSessionManager` (plain-text `cli-session.txt` for conversation id persistence), `IThemePalette` / `ConfiguredThemePalette` (Spectre colors from `Arcanum:Cli:ThemeColors`; `IThemePalette` extension methods for markup), `MarkdigSpectreRenderer` (AOT-safe AST walker — no reflection, no `Markdig.Renderers.*`), `CliTypeRegistrar` / `CliTypeResolver` (Spectre DI bridge).
 
 **MSBuild:** `PublishAot` (the shipping native image), `<TrimmerRootAssembly Include="Spectre.Console.Cli" />`, `[DynamicDependency]` on all command types. The `IL3050` warning on `CommandApp` is suppressed.
 
@@ -231,7 +235,8 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 - **`GrimoireDatabaseHostedService`** — initializes SQLCipher, derives DB passphrase from the master API key via HKDF, runs `MigrateAsync` on first use, `FailFast` on key mismatch.
 - **`CampaignLoggerQueue` / `CampaignLoggerBackgroundService`** — bounded `Channel<Guid>` plus a background service that runs hybrid sweeps (message-count threshold + idle timeout) and processes queue entries by advancing `LastSummarizedMessageAt`. Operators may also enqueue via `POST /api/conversations/{id}/rest`.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
-- **`GrimoireRepository`** — implements `IGrimoireRepository` (15 methods; the interface is the authoritative reference).
+- **`GrimoireRepository`** — implements `IGrimoireRepository` (17 methods; the interface is the authoritative reference).
+- **`ChronosyncEngine`** — implements `IChronosyncEngine`: compares the current `PatternSnapshot` to the latest `WorkspaceContext` row for that path, persists a new baseline row, and returns a `ChronosyncReport` (headless; no HTTP or Spectre in Phase 1).
 
 #### 5.4.1 Grimoire data model
 
@@ -240,11 +245,15 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 | `Conversation` | `Conversations` | `Id` (Guid) | `Title`, nullable `Summary`, nullable `LastSummarizedMessageAt`; index on `CreatedAt`; cascade-deletes messages. |
 | `ChatMessage` | `ChatMessages` | `Id` (Guid) | FK to `Conversation`; composite index on `(ConversationId, Timestamp)`; `Role` (enum → int); FTS5 virtual table + triggers for `search_archives`. |
 | `MageSetting` | `MageSettings` | `Key` (string) | `Value`, `UpdatedAt`; consumed by Lore tools. |
-| `WorkspaceContext` | `WorkspaceContexts` | `Id` (Guid) | Reserved entity — defined but not consumed by any current feature. |
+| `WorkspaceContext` | `WorkspaceContexts` | `Id` (Guid) | `CreatedAt` (`DateTimeOffset`), `WorkspacePath` (mapped column `RootPath`, max 4096), `SerializedSnapshot` (JSON `PatternSnapshot` via `GrimoireJsonContext`). **Chronosync reporting** appends a row after each analysis; “latest” for a path is `ORDER BY CreatedAt DESC`. Composite index on `(RootPath, CreatedAt)`. |
 
-**Supporting DTOs (Core):** `ConversationSummaryDto`, `ConversationDetailDto`, `ConversationMessageDto`, `LoreDto`, `UpsertLoreRequest`, `ArcanumPaths`.
+**Supporting DTOs (Core):** `ConversationSummaryDto`, `ConversationDetailDto`, `ConversationMessageDto`, `LoreDto`, `UpsertLoreRequest`, `ChronosyncReport`, `ArcanumPaths`.
 
-#### 5.4.2 Design-time factory (`ArcanumDbContextFactory`)
+#### 5.4.2 Temporal context: Session-Based Consolidation and Chronosync
+
+Arcanum’s **Session-Based Consolidation model of AI memory** spans two layers: **conversation** consolidation (Campaign Logger — §8.7) advances `LastSummarizedMessageAt` and future `Conversation.Summary` work, while **Chronosync reporting** supplies **temporal workspace** context — what changed on disk while the operator was away. `IChronosyncEngine` compares the live Eye-of-the-World `PatternSnapshot` to the last Grimoire-stored snapshot for the same `RootPath` and emits a **`ChronosyncReport`** (`PreviousSnapshotTime`, `NewThreads`, `MissingThreads`, `DomainChanged`, `PreviousDomain`) for downstream session consolidation (for example model memory prompts in a later phase). It is orthogonal to Campaign Logger thresholds; both contribute to the same mental model of “what the AI should know without re-reading the tree.”
+
+#### 5.4.3 Design-time factory (`ArcanumDbContextFactory`)
 
 `IDesignTimeDbContextFactory<ArcanumDbContext>` for `dotnet ef` tooling — uses `ARCANUM_GRIMOIRE_DEV_KEY` (fallback placeholder), a temp-directory database, and a no-op `ISecretStore`.
 
@@ -284,13 +293,15 @@ public sealed record ApiResponse<T>(T? Data, bool IsSuccess, Error? Error, strin
 
 **Rule:** Every wire payload type `T` used in an `ApiResponse<T>` must have a `[JsonSerializable]` registration on this context. When adding a new endpoint with a new payload type, extend the context in the same change set.
 
+**Grimoire blobs:** `WorkspaceContext.SerializedSnapshot` is **not** serialized through this class. Core defines **`GrimoireJsonContext`** (`RetroDownfall.Arcanum.Core.Serialization`) with the same CamelCase options for `PatternSnapshot` + `DomainType` so Infrastructure (`ChronosyncEngine`) stays AOT-safe without referencing the Api assembly.
+
 **MCP JSON-RPC:** `McpJsonSerializerContext` (Infrastructure) is a separate context for JSON-RPC 2.0 over stdio/in-process channels. It uses explicit `[JsonPropertyName]` for spec-correct member names. `McpConfigJsonSerializerContext` handles `mcp.json` deserialization. Neither is registered on `HttpJsonOptions`.
 
 ### 8.3 Service registration in `AddArcanumApiServices`
 
 `ApiBootstrapper.AddArcanumApiServices(IServiceCollection, IConfiguration)` registers:
 
-- `AddArcanumInfrastructure` (Serilog, options, Data Protection, secrets, Grimoire, workspace, Eye of the World, MCP).
+- `AddArcanumInfrastructure` (Serilog, options, Data Protection, secrets, Grimoire, workspace, Eye of the World, Chronosync engine, MCP).
 - `ApiKeyEndpointFilter` (singleton).
 - OpenAPI + JSON options (ArcanumJsonContext at head of resolver chain).
 - Named `HttpClient("Ollama")` with `Timeout = InfiniteTimeSpan`.
@@ -320,6 +331,8 @@ Three mechanisms trigger Campaign Log consolidation:
 3. **Explicit rest** — `POST /api/conversations/{id}/rest`.
 
 The consumer advances `LastSummarizedMessageAt` as a watermark; LLM-authored `Conversation.Summary` is a future phase.
+
+Under the same **Session-Based Consolidation model of AI memory**, **Chronosync reporting** (§5.4.2) addresses **spatial** drift: thread lines and `DomainType` deltas vs the last persisted `PatternSnapshot`, not chat log length. Campaign Logger and Chronosync are separate triggers; Phase 2 folds `ChronosyncReport` into the system prompt via `PingRequest.ChronosyncDelta`; MCP context remains separate.
 
 ---
 
@@ -351,6 +364,7 @@ Additional benefits:
 ### 9.4 AOT discipline for new code
 
 - Every HTTP payload type needs a `[JsonSerializable]` registration on `ArcanumJsonContext`.
+- Grimoire `PatternSnapshot` blobs use `GrimoireJsonContext` with explicit `JsonTypeInfo` — no reflection-based `JsonSerializer` overloads for those columns.
 - MCP wire types use `McpJsonSerializerContext` exclusively — no reflection-based `JsonSerializer` overloads.
 - Minimal API handlers must not return anonymous DTOs or use unbounded reflection-based model binding.
 - New `AIFunction` tools must use hand-authored `JsonDocument` schemas, not `AIFunctionFactory.Create`.
@@ -413,17 +427,20 @@ The provider persists through `IGrimoireRepository`. When `conversationId` is se
 
 **Problem:** The API daemon's cwd is not the operator's shell cwd.
 
-**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `ConversationId`, and optional `AttachedFiles`. The CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, and populates these fields before each HTTP call.
+**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `ConversationId`, optional `AttachedFiles`, and optional `ChronosyncDelta` (`ChronosyncReport`). The CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before each HTTP call.
+
+**CLI Grimoire bootstrap:** `ask` and `chat` call `IGrimoireCliInitialization` once per process so SQLCipher passphrase setup and first-run migrations match the API host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
 
 **`SystemPromptBuilder.Build` ordering:**
 
 1. Base persona.
 2. `### Workspace Context` / `### Table of Contents` (from `ContextSnapshot`).
-3. `### Master Codex (CODEX.md)` (global cascaded with optional local).
-4. `### Active Operational Spell` (from `SemanticRouter`).
-5. `### Available Spell Scripts` (when scripts exist).
-6. `### Attached Files for this Turn` (ephemeral, not persisted to Grimoire).
-7. `### Output Formatting Directive` (when `CliTerminalFormatting` is true — restricts model to headings, bold, italic, and code blocks for terminal rendering).
+3. `### Chronosync Report (Temporal Delta)` (from `PingRequest.ChronosyncDelta` when it carries a prior snapshot time and a non-empty diff — new threads, missing threads, or domain change; uses `PreviousDomain` and current snapshot domain when available; omitted when null, no prior baseline, or zero net change).
+4. `### Master Codex (CODEX.md)` (global cascaded with optional local).
+5. `### Active Operational Spell` (from `SemanticRouter`).
+6. `### Available Spell Scripts` (when scripts exist).
+7. `### Attached Files for this Turn` (ephemeral, not persisted to Grimoire).
+8. `### Output Formatting Directive` (when `CliTerminalFormatting` is true — restricts model to headings, bold, italic, and code blocks for terminal rendering).
 
 The same `WorkingDirectory` scopes `McpConnectionManager`, `CodexReader`, and `SpellScanner`.
 
@@ -450,9 +467,9 @@ Arcanum runs on **loopback only** for **single-user local development**. Even on
 3. Compares with `CryptographicOperations.FixedTimeEquals` (timing-safe).
 4. Uses `stackalloc` for keys <= 256 bytes (avoids heap allocation).
 
-### 11.4 Unauthenticated routes
+### 11.4 OpenAPI and Scalar
 
-OpenAPI and Scalar are not covered by the API-key route group.
+`MapOpenApi` and `MapScalarApiReference` are attached to the same `MapGroup("/api")` that applies `ApiKeyEndpointFilter`, so fetching **`openapi/v1.json`**, **`scalar`**, or **`scalar/v1`** requires a valid **`X-Arcanum-Key`** header alongside every other `/api` endpoint.
 
 ---
 
@@ -541,7 +558,6 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.2 Persistence
 
 - **EF Core migrations** versioned under `Data/Migrations/`. Legacy files without `__EFMigrationsHistory` need manual baseline (see README).
-- **`WorkspaceContext`** entity is defined but unused — reserved for future workspace indexing.
 - **`BureauSettings.Enabled`** has no consumers.
 - **`cli-session.txt`** stores one last conversation id — not multi-user, not cloud sync.
 
@@ -577,8 +593,12 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 | **`AddArcanumEyeOfTheWorld`** | Narrow DI extension: `IEyeOfTheWorld` only (no Grimoire or Serilog). |
 | **Eye of the World** | Situational directory perception — `EyeOfTheWorldService` in Infrastructure (§15). |
 | **`PatternSnapshot`** | `DomainType` + `RootPath` + `Threads` (bounded TOC lines). |
-| **`IGrimoireRepository`** | Core contract for Grimoire CRUD — 15 methods covering conversations, messages, lore, and archive search (§5.4). |
-| **`ArcanumDbContextFactory`** | Design-time EF factory using a temp DB (§5.4.2). |
+| **`IGrimoireRepository`** | Core contract for Grimoire CRUD — 17 methods covering conversations, messages, lore, archive search, and workspace snapshot rows (§5.4). |
+| **`Chronosync reporting`** | Headless comparison of current `PatternSnapshot` vs latest `WorkspaceContext`; persists baseline and returns `ChronosyncReport` (§5.4.2). |
+| **`ChronosyncReport`** | DTO: `PreviousSnapshotTime`, `NewThreads`, `MissingThreads`, `DomainChanged`, `PreviousDomain`. |
+| **`IChronosyncEngine`** | `AnalyzeAndSyncAsync` — implemented by `ChronosyncEngine` in Infrastructure. |
+| **`GrimoireJsonContext`** | Core source-generated JSON context for `PatternSnapshot` stored in `WorkspaceContext.SerializedSnapshot` (§8.2). |
+| **`ArcanumDbContextFactory`** | Design-time EF factory using a temp DB (§5.4.3). |
 | **`AddArcanumDaemonManagement`** | DI extension for OS-specific daemon lifecycle. |
 | **MCP** | Model Context Protocol — tool servers via JSON-RPC over stdio or in-process channels (§4.2). |
 | **`McpJsonSerializerContext`** | Source-generated context for JSON-RPC DTOs and MCP wire types. |
@@ -586,6 +606,8 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 | **`McpConnectionManager`** | Singleton managing global and per-partition MCP connections (§4.2). |
 | **`ArcanumInternalToolServer`** | In-process MCP server with native tools (§4.2). |
 | **`MarkdigSpectreRenderer`** | AOT-safe Markdown → Spectre `IRenderable` walker for `chat` swap-at-end rendering. |
+| **`IThemeDetector`** | OS dark/light preference for `Arcanum:Cli:Theme` = `SystemDefault` (no Spectre in Infrastructure). |
+| **`IThemePalette`** | Semantic Spectre colors for all CLI markup (`RetroDownfall.Arcanum.Cli.UX`). |
 | **Output Formatting Directive** | System prompt block restricting model output to terminal-safe Markdown subset (§10.5). |
 
 ---

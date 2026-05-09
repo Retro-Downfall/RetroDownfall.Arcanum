@@ -1,5 +1,7 @@
 using System.Text;
 
+using RetroDownfall.Arcanum.Core.Chronosync;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -56,6 +58,8 @@ internal static class SystemPromptBuilder
                 sb.AppendLine(thread);
             }
         }
+
+        AppendChronosyncTemporalDelta(sb, request);
 
         if (!string.IsNullOrWhiteSpace(codexContent))
         {
@@ -142,5 +146,90 @@ internal static class SystemPromptBuilder
         }
 
         return sb.ToString();
+    }
+
+    private static void AppendChronosyncTemporalDelta(StringBuilder sb, PingRequest request)
+    {
+        ChronosyncReport? delta = request.ChronosyncDelta;
+
+        if (delta is null || delta.PreviousSnapshotTime is null)
+        {
+            return;
+        }
+
+        if (delta.NewThreads.Length == 0 && delta.MissingThreads.Length == 0 && !delta.DomainChanged)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+
+        sb.AppendLine("### Chronosync Report (Temporal Delta)");
+
+        sb.AppendLine();
+
+        if (delta.DomainChanged)
+        {
+            if (delta.PreviousDomain is { } prevDomain && request.ContextSnapshot is { } snap)
+            {
+                sb.Append("The workspace domain has shifted from ");
+
+                sb.Append(prevDomain.ToString());
+
+                sb.Append(" to ");
+
+                sb.Append(snap.Domain.ToString());
+
+                sb.AppendLine(".");
+            }
+            else
+            {
+                sb.AppendLine("The workspace domain classification has changed since your last session.");
+            }
+
+            sb.AppendLine();
+        }
+
+        if (delta.NewThreads.Length > 0)
+        {
+            sb.AppendLine("New threads (added since last sync):");
+
+            sb.AppendLine();
+
+            foreach (string thread in delta.NewThreads)
+            {
+                if (string.IsNullOrWhiteSpace(thread))
+                {
+                    continue;
+                }
+
+                sb.Append("- ");
+
+                sb.AppendLine(thread);
+            }
+
+            sb.AppendLine();
+        }
+
+        if (delta.MissingThreads.Length > 0)
+        {
+            sb.AppendLine("Missing threads (removed since last sync):");
+
+            sb.AppendLine();
+
+            foreach (string thread in delta.MissingThreads)
+            {
+                if (string.IsNullOrWhiteSpace(thread))
+                {
+                    continue;
+                }
+
+                sb.Append("- ");
+
+                sb.AppendLine(thread);
+            }
+
+            sb.AppendLine();
+        }
     }
 }

@@ -2,6 +2,8 @@
 
   <PropertyGroup>
 
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
     <RootNamespace>RetroDownfall.Arcanum.Infrastructure</RootNamespace>
 
     <AssemblyName>RetroDownfall.Arcanum.Infrastructure</AssemblyName>

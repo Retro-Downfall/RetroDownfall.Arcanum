@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -18,7 +19,7 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
-public sealed class ServeCommand : AsyncCommand
+public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
     {
@@ -55,7 +56,7 @@ public sealed class ServeCommand : AsyncCommand
 
         if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(cancellationToken).ConfigureAwait(false) is not null)
         {
-            AnsiConsole.MarkupLine("[green]New Master API Key generated and secured.[/]");
+            AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape("New Master API Key generated and secured.")));
         }
 
         WebApplication app = builder.Build();

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -26,6 +27,7 @@ internal static class AskHumanToolCallStreamHandler
         IntelligenceEvent evt,
         bool unattended,
         ArcanumApiClient apiClient,
+        IThemePalette palette,
         CancellationToken cancellationToken)
     {
         if (evt.Type != IntelligenceEventType.ToolCall)
@@ -62,7 +64,8 @@ internal static class AskHumanToolCallStreamHandler
 
             Console.Error.Flush();
 
-            string answer = AnsiConsole.Ask<string>($"\n[bold magenta]Mage asks:[/] {Markup.Escape(args.Question)}");
+            string answer = AnsiConsole.Ask<string>(
+                $"\n{palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(args.Question)}");
 
             submitResult = await apiClient
                 .SubmitHumanResponseAsync(args.PromptId, answer, cancellationToken)
@@ -71,7 +74,8 @@ internal static class AskHumanToolCallStreamHandler
 
         if (submitResult.IsFailure)
         {
-            AnsiConsole.MarkupLine("[red]Failed to submit response to Daemon. The stream may be disconnected.[/]");
+            AnsiConsole.MarkupLine(
+                palette.ErrorMarkup(Markup.Escape("Failed to submit response to Daemon. The stream may be disconnected.")));
 
             return AskHumanResult.SubmitFailed;
         }
