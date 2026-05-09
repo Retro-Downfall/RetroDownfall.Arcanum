@@ -60,6 +60,11 @@ public sealed class OllamaIntelligenceProvider(
             return Result<string>.Failure(new Error("Ollama.Model", "No model configured. Set Arcanum:Ollama:DefaultModel or pass a model override."));
         }
 
+        if (!TryValidateAttachedFiles(request, out Error attachedFilesError))
+        {
+            return Result<string>.Failure(attachedFilesError);
+        }
+
         ollamaClient.SelectedModel = targetModel;
 
         Result ensure = await EnsureModelExistsAsync(targetModel, cancellationToken, pullProgress: null).ConfigureAwait(false);
@@ -256,6 +261,13 @@ public sealed class OllamaIntelligenceProvider(
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
                 "No model configured. Set Arcanum:Ollama:DefaultModel or pass a model override.");
+
+            yield break;
+        }
+
+        if (!TryValidateAttachedFiles(request, out Error streamAttachedError))
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamAttachedError.Message);
 
             yield break;
         }
@@ -1048,6 +1060,94 @@ public sealed class OllamaIntelligenceProvider(
         {
             logger.LogWarning(ex, "Grimoire could not append tool interaction for tool {ToolName}.", toolName);
         }
+    }
+
+    private bool TryValidateAttachedFiles(PingRequest request, out Error error)
+    {
+        List<AttachedFileDto>? files = request.AttachedFiles;
+
+        if (files is null || files.Count == 0)
+        {
+            error = Error.None;
+
+            return true;
+        }
+
+        long maxBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Value.Cli.MaxAttachFileSizeBytes);
+
+        int maxFiles = ArcanumSettingClamps.MaxAttachedFilesPerRequest(settings.Value.Cli.MaxAttachedFilesPerRequest);
+
+        int maxPathChars = ArcanumSettingClamps.MaxAttachedFileRelativePathChars(
+            settings.Value.Cli.MaxAttachedFileRelativePathChars);
+
+        if (files.Count > maxFiles)
+        {
+            error = new Error(
+                "Validation.AttachedFiles",
+                $"At most {maxFiles} attached files are allowed per request.");
+
+            return false;
+        }
+
+        long maxTotalBytes = maxBytes * maxFiles;
+
+        long totalUtf8 = 0;
+
+        for (int i = 0; i < files.Count; i++)
+        {
+            AttachedFileDto? item = files[i];
+
+            if (item is null)
+            {
+                error = new Error("Validation.AttachedFiles", "Attached file entries cannot be null.");
+
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(item.RelativePath))
+            {
+                error = new Error(
+                    "Validation.AttachedFiles",
+                    "Each attached file must have a non-empty relative path.");
+
+                return false;
+            }
+
+            if (item.RelativePath.Length > maxPathChars)
+            {
+                error = new Error("Validation.AttachedFiles", "Attached file path is too long.");
+
+                return false;
+            }
+
+            string content = item.Content ?? string.Empty;
+
+            long utf8Len = Encoding.UTF8.GetByteCount(content);
+
+            if (utf8Len > maxBytes)
+            {
+                error = new Error(
+                    "Validation.AttachedFiles",
+                    $"Attached file content exceeds the maximum size ({maxBytes} bytes UTF-8).");
+
+                return false;
+            }
+
+            totalUtf8 += utf8Len;
+
+            if (totalUtf8 > maxTotalBytes)
+            {
+                error = new Error(
+                    "Validation.AttachedFiles",
+                    "Total size of attached files exceeds the allowed limit for this request.");
+
+                return false;
+            }
+        }
+
+        error = Error.None;
+
+        return true;
     }
 
     private static bool ModelNameMatches(string localModelName, string targetModel)

@@ -23,6 +23,8 @@ public sealed record IntelligenceSettings
 
     public int ArchiveSearchMaxResults { get; init; } = 5;
 
+    public int ArchiveSearchMaxQueryLength { get; init; } = 512;
+
     public int CampaignLogThreshold { get; init; } = 25;
 
     public int CampaignLogIdleTimeoutMinutes { get; init; } = 240;

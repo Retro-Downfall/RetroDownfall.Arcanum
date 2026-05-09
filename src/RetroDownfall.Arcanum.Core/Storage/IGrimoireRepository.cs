@@ -53,6 +53,13 @@ public interface IGrimoireRepository
         DateTime idleCutoff,
         CancellationToken cancellationToken = default);
 
+    Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Advances <see cref="Conversation.LastSummarizedMessageAt"/> to the latest message timestamp (or UTC now if there are no messages).
+    /// </summary>
+    Task AdvanceCampaignLogWatermarkAsync(Guid conversationId, CancellationToken cancellationToken = default);
+
     Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default);
 
     Task ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default);

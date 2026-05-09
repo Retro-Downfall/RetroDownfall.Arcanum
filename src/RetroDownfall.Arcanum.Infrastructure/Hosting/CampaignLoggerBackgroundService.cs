@@ -8,7 +8,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Until summarization persists <c>Conversation.LastSummarizedMessageAt</c>, hybrid sweeps may re-enqueue the same ids while they still match the threshold or idle rule.
+/// Periodically enqueues conversations that need campaign-log processing and advances
+/// <c>Conversation.LastSummarizedMessageAt</c> when each id is consumed (watermark for sweep eligibility).
 /// </summary>
 internal sealed class CampaignLoggerBackgroundService(
     IServiceScopeFactory scopeFactory,
@@ -112,8 +113,26 @@ internal sealed class CampaignLoggerBackgroundService(
             {
                 await using AsyncServiceScope iterationScope = scopeFactory.CreateAsyncScope();
 
+                IGrimoireRepository grimoire =
+                    iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+                if (!await grimoire
+                        .ConversationExistsAsync(conversationId, stoppingToken)
+                        .ConfigureAwait(false))
+                {
+                    hostLogger.LogWarning(
+                        "Campaign Logger: Conversation {ConversationId} no longer exists; skipping.",
+                        conversationId);
+
+                    continue;
+                }
+
+                await grimoire
+                    .AdvanceCampaignLogWatermarkAsync(conversationId, stoppingToken)
+                    .ConfigureAwait(false);
+
                 hostLogger.LogInformation(
-                    "Campaign Logger: Processing conversation {ConversationId}",
+                    "Campaign Logger: Advanced campaign log watermark for conversation {ConversationId}.",
                     conversationId);
             }
             catch (Exception ex)

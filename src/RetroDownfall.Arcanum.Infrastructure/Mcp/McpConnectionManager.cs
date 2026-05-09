@@ -128,7 +128,7 @@ public sealed class McpConnectionManager(
     }
 
     /// <summary>
-    /// Disposes all MCP clients, clears workspace caches and partition state (without disposing per-workspace <see cref="SemaphoreSlim"/> instances — callers may still be releasing them), resets global bootstrap flags, and immediately re-loads global <c>mcp.json</c>.
+    /// Disposes all MCP clients, clears workspace caches and partition state, disposes per-workspace locks, resets global bootstrap flags, and immediately re-loads global <c>mcp.json</c>.
     /// </summary>
     public async Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default)
     {
@@ -156,6 +156,18 @@ public sealed class McpConnectionManager(
             _partitionClients.Clear();
 
             _mergedToolsByWorkspace.Clear();
+
+            foreach (SemaphoreSlim workspaceLock in _workspaceInitLocks.Values)
+            {
+                try
+                {
+                    workspaceLock.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Error disposing workspace init lock during MCP reload.");
+                }
+            }
 
             _workspaceInitLocks.Clear();
 

@@ -2,19 +2,24 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
-public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFilter
+public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptions<ArcanumSettings> arcOptions) : IEndpointFilter
 {
     private byte[]? _cachedExpectedUtf8;
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
+        int maxHeaderUtf16 = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
+            arcOptions.Value.Security.MaxApiKeyHeaderUtf16Chars);
+
         IHeaderDictionary headers = context.HttpContext.Request.Headers;
 
         string? headerValue = headers.TryGetValue(ArcanumApiHeaders.ApiKey, out StringValues apiKeyHeader) && apiKeyHeader.Count > 0
@@ -38,6 +43,11 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore) : IEndpointFi
         }
 
         if (string.IsNullOrEmpty(headerValue))
+        {
+            return Unauthorized(context.HttpContext);
+        }
+
+        if (headerValue.Length > maxHeaderUtf16)
         {
             return Unauthorized(context.HttpContext);
         }

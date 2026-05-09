@@ -2,7 +2,11 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -13,9 +17,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 public sealed class GrimoireRepository : IGrimoireRepository
 {
     private readonly ArcanumDbContext _db;
-    public GrimoireRepository(ArcanumDbContext db)
+
+    private readonly ILogger<GrimoireRepository> _logger;
+
+    private readonly IOptions<ArcanumSettings> _arcOptions;
+
+    public GrimoireRepository(
+        ArcanumDbContext db,
+        ILogger<GrimoireRepository> logger,
+        IOptions<ArcanumSettings> arcOptions)
     {
         _db = db;
+
+        _logger = logger;
+
+        _arcOptions = arcOptions;
     }
 
     public async Task<(Guid ConversationId, Guid AssistantMessageId)> BeginAssistantReplyAsync(
@@ -91,7 +107,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken = default)
     {
         DateTime now = DateTime.UtcNow;
-        _ = await _db.ChatMessages
+
+        int updated = await _db.ChatMessages
             .Where(m => m.Id == assistantMessageId)
             .ExecuteUpdateAsync(
                 s => s
@@ -99,6 +116,16 @@ public sealed class GrimoireRepository : IGrimoireRepository
                     .SetProperty(m => m.Timestamp, now),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (updated == 0)
+        {
+            _logger.LogWarning(
+                "FinalizeAssistantMessageAsync updated 0 rows for assistant message {AssistantMessageId}.",
+                assistantMessageId);
+
+            throw new InvalidOperationException(
+                "Assistant message could not be finalized; no matching row was updated in Grimoire.");
+        }
     }
 
     public async Task AppendToolInteractionAsync(
@@ -363,70 +390,96 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return "No matching archives found.";
         }
 
+        string trimmed = query.Trim();
+
+        int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(
+            _arcOptions.Value.Intelligence.ArchiveSearchMaxQueryLength);
+
+        if (trimmed.Length > maxQueryLen)
+        {
+            return "Archive search query is too long. Use a shorter phrase.";
+        }
+
+        string matchQuery = SanitizeFtsMatchQuery(trimmed);
+
+        if (string.IsNullOrEmpty(matchQuery))
+        {
+            return "No matching archives found.";
+        }
+
         int limit = Math.Clamp(maxResults, 1, 500);
 
-        DbConnection connection = _db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
+        try
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            DbConnection connection = _db.Database.GetDbConnection();
+
+            if (connection.State != ConnectionState.Open)
+            {
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await using DbCommand cmd = connection.CreateCommand();
+
+            cmd.CommandText =
+                """
+                SELECT c."Role", c."Content", c."Timestamp"
+                FROM "ChatMessages_fts" AS f
+                INNER JOIN "ChatMessages" AS c ON c."Id" = f."Id"
+                WHERE f MATCH @query
+                ORDER BY rank
+                LIMIT @limit
+                """;
+
+            DbParameter pQuery = cmd.CreateParameter();
+
+            pQuery.ParameterName = "@query";
+
+            pQuery.Value = matchQuery;
+
+            cmd.Parameters.Add(pQuery);
+
+            DbParameter pLimit = cmd.CreateParameter();
+
+            pLimit.ParameterName = "@limit";
+
+            pLimit.Value = limit;
+
+            cmd.Parameters.Add(pLimit);
+
+            await using DbDataReader reader = await cmd
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            StringBuilder sb = new();
+
+            bool any = false;
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                any = true;
+
+                MessageRole role = (MessageRole)reader.GetInt32(0);
+
+                string content = reader.GetString(1);
+
+                DateTime timestamp = reader.GetDateTime(2);
+
+                _ = sb.Append('[')
+                    .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
+                    .Append("] ")
+                    .Append(role)
+                    .Append(": ")
+                    .AppendLine(content);
+            }
+
+            return any ? sb.ToString().TrimEnd() : "No matching archives found.";
         }
-
-        await using DbCommand cmd = connection.CreateCommand();
-
-        cmd.CommandText =
-            """
-            SELECT c."Role", c."Content", c."Timestamp"
-            FROM "ChatMessages_fts" AS f
-            INNER JOIN "ChatMessages" AS c ON c."Id" = f."Id"
-            WHERE f MATCH @query
-            ORDER BY rank
-            LIMIT @limit
-            """;
-
-        DbParameter pQuery = cmd.CreateParameter();
-
-        pQuery.ParameterName = "@query";
-
-        pQuery.Value = query;
-
-        cmd.Parameters.Add(pQuery);
-
-        DbParameter pLimit = cmd.CreateParameter();
-
-        pLimit.ParameterName = "@limit";
-
-        pLimit.Value = limit;
-
-        cmd.Parameters.Add(pLimit);
-
-        await using DbDataReader reader = await cmd
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        StringBuilder sb = new();
-
-        bool any = false;
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        catch (SqliteException ex)
         {
-            any = true;
+            _logger.LogWarning(ex, "FTS archive search failed for sanitized query.");
 
-            MessageRole role = (MessageRole)reader.GetInt32(0);
-
-            string content = reader.GetString(1);
-
-            DateTime timestamp = reader.GetDateTime(2);
-
-            _ = sb.Append('[')
-                .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
-                .Append("] ")
-                .Append(role)
-                .Append(": ")
-                .AppendLine(content);
+            return "Archive search could not run for that input. Try simpler keywords (letters, numbers, spaces).";
         }
-
-        return any ? sb.ToString().TrimEnd() : "No matching archives found.";
     }
 
     public async Task<List<Guid>> GetConversationsNeedingSummarizationAsync(
@@ -443,6 +496,73 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .Select(c => c.Id)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
+        _db.Conversations.AnyAsync(c => c.Id == conversationId, cancellationToken);
+
+    public async Task AdvanceCampaignLogWatermarkAsync(Guid conversationId, CancellationToken cancellationToken = default)
+    {
+        bool exists = await _db.Conversations
+            .AnyAsync(c => c.Id == conversationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!exists)
+        {
+            return;
+        }
+
+        DateTime? latestMessageUtc = await _db.ChatMessages
+            .AsNoTracking()
+            .Where(m => m.ConversationId == conversationId)
+            .OrderByDescending(m => m.Timestamp)
+            .Select(m => (DateTime?)m.Timestamp)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        DateTime watermark = latestMessageUtc ?? DateTime.UtcNow;
+
+        await _db.Conversations
+            .Where(c => c.Id == conversationId)
+            .ExecuteUpdateAsync(
+                s => s.SetProperty(c => c.LastSummarizedMessageAt, watermark),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reduces FTS5 syntax injection / parse errors: keep token characters and spaces (implicit AND between tokens).
+    /// </summary>
+    private static string SanitizeFtsMatchQuery(string query)
+    {
+        StringBuilder sb = new(query.Length);
+
+        bool pendingSpace = false;
+
+        foreach (char c in query)
+        {
+            if (char.IsLetterOrDigit(c) || c == '_')
+            {
+                if (pendingSpace && sb.Length > 0)
+                {
+                    _ = sb.Append(' ');
+                }
+
+                pendingSpace = false;
+
+                _ = sb.Append(c);
+            }
+            else if (char.IsWhiteSpace(c))
+            {
+                pendingSpace = sb.Length > 0;
+            }
+            else
+            {
+                pendingSpace = sb.Length > 0;
+            }
+        }
+
+        return sb.ToString().Trim();
     }
 
     private static string TruncateTitle(string prompt)

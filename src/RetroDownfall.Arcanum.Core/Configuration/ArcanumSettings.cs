@@ -15,6 +15,8 @@ public sealed class ArcanumSettings
 
     public CliSettings Cli { get; init; } = new();
 
+    public SecuritySettings Security { get; init; } = new();
+
 }
 
 

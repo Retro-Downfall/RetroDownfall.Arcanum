@@ -26,4 +26,12 @@ public static class ArcanumSettingClamps
 
     public static long MaxAttachFileSizeBytes(long value) => Math.Clamp(value, 1024L, 100L * 1024L * 1024L);
 
+    public static int MaxApiKeyHeaderUtf16Chars(int value) => Math.Clamp(value, 128, 8192);
+
+    public static int MaxAttachedFilesPerRequest(int value) => Math.Clamp(value, 1, 256);
+
+    public static int MaxAttachedFileRelativePathChars(int value) => Math.Clamp(value, 256, 8192);
+
+    public static int ArchiveSearchMaxQueryLength(int value) => Math.Clamp(value, 32, 4096);
+
 }

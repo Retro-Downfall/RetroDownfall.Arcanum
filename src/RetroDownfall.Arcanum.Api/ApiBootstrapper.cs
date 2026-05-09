@@ -392,8 +392,18 @@ public static class ApiBootstrapper
 
         apiGroup.MapPost(
             "/conversations/{id:guid}/rest",
-            async (Guid id, ICampaignLoggerQueue queue, CancellationToken cancellationToken) =>
+            async (Guid id, IGrimoireRepository grimoire, ICampaignLoggerQueue queue, HttpContext httpContext, CancellationToken cancellationToken) =>
             {
+                if (!await grimoire.ConversationExistsAsync(id, cancellationToken).ConfigureAwait(false))
+                {
+                    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<bool> notFound = Result<bool>.Failure(
+                        new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+
+                    return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
+                }
+
                 await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
 
                 return Results.Accepted();

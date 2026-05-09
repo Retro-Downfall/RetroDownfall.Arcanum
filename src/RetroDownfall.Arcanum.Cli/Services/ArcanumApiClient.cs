@@ -536,6 +536,21 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
+            if ((int)response.StatusCode == 404)
+            {
+                ApiResponse<bool>? notFoundEnvelope = responseBytes.Length == 0
+                    ? null
+                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+                if (notFoundEnvelope is not null && notFoundEnvelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result.Failure(notFoundEnvelope.Error.Value);
+                }
+
+                return Result.Failure(
+                    new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+            }
+
             ApiResponse<string>? envelope = responseBytes.Length == 0
                 ? null
                 : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
