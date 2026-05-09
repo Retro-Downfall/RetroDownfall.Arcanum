@@ -7,4 +7,6 @@ public sealed record HostSettings
 
     public int RetainedLogFileCount { get; init; } = 7;
 
+    public bool EnableEnterpriseTelemetry { get; init; } = false;
+
 }

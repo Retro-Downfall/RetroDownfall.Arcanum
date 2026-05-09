@@ -65,6 +65,11 @@ public sealed class OllamaIntelligenceProvider(
             return Result<string>.Failure(attachedFilesError);
         }
 
+        if (!HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
+        {
+            return Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
+        }
+
         ollamaClient.SelectedModel = targetModel;
 
         Result ensure = await EnsureModelExistsAsync(targetModel, cancellationToken, pullProgress: null).ConfigureAwait(false);
@@ -76,7 +81,7 @@ public sealed class OllamaIntelligenceProvider(
 
         Conversation? thread = null;
 
-        if (request.ConversationId is { } existingConversationId)
+        if (!HasStatelessMessages(request) && request.ConversationId is { } existingConversationId)
         {
             thread = await grimoire
                 .GetConversationAsync(existingConversationId, cancellationToken)
@@ -87,19 +92,22 @@ public sealed class OllamaIntelligenceProvider(
 
         Guid? grimoireConversationId = null;
 
-        try
+        if (!HasStatelessMessages(request))
         {
-            (Guid cid, Guid aid) = await grimoire
-                .BeginAssistantReplyAsync(request.ConversationId, prompt, targetModel, cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+                (Guid cid, Guid aid) = await grimoire
+                    .BeginAssistantReplyAsync(request.ConversationId, prompt, targetModel, cancellationToken)
+                    .ConfigureAwait(false);
 
-            grimoireConversationId = cid;
+                grimoireConversationId = cid;
 
-            assistantMessageId = aid;
-        }
-        catch (Exception beginEx)
-        {
-            logger.LogWarning(beginEx, "Grimoire could not begin assistant reply for model {ModelName}.", targetModel);
+                assistantMessageId = aid;
+            }
+            catch (Exception beginEx)
+            {
+                logger.LogWarning(beginEx, "Grimoire could not begin assistant reply for model {ModelName}.", targetModel);
+            }
         }
 
         string? codexContent = await CodexReader
@@ -126,10 +134,12 @@ public sealed class OllamaIntelligenceProvider(
         float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
             settings.Value.Intelligence.SemanticRouterTemperature);
 
+        string semanticProbe = GetSemanticRouterUserProbe(request);
+
         ParsedSpell? activeSpell = await SemanticRouter
             .DetermineActiveSpellAsync(
                 chatClient,
-                prompt,
+                semanticProbe,
                 spells,
                 spellPreflight,
                 routerMaxTokens,
@@ -147,7 +157,7 @@ public sealed class OllamaIntelligenceProvider(
         {
             try
             {
-                var chatMessages = MapGrimoireToMeAiMessages(thread, prompt);
+                List<MeAiChatMessage> chatMessages = BuildInitialMeAiChatMessages(request, thread, prompt);
 
                 PrependDynamicSystemMessage(chatMessages, builtSystemPrompt);
 
@@ -272,6 +282,13 @@ public sealed class OllamaIntelligenceProvider(
             yield break;
         }
 
+        if (!HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, "Prompt is required.");
+
+            yield break;
+        }
+
         ollamaClient.SelectedModel = targetModel;
 
         yield return new IntelligenceEvent(
@@ -360,14 +377,14 @@ public sealed class OllamaIntelligenceProvider(
 
         Conversation? thread = null;
 
-        if (request.ConversationId is { } existingConversationId)
+        if (!HasStatelessMessages(request) && request.ConversationId is { } existingConversationId)
         {
             thread = await grimoire
                 .GetConversationAsync(existingConversationId, cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        List<MeAiChatMessage> chatMessages = MapGrimoireToMeAiMessages(thread, prompt);
+        List<MeAiChatMessage> chatMessages = BuildInitialMeAiChatMessages(request, thread, prompt);
 
         string? streamCodexContent = await CodexReader
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
@@ -393,10 +410,12 @@ public sealed class OllamaIntelligenceProvider(
         float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
             settings.Value.Intelligence.SemanticRouterTemperature);
 
+        string streamSemanticProbe = GetSemanticRouterUserProbe(request);
+
         ParsedSpell? streamActiveSpell = await SemanticRouter
             .DetermineActiveSpellAsync(
                 chatClient,
-                prompt,
+                streamSemanticProbe,
                 streamSpells,
                 streamSpellPreflight,
                 streamRouterMaxTokens,
@@ -416,19 +435,22 @@ public sealed class OllamaIntelligenceProvider(
 
         Guid? boundConversationId = null;
 
-        try
+        if (!HasStatelessMessages(request))
         {
-            (Guid conversationId, Guid aid) = await grimoire
-                .BeginAssistantReplyAsync(request.ConversationId, prompt, targetModel, cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+                (Guid conversationId, Guid aid) = await grimoire
+                    .BeginAssistantReplyAsync(request.ConversationId, prompt, targetModel, cancellationToken)
+                    .ConfigureAwait(false);
 
-            assistantMessageId = aid;
+                assistantMessageId = aid;
 
-            boundConversationId = conversationId;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Grimoire could not start streamed conversation persistence for model {ModelName}.", targetModel);
+                boundConversationId = conversationId;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Grimoire could not start streamed conversation persistence for model {ModelName}.", targetModel);
+            }
         }
 
         if (boundConversationId is { } bcid)
@@ -740,6 +762,84 @@ public sealed class OllamaIntelligenceProvider(
         }
 
         messages.Insert(0, new MeAiChatMessage(ChatRole.System, systemText));
+    }
+
+    private static bool HasStatelessMessages(PingRequest request) =>
+        request.StatelessMessages is { Count: > 0 };
+
+    private static string GetSemanticRouterUserProbe(PingRequest request)
+    {
+        if (!HasStatelessMessages(request))
+        {
+            return request.Prompt;
+        }
+
+        IReadOnlyList<CoreChatMessage> msgs = request.StatelessMessages!;
+
+        for (int i = msgs.Count - 1; i >= 0; i--)
+        {
+            CoreChatMessage m = msgs[i];
+
+            if (string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(m.Content))
+            {
+                return m.Content;
+            }
+        }
+
+        for (int i = msgs.Count - 1; i >= 0; i--)
+        {
+            if (!string.IsNullOrEmpty(msgs[i].Content))
+            {
+                return msgs[i].Content;
+            }
+        }
+
+        return "\u200b";
+    }
+
+    private static List<MeAiChatMessage> BuildInitialMeAiChatMessages(
+        PingRequest request,
+        Conversation? thread,
+        string newUserPrompt)
+    {
+        if (HasStatelessMessages(request))
+        {
+            return MapStatelessMessagesToMeAi(request.StatelessMessages!);
+        }
+
+        return MapGrimoireToMeAiMessages(thread, newUserPrompt);
+    }
+
+    private static List<MeAiChatMessage> MapStatelessMessagesToMeAi(IReadOnlyList<CoreChatMessage> messages)
+    {
+        var list = new List<MeAiChatMessage>(messages.Count);
+
+        foreach (CoreChatMessage m in messages)
+        {
+            list.Add(new MeAiChatMessage(MapOpenAiStyleRoleToChatRole(m.Role), m.Content ?? string.Empty));
+        }
+
+        return list;
+    }
+
+    private static ChatRole MapOpenAiStyleRoleToChatRole(string role)
+    {
+        if (string.Equals(role, "system", StringComparison.OrdinalIgnoreCase))
+        {
+            return ChatRole.System;
+        }
+
+        if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase))
+        {
+            return ChatRole.Assistant;
+        }
+
+        if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
+        {
+            return ChatRole.Tool;
+        }
+
+        return ChatRole.User;
     }
 
     private static List<MeAiChatMessage> MapGrimoireToMeAiMessages(Conversation? conversation, string newUserPrompt)

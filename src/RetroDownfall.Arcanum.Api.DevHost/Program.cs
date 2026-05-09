@@ -35,6 +35,9 @@ if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync().Configure
     Console.WriteLine(newApiKey);
 }
 WebApplication app = builder.Build();
+
+app.UseArcanumCors();
+
 app.MapArcanumEndpoints();
 try
 {

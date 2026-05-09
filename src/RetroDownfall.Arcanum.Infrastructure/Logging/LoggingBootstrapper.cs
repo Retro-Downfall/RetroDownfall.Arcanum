@@ -27,20 +27,27 @@ public static class LoggingBootstrapper
         services.AddSerilog(
             (serviceProvider, loggerConfiguration) =>
             {
-                int retained = ArcanumSettingClamps.RetainedLogFileCount(
-                    serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Host.RetainedLogFileCount);
+                ArcanumSettings arcSettings = serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
 
-                _ = loggerConfiguration
+                int retained = ArcanumSettingClamps.RetainedLogFileCount(arcSettings.Host.RetainedLogFileCount);
+
+                LoggerConfiguration cfg = loggerConfiguration
                     .MinimumLevel.Information()
                     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                     .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
-                    .Enrich.FromLogContext()
-                    .WriteTo.File(
-                        new CompactJsonFormatter(),
-                        logFilePath,
-                        rollingInterval: RollingInterval.Day,
-                        retainedFileCountLimit: retained,
-                        shared: true);
+                    .Enrich.FromLogContext();
+
+                if (arcSettings.Host.EnableEnterpriseTelemetry)
+                {
+                    cfg = cfg.WriteTo.Console(new CompactJsonFormatter());
+                }
+
+                _ = cfg.WriteTo.File(
+                    new CompactJsonFormatter(),
+                    logFilePath,
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: retained,
+                    shared: true);
             });
 
         return services;

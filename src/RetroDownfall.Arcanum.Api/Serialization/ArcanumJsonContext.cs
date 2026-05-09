@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -16,6 +17,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(Error))]
 [JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(CoreChatMessage))]
+[JsonSerializable(typeof(List<CoreChatMessage>))]
 [JsonSerializable(typeof(ChronosyncReport))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(AttachedFileDto))]
@@ -50,5 +53,19 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<LoreDto>))]
 [JsonSerializable(typeof(ApiResponse<List<LoreDto>>))]
 [JsonSerializable(typeof(Result<LoreDto>))]
+[JsonSerializable(typeof(OpenAiChatRequest))]
+[JsonSerializable(typeof(OpenAiChatMessage))]
+[JsonSerializable(typeof(List<OpenAiChatMessage>))]
+[JsonSerializable(typeof(OpenAiChatResponse))]
+[JsonSerializable(typeof(OpenAiChatChoice))]
+[JsonSerializable(typeof(List<OpenAiChatChoice>))]
+[JsonSerializable(typeof(OpenAiChatAssistantMessage))]
+[JsonSerializable(typeof(OpenAiUsage))]
+[JsonSerializable(typeof(OpenAiChatChunk))]
+[JsonSerializable(typeof(OpenAiChatStreamChoice))]
+[JsonSerializable(typeof(List<OpenAiChatStreamChoice>))]
+[JsonSerializable(typeof(OpenAiDelta))]
+[JsonSerializable(typeof(OpenAiErrorDetail))]
+[JsonSerializable(typeof(OpenAiErrorResponse))]
 
 public partial class ArcanumJsonContext : JsonSerializerContext;

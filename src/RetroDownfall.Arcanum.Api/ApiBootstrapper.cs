@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,6 +49,20 @@ public static class ApiBootstrapper
 
         services.AddSingleton<ApiKeyEndpointFilter>();
 
+        services.AddCors(static options =>
+        {
+            options.AddPolicy(
+                "AllowAll",
+                static policy =>
+                {
+                    policy.AllowAnyOrigin();
+
+                    policy.AllowAnyHeader();
+
+                    policy.AllowAnyMethod();
+                });
+        });
+
         services.AddOpenApi();
 
         services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
@@ -81,8 +96,20 @@ public static class ApiBootstrapper
         return services;
     }
 
+    /// <summary>
+    /// Enables permissive CORS for browser-based API consumers (must run before endpoint middleware).
+    /// </summary>
+    public static void UseArcanumCors(this WebApplication app)
+    {
+        app.UseCors("AllowAll");
+    }
+
     public static void MapArcanumEndpoints(this WebApplication app)
     {
+        RouteGroupBuilder openAiV1 = app.MapGroup("/v1").AddEndpointFilter<ApiKeyEndpointFilter>();
+
+        openAiV1.MapOpenAiV1ChatCompletions();
+
         var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
 
         apiGroup.MapOpenApi();
@@ -103,9 +130,10 @@ public static class ApiBootstrapper
 
         apiGroup.MapPost("/intelligence/ping", async (PingRequest? body, IArcanumIntelligenceProvider intelligence, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
-            if (body is null || string.IsNullOrWhiteSpace(body.Prompt))
+            if (body is null
+                || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
             {
-                Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
+                Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required unless StatelessMessages is provided."));
 
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
@@ -162,9 +190,10 @@ public static class ApiBootstrapper
 
             PingRequest? body = await httpContext.Request.ReadFromJsonAsync(ArcanumJsonContext.Default.PingRequest, ct).ConfigureAwait(false);
 
-            if (body is null || string.IsNullOrWhiteSpace(body.Prompt))
+            if (body is null
+                || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
             {
-                Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
+                Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required unless StatelessMessages is provided."));
 
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 

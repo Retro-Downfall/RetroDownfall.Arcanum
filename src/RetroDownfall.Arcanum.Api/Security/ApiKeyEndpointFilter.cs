@@ -22,9 +22,22 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptions<Arca
 
         IHeaderDictionary headers = context.HttpContext.Request.Headers;
 
-        string? headerValue = headers.TryGetValue(ArcanumApiHeaders.ApiKey, out StringValues apiKeyHeader) && apiKeyHeader.Count > 0
-            ? apiKeyHeader[0]
-            : null;
+        string? headerValue = null;
+
+        if (headers.TryGetValue(ArcanumApiHeaders.ApiKey, out StringValues apiKeyHeader) && apiKeyHeader.Count > 0)
+        {
+            headerValue = apiKeyHeader[0];
+        }
+        else if (headers.Authorization.Count > 0)
+        {
+            string? auth = headers.Authorization.ToString();
+
+            if (!string.IsNullOrEmpty(auth)
+                && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                headerValue = auth.AsSpan(7).Trim().ToString();
+            }
+        }
 
         byte[]? expectedUtf8 = Volatile.Read(ref _cachedExpectedUtf8);
 

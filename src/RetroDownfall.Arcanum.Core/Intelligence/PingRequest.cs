@@ -14,5 +14,6 @@ public sealed record PingRequest(
     bool CliTerminalFormatting = false,
     bool UnattendedMode = false,
     List<AttachedFileDto>? AttachedFiles = null,
-    ChronosyncReport? ChronosyncDelta = null);
+    ChronosyncReport? ChronosyncDelta = null,
+    List<CoreChatMessage>? StatelessMessages = null);
 

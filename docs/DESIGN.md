@@ -53,6 +53,7 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 |--------------------|------|---------|---------|
 | `Arcanum:Host:Port` | `int` | `5001` | Kestrel listen port. |
 | `Arcanum:Host:RetainedLogFileCount` | `int` | `7` | Serilog rolling file retention (days). |
+| `Arcanum:Host:EnableEnterpriseTelemetry` | `bool` | `false` | When `true`, Serilog adds a console sink with `CompactJsonFormatter` (structured JSON for log ingestion). |
 | `Arcanum:Security:MaxApiKeyHeaderUtf16Chars` | `int` | `512` | Rejects oversized API key headers before UTF-8 conversion. |
 | `Arcanum:Ollama:Endpoint` | `string` | `http://localhost:11434` | Base URL for the Ollama HTTP API. |
 | `Arcanum:Ollama:DefaultModel` | `string` | `llama3.2` | Model id when `PingRequest.model` is omitted. |
@@ -97,7 +98,7 @@ All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When
 - **`Primitives/`** — `Error` (readonly record struct), `Result` / `Result<T>` (success/failure with implicit conversions), `ApiResponse<T>` (sealed record wire envelope).
 - **`Configuration/`** — `ArcanumSettings` (root options), `ConfigurationBootstrapper` (loads `arcanum.json` + `ARCANUM_` env vars).
 - **`Security/`** — `ISecretStore` (API key read/write contract; concrete implementation in Infrastructure).
-- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`), `PingRequest` (sealed record carrying prompt, model, workspace path, context snapshot, conversation id, attached files, optional `ChronosyncDelta`, and behavioral flags), `IntelligenceEvent` / `IntelligenceEventType`, `AttachedFileDto`.
+- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`), `PingRequest` (sealed record carrying `Prompt`, optional `StatelessMessages` as `List<CoreChatMessage>` for stateless multi-turn without Grimoire history, model, workspace path, context snapshot, conversation id, attached files, optional `ChronosyncDelta`, and behavioral flags), `CoreChatMessage`, `IntelligenceEvent` / `IntelligenceEventType`, `AttachedFileDto`.
 - **`Storage/`** — `ArcanumPaths`, POCO entities (`Conversation`, `ChatMessage`, `MageSetting`, `WorkspaceContext`), `IGrimoireRepository`, `ICampaignLoggerQueue`.
 - **`Chronosync/`** — `ChronosyncReport`, `IChronosyncEngine` (temporal workspace delta vs Grimoire baseline).
 - **`Serialization/`** — `GrimoireJsonContext` (source-generated `PatternSnapshot` JSON for Grimoire columns; distinct from Api `ArcanumJsonContext`).
@@ -161,7 +162,7 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/lore` | Upsert lore entry. |
 | DELETE | `/api/lore/{key}` | Delete lore entry. |
 
-All routes return `ApiResponse<T>` envelopes. The `/api` group is protected by `ApiKeyEndpointFilter` (§11), including the OpenAPI document and Scalar reference UI (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need `X-Arcanum-Key` like any other `/api` caller).
+All routes return `ApiResponse<T>` envelopes except `POST /v1/chat/completions`, which uses OpenAI-shaped JSON. The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (section 11), including the OpenAPI document and Scalar reference UI on `/api` (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need a valid API key like any other `/api` caller).
 
 **Key types:** `ApiBootstrapper` (`AddArcanumApiServices` / `MapArcanumEndpoints`), `OllamaIntelligenceProvider` (§10), `SemanticRouter` (§10.2.2), `ArcanumLocalTimeTool` / `ArcanumSpellScriptTool` (sealed `AIFunction` with static `JsonDocument` schemas), `ApiKeyEndpointFilter` (§11), `ArcanumJsonContext` (§8.2).
 
@@ -427,7 +428,7 @@ The provider persists through `IGrimoireRepository`. When `conversationId` is se
 
 **Problem:** The API daemon's cwd is not the operator's shell cwd.
 
-**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `ConversationId`, optional `AttachedFiles`, and optional `ChronosyncDelta` (`ChronosyncReport`). The CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before each HTTP call.
+**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `ConversationId`, optional `StatelessMessages` (`CoreChatMessage` transcript for enterprise or OpenAI-compatible callers without Grimoire thread replay), optional `AttachedFiles`, and optional `ChronosyncDelta` (`ChronosyncReport`). The CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before each HTTP call.
 
 **CLI Grimoire bootstrap:** `ask` and `chat` call `IGrimoireCliInitialization` once per process so SQLCipher passphrase setup and first-run migrations match the API host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
 
@@ -450,7 +451,7 @@ The same `WorkingDirectory` scopes `McpConnectionManager`, `CodexReader`, and `S
 
 ### 11.1 Threat model
 
-Arcanum runs on **loopback only** for **single-user local development**. Even on localhost, every `/api` request must present a valid API key (zero-trust local). A client with the key can invoke `execute_command` — that is operator-equivalent power within the workspace tree.
+Arcanum runs on **loopback only** for **single-user local development**. Even on localhost, every `/api` and `/v1` request must present a valid API key (zero-trust local). A client with the key can invoke `execute_command` — that is operator-equivalent power within the workspace tree.
 
 ### 11.2 API key lifecycle
 
@@ -460,16 +461,25 @@ Arcanum runs on **loopback only** for **single-user local development**. Even on
 
 ### 11.3 Request authentication
 
-`ApiKeyEndpointFilter` (singleton) validates `X-Arcanum-Key`:
+`ApiKeyEndpointFilter` (singleton) accepts the API key from either header, in this order:
+
+1. **`X-Arcanum-Key`** when present (legacy Arcanum header).
+2. Otherwise `Authorization: Bearer` followed by the raw key (OpenAI-compatible clients). The `Bearer` prefix is case-insensitive; only the trimmed token after the first space is compared.
+
+The filter then:
 
 1. Rejects values exceeding `MaxApiKeyHeaderUtf16Chars` with 401.
 2. Caches the decrypted key's UTF-8 bytes after first successful load (no per-request I/O).
 3. Compares with `CryptographicOperations.FixedTimeEquals` (timing-safe).
 4. Uses `stackalloc` for keys <= 256 bytes (avoids heap allocation).
 
-### 11.4 OpenAPI and Scalar
+### 11.4 CORS (serve host)
 
-`MapOpenApi` and `MapScalarApiReference` are attached to the same `MapGroup("/api")` that applies `ApiKeyEndpointFilter`, so fetching **`openapi/v1.json`**, **`scalar`**, or **`scalar/v1`** requires a valid **`X-Arcanum-Key`** header alongside every other `/api` endpoint.
+`AddArcanumApiServices` registers a permissive CORS policy named **`AllowAll`** (`AllowAnyOrigin`, `AllowAnyHeader`, `AllowAnyMethod`). `UseArcanumCors` runs early in the pipeline (before custom exception middleware and endpoint mapping) so browser-based tools can call the API without preflight failures.
+
+### 11.5 OpenAPI and Scalar
+
+`MapOpenApi` and `MapScalarApiReference` are attached to the same `MapGroup("/api")` that applies `ApiKeyEndpointFilter`, so fetching **`openapi/v1.json`**, **`scalar`**, or **`scalar/v1`** requires a valid API key (same headers as section 11.3) alongside every other `/api` endpoint. The OpenAI-shaped **`POST /v1/chat/completions`** route lives under `MapGroup("/v1")` with the same filter but is not included in that OpenAPI document.
 
 ---
 

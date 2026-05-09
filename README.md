@@ -20,7 +20,7 @@ dotnet build RetroDownfall.Arcanum.slnx
 
 ## First-run setup
 
-Arcanum requires an API key for all `/api` routes (header `X-Arcanum-Key`). On first startup the key is generated automatically:
+Arcanum requires an API key for all `/api` and `/v1` routes. Send `X-Arcanum-Key`, or `Authorization: Bearer <KEY>` for OpenAI-compatible clients. On first startup the key is generated automatically:
 
 ```bash
 dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- serve
@@ -46,7 +46,13 @@ Settings live in a per-user directory (created on first run):
 
 Place an optional `arcanum.json` in that directory. Environment variable override prefix: `ARCANUM_` (double underscores for nesting, e.g. `ARCANUM_Arcanum__Ollama__Endpoint`).
 
+| Setting | Purpose |
+|---------|---------|
+| `Arcanum:Host:EnableEnterpriseTelemetry` | When `true`, Serilog also writes structured JSON logs to the console (for log shippers). Rolling JSON file logs are always enabled. |
+
 - The Grimoire (`WorkspaceContexts` table) stores JSON `PatternSnapshot` baselines to power Chronosync Reporting.
+
+The `serve` host registers a permissive CORS policy (`AllowAnyOrigin` / `AllowAnyHeader` / `AllowAnyMethod`) so browser UIs (for example LibreChat) can call the API without preflight failures.
 
 Minimal example:
 
@@ -54,7 +60,8 @@ Minimal example:
 {
   "Arcanum": {
     "Host": {
-      "Port": 5001
+      "Port": 5001,
+      "EnableEnterpriseTelemetry": false
     },
     "Ollama": {
       "Endpoint": "http://localhost:11434",
@@ -127,12 +134,13 @@ All commands use `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfa
 
 ## API reference
 
-All endpoints require header `X-Arcanum-Key`. Default base: `http://localhost:5001`.
+All endpoints require the API key via header `X-Arcanum-Key` or `Authorization: Bearer <KEY>`. Default base: `http://localhost:5001`.
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
-| POST | `/api/intelligence/ping` | Buffered single-turn inference |
+| POST | `/v1/chat/completions` | OpenAI-compatible chat (JSON body: `model`, `messages`, `stream`, optional `temperature` / `max_tokens`; `temperature` and `max_tokens` are accepted but not yet applied to inference). Stateless transcript only (no Grimoire thread). Response: `text/event-stream` when `stream` is true. |
+| POST | `/api/intelligence/ping` | Buffered inference (`prompt` or `statelessMessages` for multi-turn without Grimoire) |
 | POST | `/api/intelligence/ping-stream` | Streaming inference (NDJSON) |
 | POST | `/api/intelligence/human-response` | Complete an `ask_human` tool call |
 | POST | `/api/intelligence/arsenal` | List active tools and MCP servers |

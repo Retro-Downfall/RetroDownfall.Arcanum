@@ -61,6 +61,8 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 
         WebApplication app = builder.Build();
 
+        app.UseArcanumCors();
+
         app.Use(async (context, next) =>
         {
             try
