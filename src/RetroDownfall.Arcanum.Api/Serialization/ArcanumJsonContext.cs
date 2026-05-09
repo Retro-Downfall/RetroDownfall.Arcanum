@@ -27,5 +27,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(Result<WorkspaceArsenalDto>))]
 [JsonSerializable(typeof(List<McpServerStatusDto>))]
 [JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(ConversationSummaryDto))]
+[JsonSerializable(typeof(List<ConversationSummaryDto>))]
+[JsonSerializable(typeof(ApiResponse<List<ConversationSummaryDto>>))]
 
 public partial class ArcanumJsonContext : JsonSerializerContext;

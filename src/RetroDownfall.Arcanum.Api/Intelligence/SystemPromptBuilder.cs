@@ -77,6 +77,29 @@ internal static class SystemPromptBuilder
             sb.AppendLine();
 
             sb.Append(activeSpell.FullContent);
+
+            if (activeSpell.AvailableScripts.Count > 0)
+            {
+                sb.AppendLine();
+
+                sb.AppendLine();
+
+                sb.AppendLine("### Available Spell Scripts");
+
+                sb.AppendLine();
+
+                foreach (string scriptName in activeSpell.AvailableScripts)
+                {
+                    sb.Append("- ");
+
+                    sb.AppendLine(scriptName);
+                }
+
+                sb.AppendLine();
+
+                sb.AppendLine(
+                    "You may run these scripts only via the run_spell_script tool: pass script_name (file name only) and optional arguments.");
+            }
         }
 
         if (attachedFiles is { Count: > 0 })

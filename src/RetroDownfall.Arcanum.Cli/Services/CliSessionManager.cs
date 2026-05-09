@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Storage;
+using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -27,10 +28,14 @@ internal static class CliSessionManager
         }
         catch (IOException)
         {
+            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+
             return null;
         }
         catch (UnauthorizedAccessException)
         {
+            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
+
             return null;
         }
     }
@@ -45,9 +50,11 @@ internal static class CliSessionManager
         }
         catch (IOException)
         {
+            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
         }
         catch (UnauthorizedAccessException)
         {
+            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
         }
     }
 
@@ -62,9 +69,11 @@ internal static class CliSessionManager
         }
         catch (IOException)
         {
+            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
         }
         catch (UnauthorizedAccessException)
         {
+            AnsiConsole.MarkupLine("[dim yellow]Warning: Could not save/load session state.[/]");
         }
     }
 }

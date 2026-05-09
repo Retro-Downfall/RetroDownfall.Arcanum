@@ -1,12 +1,16 @@
 using System.Buffers;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -30,6 +34,8 @@ internal sealed class ArcanumInternalToolServer
     private readonly McpJsonSerializerContext _json;
 
     private readonly IHumanPromptRegistry _humanPrompts;
+
+    private readonly IServiceScopeFactory _scopeFactory;
 
     private readonly ILogger<ArcanumInternalToolServer>? _logger;
 
@@ -57,16 +63,28 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly JsonElement _askHumanSchema;
 
+    private readonly JsonElement _readLoreSchema;
+
+    private readonly JsonElement _scribeLoreSchema;
+
+    private readonly JsonElement _deleteLoreSchema;
+
+    private readonly JsonElement _searchArchivesSchema;
+
+    private readonly IntelligenceSettings _settings;
+
     private readonly string _executeCommandToolDescription;
 
     internal ArcanumInternalToolServer(
         ChannelReader<string> fromClient,
         ChannelWriter<string> toClient,
         IHumanPromptRegistry humanPromptRegistry,
+        IServiceScopeFactory scopeFactory,
         string? workspaceRootNormalizedOrNull,
         TimeSpan executeCommandTimeout,
         int executeCommandTimeoutSecondsForDisplay,
         int listDirectoryMaxPaths,
+        IntelligenceSettings intelligenceSettings,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -75,6 +93,10 @@ internal sealed class ArcanumInternalToolServer
         ArgumentNullException.ThrowIfNull(toClient);
 
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
+
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+
+        ArgumentNullException.ThrowIfNull(intelligenceSettings);
 
         if (listDirectoryMaxPaths < 1)
         {
@@ -86,6 +108,8 @@ internal sealed class ArcanumInternalToolServer
         _toClient = toClient;
 
         _humanPrompts = humanPromptRegistry;
+
+        _scopeFactory = scopeFactory;
 
         _logger = logger;
 
@@ -108,6 +132,8 @@ internal sealed class ArcanumInternalToolServer
             "Lists files and folders under a path relative to the workspace root. Optional recursion; skips node_modules, bin, obj, and .git; returns at most "
             + $"{listDirectoryMaxPaths} paths.";
 
+        _settings = intelligenceSettings;
+
         _readFileChunkSchema = BuildReadFileChunkSchema();
 
         _replaceTextBlockSchema = BuildReplaceTextBlockSchema();
@@ -119,6 +145,14 @@ internal sealed class ArcanumInternalToolServer
         _executeCommandSchema = BuildExecuteCommandSchema(_executeCommandTimeoutSeconds);
 
         _askHumanSchema = BuildAskHumanSchema();
+
+        _readLoreSchema = BuildReadLoreSchema();
+
+        _scribeLoreSchema = BuildScribeLoreSchema();
+
+        _deleteLoreSchema = BuildDeleteLoreSchema();
+
+        _searchArchivesSchema = BuildSearchArchivesSchema();
 
         _executeCommandToolDescription =
             $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout). Optional workingDirectory is relative to the workspace root.";
@@ -261,49 +295,89 @@ internal sealed class ArcanumInternalToolServer
 
     private JsonRpcResponse BuildToolsListResponse(JsonElement rpcId)
     {
-        McpToolsListResultWire body = new()
+        List<McpToolDefinitionWire> tools =
+        [
+            new McpToolDefinitionWire
+            {
+                Name = "read_file_chunk",
+                Description = "Reads a specific range of lines from a file to avoid token exhaustion.",
+                InputSchema = _readFileChunkSchema,
+            },
+            new McpToolDefinitionWire
+            {
+                Name = "replace_text_block",
+                Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
+                InputSchema = _replaceTextBlockSchema,
+            },
+            new McpToolDefinitionWire
+            {
+                Name = "write_file",
+                Description = "Create a new file or completely overwrite an existing file",
+                InputSchema = _writeFileSchema,
+            },
+            new McpToolDefinitionWire
+            {
+                Name = "list_directory",
+                Description = _listDirectoryToolsListDescription,
+                InputSchema = _listDirectorySchema,
+            },
+            new McpToolDefinitionWire
+            {
+                Name = "execute_command",
+                Description = _executeCommandToolDescription,
+                InputSchema = _executeCommandSchema,
+            },
+            new McpToolDefinitionWire
+            {
+                Name = "ask_human",
+                Description =
+                    "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
+                InputSchema = _askHumanSchema,
+            },
+        ];
+
+        if (_settings.EnableLoreSystem)
         {
-            Tools =
-            [
+            tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "read_file_chunk",
-                    Description = "Reads a specific range of lines from a file to avoid token exhaustion.",
-                    InputSchema = _readFileChunkSchema,
-                },
-                new McpToolDefinitionWire
-                {
-                    Name = "replace_text_block",
-                    Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
-                    InputSchema = _replaceTextBlockSchema,
-                },
-                new McpToolDefinitionWire
-                {
-                    Name = "write_file",
-                    Description = "Create a new file or completely overwrite an existing file",
-                    InputSchema = _writeFileSchema,
-                },
-                new McpToolDefinitionWire
-                {
-                    Name = "list_directory",
-                    Description = _listDirectoryToolsListDescription,
-                    InputSchema = _listDirectorySchema,
-                },
-                new McpToolDefinitionWire
-                {
-                    Name = "execute_command",
-                    Description = _executeCommandToolDescription,
-                    InputSchema = _executeCommandSchema,
-                },
-                new McpToolDefinitionWire
-                {
-                    Name = "ask_human",
+                    Name = "read_lore",
                     Description =
-                        "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
-                    InputSchema = _askHumanSchema,
-                },
-            ],
-        };
+                        "Reads a persistent key-value fact from the Grimoire (MageSettings). Use before answering when recalling operator context or project state.",
+                    InputSchema = _readLoreSchema,
+                });
+
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "scribe_lore",
+                    Description =
+                        "Writes or updates a compressed factual summary in the Grimoire under a descriptive key for cross-session recall.",
+                    InputSchema = _scribeLoreSchema,
+                });
+
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "delete_lore",
+                    Description = "Removes a lore key from the Grimoire when the operator asks to forget or the fact is obsolete.",
+                    InputSchema = _deleteLoreSchema,
+                });
+        }
+
+        if (_settings.EnableArchiveSearch)
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "search_archives",
+                    Description =
+                        "Search the Grimoire conversation history using keyword matching to recall past decisions or context.",
+                    InputSchema = _searchArchivesSchema,
+                });
+        }
+
+        McpToolsListResultWire body = new() { Tools = tools.ToArray() };
 
         JsonElement result = JsonSerializer.SerializeToElement(body, _json.McpToolsListResultWire);
 
@@ -336,6 +410,16 @@ internal sealed class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("tools/call params missing required 'name'."));
         }
 
+        if ((call.Name is "read_lore" or "scribe_lore" or "delete_lore") && !_settings.EnableLoreSystem)
+        {
+            return BuildToolsCallResponse(rpcId, ToolError("The Lore system is disabled in configuration."));
+        }
+
+        if (call.Name == "search_archives" && !_settings.EnableArchiveSearch)
+        {
+            return BuildToolsCallResponse(rpcId, ToolError("Archive search is disabled in configuration."));
+        }
+
         McpToolsCallResultWire result = call.Name switch
         {
             "read_file_chunk" => await ExecuteReadFileChunkAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
@@ -344,6 +428,10 @@ internal sealed class ArcanumInternalToolServer
             "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "execute_command" => await ExecuteCommandAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "ask_human" => await ExecuteAskHumanAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "read_lore" => await ExecuteReadLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "delete_lore" => await ExecuteDeleteLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "search_archives" => await ExecuteSearchArchivesAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             _ => ToolError($"Unknown tool: {call.Name}"),
         };
 
@@ -390,6 +478,216 @@ internal sealed class ArcanumInternalToolServer
         catch (InvalidOperationException ex)
         {
             return ToolError(ex.Message);
+        }
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteReadLoreAsync(JsonElement arguments, CancellationToken cancellationToken)
+    {
+        ReadLoreParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.ReadLoreParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for read_lore: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Key))
+        {
+            return ToolError("read_lore requires a non-empty 'key'.");
+        }
+
+        string key = args.Key.Trim();
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IGrimoireRepository repo = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+            string? value = await repo.ReadLoreAsync(key, cancellationToken).ConfigureAwait(false);
+
+            string text = value is null ? "Key not found." : value;
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = text },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "read_lore failed for key {Key}.", key);
+
+            return ToolError("An internal error occurred during tool execution.");
+        }
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteScribeLoreAsync(JsonElement arguments, CancellationToken cancellationToken)
+    {
+        ScribeLoreParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.ScribeLoreParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for scribe_lore: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Key) || string.IsNullOrWhiteSpace(args.Value))
+        {
+            return ToolError("scribe_lore requires non-empty 'key' and 'value'.");
+        }
+
+        string key = args.Key.Trim();
+
+        string value = args.Value.Trim();
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IGrimoireRepository repo = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+            await repo.ScribeLoreAsync(key, value, cancellationToken).ConfigureAwait(false);
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = $"Lore saved for key '{key}'." },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "scribe_lore failed for key {Key}.", key);
+
+            return ToolError("An internal error occurred during tool execution.");
+        }
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteDeleteLoreAsync(JsonElement arguments, CancellationToken cancellationToken)
+    {
+        DeleteLoreParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.DeleteLoreParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for delete_lore: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Key))
+        {
+            return ToolError("delete_lore requires a non-empty 'key'.");
+        }
+
+        string key = args.Key.Trim();
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IGrimoireRepository repo = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+            bool removed = await repo.DeleteLoreAsync(key, cancellationToken).ConfigureAwait(false);
+
+            string text = removed
+                ? $"Key '{key}' was removed from lore."
+                : $"Key '{key}' did not exist; nothing was deleted.";
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = text },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "delete_lore failed for key {Key}.", key);
+
+            return ToolError("An internal error occurred during tool execution.");
+        }
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteSearchArchivesAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        SearchArchivesParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.SearchArchivesParams);
+        }
+        catch (JsonException ex)
+        {
+            return ToolError($"Invalid arguments for search_archives: {ex.Message}");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Query))
+        {
+            return ToolError("search_archives requires a non-empty 'query'.");
+        }
+
+        string query = args.Query.Trim();
+
+        int maxResults = Math.Max(1, _settings.ArchiveSearchMaxResults);
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IGrimoireRepository repo = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+            string text = await repo
+                .SearchArchivesAsync(query, maxResults, cancellationToken)
+                .ConfigureAwait(false);
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = text },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "search_archives failed for query {Query}.", query);
+
+            return ToolError("An internal error occurred during tool execution.");
         }
     }
 
@@ -1328,6 +1626,107 @@ internal sealed class ArcanumInternalToolServer
             w.WriteStringValue("question");
 
             w.WriteStringValue("promptId");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildReadLoreSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "key",
+                "Lore key (e.g. Architecture_State, User_Preferences). Stored in the encrypted Grimoire database.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("key");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildScribeLoreSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "key",
+                "Descriptive lore key under which the fact is stored (upsert).");
+
+            WriteStringProperty(w, "value", "Compressed factual summary to persist for later turns.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("key");
+
+            w.WriteStringValue("value");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildDeleteLoreSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(w, "key", "Lore key to remove from the Grimoire.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("key");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildSearchArchivesSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "query",
+                "Keywords or FTS5 query text to match against archived chat message content.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("query");
 
             w.WriteEndArray();
 

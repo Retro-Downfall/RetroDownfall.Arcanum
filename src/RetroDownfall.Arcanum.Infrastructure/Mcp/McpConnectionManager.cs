@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -25,6 +26,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 public sealed class McpConnectionManager(
     ILogger<McpConnectionManager> logger,
     IHumanPromptRegistry humanPromptRegistry,
+    IServiceScopeFactory scopeFactory,
     IOptions<ArcanumSettings> settings) : IAsyncDisposable
 {
 
@@ -553,10 +555,12 @@ public sealed class McpConnectionManager(
 
         (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
             humanPromptRegistry,
+            scopeFactory,
             workspaceRoot,
             executeTimeout,
             timeoutSeconds,
             listDirectoryMaxPaths,
+            settings.Value.Intelligence,
             logger: null);
 
         Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);

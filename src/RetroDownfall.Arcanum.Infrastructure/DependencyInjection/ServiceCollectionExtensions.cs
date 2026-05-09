@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Pattern;
@@ -70,6 +71,8 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<GrimoireDatabaseHostedService>();
         services.AddDbContext<ArcanumDbContext>();
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
+        services.AddSingleton<CampaignLoggerQueue>();
+        services.AddHostedService<CampaignLoggerBackgroundService>();
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
         services.AddSingleton<McpConnectionManager>();
         return services;

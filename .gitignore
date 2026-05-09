@@ -4,3 +4,4 @@ artifacts/
 .vs/
 *.user
 .DS_Store
+.idea/**/jsLibraryMappings.xml

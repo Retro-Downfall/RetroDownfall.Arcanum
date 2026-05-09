@@ -101,4 +101,8 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(ListDirectoryParams))]
 [JsonSerializable(typeof(ExecuteCommandParams))]
 [JsonSerializable(typeof(AskHumanParams))]
+[JsonSerializable(typeof(ReadLoreParams))]
+[JsonSerializable(typeof(ScribeLoreParams))]
+[JsonSerializable(typeof(DeleteLoreParams))]
+[JsonSerializable(typeof(SearchArchivesParams))]
 public partial class McpJsonSerializerContext : JsonSerializerContext;

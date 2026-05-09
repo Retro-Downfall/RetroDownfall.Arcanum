@@ -225,3 +225,13 @@ public sealed record AskHumanParams
     public required string PromptId { get; init; }
 }
 
+public sealed record ReadLoreParams([property: JsonPropertyName("key")] string Key);
+
+public sealed record ScribeLoreParams(
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("value")] string Value);
+
+public sealed record DeleteLoreParams([property: JsonPropertyName("key")] string Key);
+
+public sealed record SearchArchivesParams([property: JsonPropertyName("query")] string Query);
+

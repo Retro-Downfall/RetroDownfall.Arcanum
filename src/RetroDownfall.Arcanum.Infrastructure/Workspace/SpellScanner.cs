@@ -2,7 +2,13 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
 
-internal sealed record ParsedSpell(string Name, string Description, string FilePath, string FullContent);
+internal sealed record ParsedSpell(
+    string Name,
+    string Description,
+    string FilePath,
+    string FullContent,
+    string DirectoryPath,
+    IReadOnlyList<string> AvailableScripts);
 internal static class SpellScanner
 {
     private static readonly HashSet<string> HeavyDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
@@ -183,7 +189,54 @@ internal static class SpellScanner
 
         string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
         ExtractFrontmatterFields(fullText, directoryFallbackName, out string name, out string description);
-        return new ParsedSpell(name, description, filePath, fullText);
+        string spellDirectoryPath = string.Empty;
+        try
+        {
+            string? dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                spellDirectoryPath = Path.GetFullPath(dir);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            spellDirectoryPath = string.Empty;
+        }
+
+        IReadOnlyList<string> availableScripts = spellDirectoryPath.Length > 0
+            ? DiscoverAvailableScripts(spellDirectoryPath, cancellationToken)
+            : Array.Empty<string>();
+        return new ParsedSpell(name, description, filePath, fullText, spellDirectoryPath, availableScripts);
+    }
+
+    private static IReadOnlyList<string> DiscoverAvailableScripts(string spellDirectoryFullPath, CancellationToken cancellationToken)
+    {
+        string scriptsDir = Path.Combine(spellDirectoryFullPath, "scripts");
+        if (!Directory.Exists(scriptsDir))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var names = new List<string>();
+            foreach (string path in Directory.EnumerateFiles(scriptsDir))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                names.Add(Path.GetFileName(path));
+            }
+
+            names.Sort(StringComparer.Ordinal);
+            return names;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Array.Empty<string>();
+        }
     }
 
     private static string GetSpellDirectoryFallbackName(string filePath)

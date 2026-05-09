@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Daemon;
 
 public sealed class UninstallCommand(IDaemonManager daemonManager) : AsyncCommand
 {
-    public override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine("[#C0C0C0]Removing launchd agent…[/]");
 

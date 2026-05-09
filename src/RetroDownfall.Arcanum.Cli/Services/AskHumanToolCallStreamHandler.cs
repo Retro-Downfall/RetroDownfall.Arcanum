@@ -1,16 +1,28 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
+
+internal enum AskHumanResult
+{
+
+    NotHandled,
+
+    Handled,
+
+    SubmitFailed,
+
+}
 
 /// <summary>
 /// When NDJSON streaming exposes <see cref="IntelligenceEventType.ToolCall"/> for <c>ask_human</c>, submits the human answer (or unattended stub) to the API.
 /// </summary>
 internal static class AskHumanToolCallStreamHandler
 {
-    public static async Task<bool> TryHandleAskHumanAsync(
+    public static async Task<AskHumanResult> TryHandleAskHumanAsync(
         IntelligenceEvent evt,
         bool unattended,
         ArcanumApiClient apiClient,
@@ -18,24 +30,26 @@ internal static class AskHumanToolCallStreamHandler
     {
         if (evt.Type != IntelligenceEventType.ToolCall)
         {
-            return false;
+            return AskHumanResult.NotHandled;
         }
 
         if (!string.Equals(evt.Message, "ask_human", StringComparison.Ordinal))
         {
-            return false;
+            return AskHumanResult.NotHandled;
         }
 
         AskHumanParams? args = ParseArgs(evt.Data);
 
         if (args is null)
         {
-            return false;
+            return AskHumanResult.NotHandled;
         }
+
+        Result<bool> submitResult;
 
         if (unattended)
         {
-            _ = await apiClient
+            submitResult = await apiClient
                 .SubmitHumanResponseAsync(
                     args.PromptId,
                     "System: The user is in unattended mode. Proceed using your best judgment.",
@@ -50,10 +64,19 @@ internal static class AskHumanToolCallStreamHandler
 
             string answer = AnsiConsole.Ask<string>($"\n[bold magenta]Mage asks:[/] {Markup.Escape(args.Question)}");
 
-            _ = await apiClient.SubmitHumanResponseAsync(args.PromptId, answer, cancellationToken).ConfigureAwait(false);
+            submitResult = await apiClient
+                .SubmitHumanResponseAsync(args.PromptId, answer, cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        return true;
+        if (submitResult.IsFailure)
+        {
+            AnsiConsole.MarkupLine("[red]Failed to submit response to Daemon. The stream may be disconnected.[/]");
+
+            return AskHumanResult.SubmitFailed;
+        }
+
+        return AskHumanResult.Handled;
     }
 
     private static AskHumanParams? ParseArgs(string? data)

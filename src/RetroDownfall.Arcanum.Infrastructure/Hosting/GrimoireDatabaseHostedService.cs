@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
@@ -20,7 +21,7 @@ public sealed class GrimoireDatabaseHostedService(
     [UnconditionalSuppressMessage(
         "AOT",
         "IL3050",
-        Justification = "EnsureCreatedAsync is RequiresDynamicCode; used only for first-run empty-database bootstrap with the compiled EF model—migrations and design-time model builds are not executed here.")]
+        Justification = "MigrateAsync is RequiresDynamicCode; used only for first-run empty-database bootstrap with the compiled EF model—design-time model builds are not executed here.")]
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         Batteries_V2.Init();
@@ -63,7 +64,7 @@ public sealed class GrimoireDatabaseHostedService(
         {
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
             ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
-            await db.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.MigrateAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

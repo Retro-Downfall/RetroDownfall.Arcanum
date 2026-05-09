@@ -1,4 +1,9 @@
+using System.Data;
+using System.Data.Common;
+using System.Globalization;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -185,22 +190,62 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
     }
 
-    public async Task<IReadOnlyList<ConversationSummary>> ListRecentConversationsAsync(
+    public async Task<IReadOnlyList<ConversationSummaryDto>> ListRecentConversationsAsync(
         int take,
         CancellationToken cancellationToken = default)
     {
         if (take <= 0)
         {
-            return Array.Empty<ConversationSummary>();
+            return Array.Empty<ConversationSummaryDto>();
         }
 
-        return await _db.Conversations
+        var rows = await _db.Conversations
             .AsNoTracking()
-            .OrderByDescending(c => c.CreatedAt)
+            .OrderByDescending(c => c.Messages.Max(m => (DateTime?)m.Timestamp) ?? c.CreatedAt)
+            .Select(c => new
+            {
+                c.Id,
+                c.CreatedAt,
+                LastUpdate = c.Messages.Max(m => (DateTime?)m.Timestamp),
+                FirstMsg = c.Messages.OrderBy(m => m.Timestamp).Select(m => m.Content).FirstOrDefault(),
+            })
             .Take(take)
-            .Select(c => new ConversationSummary(c.Id, c.CreatedAt, c.Title))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        List<ConversationSummaryDto> result = new(rows.Count);
+
+        foreach (var row in rows)
+        {
+            DateTime updatedAtUtc = row.LastUpdate ?? row.CreatedAt;
+
+            string snippet = BuildSnippet(row.FirstMsg);
+
+            result.Add(new ConversationSummaryDto(row.Id, row.CreatedAt, updatedAtUtc, snippet));
+        }
+
+        return result;
+    }
+
+    public async Task<int> DeleteConversationAsync(Guid conversationId, CancellationToken cancellationToken = default)
+    {
+        await using var tx = await _db.Database
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        _ = await _db.ChatMessages
+            .Where(m => m.ConversationId == conversationId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        int removed = await _db.Conversations
+            .Where(c => c.Id == conversationId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        return removed;
     }
 
     public async Task<Conversation?> GetConversationAsync(
@@ -214,10 +259,147 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .ConfigureAwait(false);
     }
 
+    public async Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default)
+    {
+        return await _db.MageSettings
+            .AsNoTracking()
+            .Where(s => s.Key == key)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default)
+    {
+        DateTime now = DateTime.UtcNow;
+        MageSetting? existing = await _db.MageSettings
+            .FirstOrDefaultAsync(s => s.Key == key, cancellationToken)
+            .ConfigureAwait(false);
+        if (existing is null)
+        {
+            _db.MageSettings.Add(
+                new MageSetting
+                {
+                    Key = key,
+                    Value = value,
+                    UpdatedAt = now,
+                });
+        }
+        else
+        {
+            existing.Value = value;
+            existing.UpdatedAt = now;
+        }
+
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default)
+    {
+        return await _db.MageSettings
+            .Where(s => s.Key == key)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false) > 0;
+    }
+
+    public async Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return "No matching archives found.";
+        }
+
+        int limit = Math.Clamp(maxResults, 1, 500);
+
+        DbConnection connection = _db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            SELECT c."Role", c."Content", c."Timestamp"
+            FROM "ChatMessages_fts" AS f
+            INNER JOIN "ChatMessages" AS c ON c."Id" = f."Id"
+            WHERE f MATCH @query
+            ORDER BY rank
+            LIMIT @limit
+            """;
+
+        DbParameter pQuery = cmd.CreateParameter();
+
+        pQuery.ParameterName = "@query";
+
+        pQuery.Value = query;
+
+        cmd.Parameters.Add(pQuery);
+
+        DbParameter pLimit = cmd.CreateParameter();
+
+        pLimit.ParameterName = "@limit";
+
+        pLimit.Value = limit;
+
+        cmd.Parameters.Add(pLimit);
+
+        await using DbDataReader reader = await cmd
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        StringBuilder sb = new();
+
+        bool any = false;
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            any = true;
+
+            MessageRole role = (MessageRole)reader.GetInt32(0);
+
+            string content = reader.GetString(1);
+
+            DateTime timestamp = reader.GetDateTime(2);
+
+            _ = sb.Append('[')
+                .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
+                .Append("] ")
+                .Append(role)
+                .Append(": ")
+                .AppendLine(content);
+        }
+
+        return any ? sb.ToString().TrimEnd() : "No matching archives found.";
+    }
+
+    public async Task<List<Guid>> GetConversationsNeedingSummarizationAsync(
+        int threshold,
+        CancellationToken cancellationToken = default)
+    {
+        return await _db.Conversations
+            .Where(c => c.Messages.Count(m => m.Timestamp > (c.LastSummarizedMessageAt ?? DateTime.MinValue)) > threshold)
+            .Select(c => c.Id)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     private static string TruncateTitle(string prompt)
     {
         string trimmed = prompt.Trim();
         const int maxLen = 200;
         return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
+    }
+
+    private static string BuildSnippet(string? firstMsg)
+    {
+        if (string.IsNullOrEmpty(firstMsg))
+        {
+            return string.Empty;
+        }
+
+        return firstMsg.Length > 50 ? string.Concat(firstMsg.AsSpan(0, 50), "...") : firstMsg;
     }
 }

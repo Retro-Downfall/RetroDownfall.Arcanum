@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 public sealed class ServeCommand : AsyncCommand
 {
-    public override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 

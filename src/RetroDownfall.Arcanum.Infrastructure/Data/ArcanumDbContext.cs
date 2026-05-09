@@ -55,6 +55,8 @@ public sealed class ArcanumDbContext(
             entity.ToTable("Conversations");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Title).HasMaxLength(512).IsRequired();
+            entity.Property(e => e.Summary);
+            entity.Property(e => e.LastSummarizedMessageAt);
             entity.HasIndex(e => e.CreatedAt);
             entity.HasMany(e => e.Messages)
                 .WithOne(m => m.Conversation!)
@@ -68,7 +70,7 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Content).IsRequired();
             entity.Property(e => e.ModelUsed).HasMaxLength(256).IsRequired();
             entity.Property(e => e.Role).HasConversion<int>();
-            entity.HasIndex(e => e.ConversationId);
+            entity.HasIndex(m => new { m.ConversationId, m.Timestamp });
         });
         modelBuilder.Entity<MageSetting>(entity =>
         {

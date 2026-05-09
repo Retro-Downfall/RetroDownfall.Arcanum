@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -38,10 +39,13 @@ public sealed class ChatCommand(
         "/tools",
         "/mcp",
         "/arsenal",
+        "/history",
+        "/resume",
+        "/delete",
         "/attach",
     };
 
-    public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
         if (settings.New)
         {
@@ -60,6 +64,8 @@ public sealed class ChatCommand(
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
+        var lastTokenUsage = new TokenUsageSink();
+
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -69,6 +75,8 @@ public sealed class ChatCommand(
             string promptMarkup = stagedFiles.Count > 0
                 ? $"[yellow][[{stagedFiles.Count} file(s) staged]]][/] [bold blue]Mage[/] >"
                 : "[bold blue]Mage[/] >";
+
+            RenderManaBarLine(lastTokenUsage.Value, arcanumSettings.Value.Ollama.ContextWindowLimit);
 
             try
             {
@@ -209,6 +217,7 @@ public sealed class ChatCommand(
                     settings,
                     stderrConsole,
                     cancellationToken,
+                    lastTokenUsage,
                     attachedFilesForRequest)
                 .ConfigureAwait(false);
         }
@@ -258,7 +267,7 @@ public sealed class ChatCommand(
         {
             CliSessionManager.ClearSession();
 
-            AnsiConsole.MarkupLine("[green]New conversation thread.[/]");
+            AnsiConsole.MarkupLine("[dim]Started new conversation.[/]");
 
             return (true, false);
         }
@@ -350,6 +359,126 @@ public sealed class ChatCommand(
             return (true, false);
         }
 
+        if (verb.Equals("/history", StringComparison.OrdinalIgnoreCase))
+        {
+            Result<List<ConversationSummaryDto>> historyResult =
+                await apiClient.GetConversationsAsync(50, cancellationToken).ConfigureAwait(false);
+
+            if (historyResult.IsFailure)
+            {
+                AnsiConsole.MarkupLine($"[red]{Markup.Escape(historyResult.Error.Message)}[/]");
+
+                return (true, false);
+            }
+
+            if (historyResult.Value.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[dim silver]No past conversations found.[/]");
+
+                return (true, false);
+            }
+
+            Table historyTable = new();
+
+            historyTable.Border(TableBorder.Rounded);
+
+            historyTable.BorderColor(Color.Silver);
+
+            historyTable.AddColumn("[bold skyblue]ID[/]");
+
+            historyTable.AddColumn("[bold skyblue]Updated[/]");
+
+            historyTable.AddColumn("[bold skyblue]Snippet[/]");
+
+            foreach (ConversationSummaryDto row in historyResult.Value)
+            {
+                string idShort = row.Id.ToString("N")[..8].ToUpperInvariant();
+
+                string updatedLocal = row.UpdatedAtUtc.ToLocalTime().ToString("g");
+
+                historyTable.AddRow(
+                    Markup.Escape(idShort),
+                    Markup.Escape(updatedLocal),
+                    Markup.Escape(row.Snippet));
+            }
+
+            AnsiConsole.Write(historyTable);
+
+            return (true, false);
+        }
+
+        if (verb.Equals("/resume", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(tail))
+            {
+                AnsiConsole.MarkupLine("[yellow]Usage:[/] [grey]/resume <id>[/]");
+
+                return (true, false);
+            }
+
+            (bool resumeOk, Guid resumeId, string? resumeErr) =
+                await TryResolveConversationIdForSlashAsync(tail, cancellationToken).ConfigureAwait(false);
+
+            if (!resumeOk)
+            {
+                if (resumeErr is not null)
+                {
+                    AnsiConsole.MarkupLine(resumeErr);
+                }
+
+                return (true, false);
+            }
+
+            CliSessionManager.SaveConversationId(resumeId);
+
+            AnsiConsole.MarkupLine("[dim]Resumed conversation.[/]");
+
+            return (true, false);
+        }
+
+        if (verb.Equals("/delete", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(tail))
+            {
+                AnsiConsole.MarkupLine("[yellow]Usage:[/] [grey]/delete <id>[/]");
+
+                return (true, false);
+            }
+
+            (bool delOk, Guid deleteId, string? deleteErr) =
+                await TryResolveConversationIdForSlashAsync(tail, cancellationToken).ConfigureAwait(false);
+
+            if (!delOk)
+            {
+                if (deleteErr is not null)
+                {
+                    AnsiConsole.MarkupLine(deleteErr);
+                }
+
+                return (true, false);
+            }
+
+            Result<bool> deleteResult = await apiClient.DeleteConversationAsync(deleteId, cancellationToken).ConfigureAwait(false);
+
+            if (deleteResult.IsFailure)
+            {
+                AnsiConsole.MarkupLine($"[red]{Markup.Escape(deleteResult.Error.Message)}[/]");
+
+                return (true, false);
+            }
+
+            Guid? active = CliSessionManager.GetLastConversationId();
+
+            if (active == deleteId)
+            {
+                CliSessionManager.ClearSession();
+            }
+
+            AnsiConsole.MarkupLine("[dim]Conversation deleted.[/]");
+
+            return (true, false);
+        }
+
         if (verb.Equals("/attach", StringComparison.OrdinalIgnoreCase))
         {
             RunAttachBrowser(stagedFiles, Environment.CurrentDirectory, MaxAttachFileSizeBytes);
@@ -358,6 +487,71 @@ public sealed class ChatCommand(
         }
 
         throw new InvalidOperationException($"Unhandled whitelisted slash verb: {verb}");
+    }
+
+    private async Task<(bool Ok, Guid Id, string? ErrorMarkup)> TryResolveConversationIdForSlashAsync(
+        string tail,
+        CancellationToken cancellationToken)
+    {
+        string t = tail.Trim();
+
+        if (Guid.TryParse(t, out Guid direct))
+        {
+            return (true, direct, null);
+        }
+
+        if (IsEightCharHexDigitPrefix(t))
+        {
+            Result<List<ConversationSummaryDto>> listResult =
+                await apiClient.GetConversationsAsync(200, cancellationToken).ConfigureAwait(false);
+
+            if (listResult.IsFailure)
+            {
+                return (false, default, $"[red]{Markup.Escape(listResult.Error.Message)}[/]");
+            }
+
+            List<ConversationSummaryDto> matches = listResult.Value
+                .Where(c => c.Id.ToString("N").StartsWith(t, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (matches.Count == 0)
+            {
+                return (false, default, "[red]No conversation matches that ID.[/]");
+            }
+
+            if (matches.Count > 1)
+            {
+                return (
+                    false,
+                    default,
+                    "[red]Multiple conversations match that ID. Please provide the full Guid.[/]");
+            }
+
+            return (true, matches[0].Id, null);
+        }
+
+        return (
+            false,
+            default,
+            "[red]Invalid id. Provide a full Guid or the first 8 hex characters (no dashes).[/]");
+    }
+
+    private static bool IsEightCharHexDigitPrefix(string t)
+    {
+        if (t.Length != 8)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < 8; i++)
+        {
+            if (!Uri.IsHexDigit(t[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static void RenderHelp()
@@ -376,7 +570,13 @@ public sealed class ChatCommand(
 
         table.AddRow("/help", "Show this table.");
 
-        table.AddRow("/new", "Clear Grimoire session file; next turn starts a new thread.");
+        table.AddRow("/new", "Clear session file; next turn starts a new Grimoire thread.");
+
+        table.AddRow("/history", "List recent conversations (time travel).");
+
+        table.AddRow("/resume [cyan]<id>[/]", "Continue a past conversation (full Guid or 8-char hex prefix).");
+
+        table.AddRow("/delete [cyan]<id>[/]", "Delete a conversation from Grimoire (full Guid or 8-char prefix).");
 
         table.AddRow("/model [cyan]<name>[/]", "Override model for subsequent turns.");
 
@@ -626,12 +826,41 @@ public sealed class ChatCommand(
         AnsiConsole.WriteLine();
     }
 
+    private static void RenderManaBarLine(int usedTokens, int contextWindowLimit)
+    {
+        double limit = Math.Max(1, contextWindowLimit);
+
+        double pct = Math.Clamp(usedTokens / limit * 100.0, 0.0, 100.0);
+
+        int displayPct = (int)Math.Round(pct, MidpointRounding.AwayFromZero);
+
+        displayPct = Math.Clamp(displayPct, 0, 100);
+
+        const int barWidth = 20;
+
+        int filled = (int)Math.Round(displayPct / 100.0 * barWidth);
+
+        filled = Math.Clamp(filled, 0, barWidth);
+
+        string filledStr = new('█', filled);
+
+        string emptyStr = new('░', barWidth - filled);
+
+        string barHostColor = pct < 75.0 ? "green" : (pct <= 90.0 ? "yellow" : "red");
+
+        string line =
+            $"[grey]Mana:[/] [[[{barHostColor}]{filledStr}[/][grey]{emptyStr}[/]] {displayPct}% ({usedTokens}/{contextWindowLimit})";
+
+        AnsiConsole.MarkupLine(line);
+    }
+
     private async Task RunTurnAsync(
         string prompt,
         SessionMut session,
         Settings settings,
         IAnsiConsole stderrConsole,
         CancellationToken cancellationToken,
+        TokenUsageSink lastTokenUsage,
         List<AttachedFileDto>? attachedFiles = null)
     {
         using CancellationTokenSource perTurnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -664,6 +893,8 @@ public sealed class ChatCommand(
         bool cancelled = false;
 
         bool errored = false;
+
+        bool submitFailed = false;
 
         try
         {
@@ -715,9 +946,20 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.ToolCall:
 
-                        if (await AskHumanToolCallStreamHandler
-                                .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, perTurnCts.Token)
-                                .ConfigureAwait(false))
+                        AskHumanResult humanResult = await AskHumanToolCallStreamHandler
+                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, perTurnCts.Token)
+                            .ConfigureAwait(false);
+
+                        if (humanResult == AskHumanResult.SubmitFailed)
+                        {
+                            submitFailed = true;
+
+                            errored = true;
+
+                            break;
+                        }
+
+                        if (humanResult == AskHumanResult.Handled)
                         {
                             break;
                         }
@@ -741,7 +983,13 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.Result:
 
-                        finalText = evt.Data;
+                        if (evt.Data is not null
+                            && int.TryParse(evt.Data, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedUsage))
+                        {
+                            lastTokenUsage.Value = parsedUsage;
+                        }
+
+                        finalText = full.ToString();
 
                         break;
 
@@ -754,6 +1002,11 @@ public sealed class ChatCommand(
                         errored = true;
 
                         break;
+                }
+
+                if (submitFailed)
+                {
+                    break;
                 }
             }
         }
@@ -843,9 +1096,17 @@ public sealed class ChatCommand(
 
     }
 
+    private sealed class TokenUsageSink
+    {
+
+        public int Value { get; set; }
+
+    }
+
     public sealed class Settings : CommandSettings
     {
         [CommandOption("-m|--model")]
+        [Description("The specific model to use for this inference request")]
         public string? Model { get; init; }
 
         [CommandOption("-n|--new")]

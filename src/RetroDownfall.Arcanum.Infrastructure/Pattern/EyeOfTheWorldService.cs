@@ -27,31 +27,38 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
         "build",
     };
 
-    public Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken)
+    public async Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(directoryPath))
         {
-            return Task.FromResult(new PatternSnapshot(
+            return new PatternSnapshot(
                 DomainType.Unknown,
                 string.Empty,
-                ["Path: (empty or invalid)"]));
+                ["Path: (empty or invalid)"]);
         }
 
         string root = Path.GetFullPath(directoryPath);
+
         if (!Directory.Exists(root))
         {
-            return Task.FromResult(new PatternSnapshot(
+            return new PatternSnapshot(
                 DomainType.Unknown,
                 root,
-                [$"Path: directory not found ({root})"]));
+                [$"Path: directory not found ({root})"]);
         }
-        ScanResult scan = ScanWorkspace(root, cancellationToken);
 
-        DomainType domain = ClassifyDomain(scan);
-        string[] threads = domain == DomainType.Unknown
-            ? BuildUnknownToc(scan)
-            : BuildSignatureToc(scan, domain);
-        return Task.FromResult(new PatternSnapshot(domain, root, threads));
+        return await Task.Run(() =>
+        {
+            ScanResult scan = ScanWorkspace(root, cancellationToken);
+
+            DomainType domain = ClassifyDomain(scan);
+
+            string[] threads = domain == DomainType.Unknown
+                ? BuildUnknownToc(scan, cancellationToken)
+                : BuildSignatureToc(scan, domain, cancellationToken);
+
+            return new PatternSnapshot(domain, root, threads);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private ScanResult ScanWorkspace(string root, CancellationToken cancellationToken)
@@ -265,21 +272,26 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
         return DomainType.Unknown;
     }
 
-    private string[] BuildSignatureToc(ScanResult scan, DomainType domain)
+    private string[] BuildSignatureToc(ScanResult scan, DomainType domain, CancellationToken cancellationToken)
     {
         List<string> lines = [];
+
         void AddBucket(List<string> paths, string labelPrefix)
         {
             foreach (string rel in paths.OrderBy(s => s, StringComparer.OrdinalIgnoreCase))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 lines.Add($"{labelPrefix}{rel}");
             }
         }
+
         AddBucket(scan.Solutions, "Solution: ");
         AddBucket(scan.Projects, "Project: ");
         AddBucket(scan.Packages, "Package: ");
         AddBucket(scan.Dockerfiles, "Dockerfile: ");
         AddBucket(scan.OtherMarkers, "Manifest: ");
+
         if (domain == DomainType.Administration || domain == DomainType.Research)
         {
             AddBucket(scan.AdminNear, "Document: ");
@@ -299,14 +311,20 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
         List<string> deduped = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         int lineBudget = scan.EnumerationTruncated ? _maxTocLines - 1 : _maxTocLines;
+
         foreach (string line in lines)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             string key = line[(line.IndexOf(':') + 1)..].TrimStart();
+
             if (!seen.Add(key))
             {
                 continue;
             }
+
             deduped.Add(line);
+
             if (deduped.Count >= lineBudget)
             {
                 break;
@@ -321,7 +339,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
         return [.. deduped];
     }
 
-    private string[] BuildUnknownToc(ScanResult scan)
+    private string[] BuildUnknownToc(ScanResult scan, CancellationToken cancellationToken)
     {
         if (scan.AllFiles.Count == 0)
         {
@@ -331,21 +349,28 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
         }
 
         List<FileRec> sorted = [.. scan.AllFiles];
+
         sorted.Sort(static (a, b) =>
         {
             int c = b.LastWriteUtc.CompareTo(a.LastWriteUtc);
             return c != 0 ? c : b.CreationUtc.CompareTo(a.CreationUtc);
         });
+
         List<string> lines = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         int fileBudget = scan.EnumerationTruncated ? _maxTocLines - 1 : _maxTocLines;
+
         foreach (FileRec rec in sorted)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (!seen.Add(rec.RelativePath))
             {
                 continue;
             }
+
             lines.Add($"File: {rec.RelativePath}");
+
             if (lines.Count >= fileBudget)
             {
                 break;

@@ -8,5 +8,9 @@ public sealed class Conversation
 
     public string Title { get; set; } = string.Empty;
 
+    public string? Summary { get; set; }
+
+    public DateTime? LastSummarizedMessageAt { get; set; }
+
     public ICollection<ChatMessage> Messages { get; set; } = new List<ChatMessage>();
 }

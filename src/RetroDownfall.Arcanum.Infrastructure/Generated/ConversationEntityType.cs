@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Conversation",
                 typeof(Conversation),
                 baseEntityType,
-                propertyCount: 3,
+                propertyCount: 5,
                 navigationCount: 1,
                 unnamedIndexCount: 1,
                 keyCount: 1);
@@ -39,6 +39,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Conversation).GetProperty("CreatedAt", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Conversation).GetField("<CreatedAt>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 sentinel: new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified));
+
+            var lastSummarizedMessageAt = runtimeEntityType.AddProperty(
+                "LastSummarizedMessageAt",
+                typeof(DateTime?),
+                propertyInfo: typeof(Conversation).GetProperty("LastSummarizedMessageAt", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Conversation).GetField("<LastSummarizedMessageAt>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+
+            var summary = runtimeEntityType.AddProperty(
+                "Summary",
+                typeof(string),
+                propertyInfo: typeof(Conversation).GetProperty("Summary", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Conversation).GetField("<Summary>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
 
             var title = runtimeEntityType.AddProperty(
                 "Title",

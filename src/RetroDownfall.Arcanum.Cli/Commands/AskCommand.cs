@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -11,7 +12,7 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) : AsyncCommand<AskCommand.Settings>
 {
-    public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
         string prompt = BuildPrompt(settings, context);
 
@@ -44,6 +45,8 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
         bool streamedTokens = false;
 
         string? finalText = null;
+
+        var accumulatedText = new StringBuilder();
 
         try
         {
@@ -86,15 +89,26 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
                         streamedTokens = true;
 
-                        AnsiConsole.Write(evt.Data ?? string.Empty);
+                        string chunk = evt.Data ?? string.Empty;
+
+                        _ = accumulatedText.Append(chunk);
+
+                        AnsiConsole.Write(chunk);
 
                         break;
 
                     case IntelligenceEventType.ToolCall:
 
-                        if (await AskHumanToolCallStreamHandler
-                                .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, linked.Token)
-                                .ConfigureAwait(false))
+                        AskHumanResult humanResult = await AskHumanToolCallStreamHandler
+                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, linked.Token)
+                            .ConfigureAwait(false);
+
+                        if (humanResult == AskHumanResult.SubmitFailed)
+                        {
+                            return 1;
+                        }
+
+                        if (humanResult == AskHumanResult.Handled)
                         {
                             break;
                         }
@@ -118,7 +132,7 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
 
                     case IntelligenceEventType.Result:
 
-                        finalText = evt.Data;
+                        finalText = accumulatedText.ToString();
 
                         break;
 
@@ -190,6 +204,7 @@ public sealed class AskCommand(IEyeOfTheWorld eye, ArcanumApiClient apiClient) :
         public string[] PromptWords { get; init; } = [];
 
         [CommandOption("-m|--model")]
+        [Description("The specific model to use for this inference request")]
         public string? Model { get; init; }
 
         [CommandOption("-n|--new")]

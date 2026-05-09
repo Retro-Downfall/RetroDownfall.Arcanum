@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -29,6 +30,18 @@ public sealed class OllamaIntelligenceProvider(
     McpConnectionManager mcpConnectionManager) : IArcanumIntelligenceProvider
 {
     private const int MaxToolInferenceRounds = 8;
+
+    private const string PublicInferenceFailureMessage =
+        "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
+
+    private const string PublicListLocalModelsFailureMessage =
+        "Could not list local Ollama models. Ensure Ollama is running and reachable. See server logs for details.";
+
+    private const string PublicModelPullFailureMessage =
+        "Model download failed. Ensure Ollama is running and has network access. See server logs for details.";
+
+    private const string PublicToolFailureMessageForGrimoire =
+        "A tool invocation failed. See server logs for details.";
 
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
@@ -121,7 +134,7 @@ public sealed class OllamaIntelligenceProvider(
 
         string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell, request.AttachedFiles);
 
-        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, cancellationToken).ConfigureAwait(false);
+        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, activeSpell, cancellationToken).ConfigureAwait(false);
 
         bool inferenceUsesTools = true;
 
@@ -201,6 +214,10 @@ public sealed class OllamaIntelligenceProvider(
 
                 return Result<string>.Success(finalText);
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 if (inferenceUsesTools && LooksLikeModelDoesNotSupportTools(ex.Message))
@@ -217,7 +234,7 @@ public sealed class OllamaIntelligenceProvider(
 
                 logger.LogError(ex, "Ollama inference failed for model {ModelName}.", targetModel);
 
-                return Result<string>.Failure(new Error("Ollama.Error", ex.Message));
+                return Result<string>.Failure(new Error("Ollama.Error", PublicInferenceFailureMessage));
             }
         }
     }
@@ -253,7 +270,7 @@ public sealed class OllamaIntelligenceProvider(
 
         if (localCheck.IsFailure)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, localCheck.Error.Message);
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicListLocalModelsFailureMessage);
 
             yield break;
         }
@@ -284,9 +301,11 @@ public sealed class OllamaIntelligenceProvider(
                     }
                     catch (Exception ex)
                     {
+                        logger.LogError(ex, "Pull stream failed while downloading model {ModelName}.", targetModel);
+
                         pullMoveFailed = true;
 
-                        pullMoveError = ex.Message;
+                        pullMoveError = PublicModelPullFailureMessage;
 
                         break;
                     }
@@ -317,7 +336,9 @@ public sealed class OllamaIntelligenceProvider(
 
             if (pullMoveFailed)
             {
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, pullMoveError ?? "Pull failed.");
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    pullMoveError ?? PublicModelPullFailureMessage);
 
                 yield break;
             }
@@ -408,11 +429,13 @@ public sealed class OllamaIntelligenceProvider(
 
         StringBuilder accumulator;
 
-        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, cancellationToken).ConfigureAwait(false);
+        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamActiveSpell, cancellationToken).ConfigureAwait(false);
 
         bool streamUsesTools = true;
 
         string? inferenceError;
+
+        int streamCompletionTokenTotal = 0;
 
         while (true)
         {
@@ -425,6 +448,8 @@ public sealed class OllamaIntelligenceProvider(
             int streamToolRoundCount = 0;
 
             inferenceError = null;
+
+            Exception? streamingMoveNextFailure = null;
 
             while (true)
             {
@@ -450,7 +475,11 @@ public sealed class OllamaIntelligenceProvider(
                         }
                         catch (Exception ex)
                         {
-                            inferenceError = ex.Message;
+                            streamingMoveNextFailure = ex;
+
+                            logger.LogError(ex, "Streaming read failed for model {ModelName}.", targetModel);
+
+                            inferenceError = PublicInferenceFailureMessage;
 
                             break;
                         }
@@ -483,11 +512,14 @@ public sealed class OllamaIntelligenceProvider(
                 {
                     if (streamUsesTools
 
-                        && LooksLikeModelDoesNotSupportTools(inferenceError)
+                        && streamingMoveNextFailure is { Message: var moveMsg }
+
+                        && LooksLikeModelDoesNotSupportTools(moveMsg)
 
                         && accumulator.Length == 0)
                     {
                         logger.LogInformation(
+                            streamingMoveNextFailure,
                             "Model {ModelName} does not support tools in Ollama; retrying stream without local tools.",
                             targetModel);
 
@@ -498,6 +530,8 @@ public sealed class OllamaIntelligenceProvider(
                         streamUsesTools = false;
 
                         inferenceError = null;
+
+                        streamingMoveNextFailure = null;
 
                         streamOuterRestart = true;
                     }
@@ -513,6 +547,8 @@ public sealed class OllamaIntelligenceProvider(
 
                 if (toolCalls.Count == 0)
                 {
+                    streamCompletionTokenTotal = SumCompletionTokensFromUsage(combinedRound);
+
                     break;
                 }
 
@@ -520,6 +556,10 @@ public sealed class OllamaIntelligenceProvider(
 
                 if (streamToolRoundCount > MaxToolInferenceRounds)
                 {
+                    logger.LogError(
+                        "Streaming inference exceeded tool round limit for model {ModelName}.",
+                        targetModel);
+
                     inferenceError = "Tool invocation limit reached.";
 
                     break;
@@ -544,7 +584,9 @@ public sealed class OllamaIntelligenceProvider(
                     }
                     catch (Exception ex)
                     {
-                        resultText = $"Error: {ex.Message}";
+                        logger.LogError(ex, "Tool {ToolName} failed during streaming inference.", fcc.Name);
+
+                        resultText = PublicToolFailureMessageForGrimoire;
                     }
 
                     yield return new IntelligenceEvent(
@@ -578,11 +620,6 @@ public sealed class OllamaIntelligenceProvider(
 
         if (inferenceError is not null)
         {
-            logger.LogError(
-                "Streaming inference failed for model {ModelName}: {InferenceError}",
-                targetModel,
-                inferenceError);
-
             yield return new IntelligenceEvent(IntelligenceEventType.Error, inferenceError);
 
             yield break;
@@ -602,7 +639,10 @@ public sealed class OllamaIntelligenceProvider(
             }
         }
 
-        yield return new IntelligenceEvent(IntelligenceEventType.Result, "Complete", finalText);
+        yield return new IntelligenceEvent(
+            IntelligenceEventType.Result,
+            "Complete",
+            streamCompletionTokenTotal.ToString(CultureInfo.InvariantCulture));
     }
 
     private async IAsyncEnumerable<PullModelResponse> EnumeratePullModelAsync(
@@ -658,7 +698,9 @@ public sealed class OllamaIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            return Result.Failure(new Error("Ollama.Pull", ex.Message));
+            logger.LogError(ex, "Model pull failed for {ModelName}.", modelName);
+
+            return Result.Failure(new Error("Ollama.Pull", PublicModelPullFailureMessage));
         }
     }
 
@@ -674,7 +716,7 @@ public sealed class OllamaIntelligenceProvider(
         {
             logger.LogWarning(ex, "Failed to list local Ollama models while checking {ModelName}.", modelName);
 
-            return Result<bool>.Failure(new Error("Ollama.ListModels", ex.Message));
+            return Result<bool>.Failure(new Error("Ollama.ListModels", PublicListLocalModelsFailureMessage));
         }
     }
 
@@ -726,11 +768,23 @@ public sealed class OllamaIntelligenceProvider(
         return list;
     }
 
-    private async Task<List<AITool>> BuildToolSetWithMcpAsync(PingRequest request, CancellationToken cancellationToken)
+    private async Task<List<AITool>> BuildToolSetWithMcpAsync(
+        PingRequest request,
+        ParsedSpell? activeSpell,
+        CancellationToken cancellationToken)
     {
         string workingDirectory = request.WorkingDirectory;
 
         List<AITool> tools = [_localTimeTool];
+
+        if (activeSpell?.AvailableScripts is { Count: > 0 })
+        {
+            int sec = Math.Clamp(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+
+            string scriptsRoot = Path.Combine(activeSpell.DirectoryPath, "scripts");
+
+            tools.Add(new ArcanumSpellScriptTool(scriptsRoot, TimeSpan.FromSeconds(sec), sec));
+        }
 
         if (request.DisableMcpTools)
         {
@@ -749,16 +803,24 @@ public sealed class OllamaIntelligenceProvider(
         return tools;
     }
 
-    private static ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request)
+    private ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request)
     {
+        int numCtx = settings.Value.Ollama.ContextWindowLimit;
+
+        var options = new ChatOptions();
+
+        options.AdditionalProperties!["num_ctx"] = numCtx;
+
         if (!includeTools || tools is null)
         {
-            return new ChatOptions();
+            return options;
         }
 
         if (!request.UnattendedMode)
         {
-            return new ChatOptions { Tools = tools };
+            options.Tools = tools;
+
+            return options;
         }
 
         List<AITool> filtered = [];
@@ -773,7 +835,32 @@ public sealed class OllamaIntelligenceProvider(
             filtered.Add(t);
         }
 
-        return new ChatOptions { Tools = filtered };
+        options.Tools = filtered;
+
+        return options;
+    }
+
+    private static int SumCompletionTokensFromUsage(ChatResponse response)
+    {
+        UsageDetails? usage = response.Usage;
+
+        if (usage is null)
+        {
+            return 0;
+        }
+
+        long input = usage.InputTokenCount ?? 0L;
+
+        long output = usage.OutputTokenCount ?? 0L;
+
+        long sum = input + output;
+
+        if (sum > int.MaxValue)
+        {
+            return int.MaxValue;
+        }
+
+        return (int)sum;
     }
 
     private static bool LooksLikeModelDoesNotSupportTools(string? message)

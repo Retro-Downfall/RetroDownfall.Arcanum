@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -66,14 +68,20 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     /// </summary>
     public static (InProcessMcpTransport Transport, ArcanumInternalToolServer Server) CreatePair(
         IHumanPromptRegistry humanPromptRegistry,
+        IServiceScopeFactory scopeFactory,
         string? workspaceRootNormalizedOrNull,
         TimeSpan executeCommandTimeout,
         int executeCommandTimeoutSecondsForDisplay,
         int listDirectoryMaxPaths,
+        IntelligenceSettings intelligenceSettings,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
+
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+
+        ArgumentNullException.ThrowIfNull(intelligenceSettings);
 
         BoundedChannelOptions lineOptions = new(ChannelCapacity)
         {
@@ -92,10 +100,12 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             clientToServer.Reader,
             serverToClient.Writer,
             humanPromptRegistry,
+            scopeFactory,
             workspaceRootNormalizedOrNull,
             executeCommandTimeout,
             executeCommandTimeoutSecondsForDisplay,
             listDirectoryMaxPaths,
+            intelligenceSettings,
             logger,
             jsonContext);
 

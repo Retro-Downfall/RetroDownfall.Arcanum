@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OllamaSharp;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -18,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
@@ -202,7 +204,15 @@ public static class ApiBootstrapper
             }
             catch (Exception ex)
             {
-                IntelligenceEvent errorEvent = new(IntelligenceEventType.Error, ex.Message);
+                ILogger streamLogger = httpContext.RequestServices
+                    .GetRequiredService<ILoggerFactory>()
+                    .CreateLogger(typeof(ApiBootstrapper));
+
+                streamLogger.LogError(ex, "Unhandled exception in ping-stream endpoint.");
+
+                IntelligenceEvent errorEvent = new(
+                    IntelligenceEventType.Error,
+                    "An internal error occurred during inference streaming.");
 
                 eventBuffer.ResetWrittenCount();
 
@@ -260,5 +270,46 @@ public static class ApiBootstrapper
             return Results.Ok(ApiResponse<WorkspaceArsenalDto>.FromResult(arsenalOk, traceId));
         })
         .WithName("PostIntelligenceArsenal");
+
+        apiGroup.MapGet(
+            "/conversations",
+            async (int? take, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                int clamped = Math.Clamp(take ?? 50, 1, 200);
+
+                IReadOnlyList<ConversationSummaryDto> summaries =
+                    await grimoire.ListRecentConversationsAsync(clamped, cancellationToken).ConfigureAwait(false);
+
+                List<ConversationSummaryDto> list = summaries is List<ConversationSummaryDto> concrete
+                    ? concrete
+                    : summaries.ToList();
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<List<ConversationSummaryDto>> ok = Result<List<ConversationSummaryDto>>.Success(list);
+
+                return Results.Ok(ApiResponse<List<ConversationSummaryDto>>.FromResult(ok, traceId));
+            })
+        .WithName("GetConversations");
+
+        apiGroup.MapDelete(
+            "/conversations/{id:guid}",
+            async (Guid id, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                int removed = await grimoire.DeleteConversationAsync(id, cancellationToken).ConfigureAwait(false);
+
+                if (removed == 0)
+                {
+                    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<bool> notFound = Result<bool>.Failure(
+                        new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+
+                    return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
+                }
+
+                return Results.NoContent();
+            })
+        .WithName("DeleteConversation");
     }
 }

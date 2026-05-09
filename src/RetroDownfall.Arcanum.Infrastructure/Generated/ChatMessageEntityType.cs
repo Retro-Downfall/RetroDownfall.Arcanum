@@ -77,7 +77,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
             runtimeEntityType.SetPrimaryKey(key);
 
             var index = runtimeEntityType.AddIndex(
-                new[] { conversationId });
+                new[] { conversationId, timestamp });
 
             return runtimeEntityType;
         }

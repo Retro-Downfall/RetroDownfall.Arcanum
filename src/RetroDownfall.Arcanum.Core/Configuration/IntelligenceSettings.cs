@@ -17,6 +17,14 @@ public sealed record IntelligenceSettings
 
     public int ListDirectoryMaxPaths { get; init; } = 500;
 
+    public bool EnableLoreSystem { get; init; } = true;
+
+    public bool EnableArchiveSearch { get; init; } = true;
+
+    public int ArchiveSearchMaxResults { get; init; } = 5;
+
+    public int CampaignLogThreshold { get; init; } = 25;
+
 }
 
 
