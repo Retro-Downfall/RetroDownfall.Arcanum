@@ -70,6 +70,8 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Intelligence:PerMessageTemplateOverheadTokens` | `int` | `4` | Per-message overhead (tokens) added to the pre-flight count to approximate chat-template framing. Clamp 0 – 32. |
 | `Arcanum:Intelligence:TokenizerEncoding` | `string` | `"o200k_base"` | Tiktoken encoding name used by `InferenceTokenizerResolver`. Unknown names log a warning and fall back to `o200k_base`. |
 | `Arcanum:Grimoire:MaxMessagesPerConversationLoad` | `int` | `1000` | Maximum messages loaded into memory by `GetConversationAsync` (most recent N, returned in chronological order). Clamp 50 – 100,000. Used to bound RAM on very long Grimoire threads. |
+| `Arcanum:Cli:DoctorHealthTimeoutSeconds` | `int` | `2` | Timeout (seconds) for the `arcanum doctor` API health probe (`GET /api/health`). Clamp 1&#8211;60. |
+| `Arcanum:Bureau:Enabled` | `bool` | `false` | **Reserved** for the future Bureau integration. Currently no first-party consumer reads this flag (no-op). The property is intentionally retained on the binding surface so operator configurations remain stable across upgrades and so Bureau wiring can land without a migration. See &#167;16 ("Known limitations and future work"). |
 | `Arcanum:Security:MaxApiKeyHeaderUtf16Chars` | `int` | `512` | Rejects oversized API key headers before UTF-8 conversion. |
 | `Arcanum:Security:ApiKeyCacheTtlSeconds` | `int` | `30` | TTL for the cached **SHA-256 digest** of the expected API key in `ApiKeyEndpointFilter`. After the TTL, the filter re-reads `ISecretStore` so on-disk rotation propagates without a restart. Clamp 1–3600. |
 | `Arcanum:DefaultModel` | `string?` | `null` | When non-empty, must match a `models` entry on some provider (see `ProviderResolver`); used when `PingRequest.Model` is omitted. If null/empty, the first model of the first provider is used. |
@@ -108,7 +110,15 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Cli:ThemeColors` | object | Core defaults | Nested `Light` / `Dark`, each with `Text`, `Heading`, `Highlight`, `Error`, `Muted` as `#RRGGBB` strings (Spectre palette is built in **Cli**). |
 | `Arcanum:Cli:ShowManaBar` | `bool` | `true` | When `true`, the **`chat`** REPL prints the context-window mana bar before each prompt (when a model resolves). Set `false` to suppress it (e.g. scripting / piped input). |
 
-All numeric settings have runtime clamps defined in `ArcanumSettingClamps`. When adding a property to `ArcanumSettings`, extend this table in the same change set.
+All numeric settings have runtime clamps defined in `ArcanumSettingClamps`, and every consumer applies the corresponding clamp at the use site (audited end-of-Phase-D; every clamp helper has at least one consumer, every numeric property is read through its clamp). When adding a property to `ArcanumSettings`:
+
+1. Define the property on the relevant nested record with an XML doc summary and a sensible default.
+2. Add a matching `ArcanumSettingClamps.<Name>` helper if the value is numeric (size, count, duration, threshold).
+3. Apply the clamp at every read site (do not store the raw value).
+4. Inject via **`IOptionsMonitor<ArcanumSettings>`** for singleton consumers (hot-reload friendly) or **`IOptionsSnapshot<ArcanumSettings>`** for scoped/per-request consumers. Singletons must never capture an `IOptionsSnapshot` value for the process lifetime.
+5. Extend this table and the README **Configuration** table in the same change set.
+
+`BureauSettings.Enabled` is the documented exception &mdash; the property has no consumer today (reserved for the future Bureau integration; see &#167;16).
 
 ---
 
@@ -773,7 +783,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.2 Persistence
 
 - **EF Core migrations** versioned under `Data/Migrations/`. Legacy files without `__EFMigrationsHistory` need manual baseline (see README).
-- **`BureauSettings.Enabled`** has no consumers.
+- **`BureauSettings.Enabled`** is reserved for the planned Bureau integration (cross-host coordination/registry layer). No first-party code reads it; setting `Arcanum:Bureau:Enabled = true` is a documented no-op today. The property is kept on the binding surface so operator JSON remains valid across upgrades and the Bureau feature can light up without a configuration migration. XML docs in `BureauSettings.cs` and the §3.4 table call this out explicitly.
 - **`cli-session.txt`** stores one last conversation id — not multi-user, not cloud sync.
 
 ### 16.3 Security and identity

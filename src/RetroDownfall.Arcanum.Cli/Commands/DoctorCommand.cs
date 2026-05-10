@@ -177,9 +177,12 @@ public sealed class DoctorCommand(
             _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
         }
 
+        int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
+            options.Value.Cli.DoctorHealthTimeoutSeconds);
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        cts.CancelAfter(TimeSpan.FromSeconds(2));
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
         try
         {
@@ -220,7 +223,7 @@ public sealed class DoctorCommand(
 
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(
-                    Markup.Escape("Timed out after 2s.")));
+                    Markup.Escape($"Timed out after {timeoutSeconds}s.")));
         }
         catch (HttpRequestException)
         {

@@ -15,6 +15,13 @@ public sealed record CliSettings
 
     public bool ShowManaBar { get; init; } = true;
 
+    /// <summary>
+    /// Timeout (seconds) for the <c>arcanum doctor</c> API health probe against
+    /// <c>http://localhost:{Arcanum:Host:Port}/api/health</c>. Default 2; clamp 1&#8211;60.
+    /// Increase for slow startups (cold containers, hardware-accelerated provider warmup).
+    /// </summary>
+    public int DoctorHealthTimeoutSeconds { get; init; } = 2;
+
 }
 
 

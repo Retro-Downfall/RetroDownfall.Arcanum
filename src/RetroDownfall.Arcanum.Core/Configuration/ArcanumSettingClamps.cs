@@ -78,5 +78,7 @@ public static class ArcanumSettingClamps
 
     public static int MaxMessagesPerConversationLoad(int value) => Math.Clamp(value, 50, 100_000);
 
+    public static int DoctorHealthTimeoutSeconds(int value) => Math.Clamp(value, 1, 60);
+
 }
 
