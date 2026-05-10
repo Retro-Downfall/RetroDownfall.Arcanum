@@ -1,11 +1,6 @@
-using System.Collections.Generic;
-
 using System.Text;
-
 using Microsoft.Extensions.AI;
-
 using Microsoft.ML.Tokenizers;
-
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -13,12 +8,13 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal static class InferenceTokenCounter
 {
 
-    private const int ChatTemplateOverheadTokensPerMessage = 4;
+    internal static bool ShouldSkipCompressionPreflight(IReadOnlyList<MeAiChatMessage> messages, int minMessages) =>
+        messages.Count <= minMessages;
 
-    internal static bool ShouldSkipCompressionPreflight(IReadOnlyList<MeAiChatMessage> messages) =>
-        messages.Count <= 6;
-
-    internal static int CountTokens(IReadOnlyList<MeAiChatMessage> messages, Tokenizer tokenizer)
+    internal static int CountTokens(
+        IReadOnlyList<MeAiChatMessage> messages,
+        Tokenizer tokenizer,
+        int perMessageOverheadTokens)
     {
 
         int total = 0;
@@ -26,7 +22,7 @@ internal static class InferenceTokenCounter
         foreach (MeAiChatMessage message in messages)
         {
 
-            total += ChatTemplateOverheadTokensPerMessage;
+            total += perMessageOverheadTokens;
 
             string? text = ExtractTextForCounting(message);
 

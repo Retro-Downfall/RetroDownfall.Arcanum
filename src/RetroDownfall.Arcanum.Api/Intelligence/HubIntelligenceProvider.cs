@@ -30,8 +30,6 @@ public sealed class HubIntelligenceProvider(
     McpConnectionManager mcpConnectionManager,
     InferenceTokenizerResolver inferenceTokenizerResolver) : IArcanumIntelligenceProvider
 {
-    private const int MaxToolInferenceRounds = 8;
-
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
 
@@ -226,6 +224,8 @@ public sealed class HubIntelligenceProvider(
 
                 int toolRoundsExecuted = 0;
 
+                int maxToolRounds = ArcanumSettingClamps.MaxToolInferenceRounds(settings.Value.Intelligence.MaxToolInferenceRounds);
+
                 ChatCompletionUsage? accumulatedUsage = null;
 
                 List<PromptToolCall>? observedToolCalls = null;
@@ -249,7 +249,7 @@ public sealed class HubIntelligenceProvider(
 
                     toolRoundsExecuted++;
 
-                    if (toolRoundsExecuted > MaxToolInferenceRounds)
+                    if (toolRoundsExecuted > maxToolRounds)
                     {
                         return Result<PromptTurnResult>.Failure(new Error("Hub.ToolLoop", "Tool invocation limit reached."));
                     }
@@ -616,6 +616,8 @@ public sealed class HubIntelligenceProvider(
 
         ChatCompletionUsage? streamAccumulatedUsage = null;
 
+        int streamMaxToolRounds = ArcanumSettingClamps.MaxToolInferenceRounds(settings.Value.Intelligence.MaxToolInferenceRounds);
+
         while (true)
         {
             bool streamOuterRestart = false;
@@ -735,7 +737,7 @@ public sealed class HubIntelligenceProvider(
 
                 streamToolRoundCount++;
 
-                if (streamToolRoundCount > MaxToolInferenceRounds)
+                if (streamToolRoundCount > streamMaxToolRounds)
                 {
                     logger.LogError(
                         "Streaming inference exceeded tool round limit for model {ModelName}.",
@@ -969,16 +971,22 @@ public sealed class HubIntelligenceProvider(
 
         }
 
-        if (InferenceTokenCounter.ShouldSkipCompressionPreflight(chatMessages))
+        int minMessagesForPreflight = ArcanumSettingClamps.CompressionPreflightMinMessages(
+            settings.Value.Intelligence.CompressionPreflightMinMessages);
+
+        if (InferenceTokenCounter.ShouldSkipCompressionPreflight(chatMessages, minMessagesForPreflight))
         {
 
             return (false, chatMessages);
 
         }
 
-        Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(lease.Provider.Type, lease.ResolvedModel);
+        Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding);
 
-        int totalTokens = InferenceTokenCounter.CountTokens(chatMessages, tokenizer);
+        int perMessageOverhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
+            settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
+
+        int totalTokens = InferenceTokenCounter.CountTokens(chatMessages, tokenizer, perMessageOverhead);
 
         int thresholdPct = ArcanumSettingClamps.ContextWindowCompressionThreshold(
             settings.Value.Intelligence.ContextWindowCompressionThreshold);
@@ -1023,7 +1031,7 @@ public sealed class HubIntelligenceProvider(
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 
-        int afterTokens = InferenceTokenCounter.CountTokens(rebuilt, tokenizer);
+        int afterTokens = InferenceTokenCounter.CountTokens(rebuilt, tokenizer, perMessageOverhead);
 
         if (afterTokens > effectiveLimit)
         {
@@ -1650,12 +1658,36 @@ public sealed class HubIntelligenceProvider(
                 writer.WriteBooleanValue(b);
                 break;
 
+            case sbyte sb:
+                writer.WriteNumberValue(sb);
+                break;
+
+            case byte by:
+                writer.WriteNumberValue(by);
+                break;
+
+            case short sh:
+                writer.WriteNumberValue(sh);
+                break;
+
+            case ushort us:
+                writer.WriteNumberValue(us);
+                break;
+
             case int i:
                 writer.WriteNumberValue(i);
                 break;
 
+            case uint ui:
+                writer.WriteNumberValue(ui);
+                break;
+
             case long l:
                 writer.WriteNumberValue(l);
+                break;
+
+            case ulong ul:
+                writer.WriteNumberValue(ul);
                 break;
 
             case double d:
@@ -1664,6 +1696,50 @@ public sealed class HubIntelligenceProvider(
 
             case float f:
                 writer.WriteNumberValue(f);
+                break;
+
+            case decimal dec:
+                writer.WriteNumberValue(dec);
+                break;
+
+            case DateTime dt:
+                writer.WriteStringValue(dt.ToString("O", CultureInfo.InvariantCulture));
+                break;
+
+            case DateTimeOffset dto:
+                writer.WriteStringValue(dto.ToString("O", CultureInfo.InvariantCulture));
+                break;
+
+            case Guid g:
+                writer.WriteStringValue(g.ToString("D", CultureInfo.InvariantCulture));
+                break;
+
+            case Uri uri:
+                writer.WriteStringValue(uri.ToString());
+                break;
+
+            case IReadOnlyDictionary<string, object?> dict:
+                writer.WriteStartObject();
+
+                foreach (KeyValuePair<string, object?> kv in dict)
+                {
+                    writer.WritePropertyName(kv.Key);
+
+                    WriteArgumentValue(writer, kv.Value);
+                }
+
+                writer.WriteEndObject();
+                break;
+
+            case System.Collections.IEnumerable enumerable:
+                writer.WriteStartArray();
+
+                foreach (object? item in enumerable)
+                {
+                    WriteArgumentValue(writer, item);
+                }
+
+                writer.WriteEndArray();
                 break;
 
             default:

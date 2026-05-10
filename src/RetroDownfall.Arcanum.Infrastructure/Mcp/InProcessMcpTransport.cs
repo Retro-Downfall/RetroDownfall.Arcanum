@@ -16,6 +16,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 {
     private const int ChannelCapacity = 256;
 
+    private const int MalformedLinePreviewLength = 80;
+
     private readonly ChannelWriter<string> _toServer;
 
     private readonly ChannelReader<string> _fromServer;
@@ -23,6 +25,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     private readonly Channel<McpInboundEnvelope> _inbound;
 
     private readonly McpJsonSerializerContext _json;
+
+    private readonly ILogger? _logger;
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
@@ -42,7 +46,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         ChannelWriter<string> toServer,
         ChannelReader<string> fromServer,
         McpRequestCancellationBroker requestCancellationBroker,
-        McpJsonSerializerContext? jsonContext = null)
+        McpJsonSerializerContext? jsonContext = null,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(toServer);
 
@@ -57,6 +62,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         RequestCancellation = requestCancellationBroker;
 
         _json = jsonContext ?? McpJsonSerializerContext.Default;
+
+        _logger = logger;
 
         BoundedChannelOptions envelopeOptions = new(ChannelCapacity)
         {
@@ -111,7 +118,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             clientToServer.Writer,
             serverToClient.Reader,
             requestCancellationBroker,
-            jsonContext);
+            jsonContext,
+            logger);
 
         ArcanumInternalToolServer server = new(
             clientToServer.Reader,
@@ -235,9 +243,34 @@ internal sealed class InProcessMcpTransport : IMcpTransport
                 {
                     throw;
                 }
-                catch (JsonException)
+                catch (ChannelClosedException)
                 {
-                    // Malformed line from in-process server — ignore (no stderr analogue).
+                    // The inbound channel is being torn down; stop reading further lines.
+                    return;
+                }
+                catch (JsonException ex)
+                {
+                    if (_logger is not null && _logger.IsEnabled(LogLevel.Debug))
+                    {
+                        string preview = line.Length > MalformedLinePreviewLength
+                            ? line[..MalformedLinePreviewLength] + "\u2026"
+                            : line;
+
+                        _logger.LogDebug(
+                            ex,
+                            "InProcessMcpTransport dropped a malformed inbound line: {LinePreview}",
+                            preview);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (_logger is not null && _logger.IsEnabled(LogLevel.Warning))
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "InProcessMcpTransport read loop dropped a line due to an unexpected exception ({ExceptionType}).",
+                            ex.GetType().Name);
+                    }
                 }
             }
         }

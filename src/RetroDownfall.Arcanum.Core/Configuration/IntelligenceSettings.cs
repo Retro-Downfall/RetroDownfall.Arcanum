@@ -44,6 +44,32 @@ public sealed record IntelligenceSettings
     /// </summary>
     public long ToolOutputCapBytes { get; init; } = 1L * 1024L * 1024L;
 
+    /// <summary>
+    /// Maximum number of agentic tool rounds the hub will execute per inference turn.
+    /// A round = one model response containing tool calls + one server-side execution batch.
+    /// Beyond this cap, the hub fails the turn with <c>Hub.ToolLoop</c>.
+    /// </summary>
+    public int MaxToolInferenceRounds { get; init; } = 8;
+
+    /// <summary>
+    /// Minimum assembled-message count before context-compression preflight runs. Short threads
+    /// are assumed to fit and skip tokenizer cost. Default 6.
+    /// </summary>
+    public int CompressionPreflightMinMessages { get; init; } = 6;
+
+    /// <summary>
+    /// Per-message overhead (tokens) added to the pre-flight count to approximate chat-template
+    /// framing (role markers, separators). Default 4.
+    /// </summary>
+    public int PerMessageTemplateOverheadTokens { get; init; } = 4;
+
+    /// <summary>
+    /// Tiktoken encoding name used by <c>InferenceTokenizerResolver</c>. Default <c>o200k_base</c>.
+    /// Operators only need to change this if they validate counts against a specific
+    /// non-OpenAI model family that ships a different encoding.
+    /// </summary>
+    public string TokenizerEncoding { get; init; } = "o200k_base";
+
 }
 
 

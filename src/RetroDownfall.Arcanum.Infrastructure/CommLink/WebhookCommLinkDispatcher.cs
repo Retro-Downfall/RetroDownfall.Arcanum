@@ -14,10 +14,14 @@ internal sealed class WebhookCommLinkDispatcher(
     ILogger<WebhookCommLinkDispatcher> logger) : ICommLinkDispatcher
 {
 
+    internal const string HttpClientName = "CommLinkWebhook";
+
     public async Task<Result> DispatchAsync(CommLinkMessage message, CancellationToken cancellationToken = default)
     {
 
-        string? url = optionsMonitor.CurrentValue.CommLink?.WebhookUrl;
+        CommLinkSettings? commLinkSettings = optionsMonitor.CurrentValue.CommLink;
+
+        string? url = commLinkSettings?.WebhookUrl;
 
         if (string.IsNullOrWhiteSpace(url))
         {
@@ -32,6 +36,19 @@ internal sealed class WebhookCommLinkDispatcher(
         {
 
             logger.LogWarning("Comm Link webhook URL is invalid; alert was not sent.");
+
+            return Result.Success();
+
+        }
+
+        string[] allowedSchemes = commLinkSettings?.AllowedSchemes ?? ["https", "http"];
+
+        if (!IsSchemeAllowed(endpoint.Scheme, allowedSchemes))
+        {
+
+            logger.LogWarning(
+                "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:CommLink:AllowedSchemes; alert was not sent.",
+                endpoint.Scheme);
 
             return Result.Success();
 
@@ -67,7 +84,7 @@ internal sealed class WebhookCommLinkDispatcher(
 
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
 
-        HttpClient client = httpClientFactory.CreateClient("CommLinkWebhook");
+        HttpClient client = httpClientFactory.CreateClient(HttpClientName);
 
         try
         {
@@ -108,6 +125,28 @@ internal sealed class WebhookCommLinkDispatcher(
         }
 
         return Result.Success();
+
+    }
+
+    private static bool IsSchemeAllowed(string scheme, string[] allowedSchemes)
+    {
+
+        foreach (string allowed in allowedSchemes)
+        {
+
+            if (string.IsNullOrWhiteSpace(allowed))
+            {
+                continue;
+            }
+
+            if (string.Equals(scheme, allowed.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+        }
+
+        return false;
 
     }
 

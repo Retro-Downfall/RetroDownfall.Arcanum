@@ -279,12 +279,24 @@ internal sealed class McpClient : IAsyncDisposable
                     continue;
                 }
 
-                HandleInboundResponse(response);
+                try
+                {
+                    HandleInboundResponse(response);
+                }
+                catch (Exception inner)
+                {
+                    // A bad handler must not fault the correlation loop and starve every pending request.
+                    System.Diagnostics.Debug.WriteLine($"MCP correlation loop handler error: {inner.GetType().Name}: {inner.Message}");
+                }
             }
         }
         catch (OperationCanceledException)
         {
             // Expected on shutdown.
+        }
+        catch (Exception outer)
+        {
+            System.Diagnostics.Debug.WriteLine($"MCP correlation loop exited unexpectedly: {outer.GetType().Name}: {outer.Message}");
         }
         finally
         {
@@ -350,12 +362,9 @@ internal sealed class McpClient : IAsyncDisposable
                 await _transport.WriteNotificationAsync(notification, CancellationToken.None)
                     .ConfigureAwait(false);
             }
-            catch (Exception ex) when (
-                ex is ObjectDisposedException or
-                       IOException or
-                       OperationCanceledException or
-                       InvalidOperationException)
+            catch (Exception)
             {
+                // Best-effort wire cancel; failures are expected during shutdown and must not crash the process.
             }
         });
     }

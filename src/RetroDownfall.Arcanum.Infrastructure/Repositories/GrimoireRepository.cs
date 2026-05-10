@@ -280,11 +280,32 @@ public sealed class GrimoireRepository : IGrimoireRepository
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        return await _db.Conversations
+        Conversation? conversation = await _db.Conversations
             .AsNoTracking()
-            .Include(c => c.Messages.OrderBy(m => m.Timestamp))
             .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
             .ConfigureAwait(false);
+
+        if (conversation is null)
+        {
+            return null;
+        }
+
+        int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
+
+        List<ChatMessage> recentDescending = await _db.ChatMessages
+            .AsNoTracking()
+            .Where(m => m.ConversationId == id)
+            .OrderByDescending(m => m.Timestamp)
+            .Take(maxMessages)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        recentDescending.Reverse();
+
+        conversation.Messages = recentDescending;
+
+        return conversation;
     }
 
     public async Task<ConversationDetailDto?> GetConversationDetailAsync(

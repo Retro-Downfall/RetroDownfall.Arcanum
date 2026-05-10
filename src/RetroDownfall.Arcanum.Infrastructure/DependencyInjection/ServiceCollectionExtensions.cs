@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -125,10 +126,19 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
 
         services.AddHttpClient(
-            "CommLinkWebhook",
-            static client =>
+            WebhookCommLinkDispatcher.HttpClientName,
+            (sp, client) =>
             {
-                client.Timeout = TimeSpan.FromSeconds(15);
+                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+                int timeoutSeconds = ArcanumSettingClamps.WebhookTimeoutSeconds(
+                    opts.CurrentValue.CommLink?.WebhookTimeoutSeconds ?? new CommLinkSettings().WebhookTimeoutSeconds);
+
+                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
             });
 
         services.AddSingleton<WebhookCommLinkDispatcher>();

@@ -38,6 +38,8 @@ WebApplication app = builder.Build();
 
 app.UseArcanumCors();
 
+app.UseArcanumRateLimiter();
+
 app.MapArcanumEndpoints();
 try
 {

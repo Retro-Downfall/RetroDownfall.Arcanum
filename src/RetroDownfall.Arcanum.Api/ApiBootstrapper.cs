@@ -2,8 +2,10 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -45,7 +47,76 @@ public static class ApiBootstrapper
 
     private const string ArcanumCorsPolicyName = "ArcanumCors";
 
+    internal const string ArcanumRateLimiterPolicyName = "ArcanumRateLimit";
+
     private static readonly string[] DefaultCorsAllowedOrigins = new HostSettings().CorsAllowedOrigins;
+
+    private static void RegisterRateLimiter(IServiceCollection services, IConfiguration configuration)
+    {
+        bool enabled = string.Equals(
+            configuration["Arcanum:Host:RateLimit:Enabled"]?.Trim(),
+            bool.TrueString,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!enabled)
+        {
+            return;
+        }
+
+        services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+            options.AddPolicy(ArcanumRateLimiterPolicyName, ctx =>
+            {
+                IOptionsMonitor<ArcanumSettings> monitor = ctx.RequestServices
+                    .GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+                HostRateLimitSettings rl = monitor.CurrentValue.Host?.RateLimit ?? new HostRateLimitSettings();
+
+                int permitLimit = ArcanumSettingClamps.RateLimitPermitLimit(rl.PermitLimit);
+
+                int windowSeconds = ArcanumSettingClamps.RateLimitWindowSeconds(rl.WindowSeconds);
+
+                int queueLimit = ArcanumSettingClamps.RateLimitQueueLimit(rl.QueueLimit);
+
+                string partitionKey = ResolveRateLimitPartitionKey(ctx);
+
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey,
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = permitLimit,
+                        Window = TimeSpan.FromSeconds(windowSeconds),
+                        QueueLimit = queueLimit,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        AutoReplenishment = true,
+                    });
+            });
+        });
+    }
+
+    private static string ResolveRateLimitPartitionKey(HttpContext context)
+    {
+        // Partition by API key when present (one bucket per credential); otherwise by remote IP.
+        if (context.Request.Headers.TryGetValue(ArcanumApiHeaders.ApiKey, out Microsoft.Extensions.Primitives.StringValues apiKey)
+            && apiKey.Count > 0
+            && !string.IsNullOrEmpty(apiKey[0]))
+        {
+            return "k:" + apiKey[0];
+        }
+
+        if (context.Request.Headers.TryGetValue("Authorization", out Microsoft.Extensions.Primitives.StringValues auth)
+            && auth.Count > 0
+            && !string.IsNullOrEmpty(auth[0]))
+        {
+            return "a:" + auth[0];
+        }
+
+        System.Net.IPAddress? ip = context.Connection.RemoteIpAddress;
+
+        return "ip:" + (ip?.ToString() ?? "unknown");
+    }
 
     private static bool IsPathUnderAnyAllowedRoot(string candidateFullPath, string[] allowedRoots)
     {
@@ -156,6 +227,8 @@ public static class ApiBootstrapper
 
         services.AddOpenApi();
 
+        RegisterRateLimiter(services, configuration);
+
         services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
 
         services.AddHttpClient(
@@ -185,15 +258,47 @@ public static class ApiBootstrapper
         app.UseCors(ArcanumCorsPolicyName);
     }
 
+    /// <summary>
+    /// Activates the Arcanum rate-limiter middleware when <c>Arcanum:Host:RateLimit:Enabled</c>
+    /// is <c>true</c>; otherwise no-op (zero overhead).
+    /// </summary>
+    public static void UseArcanumRateLimiter(this WebApplication app)
+    {
+        bool enabled = string.Equals(
+            app.Configuration["Arcanum:Host:RateLimit:Enabled"]?.Trim(),
+            bool.TrueString,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (enabled)
+        {
+            app.UseRateLimiter();
+        }
+    }
+
     public static void MapArcanumEndpoints(this WebApplication app)
     {
+        bool rateLimitEnabled = string.Equals(
+            app.Configuration["Arcanum:Host:RateLimit:Enabled"]?.Trim(),
+            bool.TrueString,
+            StringComparison.OrdinalIgnoreCase);
+
         RouteGroupBuilder openAiV1 = app.MapGroup("/v1").AddEndpointFilter<ApiKeyEndpointFilter>();
+
+        if (rateLimitEnabled)
+        {
+            openAiV1 = openAiV1.RequireRateLimiting(ArcanumRateLimiterPolicyName);
+        }
 
         openAiV1.MapOpenAiV1ChatCompletions();
 
         openAiV1.MapOpenAiV1Models();
 
         var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
+
+        if (rateLimitEnabled)
+        {
+            apiGroup = apiGroup.RequireRateLimiting(ArcanumRateLimiterPolicyName);
+        }
 
         apiGroup.MapOpenApi();
 

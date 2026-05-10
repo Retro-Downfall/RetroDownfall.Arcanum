@@ -60,5 +60,23 @@ public static class ArcanumSettingClamps
 
     public static int DaemonShutdownDrainTimeoutSeconds(int value) => Math.Clamp(value, 0, 600);
 
+    public static int MaxToolInferenceRounds(int value) => Math.Clamp(value, 1, 64);
+
+    public static int CompressionPreflightMinMessages(int value) => Math.Clamp(value, 0, 100);
+
+    public static int PerMessageTemplateOverheadTokens(int value) => Math.Clamp(value, 0, 32);
+
+    public static int WebhookTimeoutSeconds(int value) => Math.Clamp(value, 1, 120);
+
+    public static long MaxRequestBodyBytes(long value) => Math.Clamp(value, 256L * 1024L, 1024L * 1024L * 1024L);
+
+    public static int RateLimitPermitLimit(int value) => Math.Clamp(value, 1, 1_000_000);
+
+    public static int RateLimitWindowSeconds(int value) => Math.Clamp(value, 1, 86_400);
+
+    public static int RateLimitQueueLimit(int value) => Math.Clamp(value, 0, 1_000_000);
+
+    public static int MaxMessagesPerConversationLoad(int value) => Math.Clamp(value, 50, 100_000);
+
 }
 

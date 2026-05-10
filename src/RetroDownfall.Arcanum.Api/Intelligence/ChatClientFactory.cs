@@ -59,6 +59,10 @@ public sealed class ChatClientFactory(
 
         http.Timeout = Timeout.InfiniteTimeSpan;
 
+        // OllamaSharp 5.4.25 owns an internal source-generated context
+        // (OllamaSharp.Models.JsonSourceGenerationContext, not public) that it consults when this
+        // argument is null. AOT publish is clean against that path; do not switch to a custom
+        // context here without an upstream change that exposes the type.
         var ollama = new OllamaApiClient(http, resolvedModel, jsonSerializerContext: null);
 
         return new ChatClientLease(ollama, ollama, provider, resolvedModel, isOllama: true, ollamaHttp: http);

@@ -40,7 +40,7 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 
                 int port = ArcanumSettingClamps.HostPort(configuredPort);
 
-                if (ShouldBindArcanumHostAny())
+                if (ShouldBindHostAny(ctx.Configuration))
                 {
                     options.ListenAnyIP(port);
                 }
@@ -48,6 +48,11 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
                 {
                     options.ListenLocalhost(port);
                 }
+
+                long maxBodyBytes = ArcanumSettingClamps.MaxRequestBodyBytes(
+                    ReadConfiguredMaxRequestBodyBytes(ctx.Configuration));
+
+                options.Limits.MaxRequestBodySize = maxBodyBytes;
             });
 
         builder.Logging.ClearProviders();
@@ -62,6 +67,8 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
         WebApplication app = builder.Build();
 
         app.UseArcanumCors();
+
+        app.UseArcanumRateLimiter();
 
         app.Use(async (context, next) =>
         {
@@ -128,22 +135,47 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
             : new HostSettings().Port;
     }
 
-    private static bool ShouldBindArcanumHostAny()
+    private static bool ShouldBindHostAny(IConfiguration configuration)
     {
-        string? raw = Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
+        // Environment override always wins so containerized deployments don't need rebuilds.
+        string? env = Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
 
-        if (string.IsNullOrWhiteSpace(raw))
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            string trimmed = env.Trim();
+
+            if (string.Equals(trimmed, "1", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (bool.TryParse(trimmed, out bool parsedEnv))
+            {
+                return parsedEnv;
+            }
+        }
+
+        string? configured = configuration["Arcanum:Host:ListenAny"];
+
+        if (string.IsNullOrWhiteSpace(configured))
         {
             return false;
         }
 
-        string trimmed = raw.Trim();
+        return bool.TryParse(configured.Trim(), out bool parsed) && parsed;
+    }
 
-        if (string.Equals(trimmed, "1", StringComparison.Ordinal))
+    private static long ReadConfiguredMaxRequestBodyBytes(IConfiguration configuration)
+    {
+        string? raw = configuration["Arcanum:Host:MaxRequestBodyBytes"];
+
+        if (string.IsNullOrWhiteSpace(raw))
         {
-            return true;
+            return new HostSettings().MaxRequestBodyBytes;
         }
 
-        return bool.TryParse(trimmed, out bool parsed) && parsed;
+        return long.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
+            ? parsed
+            : new HostSettings().MaxRequestBodyBytes;
     }
 }

@@ -48,6 +48,19 @@ Place an optional `arcanum.json` in that directory. Environment variable overrid
 | `Arcanum:Host:CorsAllowedOrigins` | JSON array of CORS origins (default: localhost loopback). Use `["*"]` for permissive (browser callers from any origin can read responses — operator-equivalent risk if the API key leaks). |
 | `Arcanum:Host:EnableScalarUi` | When **`true`**, mounts the Scalar interactive API reference at **`/api/scalar`**. Default **`false`** (Scalar's inline JS/CSS bootstrap conflicts with Arcanum's strict CSP posture). The OpenAPI JSON document at `/api/openapi/v1.json` is always available. |
 | `Arcanum:Host:SystemFingerprint` | Optional stable identifier surfaced as **`system_fingerprint`** on OpenAI-shaped `/v1/chat/completions` responses. When unset (default), Arcanum derives one from the host assembly's informational version (for example `arcanum-0.1.0-beta`). |
+| `Arcanum:Host:ListenAny` | When **`true`**, Kestrel binds to all network interfaces (`ListenAnyIP`) instead of loopback. Default **`false`**. The environment variable **`ARCANUM_HOST_ANY=1`** is still honored as an override. |
+| `Arcanum:Host:MaxRequestBodyBytes` | Kestrel `MaxRequestBodySize` (bytes). Default **10 MiB**; clamp 256 KiB – 1 GiB. |
+| `Arcanum:Host:RateLimit:Enabled` | When **`true`**, mounts a fixed-window rate limiter on `/api` and `/v1` (default **`false`**). Partition key = `X-Arcanum-Key` header value when present, else `Authorization`, else remote IP. Excess requests return **HTTP 429** unless `QueueLimit > 0`. |
+| `Arcanum:Host:RateLimit:PermitLimit` | Requests permitted per partition per window. Default **120**; clamp 1 – 1,000,000. |
+| `Arcanum:Host:RateLimit:WindowSeconds` | Fixed-window length (seconds). Default **60**; clamp 1 – 86,400. |
+| `Arcanum:Host:RateLimit:QueueLimit` | Maximum queued requests per partition (served once the window resets). Default **0** (no queueing). Clamp 0 – 1,000,000. |
+| `Arcanum:CommLink:WebhookTimeoutSeconds` | Timeout (seconds) for the named **`HttpClient("CommLinkWebhook")`**. Default **15**; clamp 1 – 120. |
+| `Arcanum:CommLink:AllowedSchemes` | JSON array of URI schemes the webhook dispatcher is permitted to call. Default **`["https","http"]`**. Use **`["https"]`** to require TLS. URLs whose scheme is not in this list are skipped with a warning. |
+| `Arcanum:Intelligence:MaxToolInferenceRounds` | Hard cap on agentic tool rounds per inference turn. Beyond this the hub fails the turn with **`Hub.ToolLoop`**. Default **8**; clamp 1 – 64. |
+| `Arcanum:Intelligence:CompressionPreflightMinMessages` | Minimum assembled-message count before context-compression preflight runs. Default **6**; clamp 0 – 100. |
+| `Arcanum:Intelligence:PerMessageTemplateOverheadTokens` | Per-message overhead (tokens) added to the pre-flight count to approximate chat-template framing. Default **4**; clamp 0 – 32. |
+| `Arcanum:Intelligence:TokenizerEncoding` | Tiktoken encoding name used by `InferenceTokenizerResolver`. Default **`o200k_base`**. Unknown encodings log a warning and fall back to the default so the hub never throws on misconfig. |
+| `Arcanum:Grimoire:MaxMessagesPerConversationLoad` | Maximum messages loaded into memory by `GetConversationAsync` (most recent N, in chronological order). Default **1000**; clamp 50 – 100,000. |
 | `Arcanum:Host:EnableEnterpriseTelemetry` | When `true`, Serilog also writes structured JSON logs to the console (for log shippers). Rolling JSON file logs are always enabled. |
 | `Arcanum:Security:ApiKeyCacheTtlSeconds` | TTL (seconds) for the in-memory SHA-256 digest of the expected API key. Lower TTL picks up rotation faster; default **`30`** (clamp 1–3600). |
 | `Arcanum:Perception:AllowedWorkspaceRoots` | Optional JSON array of absolute directory roots that **`GET /api/perception/look`** is permitted to scan. Empty (default) keeps the historical behaviour (any directory the process can read, API key still required); when non-empty, `directory` must resolve under one of these roots or the endpoint returns **`403`**. |
@@ -249,6 +262,12 @@ Arcanum is **single-user local-first** by default. Hardening choices currently i
 - **Sanitized error envelopes**: hub model-resolution failures, OpenAI v1 inference failures, and Comm Link webhook failures return generic public strings; exception detail stays in server logs only.
 - **Perception path allowlist** (`Arcanum:Perception:AllowedWorkspaceRoots`).
 - **Unseen Servant concurrency cap** (`Arcanum:Daemon:MaxConcurrentJobs`) and shutdown drain.
+- **Comm Link webhook scheme allowlist** (`Arcanum:CommLink:AllowedSchemes`, default `["https","http"]`) and **`AllowAutoRedirect = false`** on the named HTTP client (mitigates SSRF amplification via 302 to internal targets).
+- **Kestrel request-body cap** (`Arcanum:Host:MaxRequestBodyBytes`, default 10 MiB).
+- **Optional fixed-window rate limiter** on `/api` and `/v1` partitioned by API key or IP (`Arcanum:Host:RateLimit:*`).
+- **Bounded conversation hydration** (`Arcanum:Grimoire:MaxMessagesPerConversationLoad`) prevents long threads from blowing host RAM.
+- **`McpRequestCancellationBroker` auto-cleanup**: every registration installs a `CancellationToken.Register` callback so caller-token cancellation removes the entry and disposes the linked `CancellationTokenSource` even when `Unregister` is never called (caller crash or unhandled exception).
+- **Configurable agentic loop bound** (`Arcanum:Intelligence:MaxToolInferenceRounds`).
 
 ## Native AOT publish
 

@@ -25,6 +25,8 @@ public sealed class ArcanumSettings
 
     public CommLinkSettings CommLink { get; init; } = new();
 
+    public GrimoireSettings Grimoire { get; init; } = new();
+
 }
 
 
