@@ -20,12 +20,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     private readonly ILogger<GrimoireRepository> _logger;
 
-    private readonly IOptions<ArcanumSettings> _arcOptions;
+    private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
     public GrimoireRepository(
         ArcanumDbContext db,
         ILogger<GrimoireRepository> logger,
-        IOptions<ArcanumSettings> arcOptions)
+        IOptionsSnapshot<ArcanumSettings> arcOptions)
     {
         _db = db;
 

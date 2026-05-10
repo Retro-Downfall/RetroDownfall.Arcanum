@@ -21,11 +21,10 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-public sealed class OllamaIntelligenceProvider(
-    IOllamaApiClient ollamaClient,
-    IChatClient chatClient,
-    IOptions<ArcanumSettings> settings,
-    ILogger<OllamaIntelligenceProvider> logger,
+public sealed class HubIntelligenceProvider(
+    IChatClientFactory chatClientFactory,
+    IOptionsSnapshot<ArcanumSettings> settings,
+    ILogger<HubIntelligenceProvider> logger,
     IGrimoireRepository grimoire,
     McpConnectionManager mcpConnectionManager) : IArcanumIntelligenceProvider
 {
@@ -33,6 +32,9 @@ public sealed class OllamaIntelligenceProvider(
 
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
+
+    private const string PublicHubInferenceFailureMessage =
+        "Inference failed. See server logs for details.";
 
     private const string PublicListLocalModelsFailureMessage =
         "Could not list local Ollama models. Ensure Ollama is running and reachable. See server logs for details.";
@@ -49,17 +51,6 @@ public sealed class OllamaIntelligenceProvider(
     {
         string prompt = request.Prompt;
 
-        string? modelFromRequest = request.Model;
-
-        string targetModel = !string.IsNullOrWhiteSpace(modelFromRequest)
-            ? modelFromRequest.Trim()
-            : settings.Value.Ollama.DefaultModel;
-
-        if (string.IsNullOrWhiteSpace(targetModel))
-        {
-            return Result<string>.Failure(new Error("Ollama.Model", "No model configured. Set Arcanum:Ollama:DefaultModel or pass a model override."));
-        }
-
         if (!TryValidateAttachedFiles(request, out Error attachedFilesError))
         {
             return Result<string>.Failure(attachedFilesError);
@@ -70,16 +61,34 @@ public sealed class OllamaIntelligenceProvider(
             return Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
         }
 
-        ollamaClient.SelectedModel = targetModel;
+        ChatClientLease lease;
 
-        Result ensure = await EnsureModelExistsAsync(targetModel, cancellationToken, pullProgress: null).ConfigureAwait(false);
-
-        if (ensure.IsFailure)
+        try
         {
-            return Result<string>.Failure(ensure.Error);
+            lease = chatClientFactory.ResolveClient(request.Model);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Result<string>.Failure(new Error("Hub.Model", ex.Message));
         }
 
-        Conversation? thread = null;
+        using (lease)
+        {
+            string targetModel = lease.ResolvedModel;
+
+            IChatClient chatClient = lease.ChatClient;
+
+            if (lease.IsOllama)
+            {
+                Result ensure = await EnsureModelExistsAsync(lease.OllamaApi!, targetModel, cancellationToken, pullProgress: null).ConfigureAwait(false);
+
+                if (ensure.IsFailure)
+                {
+                    return Result<string>.Failure(ensure.Error);
+                }
+            }
+
+            Conversation? thread = null;
 
         if (!HasStatelessMessages(request) && request.ConversationId is { } existingConversationId)
         {
@@ -178,7 +187,7 @@ public sealed class OllamaIntelligenceProvider(
 
                 PrependDynamicSystemMessage(chatMessages, builtSystemPrompt);
 
-                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, toolSet, request);
+                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, toolSet, request, lease);
 
                 ChatResponse? response;
 
@@ -203,7 +212,7 @@ public sealed class OllamaIntelligenceProvider(
 
                     if (toolRoundsExecuted > MaxToolInferenceRounds)
                     {
-                        return Result<string>.Failure(new Error("Ollama.ToolLoop", "Tool invocation limit reached."));
+                        return Result<string>.Failure(new Error("Hub.ToolLoop", "Tool invocation limit reached."));
                     }
 
                     foreach (FunctionCallContent fcc in calls)
@@ -264,10 +273,18 @@ public sealed class OllamaIntelligenceProvider(
                     continue;
                 }
 
-                logger.LogError(ex, "Ollama inference failed for model {ModelName}.", targetModel);
+                logger.LogError(
+                    ex,
+                    "{Provider} inference failed for model {ModelName}.",
+                    lease.IsOllama ? "Ollama" : "Hub",
+                    targetModel);
 
-                return Result<string>.Failure(new Error("Ollama.Error", PublicInferenceFailureMessage));
+                return Result<string>.Failure(
+                    new Error(
+                        lease.IsOllama ? "Ollama.Error" : "Hub.Error",
+                        lease.IsOllama ? PublicInferenceFailureMessage : PublicHubInferenceFailureMessage));
             }
+        }
         }
     }
 
@@ -276,21 +293,6 @@ public sealed class OllamaIntelligenceProvider(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         string prompt = request.Prompt;
-
-        string? modelFromRequest = request.Model;
-
-        string targetModel = !string.IsNullOrWhiteSpace(modelFromRequest)
-            ? modelFromRequest.Trim()
-            : settings.Value.Ollama.DefaultModel;
-
-        if (string.IsNullOrWhiteSpace(targetModel))
-        {
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Error,
-                "No model configured. Set Arcanum:Ollama:DefaultModel or pass a model override.");
-
-            yield break;
-        }
 
         if (!TryValidateAttachedFiles(request, out Error streamAttachedError))
         {
@@ -306,91 +308,120 @@ public sealed class OllamaIntelligenceProvider(
             yield break;
         }
 
-        ollamaClient.SelectedModel = targetModel;
+        InvalidOperationException? resolveFailure = null;
 
-        yield return new IntelligenceEvent(
-            IntelligenceEventType.Status,
-            $"Checking local availability for {targetModel}...");
+        ChatClientLease? leaseOrNull = null;
 
-        Result<bool> localCheck = await IsModelLocalAsync(targetModel, cancellationToken).ConfigureAwait(false);
-
-        if (localCheck.IsFailure)
+        try
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicListLocalModelsFailureMessage);
+            leaseOrNull = chatClientFactory.ResolveClient(request.Model);
+        }
+        catch (InvalidOperationException ex)
+        {
+            resolveFailure = ex;
+        }
+
+        if (resolveFailure is not null)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, resolveFailure.Message);
 
             yield break;
         }
 
-        if (!localCheck.Value)
+        ChatClientLease lease = leaseOrNull!;
+
+        try
         {
-            logger.LogInformation(
-                "Model {ModelName} not found locally. Downloading from Ollama... This may take a moment.",
-                targetModel);
+            string targetModel = lease.ResolvedModel;
 
-            int lastReportedPercent = -1;
+            IChatClient chatClient = lease.ChatClient;
 
-            IAsyncEnumerator<PullModelResponse> pullEnumerator = EnumeratePullModelAsync(targetModel, cancellationToken).GetAsyncEnumerator(cancellationToken);
-
-            bool pullMoveFailed = false;
-
-            string? pullMoveError = null;
-
-            try
+            if (lease.IsOllama)
             {
-                while (true)
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Status,
+                    $"Checking local availability for {targetModel}...");
+
+                Result<bool> localCheck = await IsModelLocalAsync(lease.OllamaApi!, targetModel, cancellationToken).ConfigureAwait(false);
+
+                if (localCheck.IsFailure)
                 {
-                    bool hasNext;
+                    yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicListLocalModelsFailureMessage);
+
+                    yield break;
+                }
+
+                if (!localCheck.Value)
+                {
+                    logger.LogInformation(
+                        "Model {ModelName} not found locally. Downloading from Ollama... This may take a moment.",
+                        targetModel);
+
+                    int lastReportedPercent = -1;
+
+                    IAsyncEnumerator<PullModelResponse> pullEnumerator = EnumeratePullModelAsync(lease.OllamaApi!, targetModel, cancellationToken).GetAsyncEnumerator(cancellationToken);
+
+                    bool pullMoveFailed = false;
+
+                    string? pullMoveError = null;
 
                     try
                     {
-                        hasNext = await pullEnumerator.MoveNextAsync().ConfigureAwait(false);
+                        while (true)
+                        {
+                            bool hasNext;
+
+                            try
+                            {
+                                hasNext = await pullEnumerator.MoveNextAsync().ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogError(ex, "Pull stream failed while downloading model {ModelName}.", targetModel);
+
+                                pullMoveFailed = true;
+
+                                pullMoveError = PublicModelPullFailureMessage;
+
+                                break;
+                            }
+
+                            if (!hasNext)
+                            {
+                                break;
+                            }
+
+                            PullModelResponse pull = pullEnumerator.Current;
+
+                            int rounded = (int)Math.Round(pull.Percent, MidpointRounding.AwayFromZero);
+
+                            if (rounded != lastReportedPercent)
+                            {
+                                lastReportedPercent = rounded;
+
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.Status,
+                                    $"Downloading model {targetModel}: {rounded}%");
+                            }
+                        }
                     }
-                    catch (Exception ex)
+                    finally
                     {
-                        logger.LogError(ex, "Pull stream failed while downloading model {ModelName}.", targetModel);
-
-                        pullMoveFailed = true;
-
-                        pullMoveError = PublicModelPullFailureMessage;
-
-                        break;
+                        await pullEnumerator.DisposeAsync().ConfigureAwait(false);
                     }
 
-                    if (!hasNext)
+                    if (pullMoveFailed)
                     {
-                        break;
-                    }
-
-                    PullModelResponse pull = pullEnumerator.Current;
-
-                    int rounded = (int)Math.Round(pull.Percent, MidpointRounding.AwayFromZero);
-
-                    if (rounded != lastReportedPercent)
-                    {
-                        lastReportedPercent = rounded;
-
                         yield return new IntelligenceEvent(
-                            IntelligenceEventType.Status,
-                            $"Downloading model {targetModel}: {rounded}%");
+                            IntelligenceEventType.Error,
+                            pullMoveError ?? PublicModelPullFailureMessage);
+
+                        yield break;
                     }
                 }
             }
-            finally
-            {
-                await pullEnumerator.DisposeAsync().ConfigureAwait(false);
-            }
 
-            if (pullMoveFailed)
-            {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    pullMoveError ?? PublicModelPullFailureMessage);
-
-                yield break;
-            }
-        }
-
-        yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
+            yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
 
         Conversation? thread = null;
 
@@ -512,7 +543,7 @@ public sealed class OllamaIntelligenceProvider(
 
             accumulator = new StringBuilder(1024);
 
-            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamToolSet, request);
+            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamToolSet, request, lease);
 
             int streamToolRoundCount = 0;
 
@@ -712,9 +743,15 @@ public sealed class OllamaIntelligenceProvider(
             IntelligenceEventType.Result,
             "Complete",
             streamCompletionTokenTotal.ToString(CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            lease.Dispose();
+        }
     }
 
-    private async IAsyncEnumerable<PullModelResponse> EnumeratePullModelAsync(
+    private static async IAsyncEnumerable<PullModelResponse> EnumeratePullModelAsync(
+        IOllamaApiClient ollamaClient,
         string modelName,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -729,9 +766,9 @@ public sealed class OllamaIntelligenceProvider(
         }
     }
 
-    private async Task<Result> EnsureModelExistsAsync(string modelName, CancellationToken cancellationToken, IProgress<string>? pullProgress)
+    private async Task<Result> EnsureModelExistsAsync(IOllamaApiClient ollamaClient, string modelName, CancellationToken cancellationToken, IProgress<string>? pullProgress)
     {
-        Result<bool> localCheck = await IsModelLocalAsync(modelName, cancellationToken).ConfigureAwait(false);
+        Result<bool> localCheck = await IsModelLocalAsync(ollamaClient, modelName, cancellationToken).ConfigureAwait(false);
 
         if (localCheck.IsFailure)
         {
@@ -751,7 +788,7 @@ public sealed class OllamaIntelligenceProvider(
         {
             int lastReportedPercent = -1;
 
-            await foreach (PullModelResponse pull in EnumeratePullModelAsync(modelName, cancellationToken).ConfigureAwait(false))
+            await foreach (PullModelResponse pull in EnumeratePullModelAsync(ollamaClient, modelName, cancellationToken).ConfigureAwait(false))
             {
                 int rounded = (int)Math.Round(pull.Percent, MidpointRounding.AwayFromZero);
 
@@ -773,13 +810,13 @@ public sealed class OllamaIntelligenceProvider(
         }
     }
 
-    private async Task<Result<bool>> IsModelLocalAsync(string modelName, CancellationToken cancellationToken)
+    private async Task<Result<bool>> IsModelLocalAsync(IOllamaApiClient ollamaClient, string modelName, CancellationToken cancellationToken)
     {
         try
         {
             IEnumerable<Model> models = await ollamaClient.ListLocalModelsAsync(cancellationToken).ConfigureAwait(false);
 
-            return models.Any(m => ModelNameMatches(m.Name, modelName));
+            return models.Any(m => ProviderResolver.ModelNameMatches(m.Name, modelName));
         }
         catch (Exception ex)
         {
@@ -1007,13 +1044,17 @@ public sealed class OllamaIntelligenceProvider(
         return tools;
     }
 
-    private ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request)
+    private ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request, ChatClientLease lease)
     {
-        int numCtx = ArcanumSettingClamps.ContextWindowLimit(settings.Value.Ollama.ContextWindowLimit);
-
         var options = new ChatOptions();
 
-        options.AdditionalProperties!["num_ctx"] = numCtx;
+        if (lease.IsOllama)
+        {
+            int numCtx = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
+
+            options.AdditionalProperties!["num_ctx"] = numCtx;
+
+        }
 
         if (!includeTools || tools is null)
         {
@@ -1342,23 +1383,4 @@ public sealed class OllamaIntelligenceProvider(
         return true;
     }
 
-    private static bool ModelNameMatches(string localModelName, string targetModel)
-    {
-        if (string.Equals(localModelName, targetModel, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (!targetModel.Contains(':'))
-        {
-            int colonIndex = localModelName.IndexOf(':');
-
-            if (colonIndex >= 0)
-            {
-                return localModelName.AsSpan(0, colonIndex).Equals(targetModel, StringComparison.OrdinalIgnoreCase);
-            }
-        }
-
-        return false;
-    }
 }

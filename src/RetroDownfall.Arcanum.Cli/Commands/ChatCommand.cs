@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using Microsoft.Extensions.Options;
@@ -90,7 +91,10 @@ public sealed class ChatCommand(
                 ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedFiles.Count} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
                 : $"{themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >";
 
-            RenderManaBarLine(lastTokenUsage.Value, arcanumSettings.Value.Ollama.ContextWindowLimit);
+            if (TryGetManaBarContextLimit(session, out int manaContextLimit))
+            {
+                RenderManaBarLine(lastTokenUsage.Value, manaContextLimit);
+            }
 
             try
             {
@@ -291,8 +295,40 @@ public sealed class ChatCommand(
         {
             if (string.IsNullOrWhiteSpace(tail))
             {
+                ProviderSettings[] providers = arcanumSettings.Value.Providers ?? [];
+
+                var selection = new SelectionPrompt<string>().Title("Select the active model:");
+
+                bool anyGroup = false;
+
+                foreach (ProviderSettings provider in providers)
+                {
+                    string[] models = provider.Models ?? [];
+
+                    if (models.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    anyGroup = true;
+
+                    _ = selection.AddChoiceGroup(provider.Name, models);
+                }
+
+                if (!anyGroup)
+                {
+                    AnsiConsole.MarkupLine(
+                        themePalette.ErrorMarkup(Markup.Escape("No models are configured under Arcanum:Providers.")));
+
+                    return (true, false);
+                }
+
+                string picked = AnsiConsole.Prompt(selection);
+
+                session.CurrentModel = picked;
+
                 AnsiConsole.MarkupLine(
-                    $"{themePalette.HighlightMarkup(Markup.Escape("Usage:"))} {themePalette.MutedMarkup(Markup.Escape("/model <name>"))}");
+                    $"{themePalette.HighlightMarkup(Markup.Escape("Active model:"))} {themePalette.TextMarkup(Markup.Escape(session.CurrentModel!))}");
 
                 return (true, false);
             }
@@ -337,10 +373,7 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            PingRequest reloadBody = new(
-                Prompt: string.Empty,
-                Model: null,
-                WorkingDirectory: Environment.CurrentDirectory);
+            OptionalWorkspaceRequest reloadBody = new(WorkingDirectory: Environment.CurrentDirectory);
 
             Result<string> reloadResult = await apiClient.ReloadMcpAsync(reloadBody, cancellationToken).ConfigureAwait(false);
 
@@ -358,10 +391,7 @@ public sealed class ChatCommand(
 
         if (verb.Equals("/arsenal", StringComparison.OrdinalIgnoreCase))
         {
-            PingRequest arsenalBody = new(
-                Prompt: string.Empty,
-                Model: null,
-                WorkingDirectory: Environment.CurrentDirectory);
+            OptionalWorkspaceRequest arsenalBody = new(WorkingDirectory: Environment.CurrentDirectory);
 
             Result<WorkspaceArsenalDto> arsenalResult =
                 await apiClient.GetWorkspaceArsenalAsync(arsenalBody, cancellationToken).ConfigureAwait(false);
@@ -691,8 +721,8 @@ public sealed class ChatCommand(
         table.AddRow("/log", "View the Campaign Log (summarized history) for this session.");
 
         table.AddRow(
-            "/model " + themePalette.HighlightMarkup(Markup.Escape("<name>")),
-            "Override model for subsequent turns.");
+            "/model " + themePalette.HighlightMarkup(Markup.Escape("[<name>]")),
+            "Pick from configured providers (no args) or set override by name.");
 
         table.AddRow("/look", "Eye of the World snapshot for the current directory.");
 
@@ -955,6 +985,27 @@ public sealed class ChatCommand(
         AnsiConsole.Write(root);
 
         AnsiConsole.WriteLine();
+    }
+
+    private bool TryGetManaBarContextLimit(SessionMut session, out int contextWindowLimit)
+    {
+
+        if (!ProviderResolver.TryResolveProviderForModel(
+                arcanumSettings.Value,
+                session.CurrentModel,
+                out ProviderSettings? provider,
+                out _))
+        {
+            contextWindowLimit = 0;
+
+            return false;
+
+        }
+
+        contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(provider!.ContextWindowLimit);
+
+        return true;
+
     }
 
     private void RenderManaBarLine(int usedTokens, int contextWindowLimit)

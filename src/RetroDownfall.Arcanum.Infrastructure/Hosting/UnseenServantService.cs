@@ -1,18 +1,13 @@
 using System.Collections.Concurrent;
-
 using Microsoft.Extensions.DependencyInjection;
-
 using Microsoft.Extensions.Hosting;
-
 using Microsoft.Extensions.Logging;
-
 using Microsoft.Extensions.Options;
-
 using RetroDownfall.Arcanum.Core.Configuration;
-
 using RetroDownfall.Arcanum.Core.Intelligence;
-
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -25,7 +20,6 @@ internal sealed class UnseenServantService(
     IUnseenServantPacer pacer,
     ILogger<UnseenServantService> logger) : BackgroundService
 {
-
     /// <summary>
     /// Phase 1: last completion timestamps are process-local only. After a host restart, every enabled job
     /// has no entry here and is treated as due on the first <see cref="PeriodicTimer"/> tick (no persisted watermark).
@@ -101,8 +95,65 @@ internal sealed class UnseenServantService(
 
             int clampedInterval = ArcanumSettingClamps.UnseenServantIntervalMinutes(pacer.GetEffectiveInterval(job));
 
-            string kickoff =
-                $"Execute Unseen Servant background protocol. Current polling interval is {clampedInterval} minutes.";
+            bool loreEnabled = optionsMonitor.CurrentValue.Intelligence.EnableLoreSystem;
+
+            LoreDto? prior = null;
+
+            string jobKey = string.Empty;
+
+            if (loreEnabled)
+            {
+                IGrimoireRepository repository =
+                    scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+                jobKey = $"daemon_state_{job.Name}";
+
+                try
+                {
+                    prior = await repository
+                        .GetLoreAsync(jobKey, stoppingToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Unseen Servant job {JobName} could not read daemon lore for key {JobKey}.",
+                        job.Name,
+                        jobKey);
+
+                    prior = null;
+                }
+            }
+
+            string kickoff;
+
+            if (!loreEnabled)
+            {
+                kickoff =
+                    $"""
+                    Execute Unseen Servant background protocol. Current polling interval is {clampedInterval} minutes.
+
+                    If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
+                    """;
+            }
+            else
+            {
+                string previousState = prior?.Value ?? "No previous state recorded.";
+
+                kickoff =
+                    $"""
+                    Unseen Servant background protocol.
+                    Job Name: '{job.Name}'
+                    Current polling interval: {clampedInterval} minutes.
+
+                    ### Previous State
+                    {previousState}
+
+                    Instructions: Analyze the environment. If you calculate new moving averages, trends, or state that you need for your next waking cycle, you MUST use the `scribe_lore` tool to update the key `{jobKey}` before you complete your turn.
+                    If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
+                    """;
+            }
 
             PingRequest ping = new(
                 Prompt: kickoff,
@@ -147,3 +198,27 @@ internal sealed class UnseenServantService(
     }
 
 }
+
+/*
+ * --- Sample: UnseenMarketWatcher / SPELL.md (copy to ~/.config/arcanum/spells/UnseenMarketWatcher/SPELL.md) ---
+ * ---
+ * name: UnseenMarketWatcher
+ * description: Example headless daemon spell — query a target (e.g. Kalshi spreads) and persist a moving average for the next cycle via scribe_lore.
+ * ---
+ *
+ * ## Daemon job pairing
+ *
+ * Set `Arcanum:Daemon:Jobs` with `name` matching the lore suffix you persist under. The host injects prior state from
+ * `daemon_state_{job.Name}` (e.g. job `name` = `MarketWatcher` → key `daemon_state_MarketWatcher`). Use that exact key
+ * in `scribe_lore` each run.
+ *
+ * ## Behavior
+ *
+ * 1. Use available tools (e.g. Kalshi MCP or HTTP) to read the current bid/ask or spread for one or more target markets.
+ * 2. Parse **Previous State** from the kickoff (JSON or plain text you chose in the prior cycle) for last run's spread and running average.
+ * 3. Update a simple moving average (or EMA) of the spread across cycles; include timestamp and raw observations.
+ * 4. Call `scribe_lore` with key `daemon_state_<YourJobName>` and a compact value string so the next waking cycle can continue the trend.
+ * 5. Summarize briefly in natural language if the model output is shown in logs.
+ *
+ * --- end sample ---
+ */

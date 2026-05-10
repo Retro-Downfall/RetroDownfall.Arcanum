@@ -29,6 +29,9 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(InstallCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(UninstallCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(StatusCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DaemonJobsCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonInitiativeCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonAlertCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreListCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreGetCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreSetCommand))]
@@ -120,6 +123,12 @@ internal static class Program
 
         services.AddTransient<StatusCommand>();
 
+        services.AddTransient<DaemonJobsCommand>();
+
+        services.AddTransient<DaemonInitiativeCommand>();
+
+        services.AddTransient<DaemonAlertCommand>();
+
         services.AddTransient<LoreListCommand>();
 
         services.AddTransient<LoreGetCommand>();
@@ -160,6 +169,17 @@ internal static class Program
                 daemon.AddCommand<StatusCommand>("status")
                     .WithDescription("Show whether the Arcanum daemon is running.");
 
+                daemon.AddCommand<DaemonJobsCommand>("jobs")
+                    .WithDescription(
+                        "List Unseen Servant jobs (requires API: arcanum serve on Arcanum:Host:Port).");
+
+                daemon.AddCommand<DaemonInitiativeCommand>("initiative")
+                    .WithDescription(
+                        "Set adaptive polling interval for a job (requires API: arcanum serve on Arcanum:Host:Port).");
+
+                daemon.AddCommand<DaemonAlertCommand>("alert")
+                    .WithDescription(
+                        "Send a Comm Link test alert via POST /api/commlink/send (requires API: arcanum serve on Arcanum:Host:Port).");
             });
 
             config.AddBranch("lore", lore =>

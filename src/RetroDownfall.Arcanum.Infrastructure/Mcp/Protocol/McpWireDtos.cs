@@ -248,3 +248,23 @@ public sealed record AdjustInitiativeArgs
     public required int IntervalMinutes { get; init; }
 }
 
+/// <summary>
+/// Arguments accepted by the in-process <c>use_commlink</c> tool (Comm Link alerts).
+/// </summary>
+public sealed record UseCommlinkParams
+{
+
+    [JsonPropertyName("title")]
+    public required string Title { get; init; }
+
+    [JsonPropertyName("body")]
+    public required string Body { get; init; }
+
+    [JsonPropertyName("severity")]
+    public required string Severity { get; init; }
+
+    [JsonPropertyName("source")]
+    public string? Source { get; init; }
+}
+
+

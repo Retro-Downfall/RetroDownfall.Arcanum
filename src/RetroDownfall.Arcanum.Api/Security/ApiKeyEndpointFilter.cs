@@ -11,14 +11,14 @@ using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
-public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptions<ArcanumSettings> arcOptions) : IEndpointFilter
+public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptionsMonitor<ArcanumSettings> arcOptions) : IEndpointFilter
 {
     private byte[]? _cachedExpectedUtf8;
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         int maxHeaderUtf16 = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
-            arcOptions.Value.Security.MaxApiKeyHeaderUtf16Chars);
+            arcOptions.CurrentValue.Security.MaxApiKeyHeaderUtf16Chars);
 
         IHeaderDictionary headers = context.HttpContext.Request.Headers;
 

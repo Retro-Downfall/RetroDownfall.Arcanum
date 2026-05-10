@@ -22,16 +22,7 @@ public sealed class LoreDeleteCommand(ArcanumApiClient apiClient, IThemePalette 
             return 1;
         }
 
-        if (result.Value)
-        {
-            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Deleted lore for '{Key}'.")));
-        }
-        else
-        {
-            AnsiConsole.MarkupLine(
-                themePalette.HighlightMarkup(
-                    Markup.Escape($"No lore entry found for '{Key}'; nothing was deleted.")));
-        }
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Deleted lore for '{Key}'.")));
 
         return 0;
     }

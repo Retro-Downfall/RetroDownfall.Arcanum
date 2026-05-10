@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -17,6 +18,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(Error))]
 [JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(OptionalWorkspaceRequest))]
 [JsonSerializable(typeof(CoreChatMessage))]
 [JsonSerializable(typeof(List<CoreChatMessage>))]
 [JsonSerializable(typeof(ChronosyncReport))]
@@ -67,6 +69,9 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(OpenAiDelta))]
 [JsonSerializable(typeof(OpenAiErrorDetail))]
 [JsonSerializable(typeof(OpenAiErrorResponse))]
+[JsonSerializable(typeof(OpenAiModel))]
+[JsonSerializable(typeof(OpenAiModelListResponse))]
+[JsonSerializable(typeof(List<OpenAiModel>))]
 [JsonSerializable(typeof(UnseenServantJobStatusDto))]
 [JsonSerializable(typeof(UnseenServantJobStatusDto[]))]
 [JsonSerializable(typeof(AdjustInitiativeRequestDto))]
@@ -74,5 +79,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(Result<UnseenServantJobStatusDto[]>))]
 [JsonSerializable(typeof(ApiResponse<UnseenServantJobStatusDto>))]
 [JsonSerializable(typeof(Result<UnseenServantJobStatusDto>))]
+[JsonSerializable(typeof(CommLinkMessageRequestDto))]
+[JsonSerializable(typeof(CommLinkSeverity))]
 
 public partial class ArcanumJsonContext : JsonSerializerContext;

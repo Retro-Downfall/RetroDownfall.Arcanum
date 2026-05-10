@@ -5,14 +5,14 @@ using RetroDownfall.Arcanum.Core.Pattern.Entities;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Pattern;
 
-public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : IEyeOfTheWorld
+public sealed class EyeOfTheWorldService(IOptionsMonitor<ArcanumSettings> settings) : IEyeOfTheWorld
 {
 
-    private readonly int _maxEnumerationSteps = ArcanumSettingClamps.MaxEnumerationSteps(
-        settings.Value.Perception.MaxEnumerationSteps);
+    private int MaxEnumerationSteps =>
+        ArcanumSettingClamps.MaxEnumerationSteps(settings.CurrentValue.Perception.MaxEnumerationSteps);
 
-    private readonly int _maxTocLines = ArcanumSettingClamps.MaxTableOfContentsLines(
-        settings.Value.Perception.MaxTableOfContentsLines);
+    private int MaxTocLines =>
+        ArcanumSettingClamps.MaxTableOfContentsLines(settings.CurrentValue.Perception.MaxTableOfContentsLines);
 
     private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -75,7 +75,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
             foreach (string fullPath in Directory.EnumerateFiles(root, "*", options))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (result.EnumerationSteps >= _maxEnumerationSteps)
+                if (result.EnumerationSteps >= MaxEnumerationSteps)
                 {
                     result.EnumerationTruncated = true;
                     break;
@@ -302,7 +302,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
             AddBucket(scan.NotesNear, "Note: ");
         }
 
-        if (domain == DomainType.SoftwareEngineering && lines.Count < _maxTocLines)
+        if (domain == DomainType.SoftwareEngineering && lines.Count < MaxTocLines)
         {
             AddBucket(scan.AdminNear, "Document: ");
             AddBucket(scan.NotesNear, "Note: ");
@@ -310,7 +310,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
 
         List<string> deduped = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        int lineBudget = scan.EnumerationTruncated ? _maxTocLines - 1 : _maxTocLines;
+        int lineBudget = scan.EnumerationTruncated ? MaxTocLines - 1 : MaxTocLines;
 
         foreach (string line in lines)
         {
@@ -333,7 +333,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
 
         if (scan.EnumerationTruncated)
         {
-            deduped.Add($"Scan: truncated after {_maxEnumerationSteps} files");
+            deduped.Add($"Scan: truncated after {MaxEnumerationSteps} files");
         }
 
         return [.. deduped];
@@ -344,7 +344,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
         if (scan.AllFiles.Count == 0)
         {
             return scan.EnumerationTruncated
-                ? [$"Scan: truncated after {_maxEnumerationSteps} files"]
+                ? [$"Scan: truncated after {MaxEnumerationSteps} files"]
                 : ["File: (no files enumerated)"];
         }
 
@@ -358,7 +358,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
 
         List<string> lines = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        int fileBudget = scan.EnumerationTruncated ? _maxTocLines - 1 : _maxTocLines;
+        int fileBudget = scan.EnumerationTruncated ? MaxTocLines - 1 : MaxTocLines;
 
         foreach (FileRec rec in sorted)
         {
@@ -379,7 +379,7 @@ public sealed class EyeOfTheWorldService(IOptions<ArcanumSettings> settings) : I
 
         if (scan.EnumerationTruncated)
         {
-            lines.Add($"Scan: truncated after {_maxEnumerationSteps} files");
+            lines.Add($"Scan: truncated after {MaxEnumerationSteps} files");
         }
 
         return [.. lines];

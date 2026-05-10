@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Hosting;
@@ -10,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Workspace;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
@@ -121,6 +123,25 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<CampaignLoggerBackgroundService>();
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
+
+        services.AddHttpClient(
+            "CommLinkWebhook",
+            static client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(15);
+            });
+
+        services.AddSingleton<WebhookCommLinkDispatcher>();
+
+        services.AddSingleton<ICommLinkDispatcher>(static sp =>
+        {
+            WebhookCommLinkDispatcher webhook = sp.GetRequiredService<WebhookCommLinkDispatcher>();
+
+            IReadOnlyList<ICommLinkDispatcher> sinks = [webhook];
+
+            return new CommLinkMultiplexer(sinks);
+        });
+
         services.AddSingleton<McpConnectionManager>();
         return services;
     }

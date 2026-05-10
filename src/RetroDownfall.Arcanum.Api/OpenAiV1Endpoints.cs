@@ -27,10 +27,54 @@ internal static class OpenAiV1Endpoints
         _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync).WithName("PostOpenAiChatCompletions");
     }
 
+    internal static void MapOpenAiV1Models(this RouteGroupBuilder v1)
+    {
+        _ = v1.MapGet("/models", HandleListModels).WithName("GetOpenAiModels");
+    }
+
+    private static IResult HandleListModels(IOptionsSnapshot<ArcanumSettings> settings)
+    {
+        ArcanumSettings arc = settings.Value;
+
+        ProviderSettings[] providers = arc.Providers;
+
+        long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        List<OpenAiModel> data = [];
+
+        Dictionary<string, bool> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ProviderSettings provider in providers)
+        {
+            string ownedBy = string.IsNullOrWhiteSpace(provider.Name) ? "system" : provider.Name;
+
+            foreach (string model in provider.Models)
+            {
+                if (string.IsNullOrWhiteSpace(model))
+                {
+                    continue;
+                }
+
+                string id = model.Trim();
+
+                if (!seen.TryAdd(id, true))
+                {
+                    continue;
+                }
+
+                data.Add(new OpenAiModel(id, "model", created, ownedBy));
+            }
+        }
+
+        OpenAiModelListResponse response = new(data);
+
+        return Results.Json(response, ArcanumJsonContext.Default.OpenAiModelListResponse);
+    }
+
     private static async Task<IResult> HandleChatCompletionsAsync(
         HttpContext httpContext,
         IArcanumIntelligenceProvider intelligence,
-        IOptions<ArcanumSettings> settings,
+        IOptionsSnapshot<ArcanumSettings> settings,
         CancellationToken cancellationToken)
     {
         OpenAiChatRequest? body = await httpContext.Request
@@ -58,11 +102,8 @@ internal static class OpenAiV1Endpoints
 
         PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body);
 
-        string resolvedModel = !string.IsNullOrWhiteSpace(body.Model)
-            ? body.Model.Trim()
-            : settings.Value.Ollama.DefaultModel;
-
-        if (string.IsNullOrWhiteSpace(resolvedModel))
+        if (!ProviderResolver.TryResolveProviderForModel(settings.Value, body.Model, out _, out string resolvedModel)
+            || string.IsNullOrWhiteSpace(resolvedModel))
         {
             return Results.Json(
                 new OpenAiErrorResponse(new OpenAiErrorDetail("No model configured.", "invalid_request_error")),

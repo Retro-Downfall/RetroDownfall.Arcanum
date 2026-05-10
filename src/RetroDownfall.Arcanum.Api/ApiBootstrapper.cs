@@ -10,10 +10,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OllamaSharp;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -71,30 +71,17 @@ public static class ApiBootstrapper
         services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
 
         services.AddHttpClient(
-            "Ollama",
-            (sp, client) =>
+            "OllamaProvider",
+            static (sp, client) =>
             {
-                ArcanumSettings settings = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value;
-
-                client.BaseAddress = new Uri(settings.Ollama.Endpoint);
+                _ = sp;
 
                 client.Timeout = Timeout.InfiniteTimeSpan;
             });
 
-        services.AddScoped<OllamaApiClient>(sp =>
-        {
-            IHttpClientFactory factory = sp.GetRequiredService<IHttpClientFactory>();
+        services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
-            ArcanumSettings settings = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value;
-
-            return new OllamaApiClient(factory.CreateClient("Ollama"), settings.Ollama.DefaultModel);
-        });
-
-        services.AddScoped<IOllamaApiClient>(sp => sp.GetRequiredService<OllamaApiClient>());
-
-        services.AddScoped<IChatClient>(sp => sp.GetRequiredService<OllamaApiClient>());
-
-        services.AddScoped<IArcanumIntelligenceProvider, OllamaIntelligenceProvider>();
+        services.AddScoped<IArcanumIntelligenceProvider, HubIntelligenceProvider>();
 
         return services;
     }
@@ -112,6 +99,8 @@ public static class ApiBootstrapper
         RouteGroupBuilder openAiV1 = app.MapGroup("/v1").AddEndpointFilter<ApiKeyEndpointFilter>();
 
         openAiV1.MapOpenAiV1ChatCompletions();
+
+        openAiV1.MapOpenAiV1Models();
 
         var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
 
@@ -177,7 +166,17 @@ public static class ApiBootstrapper
 
                 bool accepted = registry.TrySubmitResponse(body.PromptId.Trim(), body.Answer);
 
-                Result<bool> ok = Result<bool>.Success(accepted);
+                if (!accepted)
+                {
+                    Result<bool> notFound = Result<bool>.Failure(
+                        new Error(
+                            "Intelligence.HumanPromptNotFound",
+                            "No active ask_human prompt matches that promptId (unknown, expired, or already answered)."));
+
+                    return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
+                }
+
+                Result<bool> ok = Result<bool>.Success(true);
 
                 return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
             })
@@ -263,7 +262,7 @@ public static class ApiBootstrapper
         })
         .WithName("PostIntelligencePingStream");
 
-        apiGroup.MapPost("/mcp/reload", async (PingRequest? body, McpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
+        apiGroup.MapPost("/mcp/reload", async (OptionalWorkspaceRequest? body, McpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
         {
             string workingDirectory = body?.WorkingDirectory ?? string.Empty;
 
@@ -277,7 +276,7 @@ public static class ApiBootstrapper
         })
         .WithName("PostMcpReload");
 
-        apiGroup.MapPost("/intelligence/arsenal", async (PingRequest? body, McpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
+        apiGroup.MapPost("/intelligence/arsenal", async (OptionalWorkspaceRequest? body, McpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
         {
             string workingDirectory = body?.WorkingDirectory ?? string.Empty;
 
@@ -418,7 +417,11 @@ public static class ApiBootstrapper
                     return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
                 }
 
-                return Results.NoContent();
+                string okTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<bool> deleted = Result<bool>.Success(true);
+
+                return Results.Ok(ApiResponse<bool>.FromResult(deleted, okTraceId));
             })
         .WithName("DeleteConversation");
 
@@ -438,7 +441,14 @@ public static class ApiBootstrapper
 
                 await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
 
-                return Results.Accepted();
+                string acceptedTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                Result<bool> queued = Result<bool>.Success(true);
+
+                return Results.Json(
+                    ApiResponse<bool>.FromResult(queued, acceptedTraceId),
+                    ArcanumJsonContext.Default.ApiResponseBoolean,
+                    statusCode: StatusCodes.Status202Accepted);
             })
         .WithName("PostConversationRest");
 
@@ -564,7 +574,15 @@ public static class ApiBootstrapper
 
                 string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-                Result<bool> ok = Result<bool>.Success(removed);
+                if (!removed)
+                {
+                    Result<bool> notFound = Result<bool>.Failure(
+                        new Error("Grimoire.LoreNotFound", "No lore exists with that key."));
+
+                    return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
+                }
+
+                Result<bool> ok = Result<bool>.Success(true);
 
                 return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
             })
@@ -652,5 +670,62 @@ public static class ApiBootstrapper
                 return Results.Ok(ApiResponse<UnseenServantJobStatusDto>.FromResult(ok, traceId));
             })
         .WithName("PostDaemonJobInitiative");
+
+        apiGroup.MapPost(
+            "/commlink/send",
+            async (
+                HttpContext httpContext,
+                ICommLinkDispatcher commLink,
+                CancellationToken cancellationToken) =>
+            {
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                CommLinkMessageRequestDto? body = await httpContext.Request
+                    .ReadFromJsonAsync(ArcanumJsonContext.Default.CommLinkMessageRequestDto, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (body is null)
+                {
+                    Result<bool> invalid = Result<bool>.Failure(
+                        new Error("Validation.InvalidBody", "Request body is required."));
+
+                    return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+                }
+
+                if (string.IsNullOrWhiteSpace(body.Title) || string.IsNullOrWhiteSpace(body.Body))
+                {
+                    Result<bool> invalid = Result<bool>.Failure(
+                        new Error("Validation.InvalidFields", "Title and body must not be empty."));
+
+                    return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+                }
+
+                string title = body.Title.Trim();
+
+                string bodyText = body.Body.Trim();
+
+                string source = string.IsNullOrWhiteSpace(body.Source) ? "api" : body.Source.Trim();
+
+                CommLinkMessage message = new(title, bodyText, body.Severity, source);
+
+                Result dispatch = await commLink
+                    .DispatchAsync(message, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (dispatch.IsFailure)
+                {
+                    Result<bool> failed = Result<bool>.Failure(dispatch.Error);
+
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(failed, traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+
+                Result<bool> ok = Result<bool>.Success(true);
+
+                return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
+            })
+        .WithName("PostCommLinkSend");
     }
 }

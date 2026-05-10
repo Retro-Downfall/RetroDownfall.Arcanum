@@ -5,7 +5,9 @@ public sealed class ArcanumSettings
 
     public HostSettings Host { get; init; } = new();
 
-    public OllamaSettings Ollama { get; init; } = new();
+    public ProviderSettings[] Providers { get; init; } = [];
+
+    public string? DefaultModel { get; init; }
 
     public BureauSettings Bureau { get; init; } = new();
 
@@ -19,7 +21,10 @@ public sealed class ArcanumSettings
 
     public DaemonSettings Daemon { get; init; } = new();
 
+    public CommLinkSettings CommLink { get; init; } = new();
+
 }
+
 
 
 

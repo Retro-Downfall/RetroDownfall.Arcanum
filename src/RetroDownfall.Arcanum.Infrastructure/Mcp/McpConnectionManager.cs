@@ -29,7 +29,7 @@ public sealed class McpConnectionManager(
     IHumanPromptRegistry humanPromptRegistry,
     IServiceScopeFactory scopeFactory,
     IUnseenServantPacer pacer,
-    IOptions<ArcanumSettings> settings) : IAsyncDisposable
+    IOptionsMonitor<ArcanumSettings> settings) : IAsyncDisposable
 {
 
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
@@ -259,23 +259,23 @@ public sealed class McpConnectionManager(
 
     private int GetClampedExecuteCommandTimeoutSeconds()
     {
-        return Math.Clamp(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+        return Math.Clamp(settings.CurrentValue.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
     }
 
     private TimeSpan GetClampedMcpRequestTimeout()
     {
         return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpRequestTimeoutSeconds(settings.Value.Intelligence.McpRequestTimeoutSeconds));
+            ArcanumSettingClamps.McpRequestTimeoutSeconds(settings.CurrentValue.Intelligence.McpRequestTimeoutSeconds));
     }
 
     private int GetClampedMcpMaxPaginationPages()
     {
-        return ArcanumSettingClamps.McpMaxPaginationPages(settings.Value.Intelligence.McpMaxPaginationPages);
+        return ArcanumSettingClamps.McpMaxPaginationPages(settings.CurrentValue.Intelligence.McpMaxPaginationPages);
     }
 
     private int GetClampedListDirectoryMaxPaths()
     {
-        return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.Value.Intelligence.ListDirectoryMaxPaths);
+        return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.CurrentValue.Intelligence.ListDirectoryMaxPaths);
     }
 
     private async Task EnsureGlobalLoadedAsync(CancellationToken cancellationToken)
@@ -575,7 +575,7 @@ public sealed class McpConnectionManager(
             executeTimeout,
             timeoutSeconds,
             listDirectoryMaxPaths,
-            settings.Value.Intelligence,
+            settings.CurrentValue.Intelligence,
             logger: null);
 
         Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);

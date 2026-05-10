@@ -7,8 +7,10 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -74,6 +76,8 @@ internal sealed class ArcanumInternalToolServer
     private readonly JsonElement _searchArchivesSchema;
 
     private readonly JsonElement _adjustInitiativeSchema;
+
+    private readonly JsonElement _useCommlinkSchema;
 
     private readonly IntelligenceSettings _settings;
 
@@ -164,6 +168,8 @@ internal sealed class ArcanumInternalToolServer
         _searchArchivesSchema = BuildSearchArchivesSchema();
 
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
+
+        _useCommlinkSchema = BuildUseCommlinkSchema();
 
         _executeCommandToolDescription =
             $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout). Optional workingDirectory is relative to the workspace root.";
@@ -347,6 +353,13 @@ internal sealed class ArcanumInternalToolServer
             },
             new McpToolDefinitionWire
             {
+                Name = "use_commlink",
+                Description =
+                    "Sends a high-priority Comm Link alert to the operator (e.g. configured webhook). Use when immediate human attention is required.",
+                InputSchema = _useCommlinkSchema,
+            },
+            new McpToolDefinitionWire
+            {
                 Name = "ask_human",
                 Description =
                     "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
@@ -448,6 +461,7 @@ internal sealed class ArcanumInternalToolServer
             "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "execute_command" => await ExecuteCommandAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "adjust_initiative" => await ExecuteAdjustInitiativeAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "use_commlink" => await ExecuteUseCommlinkAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "ask_human" => await ExecuteAskHumanAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "read_lore" => await ExecuteReadLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
             "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
@@ -548,6 +562,94 @@ internal sealed class ArcanumInternalToolServer
                 ],
                 IsError = false,
             });
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteUseCommlinkAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+
+        UseCommlinkParams? args;
+
+        try
+        {
+
+            args = JsonSerializer.Deserialize(arguments, _json.UseCommlinkParams);
+
+        }
+        catch (JsonException ex)
+        {
+
+            _logger?.LogError(ex, "use_commlink argument deserialization failed.");
+
+            return ToolError("Invalid arguments for use_commlink.");
+
+        }
+
+        if (args is null
+            || string.IsNullOrWhiteSpace(args.Title)
+            || string.IsNullOrWhiteSpace(args.Body)
+            || string.IsNullOrWhiteSpace(args.Severity))
+        {
+
+            return ToolError("use_commlink requires non-empty 'title', 'body', and 'severity'.");
+
+        }
+
+        if (!Enum.TryParse(args.Severity.Trim(), ignoreCase: true, out CommLinkSeverity severity))
+        {
+
+            severity = CommLinkSeverity.Info;
+
+        }
+
+        string source = string.IsNullOrWhiteSpace(args.Source) ? "use_commlink" : args.Source.Trim();
+
+        CommLinkMessage message = new(args.Title.Trim(), args.Body.Trim(), severity, source);
+
+        try
+        {
+
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
+
+            Result r = await dispatcher
+                .DispatchAsync(message, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (r.IsFailure)
+            {
+
+                return ToolError($"use_commlink failed: {r.Error.Message}");
+
+            }
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = "Comm Link alert dispatched successfully." },
+                ],
+                IsError = false,
+            };
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            _logger?.LogError(ex, "use_commlink dispatch failed.");
+
+            return ToolError("An internal error occurred during use_commlink.");
+
+        }
+
     }
 
     private async Task<McpToolsCallResultWire> ExecuteReadLoreAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -1909,6 +2011,53 @@ internal sealed class ArcanumInternalToolServer
 
             w.WriteBoolean("additionalProperties", false);
         });
+    }
+
+    private static JsonElement BuildUseCommlinkSchema()
+    {
+
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "title",
+                "Short alert title shown to the operator.");
+
+            WriteStringProperty(
+                w,
+                "body",
+                "Alert body with details the operator should read.");
+
+            WriteStringProperty(
+                w,
+                "severity",
+                "One of: Info, Warning, Critical (case-insensitive). Unknown values are treated as Info.");
+
+            WriteStringProperty(
+                w,
+                "source",
+                "Optional origin label (defaults to use_commlink).");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("title");
+
+            w.WriteStringValue("body");
+
+            w.WriteStringValue("severity");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+
+        });
+
     }
 
     private static JsonElement BuildSchema(Action<Utf8JsonWriter> writeBody)
