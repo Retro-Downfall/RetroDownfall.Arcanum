@@ -31,17 +31,25 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly int _executeTimeoutSeconds;
 
-    public ArcanumSpellScriptTool(string scriptsDirectoryPath, TimeSpan executeTimeout, int executeTimeoutSecondsForDisplay)
+    private readonly long _toolOutputCapBytes;
+
+    public ArcanumSpellScriptTool(
+        string scriptsDirectoryPath,
+        TimeSpan executeTimeout,
+        int executeTimeoutSecondsForDisplay,
+        long toolOutputCapBytes = 1L * 1024L * 1024L)
     {
         _executeTimeout = executeTimeout;
 
         _executeTimeoutSeconds = executeTimeoutSecondsForDisplay;
 
+        _toolOutputCapBytes = toolOutputCapBytes < 2048L ? 2048L : toolOutputCapBytes;
+
         try
         {
             _scriptsRootFull = Path.GetFullPath(scriptsDirectoryPath);
         }
-        catch
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
         {
             _scriptsRootFull = null;
         }
@@ -85,6 +93,12 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         if (!File.Exists(candidate))
         {
             return $"run_spell_script: script not found: '{scriptName}'.";
+        }
+
+        if (TryResolveFinalSymlinkTarget(candidate) is { } finalTarget
+            && !IsPathUnderRoot(_scriptsRootFull, finalTarget))
+        {
+            return "run_spell_script: resolved path is a symlink that leaves the spell scripts directory; request rejected.";
         }
 
         _ = TryGetStringArgument(arguments, "arguments", out string? extraArgs);
@@ -131,64 +145,161 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             return "run_spell_script: failed to start the script process.";
         }
 
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitToken);
+        CancellationTokenRegistration killRegistration = waitToken.Register(
+            static state => TryKillProcessEntireTree((Process)state!),
+            process);
 
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitToken);
+        long perStreamCap = _toolOutputCapBytes / 2L;
+
+        if (perStreamCap < 1024L)
+        {
+            perStreamCap = 1024L;
+        }
 
         try
         {
-            await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKillProcessEntireTree(process);
+            Task<CappedOutput> stdoutTask = ReadStreamCappedAsync(process.StandardOutput, perStreamCap, waitToken);
 
-            if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            Task<CappedOutput> stderrTask = ReadStreamCappedAsync(process.StandardError, perStreamCap, waitToken);
+
+            try
             {
-                return $"run_spell_script: the command timed out after {_executeTimeoutSeconds} seconds.";
+                await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKillProcessEntireTree(process);
+
+                if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    return $"run_spell_script: the command timed out after {_executeTimeoutSeconds} seconds.";
+                }
+
+                return "run_spell_script: canceled.";
             }
 
-            return "run_spell_script: canceled.";
+            CappedOutput stdout;
+
+            CappedOutput stderr;
+
+            try
+            {
+                stdout = await stdoutTask.ConfigureAwait(false);
+
+                stderr = await stderrTask.ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                return "run_spell_script: failed to read process output.";
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return "run_spell_script: failed to read process output.";
+            }
+            catch (OperationCanceledException)
+            {
+                return "run_spell_script: canceled while reading output.";
+            }
+
+            var text = new StringBuilder();
+
+            text.AppendLine("--- stdout ---");
+
+            text.AppendLine(stdout.Text);
+
+            if (stdout.Truncated)
+            {
+                text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
+            }
+
+            text.AppendLine("--- stderr ---");
+
+            text.AppendLine(stderr.Text);
+
+            if (stderr.Truncated)
+            {
+                text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
+            }
+
+            text.Append("--- exit code ---\n");
+
+            text.Append(process.ExitCode);
+
+            return text.ToString();
         }
-
-        string stdout;
-
-        string stderr;
-
-        try
+        finally
         {
-            stdout = await stdoutTask.ConfigureAwait(false);
-
-            stderr = await stderrTask.ConfigureAwait(false);
+            await killRegistration.DisposeAsync().ConfigureAwait(false);
         }
-        catch (IOException)
+    }
+
+    private readonly record struct CappedOutput(string Text, bool Truncated);
+
+    private static async Task<CappedOutput> ReadStreamCappedAsync(
+        StreamReader reader,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        StringBuilder builder = new();
+
+        char[] buffer = new char[4096];
+
+        long approximateBytes = 0L;
+
+        bool truncated = false;
+
+        while (true)
         {
-            return "run_spell_script: failed to read process output.";
+            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+            if (read <= 0)
+            {
+                break;
+            }
+
+            long encodedSize = Encoding.UTF8.GetByteCount(buffer, 0, read);
+
+            if (approximateBytes + encodedSize > maxBytes)
+            {
+                long remaining = maxBytes - approximateBytes;
+
+                if (remaining > 0)
+                {
+                    int safeChars = ChooseSafeCharCount(buffer, read, remaining);
+
+                    builder.Append(buffer, 0, safeChars);
+                }
+
+                truncated = true;
+
+                break;
+            }
+
+            builder.Append(buffer, 0, read);
+
+            approximateBytes += encodedSize;
         }
-        catch (UnauthorizedAccessException)
+
+        return new CappedOutput(builder.ToString(), truncated);
+    }
+
+    private static int ChooseSafeCharCount(char[] buffer, int charCount, long remainingBytes)
+    {
+        long running = 0L;
+
+        for (int i = 0; i < charCount; i++)
         {
-            return "run_spell_script: failed to read process output.";
+            int charByteSize = Encoding.UTF8.GetByteCount(buffer, i, 1);
+
+            if (running + charByteSize > remainingBytes)
+            {
+                return i;
+            }
+
+            running += charByteSize;
         }
-        catch (OperationCanceledException)
-        {
-            return "run_spell_script: canceled while reading output.";
-        }
 
-        var text = new StringBuilder();
-
-        text.AppendLine("--- stdout ---");
-
-        text.AppendLine(stdout);
-
-        text.AppendLine("--- stderr ---");
-
-        text.AppendLine(stderr);
-
-        text.Append("--- exit code ---\n");
-
-        text.Append(process.ExitCode);
-
-        return text.ToString();
+        return charCount;
     }
 
     private static ProcessStartInfo BuildProcessStartInfo(string scriptsRootFull, string scriptFullPath, string? argumentsLine)
@@ -362,6 +473,25 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         return candidateFullPath.Equals(normalizedRoot, cmp) || candidateFullPath.StartsWith(prefix, cmp);
     }
 
+    private static string? TryResolveFinalSymlinkTarget(string path)
+    {
+        try
+        {
+            FileSystemInfo? linkTarget = File.ResolveLinkTarget(path, returnFinalTarget: true);
+
+            if (linkTarget is null)
+            {
+                return null;
+            }
+
+            return Path.GetFullPath(linkTarget.FullName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     private static void TryKillProcessEntireTree(Process process)
     {
         try
@@ -379,6 +509,13 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         }
         catch (NotSupportedException)
         {
+            try
+            {
+                process.Kill();
+            }
+            catch (Exception)
+            {
+            }
         }
     }
 }

@@ -30,10 +30,13 @@ internal sealed class McpClient : IAsyncDisposable
 
     private volatile bool _disposed;
 
+    private readonly McpRequestCancellationBroker? _requestCancellationBroker;
+
     public McpClient(
         IMcpTransport transport,
         TimeSpan defaultRequestTimeout,
         int maxToolsListPages,
+        McpRequestCancellationBroker? requestCancellationBroker = null,
         McpJsonSerializerContext? jsonContext = null)
     {
         ArgumentNullException.ThrowIfNull(transport);
@@ -48,6 +51,8 @@ internal sealed class McpClient : IAsyncDisposable
         _defaultRequestTimeout = defaultRequestTimeout;
 
         _maxToolsListPages = maxToolsListPages;
+
+        _requestCancellationBroker = requestCancellationBroker;
 
         _json = jsonContext ?? McpJsonSerializerContext.Default;
     }
@@ -132,13 +137,23 @@ internal sealed class McpClient : IAsyncDisposable
 
         CancellationToken waitToken = linked.Token;
 
+        _requestCancellationBroker?.Register(id, cancellationToken);
+
+        CancellationTokenRegistration wireCancelReg = cancellationToken.Register(
+            () => DispatchWireCancelNotification(id));
+
         try
         {
             await _transport.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+
             return await tcs.Task.WaitAsync(waitToken).ConfigureAwait(false);
         }
         finally
         {
+            wireCancelReg.Dispose();
+
+            _requestCancellationBroker?.Unregister(id);
+
             if (_pending.TryRemove(id, out TaskCompletionSource<JsonElement>? leftover))
             {
                 leftover.TrySetCanceled(CancellationToken.None);
@@ -311,7 +326,41 @@ internal sealed class McpClient : IAsyncDisposable
         }
     }
 
-    private static string NormalizeRpcId(JsonElement id)
+    private void DispatchWireCancelNotification(string requestId)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                McpCancelledParams cancelParams = new()
+                {
+                    RequestId = requestId,
+                    Reason = "Client cancelled",
+                };
+
+                JsonElement paramsElement = JsonSerializer.SerializeToElement(
+                    cancelParams, _json.McpCancelledParams);
+
+                JsonRpcNotification notification = new()
+                {
+                    Method = "notifications/cancelled",
+                    Params = paramsElement,
+                };
+
+                await _transport.WriteNotificationAsync(notification, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                ex is ObjectDisposedException or
+                       IOException or
+                       OperationCanceledException or
+                       InvalidOperationException)
+            {
+            }
+        });
+    }
+
+    internal static string NormalizeRpcId(JsonElement id)
     {
         return id.ValueKind switch
         {

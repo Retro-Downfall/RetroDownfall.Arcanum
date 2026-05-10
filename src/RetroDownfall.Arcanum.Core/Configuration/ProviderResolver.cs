@@ -33,6 +33,7 @@ public static class ProviderResolver
 
     /// <summary>
     /// Resolves provider and canonical model string. Fails if an explicit <paramref name="targetModel"/> or <see cref="ArcanumSettings.DefaultModel"/> is set but does not match any configured model.
+    /// Internal background callers (for example Campaign Logger) pass <paramref name="targetModel"/> from <see cref="ArcanumSettings.FastModel"/> or <see cref="ArcanumSettings.DefaultModel"/>; those properties are not read here directly.
     /// </summary>
     public static bool TryResolveProviderForModel(
         ArcanumSettings settings,

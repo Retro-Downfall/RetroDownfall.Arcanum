@@ -13,5 +13,8 @@ public sealed record CliSettings
 
     public ThemeColors ThemeColors { get; init; } = new();
 
+    public bool ShowManaBar { get; init; } = true;
+
 }
+
 

@@ -9,6 +9,8 @@ public sealed class ArcanumSettings
 
     public string? DefaultModel { get; init; }
 
+    public string? FastModel { get; init; }
+
     public BureauSettings Bureau { get; init; } = new();
 
     public IntelligenceSettings Intelligence { get; init; } = new();

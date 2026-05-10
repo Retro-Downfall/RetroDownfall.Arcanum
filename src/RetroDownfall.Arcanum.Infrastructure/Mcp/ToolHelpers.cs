@@ -37,6 +37,9 @@ internal static class ToolHelpers
         }
     }
 
+    /// <summary>
+    /// Lexical prefix-only check (used for ASCII-fast pre-filter and for paths that do not yet exist on disk).
+    /// </summary>
     internal static bool IsPathUnderWorkspace(string workspaceRootFull, string candidateFull)
     {
         char sep = Path.DirectorySeparatorChar;
@@ -50,6 +53,76 @@ internal static class ToolHelpers
             : StringComparison.Ordinal;
 
         return candidateFull.Equals(root, cmp) || candidateFull.StartsWith(prefix, cmp);
+    }
+
+    /// <summary>
+    /// Lexical prefix check plus symlink target resolution. When the candidate path exists and
+    /// is a symlink (or any ancestor along the candidate path is a symlink whose final target
+    /// leaves the workspace), the call returns <c>false</c>.
+    /// </summary>
+    /// <remarks>
+    /// AOT-safe: no reflection. Returns the (possibly link-resolved) final path through
+    /// <paramref name="resolvedFinalPath"/> for callers that want to open the resolved target,
+    /// or <c>null</c> when the candidate does not yet exist on disk (allowed for write-style ops).
+    /// </remarks>
+    internal static bool IsPathUnderWorkspaceWithSymlinkCheck(
+        string workspaceRootFull,
+        string candidateFull,
+        out string? resolvedFinalPath)
+    {
+        resolvedFinalPath = null;
+
+        if (!IsPathUnderWorkspace(workspaceRootFull, candidateFull))
+        {
+            return false;
+        }
+
+        string? finalTarget = TryResolveFinalSymlinkTarget(candidateFull);
+
+        if (finalTarget is null)
+        {
+            return true;
+        }
+
+        resolvedFinalPath = finalTarget;
+
+        return IsPathUnderWorkspace(workspaceRootFull, finalTarget);
+    }
+
+    private static string? TryResolveFinalSymlinkTarget(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                FileSystemInfo? linkTarget = File.ResolveLinkTarget(path, returnFinalTarget: true);
+
+                if (linkTarget is null)
+                {
+                    return null;
+                }
+
+                return Path.GetFullPath(linkTarget.FullName);
+            }
+
+            if (Directory.Exists(path))
+            {
+                FileSystemInfo? linkTarget = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+
+                if (linkTarget is null)
+                {
+                    return null;
+                }
+
+                return Path.GetFullPath(linkTarget.FullName);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            return null;
+        }
+
+        return null;
     }
 
 }

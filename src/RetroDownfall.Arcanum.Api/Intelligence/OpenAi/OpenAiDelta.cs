@@ -1,3 +1,14 @@
+using System.Text.Json.Serialization;
+
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
-public sealed record OpenAiDelta(string? Content);
+/// <summary>
+/// Per-chunk delta inside a streaming <c>choices[].delta</c>. All fields are optional because
+/// most chunks carry only one (typically <c>content</c>); the first chunk often includes
+/// <c>role</c>, and tool-call chunks include <c>tool_calls</c>.
+/// </summary>
+public sealed record OpenAiDelta(
+    [property: JsonPropertyName("content")] string? Content = null,
+    [property: JsonPropertyName("role")] string? Role = null,
+    [property: JsonPropertyName("tool_calls")] OpenAiStreamToolCall[]? ToolCalls = null,
+    [property: JsonPropertyName("refusal")] string? Refusal = null);

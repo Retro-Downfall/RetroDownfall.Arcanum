@@ -28,56 +28,143 @@ internal sealed class UnseenServantService(
 
     private readonly ConcurrentDictionary<string, byte> _runningJobs = new(StringComparer.Ordinal);
 
+    private readonly ConcurrentDictionary<Guid, Task> _activeJobTasks = new();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
 
         using PeriodicTimer timer = new(TimeSpan.FromMinutes(1));
 
-        try
+        while (!stoppingToken.IsCancellationRequested)
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+            try
             {
-                List<UnseenServantJob>? jobList = optionsMonitor.CurrentValue.Daemon?.Jobs;
-
-                IReadOnlyList<UnseenServantJob> jobs = jobList ?? [];
-
-                DateTimeOffset now = DateTimeOffset.UtcNow;
-
-                foreach (UnseenServantJob job in jobs)
+                if (!await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
                 {
-                    if (!job.Enabled)
-                    {
-                        continue;
-                    }
-
-                    string key = JobTrackingKey(job);
-
-                    if (!_runningJobs.TryAdd(key, 0))
-                    {
-                        continue;
-                    }
-
-                    int intervalMinutes = ArcanumSettingClamps.UnseenServantIntervalMinutes(pacer.GetEffectiveInterval(job));
-
-                    TimeSpan interval = TimeSpan.FromMinutes(intervalMinutes);
-
-                    if (_lastRunUtc.TryGetValue(key, out DateTimeOffset last)
-                        && now - last < interval)
-                    {
-                        _ = _runningJobs.TryRemove(key, out _);
-
-                        continue;
-                    }
-
-                    _ = Task.Run(
-                        () => RunJobAsync(job, key, stoppingToken),
-                        stoppingToken);
+                    break;
                 }
+
+                DispatchDueJobs(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Unseen Servant scheduler tick failed; continuing.");
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+    }
+
+    private void DispatchDueJobs(CancellationToken stoppingToken)
+    {
+        List<UnseenServantJob>? jobList = optionsMonitor.CurrentValue.Daemon?.Jobs;
+
+        IReadOnlyList<UnseenServantJob> jobs = jobList ?? [];
+
+        int maxConcurrent = ArcanumSettingClamps.DaemonMaxConcurrentJobs(
+            optionsMonitor.CurrentValue.Daemon?.MaxConcurrentJobs ?? new DaemonSettings().MaxConcurrentJobs);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        foreach (UnseenServantJob job in jobs)
         {
+            if (!job.Enabled)
+            {
+                continue;
+            }
+
+            if (_runningJobs.Count >= maxConcurrent)
+            {
+                logger.LogDebug(
+                    "Unseen Servant deferring job {JobName}: at MaxConcurrentJobs={MaxConcurrent}.",
+                    job.Name,
+                    maxConcurrent);
+
+                break;
+            }
+
+            string key = JobTrackingKey(job);
+
+            if (!_runningJobs.TryAdd(key, 0))
+            {
+                continue;
+            }
+
+            int intervalMinutes = ArcanumSettingClamps.UnseenServantIntervalMinutes(pacer.GetEffectiveInterval(job));
+
+            TimeSpan interval = TimeSpan.FromMinutes(intervalMinutes);
+
+            if (_lastRunUtc.TryGetValue(key, out DateTimeOffset last)
+                && now - last < interval)
+            {
+                _ = _runningJobs.TryRemove(key, out _);
+
+                continue;
+            }
+
+            Guid taskId = Guid.NewGuid();
+
+            Task jobTask = Task.Run(
+                async () =>
+                {
+                    try
+                    {
+                        await RunJobAsync(job, key, stoppingToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _ = _activeJobTasks.TryRemove(taskId, out _);
+                    }
+                },
+                stoppingToken);
+
+            _activeJobTasks[taskId] = jobTask;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+        int drainSeconds = ArcanumSettingClamps.DaemonShutdownDrainTimeoutSeconds(
+            optionsMonitor.CurrentValue.Daemon?.ShutdownDrainTimeoutSeconds ?? new DaemonSettings().ShutdownDrainTimeoutSeconds);
+
+        if (drainSeconds <= 0)
+        {
+            return;
+        }
+
+        Task[] snapshot = _activeJobTasks.Values.ToArray();
+
+        if (snapshot.Length == 0)
+        {
+            return;
+        }
+
+        using CancellationTokenSource drainCts = new(TimeSpan.FromSeconds(drainSeconds));
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            drainCts.Token);
+
+        try
+        {
+            Task drained = Task.WhenAll(snapshot);
+
+            await drained.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogInformation(
+                "Unseen Servant shutdown drain elapsed before {Count} job(s) completed.",
+                snapshot.Length);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Unseen Servant shutdown drain observed an unhandled exception.");
         }
     }
 
@@ -161,7 +248,7 @@ internal sealed class UnseenServantService(
                 UnattendedMode: true,
                 OverrideSpellName: string.IsNullOrWhiteSpace(job.TargetSpell) ? null : job.TargetSpell.Trim());
 
-            Result<string> result = await intelligence
+            Result<PromptTurnResult> result = await intelligence
                 .ExecutePromptAsync(ping, stoppingToken)
                 .ConfigureAwait(false);
 

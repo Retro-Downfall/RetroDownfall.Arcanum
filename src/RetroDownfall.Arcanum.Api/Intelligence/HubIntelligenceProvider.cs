@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.ML.Tokenizers;
 using OllamaSharp;
 using OllamaSharp.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -26,7 +27,8 @@ public sealed class HubIntelligenceProvider(
     IOptionsSnapshot<ArcanumSettings> settings,
     ILogger<HubIntelligenceProvider> logger,
     IGrimoireRepository grimoire,
-    McpConnectionManager mcpConnectionManager) : IArcanumIntelligenceProvider
+    McpConnectionManager mcpConnectionManager,
+    InferenceTokenizerResolver inferenceTokenizerResolver) : IArcanumIntelligenceProvider
 {
     private const int MaxToolInferenceRounds = 8;
 
@@ -45,20 +47,25 @@ public sealed class HubIntelligenceProvider(
     private const string PublicToolFailureMessageForGrimoire =
         "A tool invocation failed. See server logs for details.";
 
+    private const string PublicModelResolutionFailureMessage =
+        "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
+
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
-    public async Task<Result<string>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
+    private static readonly ArcanumSystemInfoTool _systemInfoTool = new();
+
+    public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
     {
         string prompt = request.Prompt;
 
         if (!TryValidateAttachedFiles(request, out Error attachedFilesError))
         {
-            return Result<string>.Failure(attachedFilesError);
+            return Result<PromptTurnResult>.Failure(attachedFilesError);
         }
 
         if (!HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
-            return Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
+            return Result<PromptTurnResult>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
         }
 
         ChatClientLease lease;
@@ -69,7 +76,9 @@ public sealed class HubIntelligenceProvider(
         }
         catch (InvalidOperationException ex)
         {
-            return Result<string>.Failure(new Error("Hub.Model", ex.Message));
+            logger.LogWarning(ex, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+
+            return Result<PromptTurnResult>.Failure(new Error("Hub.Model", PublicModelResolutionFailureMessage));
         }
 
         using (lease)
@@ -84,7 +93,7 @@ public sealed class HubIntelligenceProvider(
 
                 if (ensure.IsFailure)
                 {
-                    return Result<string>.Failure(ensure.Error);
+                    return Result<PromptTurnResult>.Failure(ensure.Error);
                 }
             }
 
@@ -123,54 +132,62 @@ public sealed class HubIntelligenceProvider(
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        string? spellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
-            request.WorkingDirectory,
-            out string? spellRoot,
-            out _)
-            ? spellRoot
-            : null;
-
-        IReadOnlyList<ParsedSpell> spells = await SpellScanner
-            .ScanAsync(spellWorkspaceRoot, cancellationToken)
-            .ConfigureAwait(false);
-
         ParsedSpell? activeSpell;
 
-        if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+        if (request.SkipSpellRouting)
         {
-            if (!TryResolveOverrideSpell(request.OverrideSpellName, spells, out ParsedSpell? overridePick))
-            {
-                return Result<string>.Failure(
-                    new Error(
-                        "Validation.SpellOverride",
-                        $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
-            }
-
-            activeSpell = overridePick;
+            activeSpell = null;
         }
         else
         {
-            TimeSpan spellPreflight = TimeSpan.FromSeconds(
-                ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+            string? spellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
+                request.WorkingDirectory,
+                out string? spellRoot,
+                out _)
+                ? spellRoot
+                : null;
 
-            int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-                settings.Value.Intelligence.SemanticRouterMaxTokens);
-
-            float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-                settings.Value.Intelligence.SemanticRouterTemperature);
-
-            string semanticProbe = GetSemanticRouterUserProbe(request);
-
-            activeSpell = await SemanticRouter
-                .DetermineActiveSpellAsync(
-                    chatClient,
-                    semanticProbe,
-                    spells,
-                    spellPreflight,
-                    routerMaxTokens,
-                    routerTemperature,
-                    cancellationToken)
+            IReadOnlyList<ParsedSpell> spells = await SpellScanner
+                .ScanAsync(spellWorkspaceRoot, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+            {
+                if (!TryResolveOverrideSpell(request.OverrideSpellName, spells, out ParsedSpell? overridePick))
+                {
+                    return Result<PromptTurnResult>.Failure(
+                        new Error(
+                            "Validation.SpellOverride",
+                            $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
+                }
+
+                activeSpell = overridePick;
+            }
+            else
+            {
+                TimeSpan spellPreflight = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+
+                int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+                    settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+                float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+                    settings.Value.Intelligence.SemanticRouterTemperature);
+
+                string semanticProbe = GetSemanticRouterUserProbe(request);
+
+                activeSpell = await SemanticRouter
+                    .DetermineActiveSpellAsync(
+                        chatClient,
+                        semanticProbe,
+                        spells,
+                        spellPreflight,
+                        routerMaxTokens,
+                        routerTemperature,
+                        cancellationToken,
+                        logger)
+                    .ConfigureAwait(false);
+            }
         }
 
         string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell, request.AttachedFiles);
@@ -187,17 +204,39 @@ public sealed class HubIntelligenceProvider(
 
                 PrependDynamicSystemMessage(chatMessages, builtSystemPrompt);
 
+                (bool compressedSync, List<MeAiChatMessage> syncMessages) = TryApplyContextCompressionIfNeeded(
+                    request,
+                    chatMessages,
+                    codexContent,
+                    activeSpell,
+                    thread,
+                    prompt,
+                    lease);
+
+                chatMessages = syncMessages;
+
+                if (compressedSync)
+                {
+                    logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
+                }
+
                 ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, toolSet, request, lease);
 
                 ChatResponse? response;
 
                 int toolRoundsExecuted = 0;
 
+                ChatCompletionUsage? accumulatedUsage = null;
+
+                List<PromptToolCall>? observedToolCalls = null;
+
                 while (true)
                 {
                     response = await chatClient
                         .GetResponseAsync(chatMessages, chatOptions, cancellationToken)
                         .ConfigureAwait(false);
+
+                    accumulatedUsage = AccumulateUsage(accumulatedUsage, MapUsageDetails(response.Usage));
 
                     List<FunctionCallContent> calls = CollectFunctionCalls(response)
                         .Where(static c => !c.InformationalOnly)
@@ -212,12 +251,16 @@ public sealed class HubIntelligenceProvider(
 
                     if (toolRoundsExecuted > MaxToolInferenceRounds)
                     {
-                        return Result<string>.Failure(new Error("Hub.ToolLoop", "Tool invocation limit reached."));
+                        return Result<PromptTurnResult>.Failure(new Error("Hub.ToolLoop", "Tool invocation limit reached."));
                     }
 
                     foreach (FunctionCallContent fcc in calls)
                     {
                         string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
+
+                        string callId = string.IsNullOrEmpty(fcc.CallId) ? fcc.Name : fcc.CallId;
+
+                        (observedToolCalls ??= []).Add(new PromptToolCall(callId, fcc.Name, argsSnapshot));
 
                         string resultText = await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
 
@@ -253,7 +296,13 @@ public sealed class HubIntelligenceProvider(
                     }
                 }
 
-                return Result<string>.Success(finalText);
+                await TryIncrementConversationTokensAsync(
+                    grimoireConversationId,
+                    accumulatedUsage,
+                    cancellationToken)
+                    .ConfigureAwait(false);
+
+                return Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, "stop"));
             }
             catch (OperationCanceledException)
             {
@@ -279,7 +328,7 @@ public sealed class HubIntelligenceProvider(
                     lease.IsOllama ? "Ollama" : "Hub",
                     targetModel);
 
-                return Result<string>.Failure(
+                return Result<PromptTurnResult>.Failure(
                     new Error(
                         lease.IsOllama ? "Ollama.Error" : "Hub.Error",
                         lease.IsOllama ? PublicInferenceFailureMessage : PublicHubInferenceFailureMessage));
@@ -323,7 +372,9 @@ public sealed class HubIntelligenceProvider(
 
         if (resolveFailure is not null)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, resolveFailure.Message);
+            logger.LogWarning(resolveFailure, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
 
             yield break;
         }
@@ -374,6 +425,10 @@ public sealed class HubIntelligenceProvider(
                             try
                             {
                                 hasNext = await pullEnumerator.MoveNextAsync().ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw;
                             }
                             catch (Exception ex)
                             {
@@ -438,55 +493,63 @@ public sealed class HubIntelligenceProvider(
             .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
-            request.WorkingDirectory,
-            out string? streamSpellRoot,
-            out _)
-            ? streamSpellRoot
-            : null;
-
-        IReadOnlyList<ParsedSpell> streamSpells = await SpellScanner
-            .ScanAsync(streamSpellWorkspaceRoot, cancellationToken)
-            .ConfigureAwait(false);
-
         ParsedSpell? streamActiveSpell;
 
-        if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+        if (request.SkipSpellRouting)
         {
-            if (!TryResolveOverrideSpell(request.OverrideSpellName, streamSpells, out ParsedSpell? streamOverridePick))
-            {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Error,
-                    $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name.");
-
-                yield break;
-            }
-
-            streamActiveSpell = streamOverridePick;
+            streamActiveSpell = null;
         }
         else
         {
-            TimeSpan streamSpellPreflight = TimeSpan.FromSeconds(
-                ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+            string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
+                request.WorkingDirectory,
+                out string? streamSpellRoot,
+                out _)
+                ? streamSpellRoot
+                : null;
 
-            int streamRouterMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-                settings.Value.Intelligence.SemanticRouterMaxTokens);
-
-            float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-                settings.Value.Intelligence.SemanticRouterTemperature);
-
-            string streamSemanticProbe = GetSemanticRouterUserProbe(request);
-
-            streamActiveSpell = await SemanticRouter
-                .DetermineActiveSpellAsync(
-                    chatClient,
-                    streamSemanticProbe,
-                    streamSpells,
-                    streamSpellPreflight,
-                    streamRouterMaxTokens,
-                    streamRouterTemperature,
-                    cancellationToken)
+            IReadOnlyList<ParsedSpell> streamSpells = await SpellScanner
+                .ScanAsync(streamSpellWorkspaceRoot, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+            {
+                if (!TryResolveOverrideSpell(request.OverrideSpellName, streamSpells, out ParsedSpell? streamOverridePick))
+                {
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name.");
+
+                    yield break;
+                }
+
+                streamActiveSpell = streamOverridePick;
+            }
+            else
+            {
+                TimeSpan streamSpellPreflight = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+
+                int streamRouterMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+                    settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+                float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+                    settings.Value.Intelligence.SemanticRouterTemperature);
+
+                string streamSemanticProbe = GetSemanticRouterUserProbe(request);
+
+                streamActiveSpell = await SemanticRouter
+                    .DetermineActiveSpellAsync(
+                        chatClient,
+                        streamSemanticProbe,
+                        streamSpells,
+                        streamSpellPreflight,
+                        streamRouterMaxTokens,
+                        streamRouterTemperature,
+                        cancellationToken,
+                        logger)
+                    .ConfigureAwait(false);
+            }
         }
 
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
@@ -496,6 +559,17 @@ public sealed class HubIntelligenceProvider(
             request.AttachedFiles);
 
         PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
+
+        (bool compressedStream, List<MeAiChatMessage> streamMessages) = TryApplyContextCompressionIfNeeded(
+            request,
+            chatMessages,
+            streamCodexContent,
+            streamActiveSpell,
+            thread,
+            prompt,
+            lease);
+
+        chatMessages = streamMessages;
 
         Guid? assistantMessageId = null;
 
@@ -527,6 +601,11 @@ public sealed class HubIntelligenceProvider(
                 bcid.ToString());
         }
 
+        if (compressedStream)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Status, IntelligenceStatusMessages.MemoryCompressionNotice);
+        }
+
         StringBuilder accumulator;
 
         List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamActiveSpell, cancellationToken).ConfigureAwait(false);
@@ -535,13 +614,15 @@ public sealed class HubIntelligenceProvider(
 
         string? inferenceError;
 
-        int streamCompletionTokenTotal = 0;
+        ChatCompletionUsage? streamAccumulatedUsage = null;
 
         while (true)
         {
             bool streamOuterRestart = false;
 
             accumulator = new StringBuilder(1024);
+
+            streamAccumulatedUsage = null;
 
             ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamToolSet, request, lease);
 
@@ -641,14 +722,14 @@ public sealed class HubIntelligenceProvider(
 
                 ChatResponse combinedRound = roundUpdates.ToChatResponse();
 
+                streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, MapUsageDetails(combinedRound.Usage));
+
                 List<FunctionCallContent> toolCalls = CollectFunctionCalls(combinedRound)
                     .Where(static c => !c.InformationalOnly)
                     .ToList();
 
                 if (toolCalls.Count == 0)
                 {
-                    streamCompletionTokenTotal = SumCompletionTokensFromUsage(combinedRound);
-
                     break;
                 }
 
@@ -665,22 +746,32 @@ public sealed class HubIntelligenceProvider(
                     break;
                 }
 
+                int toolCallIndex = 0;
+
                 foreach (FunctionCallContent fcc in toolCalls)
                 {
                     string toolCallData = FormatToolCallEventData(fcc);
 
+                    string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
+
+                    string callId = string.IsNullOrEmpty(fcc.CallId) ? fcc.Name : fcc.CallId;
+
                     yield return new IntelligenceEvent(
                         IntelligenceEventType.ToolCall,
                         fcc.Name,
-                        toolCallData);
-
-                    string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
+                        toolCallData,
+                        null,
+                        new IntelligenceToolCallEvent(callId, fcc.Name, argsSnapshot, toolCallIndex));
 
                     string resultText;
 
                     try
                     {
                         resultText = await InvokeToolCallAsync(fcc, streamChatOptions, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
                     }
                     catch (Exception ex)
                     {
@@ -692,7 +783,9 @@ public sealed class HubIntelligenceProvider(
                     yield return new IntelligenceEvent(
                         IntelligenceEventType.ToolResult,
                         fcc.Name,
-                        resultText);
+                        resultText,
+                        null,
+                        new IntelligenceToolCallEvent(callId, fcc.Name, resultText, toolCallIndex));
 
                     chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [fcc]));
 
@@ -707,6 +800,8 @@ public sealed class HubIntelligenceProvider(
                         targetModel,
                         cancellationToken)
                         .ConfigureAwait(false);
+
+                    toolCallIndex++;
                 }
             }
 
@@ -739,10 +834,16 @@ public sealed class HubIntelligenceProvider(
             }
         }
 
+        await TryIncrementConversationTokensAsync(boundConversationId, streamAccumulatedUsage, cancellationToken)
+            .ConfigureAwait(false);
+
+        string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
+
         yield return new IntelligenceEvent(
             IntelligenceEventType.Result,
             "Complete",
-            streamCompletionTokenTotal.ToString(CultureInfo.InvariantCulture));
+            usageData,
+            streamAccumulatedUsage);
         }
         finally
         {
@@ -802,6 +903,10 @@ public sealed class HubIntelligenceProvider(
 
             return Result.Success();
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Model pull failed for {ModelName}.", modelName);
@@ -817,6 +922,10 @@ public sealed class HubIntelligenceProvider(
             IEnumerable<Model> models = await ollamaClient.ListLocalModelsAsync(cancellationToken).ConfigureAwait(false);
 
             return models.Any(m => ProviderResolver.ModelNameMatches(m.Name, modelName));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -834,6 +943,151 @@ public sealed class HubIntelligenceProvider(
         }
 
         messages.Insert(0, new MeAiChatMessage(ChatRole.System, systemText));
+    }
+
+    private (bool Compressed, List<MeAiChatMessage> Messages) TryApplyContextCompressionIfNeeded(
+        PingRequest request,
+        List<MeAiChatMessage> chatMessages,
+        string? codexContent,
+        ParsedSpell? activeSpell,
+        Conversation? thread,
+        string newUserPrompt,
+        ChatClientLease lease)
+    {
+
+        if (!settings.Value.Intelligence.EnableContextCompression)
+        {
+
+            return (false, chatMessages);
+
+        }
+
+        if (HasStatelessMessages(request) || thread is null)
+        {
+
+            return (false, chatMessages);
+
+        }
+
+        if (InferenceTokenCounter.ShouldSkipCompressionPreflight(chatMessages))
+        {
+
+            return (false, chatMessages);
+
+        }
+
+        Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(lease.Provider.Type, lease.ResolvedModel);
+
+        int totalTokens = InferenceTokenCounter.CountTokens(chatMessages, tokenizer);
+
+        int thresholdPct = ArcanumSettingClamps.ContextWindowCompressionThreshold(
+            settings.Value.Intelligence.ContextWindowCompressionThreshold);
+
+        int contextLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
+
+        long effectiveLong = (long)contextLimit * thresholdPct / 100L;
+
+        int effectiveLimit = effectiveLong > int.MaxValue ? int.MaxValue : (int)effectiveLong;
+
+        if (totalTokens <= effectiveLimit)
+        {
+
+            return (false, chatMessages);
+
+        }
+
+        if (string.IsNullOrWhiteSpace(thread.Summary) || thread.LastSummarizedMessageAt is null)
+        {
+
+            logger.LogWarning(
+                "Context ({TotalTokens} tokens) exceeds compression threshold ({EffectiveLimit} tokens) but no campaign summary is available for conversation {ConversationId}; proceeding unfiltered.",
+                totalTokens,
+                effectiveLimit,
+                thread.Id);
+
+            return (false, chatMessages);
+
+        }
+
+        List<MeAiChatMessage> rebuilt = MapFilteredGrimoireToMeAiMessages(
+            thread,
+            thread.LastSummarizedMessageAt.Value,
+            newUserPrompt);
+
+        string augmentedSystem = SystemPromptBuilder.Build(
+            request,
+            codexContent,
+            activeSpell,
+            request.AttachedFiles,
+            thread.Summary);
+
+        PrependDynamicSystemMessage(rebuilt, augmentedSystem);
+
+        int afterTokens = InferenceTokenCounter.CountTokens(rebuilt, tokenizer);
+
+        if (afterTokens > effectiveLimit)
+        {
+
+            logger.LogWarning(
+                "After memory compression, context is still {AfterTokens} tokens (threshold {EffectiveLimit}) for conversation {ConversationId}.",
+                afterTokens,
+                effectiveLimit,
+                thread.Id);
+
+        }
+
+        return (true, rebuilt);
+
+    }
+
+    private static List<MeAiChatMessage> MapFilteredGrimoireToMeAiMessages(
+        Conversation conversation,
+        DateTime watermarkExclusive,
+        string newUserPrompt)
+    {
+
+        List<Core.Storage.Entities.ChatMessage> ordered = conversation.Messages
+            .Where(m => m.Timestamp > watermarkExclusive)
+            .OrderBy(m => m.Timestamp)
+            .ToList();
+
+        while (ordered.Count > 0
+
+            && ordered[^1].Role == MessageRole.Assistant
+
+            && string.IsNullOrEmpty(ordered[^1].Content))
+        {
+
+            ordered.RemoveAt(ordered.Count - 1);
+
+        }
+
+        var list = new List<MeAiChatMessage>(ordered.Count + 1);
+
+        foreach (Core.Storage.Entities.ChatMessage m in ordered)
+        {
+
+            ChatRole role = m.Role switch
+            {
+
+                MessageRole.User => ChatRole.User,
+
+                MessageRole.Assistant => ChatRole.Assistant,
+
+                MessageRole.System => ChatRole.System,
+
+                _ => ChatRole.User,
+
+            };
+
+            list.Add(new MeAiChatMessage(role, m.Content));
+
+        }
+
+        list.Add(new MeAiChatMessage(ChatRole.User, newUserPrompt));
+
+        return list;
+
     }
 
     private static bool HasStatelessMessages(PingRequest request) =>
@@ -945,10 +1199,123 @@ public sealed class HubIntelligenceProvider(
 
         foreach (CoreChatMessage m in messages)
         {
-            list.Add(new MeAiChatMessage(MapOpenAiStyleRoleToChatRole(m.Role), m.Content ?? string.Empty));
+            list.Add(MapStatelessMessageToMeAi(m));
         }
 
         return list;
+    }
+
+    private static MeAiChatMessage MapStatelessMessageToMeAi(CoreChatMessage m)
+    {
+        ChatRole role = MapOpenAiStyleRoleToChatRole(m.Role);
+
+        if (role == ChatRole.Tool && !string.IsNullOrEmpty(m.ToolCallId))
+        {
+            return new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(m.ToolCallId, m.Content ?? string.Empty)]);
+        }
+
+        if (role == ChatRole.Assistant && m.ToolCalls is { Count: > 0 } toolCalls)
+        {
+            List<AIContent> contents = new(toolCalls.Count + 1);
+
+            if (!string.IsNullOrEmpty(m.Content))
+            {
+                contents.Add(new TextContent(m.Content));
+            }
+
+            foreach (CoreToolCall tc in toolCalls)
+            {
+                Dictionary<string, object?>? args = ParseToolCallArgumentsForAiFunction(tc.ArgumentsJson);
+
+                contents.Add(new FunctionCallContent(tc.Id, tc.Name, args));
+            }
+
+            return new MeAiChatMessage(ChatRole.Assistant, contents);
+        }
+
+        if (m.ContentParts is { Count: > 0 } parts)
+        {
+            List<AIContent> contents = new(parts.Count);
+
+            foreach (CoreContentPart part in parts)
+            {
+                if (string.Equals(part.Kind, "image_url", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(part.ImageUrl)
+                    && Uri.TryCreate(part.ImageUrl, UriKind.Absolute, out Uri? imageUri))
+                {
+                    contents.Add(new UriContent(imageUri, "image/*"));
+
+                    continue;
+                }
+
+                string text = part.Text ?? string.Empty;
+
+                if (text.Length > 0)
+                {
+                    contents.Add(new TextContent(text));
+                }
+            }
+
+            if (contents.Count == 0)
+            {
+                contents.Add(new TextContent(string.Empty));
+            }
+
+            MeAiChatMessage built = new(role, contents);
+
+            if (!string.IsNullOrEmpty(m.Name))
+            {
+                built.AuthorName = m.Name;
+            }
+
+            return built;
+        }
+
+        MeAiChatMessage textOnly = new(role, m.Content ?? string.Empty);
+
+        if (!string.IsNullOrEmpty(m.Name))
+        {
+            textOnly.AuthorName = m.Name;
+        }
+
+        return textOnly;
+    }
+
+    private static Dictionary<string, object?>? ParseToolCallArgumentsForAiFunction(string? argumentsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argumentsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(argumentsJson);
+
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["value"] = doc.RootElement.Clone(),
+                };
+            }
+
+            Dictionary<string, object?> map = new(StringComparer.Ordinal);
+
+            foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
+            {
+                map[prop.Name] = prop.Value.Clone();
+            }
+
+            return map;
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["raw"] = argumentsJson,
+            };
+        }
     }
 
     private static ChatRole MapOpenAiStyleRoleToChatRole(string role)
@@ -1016,15 +1383,17 @@ public sealed class HubIntelligenceProvider(
     {
         string workingDirectory = request.WorkingDirectory;
 
-        List<AITool> tools = [_localTimeTool];
+        List<AITool> tools = [_localTimeTool, _systemInfoTool];
 
         if (activeSpell?.AvailableScripts is { Count: > 0 })
         {
             int sec = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds);
 
+            long outputCap = ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.Intelligence.ToolOutputCapBytes);
+
             string scriptsRoot = Path.Combine(activeSpell.DirectoryPath, "scripts");
 
-            tools.Add(new ArcanumSpellScriptTool(scriptsRoot, TimeSpan.FromSeconds(sec), sec));
+            tools.Add(new ArcanumSpellScriptTool(scriptsRoot, TimeSpan.FromSeconds(sec), sec, outputCap));
         }
 
         if (request.DisableMcpTools)
@@ -1053,8 +1422,9 @@ public sealed class HubIntelligenceProvider(
             int numCtx = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
 
             options.AdditionalProperties!["num_ctx"] = numCtx;
-
         }
+
+        ApplyInferenceParameters(options, request);
 
         if (!includeTools || tools is null)
         {
@@ -1085,27 +1455,118 @@ public sealed class HubIntelligenceProvider(
         return options;
     }
 
-    private static int SumCompletionTokensFromUsage(ChatResponse response)
+    private static void ApplyInferenceParameters(ChatOptions options, PingRequest request)
     {
-        UsageDetails? usage = response.Usage;
+        if (request.Temperature is { } temp)
+        {
+            options.Temperature = Math.Clamp(temp, 0f, 2f);
+        }
 
+        if (request.TopP is { } topP)
+        {
+            options.TopP = Math.Clamp(topP, 0f, 1f);
+        }
+
+        if (request.MaxOutputTokens is { } maxOutput && maxOutput > 0)
+        {
+            options.MaxOutputTokens = maxOutput;
+        }
+
+        if (request.PresencePenalty is { } presence)
+        {
+            options.PresencePenalty = Math.Clamp(presence, -2f, 2f);
+        }
+
+        if (request.FrequencyPenalty is { } frequency)
+        {
+            options.FrequencyPenalty = Math.Clamp(frequency, -2f, 2f);
+        }
+
+        if (request.Seed is { } seed)
+        {
+            options.Seed = seed;
+        }
+
+        if (request.Stop is { Count: > 0 } stops)
+        {
+            options.StopSequences = stops.ToList();
+        }
+
+        if (request.ResponseFormat is { } responseFormatType && !string.IsNullOrWhiteSpace(responseFormatType))
+        {
+            options.ResponseFormat = responseFormatType.ToLowerInvariant() switch
+            {
+                "json_object" or "json_schema" => ChatResponseFormat.Json,
+                "text" => ChatResponseFormat.Text,
+                _ => options.ResponseFormat,
+            };
+        }
+    }
+
+    private static ChatCompletionUsage? MapUsageDetails(UsageDetails? usage)
+    {
         if (usage is null)
+        {
+            return null;
+        }
+
+        int prompt = ClampUsageToInt(usage.InputTokenCount ?? 0L);
+
+        int completion = ClampUsageToInt(usage.OutputTokenCount ?? 0L);
+
+        int total = ClampUsageToInt((long)prompt + completion);
+
+        return new ChatCompletionUsage(prompt, completion, total);
+    }
+
+    private static int ClampUsageToInt(long value)
+    {
+        if (value < 0)
         {
             return 0;
         }
 
-        long input = usage.InputTokenCount ?? 0L;
-
-        long output = usage.OutputTokenCount ?? 0L;
-
-        long sum = input + output;
-
-        if (sum > int.MaxValue)
+        if (value > int.MaxValue)
         {
             return int.MaxValue;
         }
 
-        return (int)sum;
+        return (int)value;
+    }
+
+    private static ChatCompletionUsage AccumulateUsage(ChatCompletionUsage? running, ChatCompletionUsage? round)
+    {
+        int p = (running?.PromptTokens ?? 0) + (round?.PromptTokens ?? 0);
+
+        int c = (running?.CompletionTokens ?? 0) + (round?.CompletionTokens ?? 0);
+
+        return new ChatCompletionUsage(p, c, p + c);
+    }
+
+    private async Task TryIncrementConversationTokensAsync(
+        Guid? conversationId,
+        ChatCompletionUsage? usage,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.Value.Intelligence.EnableTokenTracking || !conversationId.HasValue || usage is null || usage.TotalTokens <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await grimoire
+                .IncrementConversationTokensAsync(conversationId.Value, usage.TotalTokens, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Grimoire could not increment token totals for conversation {ConversationId}.", conversationId);
+        }
     }
 
     private static bool LooksLikeModelDoesNotSupportTools(string? message)
@@ -1288,6 +1749,10 @@ public sealed class HubIntelligenceProvider(
                     modelUsed,
                     cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

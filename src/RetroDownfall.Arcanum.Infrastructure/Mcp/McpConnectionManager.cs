@@ -40,11 +40,11 @@ public sealed class McpConnectionManager(
 
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
 
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceInitLocks = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _workspaceInitLocks = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, IReadOnlyList<AITool>> _mergedToolsByWorkspace = new(StringComparer.Ordinal);
 
-    private readonly ConcurrentDictionary<string, McpPartitionClients> _partitionClients = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<McpPartitionClients>> _partitionClients = new(StringComparer.Ordinal);
 
     private bool _globalInitialized;
 
@@ -70,9 +70,13 @@ public sealed class McpConnectionManager(
 
         await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
 
-        SemaphoreSlim workspaceLock = _workspaceInitLocks.GetOrAdd(
-            workspaceKey,
-            static _ => new SemaphoreSlim(1, 1));
+        SemaphoreSlim workspaceLock = _workspaceInitLocks
+            .GetOrAdd(
+                workspaceKey,
+                static _ => new Lazy<SemaphoreSlim>(
+                    static () => new SemaphoreSlim(1, 1),
+                    LazyThreadSafetyMode.ExecutionAndPublication))
+            .Value;
 
         await workspaceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -108,9 +112,10 @@ public sealed class McpConnectionManager(
 
         List<McpServerStatusDto> result = [];
 
-        if (_partitionClients.TryGetValue(GlobalPartitionKey, out McpPartitionClients? globalPartition))
+        if (_partitionClients.TryGetValue(GlobalPartitionKey, out Lazy<McpPartitionClients>? globalPartitionLazy)
+            && globalPartitionLazy.IsValueCreated)
         {
-            foreach (McpServerMetadata meta in globalPartition.Servers)
+            foreach (McpServerMetadata meta in globalPartitionLazy.Value.Servers)
             {
                 result.Add(ToStatusDto(meta));
             }
@@ -118,9 +123,10 @@ public sealed class McpConnectionManager(
 
         string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
 
-        if (_partitionClients.TryGetValue(workspaceKey, out McpPartitionClients? workspacePartition))
+        if (_partitionClients.TryGetValue(workspaceKey, out Lazy<McpPartitionClients>? workspacePartitionLazy)
+            && workspacePartitionLazy.IsValueCreated)
         {
-            foreach (McpServerMetadata meta in workspacePartition.Servers)
+            foreach (McpServerMetadata meta in workspacePartitionLazy.Value.Servers)
             {
                 result.Add(ToStatusDto(meta));
             }
@@ -140,9 +146,14 @@ public sealed class McpConnectionManager(
 
         try
         {
-            foreach (McpPartitionClients partition in _partitionClients.Values)
+            foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
             {
-                foreach (McpClient client in partition.Clients)
+                if (!partitionLazy.IsValueCreated)
+                {
+                    continue;
+                }
+
+                foreach (McpClient client in partitionLazy.Value.Clients)
                 {
                     try
                     {
@@ -159,11 +170,16 @@ public sealed class McpConnectionManager(
 
             _mergedToolsByWorkspace.Clear();
 
-            foreach (SemaphoreSlim workspaceLock in _workspaceInitLocks.Values)
+            foreach (Lazy<SemaphoreSlim> workspaceLockLazy in _workspaceInitLocks.Values)
             {
+                if (!workspaceLockLazy.IsValueCreated)
+                {
+                    continue;
+                }
+
                 try
                 {
-                    workspaceLock.Dispose();
+                    workspaceLockLazy.Value.Dispose();
                 }
                 catch (Exception ex)
                 {
@@ -200,8 +216,15 @@ public sealed class McpConnectionManager(
 
         _disposed = true;
 
-        foreach (McpPartitionClients partition in _partitionClients.Values)
+        foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
         {
+            if (!partitionLazy.IsValueCreated)
+            {
+                continue;
+            }
+
+            McpPartitionClients partition = partitionLazy.Value;
+
             for (int i = partition.Clients.Count - 1; i >= 0; i--)
             {
                 try
@@ -223,9 +246,14 @@ public sealed class McpConnectionManager(
 
         _globalInitLock.Dispose();
 
-        foreach (SemaphoreSlim slim in _workspaceInitLocks.Values)
+        foreach (Lazy<SemaphoreSlim> slimLazy in _workspaceInitLocks.Values)
         {
-            slim.Dispose();
+            if (!slimLazy.IsValueCreated)
+            {
+                continue;
+            }
+
+            slimLazy.Value.Dispose();
         }
 
         _workspaceInitLocks.Clear();
@@ -367,7 +395,7 @@ public sealed class McpConnectionManager(
 
     private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(string workspaceKey, CancellationToken cancellationToken)
     {
-        McpPartitionClients partition = _partitionClients.GetOrAdd(workspaceKey, static _ => new McpPartitionClients());
+        McpPartitionClients partition = GetOrCreatePartition(workspaceKey);
 
         List<LoadedMcpTool> internalTagged = await EnsurePartitionInternalToolsAsync(partition, workspaceKey, cancellationToken).ConfigureAwait(false);
 
@@ -521,7 +549,13 @@ public sealed class McpConnectionManager(
 
     private McpPartitionClients GetOrCreatePartition(string partitionKey)
     {
-        return _partitionClients.GetOrAdd(partitionKey, static _ => new McpPartitionClients());
+        return _partitionClients
+            .GetOrAdd(
+                partitionKey,
+                static _ => new Lazy<McpPartitionClients>(
+                    static () => new McpPartitionClients(),
+                    LazyThreadSafetyMode.ExecutionAndPublication))
+            .Value;
     }
 
     private sealed class McpPartitionClients
@@ -588,7 +622,11 @@ public sealed class McpConnectionManager(
 
         try
         {
-            client = new McpClient(transport, GetClampedMcpRequestTimeout(), GetClampedMcpMaxPaginationPages());
+            client = new McpClient(
+                transport,
+                GetClampedMcpRequestTimeout(),
+                GetClampedMcpMaxPaginationPages(),
+                requestCancellationBroker: transport.RequestCancellation);
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 

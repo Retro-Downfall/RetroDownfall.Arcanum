@@ -1,11 +1,12 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
-public sealed class ArcanumLocalTimeTool : AIFunction
+public sealed class ArcanumSystemInfoTool : AIFunction
 {
-    public const string ToolName = "get_local_system_time";
+    public const string ToolName = "get_arcanum_system_info";
 
     private static readonly JsonDocument SchemaDocument = JsonDocument.Parse(
         """
@@ -20,7 +21,7 @@ public sealed class ArcanumLocalTimeTool : AIFunction
 
     public override string Name => ToolName;
 
-    public override string Description => "Gets the current local system time.";
+    public override string Description => "Returns the host operating system, CPU architecture, and .NET runtime version for the API process.";
 
     public override JsonElement JsonSchema => SchemaDocument.RootElement;
 
@@ -30,6 +31,7 @@ public sealed class ArcanumLocalTimeTool : AIFunction
 
         _ = cancellationToken;
 
-        return new ValueTask<object?>(DateTime.Now.ToString("O"));
+        return new ValueTask<object?>(
+            $"OS: {RuntimeInformation.OSDescription} | Architecture: {RuntimeInformation.OSArchitecture} | .NET Runtime: {Environment.Version}");
     }
 }

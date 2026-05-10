@@ -1,11 +1,14 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 public sealed record OpenAiChatResponse(
-    string Id,
+    [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("object")] string ObjectKind,
-    long Created,
-    string Model,
-    List<OpenAiChatChoice> Choices,
-    OpenAiUsage? Usage);
+    [property: JsonPropertyName("created")] long Created,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("choices")] List<OpenAiChatChoice> Choices,
+    [property: JsonPropertyName("usage")] ChatCompletionUsage? Usage,
+    [property: JsonPropertyName("system_fingerprint")] string? SystemFingerprint = null,
+    [property: JsonPropertyName("service_tier")] string? ServiceTier = null);

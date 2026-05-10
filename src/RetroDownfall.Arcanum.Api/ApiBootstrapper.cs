@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -42,6 +43,78 @@ public static class ApiBootstrapper
         "IL3050",
         Justification = "ILC attributes the OpenAPI/Mvc.Abstractions ModelMetadata path as RequiresDynamicCode during Native AOT publish; registration is bounded to MapOpenApi/Scalar and minimal APIs.")]
 
+    private const string ArcanumCorsPolicyName = "ArcanumCors";
+
+    private static readonly string[] DefaultCorsAllowedOrigins = new HostSettings().CorsAllowedOrigins;
+
+    private static bool IsPathUnderAnyAllowedRoot(string candidateFullPath, string[] allowedRoots)
+    {
+        char sep = Path.DirectorySeparatorChar;
+
+        StringComparison cmp = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        foreach (string root in allowedRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+
+            string normalizedRoot;
+
+            try
+            {
+                normalizedRoot = Path.GetFullPath(root.Trim());
+            }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+            {
+                continue;
+            }
+
+            normalizedRoot = normalizedRoot.TrimEnd(sep);
+
+            if (candidateFullPath.Equals(normalizedRoot, cmp))
+            {
+                return true;
+            }
+
+            if (candidateFullPath.StartsWith(normalizedRoot + sep, cmp))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string[] ReadCorsAllowedOriginsFromConfiguration(IConfiguration configuration)
+    {
+        IConfigurationSection section = configuration.GetSection("Arcanum:Host:CorsAllowedOrigins");
+
+        if (!section.Exists())
+        {
+            return DefaultCorsAllowedOrigins;
+        }
+
+        List<string> values = [];
+
+        foreach (IConfigurationSection child in section.GetChildren())
+        {
+            string? value = child.Value;
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            values.Add(value.Trim().TrimEnd('/'));
+        }
+
+        return values.ToArray();
+    }
+
     public static IServiceCollection AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IHumanPromptRegistry, HumanPromptRegistry>();
@@ -52,13 +125,28 @@ public static class ApiBootstrapper
 
         services.AddSingleton<ApiKeyEndpointFilter>();
 
-        services.AddCors(static options =>
+        services.AddCors(options =>
         {
             options.AddPolicy(
-                "AllowAll",
-                static policy =>
+                ArcanumCorsPolicyName,
+                policy =>
                 {
-                    policy.AllowAnyOrigin();
+                    string[] origins = ReadCorsAllowedOriginsFromConfiguration(configuration);
+
+                    bool wildcard = origins.Any(static o => string.Equals(o, "*", StringComparison.Ordinal));
+
+                    if (wildcard)
+                    {
+                        policy.AllowAnyOrigin();
+                    }
+                    else if (origins.Length == 0)
+                    {
+                        policy.WithOrigins(DefaultCorsAllowedOrigins);
+                    }
+                    else
+                    {
+                        policy.WithOrigins(origins);
+                    }
 
                     policy.AllowAnyHeader();
 
@@ -81,17 +169,20 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
+        services.AddSingleton<InferenceTokenizerResolver>();
+
         services.AddScoped<IArcanumIntelligenceProvider, HubIntelligenceProvider>();
 
         return services;
     }
 
     /// <summary>
-    /// Enables permissive CORS for browser-based API consumers (must run before endpoint middleware).
+    /// Applies the configurable Arcanum CORS policy from <c>Arcanum:Host:CorsAllowedOrigins</c>.
+    /// Default is localhost loopback; use <c>["*"]</c> for permissive (browser-callable from any origin).
     /// </summary>
     public static void UseArcanumCors(this WebApplication app)
     {
-        app.UseCors("AllowAll");
+        app.UseCors(ArcanumCorsPolicyName);
     }
 
     public static void MapArcanumEndpoints(this WebApplication app)
@@ -106,7 +197,38 @@ public static class ApiBootstrapper
 
         apiGroup.MapOpenApi();
 
-        apiGroup.MapScalarApiReference();
+        bool enableScalar = string.Equals(
+            app.Configuration["Arcanum:Host:EnableScalarUi"]?.Trim(),
+            bool.TrueString,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (enableScalar)
+        {
+            RouteGroupBuilder scalarGroup = apiGroup
+                .MapGroup(string.Empty)
+                .AddEndpointFilter(static async (EndpointFilterInvocationContext context, EndpointFilterDelegate next) =>
+                {
+                    object? result = await next(context).ConfigureAwait(false);
+
+                    HttpResponse response = context.HttpContext.Response;
+
+                    if (!response.Headers.ContainsKey("Content-Security-Policy"))
+                    {
+                        response.Headers.Append(
+                            "Content-Security-Policy",
+                            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+                    }
+
+                    if (!response.Headers.ContainsKey("X-Content-Type-Options"))
+                    {
+                        response.Headers.Append("X-Content-Type-Options", "nosniff");
+                    }
+
+                    return result;
+                });
+
+            scalarGroup.MapScalarApiReference();
+        }
 
         apiGroup.MapGet("/health", (HttpContext httpContext) =>
         {
@@ -125,22 +247,33 @@ public static class ApiBootstrapper
             if (body is null
                 || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
             {
-                Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required unless StatelessMessages is provided."));
+                Result<PromptResponseDto> invalid = Result<PromptResponseDto>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required unless StatelessMessages is provided."));
 
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-                return Results.BadRequest(ApiResponse<string>.FromResult(invalid, badTraceId));
+                return Results.Json(
+                    ApiResponse<PromptResponseDto>.FromResult(invalid, badTraceId),
+                    ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
+                    statusCode: StatusCodes.Status400BadRequest);
             }
 
-            Result<string> result = await intelligence.ExecutePromptAsync(body, cancellationToken).ConfigureAwait(false);
+            Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(body, cancellationToken).ConfigureAwait(false);
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ApiResponse<string> response = ApiResponse<string>.FromResult(result, traceId);
+            Result<PromptResponseDto> envelopeResult = turn.IsFailure
+                ? Result<PromptResponseDto>.Failure(turn.Error)
+                : Result<PromptResponseDto>.Success(new PromptResponseDto(
+                    turn.Value.Text,
+                    turn.Value.Usage,
+                    turn.Value.ToolCalls,
+                    turn.Value.FinishReason));
 
-            return result.IsSuccess
+            ApiResponse<PromptResponseDto> response = ApiResponse<PromptResponseDto>.FromResult(envelopeResult, traceId);
+
+            return turn.IsSuccess
                 ? Results.Ok(response)
-                : Results.Json(response, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status500InternalServerError);
+                : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: StatusCodes.Status500InternalServerError);
         })
         .WithName("PostIntelligencePing");
 
@@ -209,6 +342,10 @@ public static class ApiBootstrapper
             IArcanumIntelligenceProvider intelligence = httpContext.RequestServices.GetRequiredService<IArcanumIntelligenceProvider>();
 
             httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
+
+            httpContext.Response.Headers.CacheControl = "no-cache";
+
+            httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
 
             ArrayBufferWriter<byte> eventBuffer = new(256);
 
@@ -288,7 +425,7 @@ public static class ApiBootstrapper
 
             List<string> spellNames = spells.Select(static s => s.Name).ToList();
 
-            List<string> nativeTools = ["GetLocalSystemTime"];
+            List<string> nativeTools = [ArcanumLocalTimeTool.ToolName, ArcanumSystemInfoTool.ToolName];
 
             List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(workingDirectory, ct).ConfigureAwait(false);
 
@@ -304,11 +441,30 @@ public static class ApiBootstrapper
 
         apiGroup.MapGet(
             "/perception/look",
-            async (string? directory, IEyeOfTheWorld eye, HttpContext httpContext, CancellationToken cancellationToken) =>
+            async (
+                string? directory,
+                IEyeOfTheWorld eye,
+                IOptionsSnapshot<ArcanumSettings> settings,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
             {
                 string path = string.IsNullOrWhiteSpace(directory) ? Environment.CurrentDirectory : directory;
 
-                string resolved = Path.GetFullPath(path);
+                string resolved;
+
+                try
+                {
+                    resolved = Path.GetFullPath(path);
+                }
+                catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+                {
+                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<PatternSnapshot> invalid = Result<PatternSnapshot>.Failure(
+                        new Error("Perception.InvalidPath", "The specified directory could not be resolved."));
+
+                    return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
+                }
 
                 if (!Directory.Exists(resolved))
                 {
@@ -318,6 +474,23 @@ public static class ApiBootstrapper
                         new Error("Perception.InvalidPath", "The specified directory does not exist or is inaccessible."));
 
                     return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
+                }
+
+                string[] allowedRoots = settings.Value.Perception.AllowedWorkspaceRoots ?? [];
+
+                if (allowedRoots.Length > 0 && !IsPathUnderAnyAllowedRoot(resolved, allowedRoots))
+                {
+                    string deniedTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<PatternSnapshot> denied = Result<PatternSnapshot>.Failure(
+                        new Error(
+                            "Perception.PathNotAllowed",
+                            "The specified directory is outside the configured Perception.AllowedWorkspaceRoots."));
+
+                    return Results.Json(
+                        ApiResponse<PatternSnapshot>.FromResult(denied, deniedTraceId),
+                        ArcanumJsonContext.Default.ApiResponsePatternSnapshot,
+                        statusCode: StatusCodes.Status403Forbidden);
                 }
 
                 PatternSnapshot snapshot = await eye.PerceivePatternAsync(resolved, cancellationToken).ConfigureAwait(false);

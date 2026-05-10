@@ -18,7 +18,8 @@ internal static class SystemPromptBuilder
         PingRequest request,
         string? codexContent,
         ParsedSpell? activeSpell = null,
-        List<AttachedFileDto>? attachedFiles = null)
+        List<AttachedFileDto>? attachedFiles = null,
+        string? campaignSummary = null)
     {
         var sb = new StringBuilder(512);
 
@@ -70,6 +71,22 @@ internal static class SystemPromptBuilder
             sb.AppendLine();
 
             sb.Append(codexContent);
+        }
+
+        if (!string.IsNullOrWhiteSpace(campaignSummary))
+        {
+            sb.AppendLine();
+
+            sb.AppendLine("### Campaign Summary (compressed context)");
+
+            sb.AppendLine();
+
+            sb.AppendLine(
+                "The following is a summary of earlier conversation history that has been compressed to fit within the context window. Treat it as reliable prior context:");
+
+            sb.AppendLine();
+
+            sb.Append(campaignSummary.Trim());
         }
 
         if (activeSpell is not null)

@@ -45,9 +45,9 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<string>? envelope = responseBytes.Length == 0
+            ApiResponse<PromptResponseDto>? envelope = responseBytes.Length == 0
                 ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponsePromptResponseDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -63,7 +63,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                     return Result<string>.Failure(err);
                 }
 
-                return Result<string>.Success(envelope.Data ?? string.Empty);
+                return Result<string>.Success(envelope.Data?.Text ?? string.Empty);
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })

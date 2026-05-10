@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
@@ -58,11 +59,25 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(OpenAiChatRequest))]
 [JsonSerializable(typeof(OpenAiChatMessage))]
 [JsonSerializable(typeof(List<OpenAiChatMessage>))]
+[JsonSerializable(typeof(OpenAiMessageContent))]
+[JsonSerializable(typeof(OpenAiContentPart))]
+[JsonSerializable(typeof(OpenAiContentPart[]))]
+[JsonSerializable(typeof(OpenAiImageUrl))]
+[JsonSerializable(typeof(OpenAiToolCall))]
+[JsonSerializable(typeof(OpenAiToolCall[]))]
+[JsonSerializable(typeof(OpenAiStreamToolCall))]
+[JsonSerializable(typeof(OpenAiStreamToolCall[]))]
+[JsonSerializable(typeof(OpenAiFunctionCall))]
+[JsonSerializable(typeof(OpenAiStreamOptions))]
+[JsonSerializable(typeof(OpenAiResponseFormat))]
+[JsonSerializable(typeof(OpenAiToolDefinition))]
+[JsonSerializable(typeof(OpenAiToolDefinition[]))]
+[JsonSerializable(typeof(OpenAiFunctionDefinition))]
 [JsonSerializable(typeof(OpenAiChatResponse))]
 [JsonSerializable(typeof(OpenAiChatChoice))]
 [JsonSerializable(typeof(List<OpenAiChatChoice>))]
 [JsonSerializable(typeof(OpenAiChatAssistantMessage))]
-[JsonSerializable(typeof(OpenAiUsage))]
+[JsonSerializable(typeof(ChatCompletionUsage))]
 [JsonSerializable(typeof(OpenAiChatChunk))]
 [JsonSerializable(typeof(OpenAiChatStreamChoice))]
 [JsonSerializable(typeof(List<OpenAiChatStreamChoice>))]
@@ -72,6 +87,12 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(OpenAiModel))]
 [JsonSerializable(typeof(OpenAiModelListResponse))]
 [JsonSerializable(typeof(List<OpenAiModel>))]
+[JsonSerializable(typeof(PromptResponseDto))]
+[JsonSerializable(typeof(PromptToolCall))]
+[JsonSerializable(typeof(List<PromptToolCall>))]
+[JsonSerializable(typeof(ApiResponse<PromptResponseDto>))]
+[JsonSerializable(typeof(Result<PromptResponseDto>))]
+[JsonSerializable(typeof(IntelligenceToolCallEvent))]
 [JsonSerializable(typeof(UnseenServantJobStatusDto))]
 [JsonSerializable(typeof(UnseenServantJobStatusDto[]))]
 [JsonSerializable(typeof(AdjustInitiativeRequestDto))]
@@ -81,5 +102,6 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(Result<UnseenServantJobStatusDto>))]
 [JsonSerializable(typeof(CommLinkMessageRequestDto))]
 [JsonSerializable(typeof(CommLinkSeverity))]
+[JsonSerializable(typeof(SemanticSpellResponse))]
 
 public partial class ArcanumJsonContext : JsonSerializerContext;

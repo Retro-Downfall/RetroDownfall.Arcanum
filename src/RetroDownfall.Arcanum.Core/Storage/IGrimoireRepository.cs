@@ -55,10 +55,21 @@ public interface IGrimoireRepository
 
     Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default);
 
+    Task IncrementConversationTokensAsync(Guid conversationId, long totalTokens, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Advances <see cref="Conversation.LastSummarizedMessageAt"/> to the latest message timestamp (or UTC now if there are no messages).
     /// </summary>
     Task AdvanceCampaignLogWatermarkAsync(Guid conversationId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically updates <see cref="Conversation.Summary"/> and <see cref="Conversation.LastSummarizedMessageAt"/> only. Does not modify <see cref="ChatMessage"/> rows.
+    /// </summary>
+    Task UpdateConversationCampaignRollupAsync(
+        Guid conversationId,
+        string summary,
+        DateTime lastSummarizedMessageAt,
+        CancellationToken cancellationToken = default);
 
     Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default);
 

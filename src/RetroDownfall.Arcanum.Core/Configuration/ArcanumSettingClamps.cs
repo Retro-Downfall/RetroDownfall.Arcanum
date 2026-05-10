@@ -50,5 +50,15 @@ public static class ArcanumSettingClamps
 
     public static int SemanticRouterPreflightTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
+    public static int ContextWindowCompressionThreshold(int value) => Math.Clamp(value, 50, 100);
+
+    public static int ApiKeyCacheTtlSeconds(int value) => Math.Clamp(value, 1, 3_600);
+
+    public static long ToolOutputCapBytes(long value) => Math.Clamp(value, 64L * 1024L, 64L * 1024L * 1024L);
+
+    public static int DaemonMaxConcurrentJobs(int value) => Math.Clamp(value, 1, 1_024);
+
+    public static int DaemonShutdownDrainTimeoutSeconds(int value) => Math.Clamp(value, 0, 600);
+
 }
 

@@ -5,7 +5,7 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 public interface IArcanumIntelligenceProvider
 {
-    Task<Result<string>> ExecutePromptAsync(
+    Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
         CancellationToken cancellationToken = default);
 

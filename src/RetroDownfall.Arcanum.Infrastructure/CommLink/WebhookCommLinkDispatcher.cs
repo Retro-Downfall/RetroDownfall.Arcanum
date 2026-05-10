@@ -100,7 +100,10 @@ internal sealed class WebhookCommLinkDispatcher(
 
             logger.LogWarning(ex, "Comm Link webhook POST failed.");
 
-            return Result.Failure(new Error("CommLink.WebhookException", ex.Message));
+            return Result.Failure(
+                new Error(
+                    "CommLink.WebhookException",
+                    "Comm Link webhook POST failed. See server logs for details."));
 
         }
 

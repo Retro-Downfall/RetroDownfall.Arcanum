@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Conversation",
                 typeof(Conversation),
                 baseEntityType,
-                propertyCount: 5,
+                propertyCount: 6,
                 navigationCount: 1,
                 unnamedIndexCount: 1,
                 keyCount: 1);
@@ -60,6 +60,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Conversation).GetProperty("Title", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Conversation).GetField("<Title>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 maxLength: 512);
+
+            var totalTokensUsed = runtimeEntityType.AddProperty(
+                "TotalTokensUsed",
+                typeof(long),
+                propertyInfo: typeof(Conversation).GetProperty("TotalTokensUsed", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Conversation).GetField("<TotalTokensUsed>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                valueGenerated: ValueGenerated.OnAdd,
+                sentinel: 0L);
+            totalTokensUsed.AddAnnotation("Relational:DefaultValue", 0L);
 
             var key = runtimeEntityType.AddKey(
                 new[] { id });

@@ -1,6 +1,9 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -16,7 +19,8 @@ internal static class SemanticRouter
         TimeSpan preflightTimeout,
         int maxOutputTokens,
         float temperature,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ILogger? logger = null)
     {
         if (availableSpells.Count == 0)
         {
@@ -41,7 +45,8 @@ internal static class SemanticRouter
 
         string classificationPrompt = string.Format(
             CultureInfo.InvariantCulture,
-            "You are an intent router. Match the user's request to the correct tool. Available tools: [{0}]. User request: '{1}'. Return ONLY the exact Name of the matching tool. If none match, return 'NONE'.",
+            "You are an intent router. Match the user's request to the correct tool. Available tools: [{0}]. User request: '{1}'. "
+            + "You must respond with a single valid JSON object containing exactly one key: spellName. If a spell matches the user's intent, the value must be the exact name of the spell. If no spell matches, the value must be NONE. Do not wrap the JSON in markdown code fences. Do not include any other text.",
             toolsList.ToString(),
             safeUser);
 
@@ -54,6 +59,7 @@ internal static class SemanticRouter
         {
             MaxOutputTokens = maxOutputTokens,
             Temperature = temperature,
+            ResponseFormat = ChatResponseFormat.Json,
         };
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -74,23 +80,66 @@ internal static class SemanticRouter
         }
         catch (OperationCanceledException)
         {
+            logger?.LogInformation(
+                "SemanticRouter preflight timed out after {TimeoutSeconds:F0}s; continuing with no active spell.",
+                preflightTimeout.TotalSeconds);
+
             return null;
         }
-        catch (Exception)
+        catch (Exception ex)
+        {
+            logger?.LogWarning(
+                ex,
+                "SemanticRouter preflight failed ({ExceptionType}); continuing with no active spell.",
+                ex.GetType().Name);
+
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(response.Text))
         {
             return null;
         }
 
-        string normalized = NormalizeRouterReply(response.Text);
+        string trimmed = response.Text.Trim();
 
-        if (normalized.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+        string cleaned = StripMarkdownFences(trimmed);
+
+        SemanticSpellResponse? parsed;
+
+        try
+        {
+            parsed = JsonSerializer.Deserialize(cleaned, ArcanumJsonContext.Default.SemanticSpellResponse);
+        }
+        catch (JsonException)
+        {
+            string logSnippet = trimmed.Length > 200 ? trimmed[..200] : trimmed;
+
+            logger?.LogWarning("SemanticRouter failed to parse JSON response: {ResponseText}", logSnippet);
+
+            return null;
+        }
+
+        if (parsed is null)
+        {
+            return null;
+        }
+
+        string spellName = parsed.SpellName.Trim();
+
+        if (string.IsNullOrEmpty(spellName))
+        {
+            return null;
+        }
+
+        if (spellName.Equals("NONE", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
         foreach (ParsedSpell spell in availableSpells)
         {
-            if (spell.Name.Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            if (spell.Name.Equals(spellName, StringComparison.OrdinalIgnoreCase))
             {
                 return spell;
             }
@@ -99,26 +148,29 @@ internal static class SemanticRouter
         return null;
     }
 
-    private static string NormalizeRouterReply(string? raw)
+    private static string StripMarkdownFences(string trimmed)
     {
-        string trimmed = (raw ?? string.Empty).Trim();
-
-        int lineBreak = trimmed.IndexOfAny(['\r', '\n']);
-
-        if (lineBreak >= 0)
+        if (trimmed.Length < 3 || !trimmed.StartsWith("```", StringComparison.Ordinal))
         {
-            trimmed = trimmed[..lineBreak].Trim();
+            return trimmed;
         }
 
-        trimmed = trimmed.Trim().Trim('"', '\'');
+        ReadOnlySpan<char> afterOpen = trimmed.AsSpan(3).TrimStart();
 
-        int space = trimmed.IndexOf(' ');
-
-        if (space > 0)
+        if (afterOpen.StartsWith("json", StringComparison.OrdinalIgnoreCase))
         {
-            trimmed = trimmed[..space];
+            afterOpen = afterOpen[4..].TrimStart();
         }
 
-        return trimmed;
+        ReadOnlySpan<char> content = afterOpen;
+
+        int close = content.LastIndexOf("```".AsSpan(), StringComparison.Ordinal);
+
+        if (close >= 0)
+        {
+            content = content[..close].TrimEnd();
+        }
+
+        return content.ToString();
     }
 }

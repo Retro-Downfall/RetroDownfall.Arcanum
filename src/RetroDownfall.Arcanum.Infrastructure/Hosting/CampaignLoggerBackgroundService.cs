@@ -1,15 +1,22 @@
+using System.Text;
+
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Periodically enqueues conversations that need campaign-log processing and advances
-/// <c>Conversation.LastSummarizedMessageAt</c> when each id is consumed (watermark for sweep eligibility).
+/// Periodically enqueues conversations that need campaign-log processing and runs headless inference to
+/// update <c>Conversation.Summary</c> and <c>Conversation.LastSummarizedMessageAt</c> when each id is consumed.
 /// </summary>
 internal sealed class CampaignLoggerBackgroundService(
     IServiceScopeFactory scopeFactory,
@@ -124,9 +131,14 @@ internal sealed class CampaignLoggerBackgroundService(
                     IGrimoireRepository grimoire =
                         iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
 
-                    if (!await grimoire
-                            .ConversationExistsAsync(conversationId, stoppingToken)
-                            .ConfigureAwait(false))
+                    IArcanumIntelligenceProvider intelligence =
+                        iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
+
+                    Conversation? conversation = await grimoire
+                        .GetConversationAsync(conversationId, stoppingToken)
+                        .ConfigureAwait(false);
+
+                    if (conversation is null)
                     {
                         hostLogger.LogWarning(
                             "Campaign Logger: Conversation {ConversationId} no longer exists; skipping.",
@@ -135,13 +147,113 @@ internal sealed class CampaignLoggerBackgroundService(
                         continue;
                     }
 
-                    await grimoire
-                        .AdvanceCampaignLogWatermarkAsync(conversationId, stoppingToken)
-                        .ConfigureAwait(false);
+                    DateTime watermark = conversation.LastSummarizedMessageAt ?? DateTime.MinValue;
 
-                    hostLogger.LogInformation(
-                        "Campaign Logger: Advanced campaign log watermark for conversation {ConversationId}.",
-                        conversationId);
+                    List<ChatMessage> batch = conversation.Messages
+                        .Where(m => m.Timestamp > watermark)
+                        .OrderBy(m => m.Timestamp)
+                        .ToList();
+
+                    if (batch.Count == 0)
+                    {
+                        hostLogger.LogInformation(
+                            "Campaign Logger: No messages to summarize for conversation {ConversationId}; skipping.",
+                            conversationId);
+
+                        continue;
+                    }
+
+                    DateTime batchEndUtc = batch[^1].Timestamp;
+
+                    StringBuilder userPayload = new();
+
+                    if (!string.IsNullOrWhiteSpace(conversation.Summary))
+                    {
+                        _ = userPayload.AppendLine("## Previous Summary");
+
+                        _ = userPayload.AppendLine(conversation.Summary.Trim());
+
+                        _ = userPayload.AppendLine();
+                    }
+
+                    foreach (ChatMessage m in batch)
+                    {
+                        _ = userPayload.Append('[');
+
+                        _ = userPayload.Append(m.Role.ToString());
+
+                        _ = userPayload.Append("]: ");
+
+                        _ = userPayload.AppendLine(m.Content);
+                    }
+
+                    const string systemPersona =
+                        "You are an AI tasked with maintaining a rolling campaign summary of a technical workspace conversation. Combine the previous summary (if any) with the new messages into a single, cohesive, highly condensed summary. Preserve critical technical details, file paths, and decisions. Discard conversational filler.";
+
+                    List<CoreChatMessage> statelessMessages =
+                    [
+                        new CoreChatMessage("system", systemPersona),
+
+                        new CoreChatMessage("user", userPayload.ToString().TrimEnd()),
+                    ];
+
+                    ArcanumSettings arc = options.CurrentValue;
+
+                    string? model = null;
+
+                    if (!string.IsNullOrWhiteSpace(arc.FastModel))
+                    {
+                        model = arc.FastModel.Trim();
+                    }
+                    else if (!string.IsNullOrWhiteSpace(arc.DefaultModel))
+                    {
+                        model = arc.DefaultModel.Trim();
+                    }
+
+                    PingRequest ping = new(
+                        Prompt: string.Empty,
+                        Model: model,
+                        WorkingDirectory: string.Empty,
+                        UnattendedMode: true,
+                        DisableMcpTools: true,
+                        StatelessMessages: statelessMessages,
+                        SkipSpellRouting: true);
+
+                    try
+                    {
+                        Result<PromptTurnResult> result = await intelligence
+                            .ExecutePromptAsync(ping, stoppingToken)
+                            .ConfigureAwait(false);
+
+                        if (result.IsFailure)
+                        {
+                            hostLogger.LogWarning(
+                                "Campaign Logger: Summarization failed for conversation {ConversationId}: {Code} {Message}",
+                                conversationId,
+                                result.Error.Code,
+                                result.Error.Message);
+
+                            continue;
+                        }
+
+                        string summaryText = result.Value.Text.Trim();
+
+                        await grimoire
+                            .UpdateConversationCampaignRollupAsync(conversationId, summaryText, batchEndUtc, stoppingToken)
+                            .ConfigureAwait(false);
+
+                        hostLogger.LogInformation(
+                            "Campaign Logger: Updated campaign summary for conversation {ConversationId} through {BatchEndUtc:o}.",
+                            conversationId,
+                            batchEndUtc);
+                    }
+                    catch (Exception inferEx)
+                    {
+                        hostLogger.LogWarning(
+                            inferEx,
+                            "Campaign Logger: Summarization threw for conversation {ConversationId}.",
+                            conversationId);
+                    }
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

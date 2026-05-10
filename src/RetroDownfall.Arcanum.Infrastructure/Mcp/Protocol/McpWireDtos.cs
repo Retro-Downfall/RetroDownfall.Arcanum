@@ -201,13 +201,21 @@ public sealed record ListDirectoryParams
 /// <summary>
 /// Arguments accepted by the in-process <c>execute_command</c> tool.
 /// </summary>
+/// <remarks>
+/// Callers must populate <see cref="ArgumentList"/> with one entry per argument token (preferred,
+/// no OS-level re-parsing), or fall back to a single <see cref="Arguments"/> string that the host
+/// tokenizes (quoted substrings stay together; everything else splits on whitespace).
+/// </remarks>
 public sealed record ExecuteCommandParams
 {
     [JsonPropertyName("command")]
     public required string Command { get; init; }
 
     [JsonPropertyName("arguments")]
-    public required string Arguments { get; init; }
+    public string? Arguments { get; init; }
+
+    [JsonPropertyName("argumentList")]
+    public string[]? ArgumentList { get; init; }
 
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; init; }
@@ -265,6 +273,18 @@ public sealed record UseCommlinkParams
 
     [JsonPropertyName("source")]
     public string? Source { get; init; }
+}
+
+/// <summary>
+/// MCP <c>notifications/cancelled</c> notification <c>params</c> (JSON-RPC cooperative cancellation over the wire).
+/// </summary>
+public sealed record McpCancelledParams
+{
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string? Reason { get; init; }
 }
 
 

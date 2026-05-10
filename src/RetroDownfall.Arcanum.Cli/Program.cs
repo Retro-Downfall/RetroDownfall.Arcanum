@@ -30,6 +30,7 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(UninstallCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(StatusCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DaemonJobsCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DoctorCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonInitiativeCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonAlertCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreListCommand))]
@@ -137,6 +138,8 @@ internal static class Program
 
         services.AddTransient<LoreDeleteCommand>();
 
+        services.AddTransient<DoctorCommand>();
+
         CliTypeRegistrar registrar = new(services);
 
         CommandApp app = new(registrar);
@@ -155,6 +158,9 @@ internal static class Program
 
             config.AddCommand<LookCommand>("look")
                 .WithDescription("Eye of the World: situational snapshot of the current directory (domain + TOC).");
+
+            config.AddCommand<DoctorCommand>("doctor")
+                .WithDescription("Run environment diagnostics (version, paths, API health).");
 
             config.AddBranch("daemon", daemon =>
             {

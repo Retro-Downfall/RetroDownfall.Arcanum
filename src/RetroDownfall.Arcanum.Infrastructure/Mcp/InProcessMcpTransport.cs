@@ -36,18 +36,25 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
     internal CancellationToken LifetimeCancellation => _lifetimeCts.Token;
 
+    internal McpRequestCancellationBroker RequestCancellation { get; }
+
     internal InProcessMcpTransport(
         ChannelWriter<string> toServer,
         ChannelReader<string> fromServer,
+        McpRequestCancellationBroker requestCancellationBroker,
         McpJsonSerializerContext? jsonContext = null)
     {
         ArgumentNullException.ThrowIfNull(toServer);
 
         ArgumentNullException.ThrowIfNull(fromServer);
 
+        ArgumentNullException.ThrowIfNull(requestCancellationBroker);
+
         _toServer = toServer;
 
         _fromServer = fromServer;
+
+        RequestCancellation = requestCancellationBroker;
 
         _json = jsonContext ?? McpJsonSerializerContext.Default;
 
@@ -98,7 +105,13 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
 
-        InProcessMcpTransport transport = new(clientToServer.Writer, serverToClient.Reader);
+        McpRequestCancellationBroker requestCancellationBroker = new();
+
+        InProcessMcpTransport transport = new(
+            clientToServer.Writer,
+            serverToClient.Reader,
+            requestCancellationBroker,
+            jsonContext);
 
         ArcanumInternalToolServer server = new(
             clientToServer.Reader,
@@ -111,6 +124,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             executeCommandTimeoutSecondsForDisplay,
             listDirectoryMaxPaths,
             intelligenceSettings,
+            requestCancellationBroker,
             logger,
             jsonContext);
 

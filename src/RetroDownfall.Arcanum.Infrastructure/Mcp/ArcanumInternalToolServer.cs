@@ -81,6 +81,8 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly IntelligenceSettings _settings;
 
+    private readonly McpRequestCancellationBroker _requestCancellationBroker;
+
     private readonly string _executeCommandToolDescription;
 
     internal ArcanumInternalToolServer(
@@ -94,6 +96,7 @@ internal sealed class ArcanumInternalToolServer
         int executeCommandTimeoutSecondsForDisplay,
         int listDirectoryMaxPaths,
         IntelligenceSettings intelligenceSettings,
+        McpRequestCancellationBroker requestCancellationBroker,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -108,6 +111,8 @@ internal sealed class ArcanumInternalToolServer
         ArgumentNullException.ThrowIfNull(pacer);
 
         ArgumentNullException.ThrowIfNull(intelligenceSettings);
+
+        ArgumentNullException.ThrowIfNull(requestCancellationBroker);
 
         if (listDirectoryMaxPaths < 1)
         {
@@ -147,6 +152,8 @@ internal sealed class ArcanumInternalToolServer
 
         _settings = intelligenceSettings;
 
+        _requestCancellationBroker = requestCancellationBroker;
+
         _readFileChunkSchema = BuildReadFileChunkSchema();
 
         _replaceTextBlockSchema = BuildReplaceTextBlockSchema();
@@ -172,7 +179,7 @@ internal sealed class ArcanumInternalToolServer
         _useCommlinkSchema = BuildUseCommlinkSchema();
 
         _executeCommandToolDescription =
-            $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout). Optional workingDirectory is relative to the workspace root.";
+            $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout or cooperative cancel). Optional workingDirectory is relative to the workspace root.";
     }
 
     /// <summary>
@@ -453,20 +460,26 @@ internal sealed class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("Archive search is disabled in configuration."));
         }
 
+        using CancellationTokenSource toolScope = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _requestCancellationBroker.GetTokenOrFallback(McpClient.NormalizeRpcId(rpcId), cancellationToken));
+
+        CancellationToken toolToken = toolScope.Token;
+
         McpToolsCallResultWire result = call.Name switch
         {
-            "read_file_chunk" => await ExecuteReadFileChunkAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "replace_text_block" => await ExecuteReplaceTextBlockAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "write_file" => await ExecuteWriteFileAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "execute_command" => await ExecuteCommandAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "adjust_initiative" => await ExecuteAdjustInitiativeAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "use_commlink" => await ExecuteUseCommlinkAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "ask_human" => await ExecuteAskHumanAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "read_lore" => await ExecuteReadLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "delete_lore" => await ExecuteDeleteLoreAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
-            "search_archives" => await ExecuteSearchArchivesAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            "read_file_chunk" => await ExecuteReadFileChunkAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "replace_text_block" => await ExecuteReplaceTextBlockAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "write_file" => await ExecuteWriteFileAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "execute_command" => await ExecuteCommandAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "adjust_initiative" => await ExecuteAdjustInitiativeAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "use_commlink" => await ExecuteUseCommlinkAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "ask_human" => await ExecuteAskHumanAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "read_lore" => await ExecuteReadLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "delete_lore" => await ExecuteDeleteLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "search_archives" => await ExecuteSearchArchivesAsync(call.Arguments, toolToken).ConfigureAwait(false),
             _ => ToolError($"Unknown tool: {call.Name}"),
         };
 
@@ -933,7 +946,7 @@ internal sealed class ArcanumInternalToolServer
             return false;
         }
 
-        if (!ToolHelpers.IsPathUnderWorkspace(root, resolved))
+        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, resolved, out _))
         {
             error = ToolError(PathEscapesSandboxMessage);
 
@@ -1455,10 +1468,12 @@ internal sealed class ArcanumInternalToolServer
 
         if (args is null || string.IsNullOrWhiteSpace(args.Command))
         {
-            return ToolError("execute_command requires 'command' and 'arguments'.");
+            return ToolError("execute_command requires 'command'.");
         }
 
-        string argumentsLine = args.Arguments;
+        string commandFileName = args.Command.Trim();
+
+        IReadOnlyList<string> tokenizedArgs = ResolveCommandArgumentTokens(args.ArgumentList, args.Arguments);
 
         string root = _workspaceRoot!;
 
@@ -1492,9 +1507,7 @@ internal sealed class ArcanumInternalToolServer
 
         ProcessStartInfo psi = new()
         {
-            FileName = args.Command,
-
-            Arguments = argumentsLine,
+            FileName = commandFileName,
 
             UseShellExecute = false,
 
@@ -1506,6 +1519,11 @@ internal sealed class ArcanumInternalToolServer
 
             WorkingDirectory = workingDir,
         };
+
+        foreach (string token in tokenizedArgs)
+        {
+            psi.ArgumentList.Add(token);
+        }
 
         using Process process = new();
 
@@ -1555,81 +1573,247 @@ internal sealed class ArcanumInternalToolServer
             return ToolError("execute_command: failed to start the process.");
         }
 
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitToken);
+        CancellationTokenRegistration killRegistration = waitToken.Register(
+            static state => TryKillProcessEntireTree((Process)state!),
+            process);
 
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitToken);
+        long perStreamCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(_settings.ToolOutputCapBytes) / 2L;
+
+        if (perStreamCapBytes < 1024L)
+        {
+            perStreamCapBytes = 1024L;
+        }
 
         try
         {
-            await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKillProcessEntireTree(process);
+            Task<CappedOutput> stdoutTask = ReadStreamCappedAsync(process.StandardOutput, perStreamCapBytes, waitToken);
 
-            if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            Task<CappedOutput> stderrTask = ReadStreamCappedAsync(process.StandardError, perStreamCapBytes, waitToken);
+
+            try
             {
-                return ToolError(
-                    $"execute_command: the command timed out after {_executeCommandTimeoutSeconds} seconds.");
+                await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKillProcessEntireTree(process);
+
+                if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    return ToolError(
+                        $"execute_command: the command timed out after {_executeCommandTimeoutSeconds} seconds.");
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return ToolError("execute_command: canceled.");
+                }
+
+                return ToolError("execute_command: canceled or timed out.");
             }
 
-            if (cancellationToken.IsCancellationRequested)
+            CappedOutput stdout;
+
+            CappedOutput stderr;
+
+            try
             {
-                return ToolError("execute_command: canceled.");
+                stdout = await stdoutTask.ConfigureAwait(false);
+
+                stderr = await stderrTask.ConfigureAwait(false);
+            }
+            catch (IOException ex)
+            {
+                _logger?.LogError(ex, "execute_command: I/O error reading process output.");
+
+                return ToolError("execute_command: failed to read process output.");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger?.LogError(ex, "execute_command: access denied reading process output.");
+
+                return ToolError("execute_command: access denied reading process output.");
+            }
+            catch (OperationCanceledException)
+            {
+                return ToolError("execute_command: canceled while reading output.");
             }
 
-            return ToolError("execute_command: canceled or timed out.");
+            StringBuilder text = new();
+
+            text.AppendLine("--- stdout ---");
+
+            text.AppendLine(stdout.Text);
+
+            if (stdout.Truncated)
+            {
+                text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
+            }
+
+            text.AppendLine("--- stderr ---");
+
+            text.AppendLine(stderr.Text);
+
+            if (stderr.Truncated)
+            {
+                text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
+            }
+
+            text.Append("--- exit code ---\n");
+
+            text.Append(process.ExitCode);
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = text.ToString() },
+                ],
+                IsError = false,
+            };
+        }
+        finally
+        {
+            await killRegistration.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private readonly record struct CappedOutput(string Text, bool Truncated);
+
+    private static async Task<CappedOutput> ReadStreamCappedAsync(
+        StreamReader reader,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        StringBuilder builder = new();
+
+        char[] buffer = new char[4096];
+
+        long approximateBytes = 0L;
+
+        bool truncated = false;
+
+        while (true)
+        {
+            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+            if (read <= 0)
+            {
+                break;
+            }
+
+            long encodedSize = Encoding.UTF8.GetByteCount(buffer, 0, read);
+
+            if (approximateBytes + encodedSize > maxBytes)
+            {
+                long remaining = maxBytes - approximateBytes;
+
+                if (remaining > 0)
+                {
+                    int safeChars = ChooseSafeCharCount(buffer, read, remaining);
+
+                    builder.Append(buffer, 0, safeChars);
+                }
+
+                truncated = true;
+
+                break;
+            }
+
+            builder.Append(buffer, 0, read);
+
+            approximateBytes += encodedSize;
         }
 
-        string stdout;
+        return new CappedOutput(builder.ToString(), truncated);
+    }
 
-        string stderr;
+    private static int ChooseSafeCharCount(char[] buffer, int charCount, long remainingBytes)
+    {
+        long running = 0L;
 
-        try
+        for (int i = 0; i < charCount; i++)
         {
-            stdout = await stdoutTask.ConfigureAwait(false);
+            int charByteSize = Encoding.UTF8.GetByteCount(buffer, i, 1);
 
-            stderr = await stderrTask.ConfigureAwait(false);
-        }
-        catch (IOException ex)
-        {
-            _logger?.LogError(ex, "execute_command: I/O error reading process output.");
+            if (running + charByteSize > remainingBytes)
+            {
+                return i;
+            }
 
-            return ToolError("execute_command: failed to read process output.");
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "execute_command: access denied reading process output.");
-
-            return ToolError("execute_command: access denied reading process output.");
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolError("execute_command: canceled while reading output.");
+            running += charByteSize;
         }
 
-        StringBuilder text = new();
+        return charCount;
+    }
 
-        text.AppendLine("--- stdout ---");
-
-        text.AppendLine(stdout);
-
-        text.AppendLine("--- stderr ---");
-
-        text.AppendLine(stderr);
-
-        text.Append("--- exit code ---\n");
-
-        text.Append(process.ExitCode);
-
-        return new McpToolsCallResultWire
+    private static IReadOnlyList<string> ResolveCommandArgumentTokens(string[]? argumentList, string? argumentsString)
+    {
+        if (argumentList is { Length: > 0 })
         {
-            Content =
-            [
-                new McpToolContentTextWire { Text = text.ToString() },
-            ],
-            IsError = false,
-        };
+            List<string> direct = new(argumentList.Length);
+
+            foreach (string token in argumentList)
+            {
+                if (token is null)
+                {
+                    continue;
+                }
+
+                direct.Add(token);
+            }
+
+            return direct;
+        }
+
+        if (string.IsNullOrEmpty(argumentsString))
+        {
+            return Array.Empty<string>();
+        }
+
+        return TokenizeArgumentsString(argumentsString);
+    }
+
+    private static IReadOnlyList<string> TokenizeArgumentsString(string line)
+    {
+        List<string> tokens = [];
+
+        StringBuilder current = new();
+
+        bool inQuotes = false;
+
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+
+            if (c == '"')
+            {
+                inQuotes = !inQuotes;
+
+                continue;
+            }
+
+            if (!inQuotes && char.IsWhiteSpace(c))
+            {
+                if (current.Length > 0)
+                {
+                    tokens.Add(current.ToString());
+
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(c);
+        }
+
+        if (current.Length > 0)
+        {
+            tokens.Add(current.ToString());
+        }
+
+        return tokens;
     }
 
     private static void TryKillProcessEntireTree(Process process)
@@ -1649,6 +1833,13 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (NotSupportedException)
         {
+            try
+            {
+                process.Kill();
+            }
+            catch (Exception)
+            {
+            }
         }
     }
 
@@ -1830,7 +2021,24 @@ internal sealed class ArcanumInternalToolServer
                 "command",
                 $"Executable or binary name (no shell). The host enforces a {timeoutSeconds} second timeout.");
 
-            WriteStringProperty(w, "arguments", "Command-line arguments as a single string (may be empty).");
+            WriteStringProperty(
+                w,
+                "arguments",
+                "Optional command-line arguments as a single string. Tokenized by the host (quoted substrings stay together; whitespace separates tokens). Prefer 'argumentList' when calling from a model SDK.");
+
+            w.WriteStartObject("argumentList");
+
+            w.WriteString("type", "array");
+
+            w.WriteString("description", "Preferred: pre-tokenized argument list. Each entry is passed verbatim to the child process (no shell, no re-parsing).");
+
+            w.WriteStartObject("items");
+
+            w.WriteString("type", "string");
+
+            w.WriteEndObject();
+
+            w.WriteEndObject();
 
             WriteStringProperty(
                 w,
@@ -1842,8 +2050,6 @@ internal sealed class ArcanumInternalToolServer
             w.WriteStartArray("required");
 
             w.WriteStringValue("command");
-
-            w.WriteStringValue("arguments");
 
             w.WriteEndArray();
 

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
@@ -53,7 +54,10 @@ public sealed class ChatCommand(
         "/delete",
         "/rest",
         "/log",
+        "/memory",
+        "/summary",
         "/attach",
+        "/mana",
     };
 
     protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -79,8 +83,6 @@ public sealed class ChatCommand(
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
-        var lastTokenUsage = new TokenUsageSink();
-
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -91,9 +93,12 @@ public sealed class ChatCommand(
                 ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedFiles.Count} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
                 : $"{themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >";
 
-            if (TryGetManaBarContextLimit(session, out int manaContextLimit))
+            if (arcanumSettings.Value.Cli.ShowManaBar
+                && TryGetManaBarContextLimit(session, out int manaContextLimit))
             {
-                RenderManaBarLine(lastTokenUsage.Value, manaContextLimit);
+                int used = session.SessionMana?.TotalTokens ?? 0;
+
+                RenderManaBarLine(session, used, manaContextLimit);
             }
 
             try
@@ -102,6 +107,8 @@ public sealed class ChatCommand(
             }
             catch (InvalidOperationException)
             {
+                await PrintExitSummaryAsync(session, cancellationToken).ConfigureAwait(false);
+
                 return 0;
             }
 
@@ -236,10 +243,11 @@ public sealed class ChatCommand(
                     settings,
                     stderrConsole,
                     cancellationToken,
-                    lastTokenUsage,
                     attachedFilesForRequest)
                 .ConfigureAwait(false);
         }
+
+        await PrintExitSummaryAsync(session, cancellationToken).ConfigureAwait(false);
 
         return 0;
     }
@@ -285,6 +293,10 @@ public sealed class ChatCommand(
         if (verb.Equals("/new", StringComparison.OrdinalIgnoreCase))
         {
             cliSession.ClearSession();
+
+            session.MemoryCompressed = false;
+
+            session.SessionMana = null;
 
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Started new conversation.")));
 
@@ -439,6 +451,8 @@ public sealed class ChatCommand(
 
             historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Snippet")));
 
+            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Mana")));
+
             foreach (ConversationSummaryDto row in historyResult.Value)
             {
                 string idShort = row.Id.ToString("N")[..8].ToUpperInvariant();
@@ -448,7 +462,8 @@ public sealed class ChatCommand(
                 historyTable.AddRow(
                     Markup.Escape(idShort),
                     Markup.Escape(updatedLocal),
-                    Markup.Escape(row.Snippet));
+                    Markup.Escape(row.Snippet),
+                    Markup.Escape(row.TotalTokensUsed.ToString(CultureInfo.InvariantCulture)));
             }
 
             AnsiConsole.Write(historyTable);
@@ -562,51 +577,22 @@ public sealed class ChatCommand(
             return (true, false);
         }
 
-        if (verb.Equals("/log", StringComparison.OrdinalIgnoreCase))
+        if (verb.Equals("/mana", StringComparison.OrdinalIgnoreCase))
         {
-            Guid? logConversationId = cliSession.GetLastConversationId();
+            await TryShowManaPanelAsync(session, cancellationToken).ConfigureAwait(false);
 
-            if (logConversationId is null)
-            {
-                AnsiConsole.MarkupLine(
-                    themePalette.HighlightMarkup(
-                        Markup.Escape(
-                            "No active conversation. Send a message first or use /resume to bind a session.")));
+            return (true, false);
+        }
 
-                return (true, false);
-            }
+        if (verb.Equals("/log", StringComparison.OrdinalIgnoreCase)
+            || verb.Equals("/memory", StringComparison.OrdinalIgnoreCase)
+            || verb.Equals("/summary", StringComparison.OrdinalIgnoreCase))
+        {
+            string panelTitle = verb.Equals("/log", StringComparison.OrdinalIgnoreCase)
+                ? "Campaign Log"
+                : "Memory Summary";
 
-            Result<ConversationDetailDto> logResult = await apiClient
-                .GetConversationAsync(logConversationId.Value, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (logResult.IsFailure)
-            {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(logResult.Error.Message)));
-
-                return (true, false);
-            }
-
-            ConversationDetailDto detail = logResult.Value;
-
-            if (string.IsNullOrWhiteSpace(detail.Summary))
-            {
-                AnsiConsole.MarkupLine(
-                    themePalette.HighlightMarkup(
-                        Markup.Escape(
-                            "No campaign log exists for this session yet. Type /rest to trigger consolidation.")));
-
-                return (true, false);
-            }
-
-            Panel logPanel = new(new Markup(Markup.Escape(detail.Summary)))
-            {
-                Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Campaign Log"))),
-                Border = BoxBorder.Rounded,
-                BorderStyle = themePalette.HighlightStyle(),
-            };
-
-            AnsiConsole.Write(logPanel);
+            await TryShowCampaignSummaryPanelAsync(panelTitle, cancellationToken).ConfigureAwait(false);
 
             return (true, false);
         }
@@ -719,6 +705,10 @@ public sealed class ChatCommand(
         table.AddRow("/rest", "Manually trigger memory consolidation for the current session.");
 
         table.AddRow("/log", "View the Campaign Log (summarized history) for this session.");
+
+        table.AddRow("/mana", "Token usage for this REPL session and conversation lifetime (Grimoire).");
+
+        table.AddRow("/memory, /summary", "View the Campaign Summary (compressed memory context) for this session.");
 
         table.AddRow(
             "/model " + themePalette.HighlightMarkup(Markup.Escape("[<name>]")),
@@ -1008,7 +998,7 @@ public sealed class ChatCommand(
 
     }
 
-    private void RenderManaBarLine(int usedTokens, int contextWindowLimit)
+    private void RenderManaBarLine(SessionMut session, int usedTokens, int contextWindowLimit)
     {
         double limit = Math.Max(1, contextWindowLimit);
 
@@ -1039,7 +1029,60 @@ public sealed class ChatCommand(
         string line =
             $"{themePalette.MutedMarkup(Markup.Escape("Mana:"))} [[[{fillTag}]{filledStr}[/][{mutedTag}]{emptyStr}[/]] {displayPct}% ({usedTokens}/{contextWindowLimit})";
 
+        if (session.MemoryCompressed)
+        {
+            line +=
+                $" {themePalette.MutedMarkup(Markup.Escape("\u2699 Memory Compressed"))}";
+        }
+
         AnsiConsole.MarkupLine(line);
+    }
+
+    private async Task TryShowCampaignSummaryPanelAsync(string panelTitle, CancellationToken cancellationToken)
+    {
+        Guid? logConversationId = cliSession.GetLastConversationId();
+
+        if (logConversationId is null)
+        {
+            AnsiConsole.MarkupLine(
+                themePalette.HighlightMarkup(
+                    Markup.Escape(
+                        "No active conversation. Send a message first or use /resume to bind a session.")));
+
+            return;
+        }
+
+        Result<ConversationDetailDto> logResult = await apiClient
+            .GetConversationAsync(logConversationId.Value, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (logResult.IsFailure)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(logResult.Error.Message)));
+
+            return;
+        }
+
+        ConversationDetailDto detail = logResult.Value;
+
+        if (string.IsNullOrWhiteSpace(detail.Summary))
+        {
+            AnsiConsole.MarkupLine(
+                themePalette.HighlightMarkup(
+                    Markup.Escape(
+                        "No campaign log exists for this session yet. Type /rest to trigger consolidation.")));
+
+            return;
+        }
+
+        Panel logPanel = new(new Markup(Markup.Escape(detail.Summary)))
+        {
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape(panelTitle))),
+            Border = BoxBorder.Rounded,
+            BorderStyle = themePalette.HighlightStyle(),
+        };
+
+        AnsiConsole.Write(logPanel);
     }
 
     private async Task RunTurnAsync(
@@ -1048,7 +1091,6 @@ public sealed class ChatCommand(
         Settings settings,
         IAnsiConsole stderrConsole,
         CancellationToken cancellationToken,
-        TokenUsageSink lastTokenUsage,
         List<AttachedFileDto>? attachedFiles = null)
     {
         using CancellationTokenSource perTurnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1121,6 +1163,14 @@ public sealed class ChatCommand(
                 {
                     case IntelligenceEventType.Status:
 
+                        if (string.Equals(
+                                evt.Message,
+                                IntelligenceStatusMessages.MemoryCompressionNotice,
+                                StringComparison.Ordinal))
+                        {
+                            session.MemoryCompressed = true;
+                        }
+
                         stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(evt.Message)));
 
                         break;
@@ -1181,10 +1231,16 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.Result:
 
-                        if (evt.Data is not null
+                        if (evt.Usage is { } usageTurn)
+                        {
+                            session.SessionMana = AccumulateSessionMana(session.SessionMana, usageTurn);
+                        }
+                        else if (evt.Data is not null
                             && int.TryParse(evt.Data, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedUsage))
                         {
-                            lastTokenUsage.Value = parsedUsage;
+                            session.SessionMana = AccumulateSessionMana(
+                                session.SessionMana,
+                                new ChatCompletionUsage(0, 0, parsedUsage));
                         }
 
                         finalText = full.ToString();
@@ -1293,13 +1349,121 @@ public sealed class ChatCommand(
 
         public bool DisableTools { get; set; }
 
+        public bool MemoryCompressed { get; set; }
+
+        public ChatCompletionUsage? SessionMana { get; set; }
+
     }
 
-    private sealed class TokenUsageSink
+    private static ChatCompletionUsage AccumulateSessionMana(ChatCompletionUsage? running, ChatCompletionUsage round)
     {
+        int p = (running?.PromptTokens ?? 0) + round.PromptTokens;
 
-        public int Value { get; set; }
+        int c = (running?.CompletionTokens ?? 0) + round.CompletionTokens;
 
+        return new ChatCompletionUsage(p, c, p + c);
+    }
+
+    private async Task TryShowManaPanelAsync(SessionMut session, CancellationToken cancellationToken)
+    {
+        string sessionLine = session.SessionMana is null
+            ? "This session: (no recorded usage yet)"
+            : $"This session — prompt_tokens: {session.SessionMana.PromptTokens}, completion_tokens: {session.SessionMana.CompletionTokens}, total_tokens: {session.SessionMana.TotalTokens}";
+
+        Guid? activeId = cliSession.GetLastConversationId();
+
+        if (activeId is null)
+        {
+            AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape(sessionLine)));
+
+            AnsiConsole.MarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape("No active conversation — bind one with /resume to see lifetime Grimoire totals.")));
+
+            return;
+        }
+
+        Result<ConversationDetailDto> detailResult =
+            await apiClient.GetConversationAsync(activeId.Value, cancellationToken).ConfigureAwait(false);
+
+        if (detailResult.IsFailure)
+        {
+            AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape(sessionLine)));
+
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(detailResult.Error.Message)));
+
+            return;
+        }
+
+        ConversationDetailDto detail = detailResult.Value;
+
+        string body =
+            $"{sessionLine}\n\nLifetime (Grimoire) total_tokens: {detail.TotalTokensUsed.ToString(CultureInfo.InvariantCulture)}";
+
+        Panel panel = new(new Markup(Markup.Escape(body)))
+        {
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Mana"))),
+            Border = BoxBorder.Rounded,
+            BorderStyle = themePalette.HighlightStyle(),
+        };
+
+        AnsiConsole.Write(panel);
+
+        AnsiConsole.WriteLine();
+    }
+
+    private async Task PrintExitSummaryAsync(SessionMut session, CancellationToken cancellationToken)
+    {
+        int sessionTotal = session.SessionMana?.TotalTokens ?? 0;
+
+        long lifetime = 0L;
+
+        Guid? id = cliSession.GetLastConversationId();
+
+        if (id is not null)
+        {
+            try
+            {
+                Result<ConversationDetailDto> r =
+                    await apiClient.GetConversationAsync(id.Value, cancellationToken).ConfigureAwait(false);
+
+                if (r.IsSuccess)
+                {
+                    lifetime = r.Value.TotalTokensUsed;
+                }
+            }
+            catch (HttpRequestException)
+            {
+            }
+            catch (TaskCanceledException)
+            {
+            }
+        }
+
+        if (sessionTotal <= 0 && lifetime <= 0)
+        {
+            return;
+        }
+
+        string exitBody =
+            $"Session total_tokens: {sessionTotal.ToString(CultureInfo.InvariantCulture)}\nConversation lifetime (Grimoire): {lifetime.ToString(CultureInfo.InvariantCulture)}";
+
+        if (session.SessionMana is not null)
+        {
+            exitBody +=
+                $"\nSession prompt_tokens: {session.SessionMana.PromptTokens.ToString(CultureInfo.InvariantCulture)}, completion_tokens: {session.SessionMana.CompletionTokens.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        Panel panel = new(new Markup(Markup.Escape(exitBody)))
+        {
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Session mana"))),
+            Border = BoxBorder.Rounded,
+            BorderStyle = themePalette.MutedStyle(),
+        };
+
+        AnsiConsole.Write(panel);
+
+        AnsiConsole.WriteLine();
     }
 
     public sealed class Settings : CommandSettings

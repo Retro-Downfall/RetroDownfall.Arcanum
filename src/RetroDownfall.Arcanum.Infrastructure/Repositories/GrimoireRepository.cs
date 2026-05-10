@@ -233,6 +233,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             {
                 c.Id,
                 c.CreatedAt,
+                c.TotalTokensUsed,
                 LastUpdate = c.Messages.Max(m => (DateTime?)m.Timestamp),
                 FirstMsg = c.Messages.OrderBy(m => m.Timestamp).Select(m => m.Content).FirstOrDefault(),
             })
@@ -248,7 +249,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             string snippet = BuildSnippet(row.FirstMsg);
 
-            result.Add(new ConversationSummaryDto(row.Id, row.CreatedAt, updatedAtUtc, snippet));
+            result.Add(new ConversationSummaryDto(row.Id, row.CreatedAt, updatedAtUtc, snippet, row.TotalTokensUsed));
         }
 
         return result;
@@ -293,7 +294,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         return await _db.Conversations
             .AsNoTracking()
             .Where(c => c.Id == id)
-            .Select(c => new ConversationDetailDto(c.Id, c.Title, c.CreatedAt, c.Summary))
+            .Select(c => new ConversationDetailDto(c.Id, c.Title, c.CreatedAt, c.Summary, c.TotalTokensUsed))
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -501,6 +502,24 @@ public sealed class GrimoireRepository : IGrimoireRepository
     public Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
         _db.Conversations.AnyAsync(c => c.Id == conversationId, cancellationToken);
 
+    public async Task IncrementConversationTokensAsync(
+        Guid conversationId,
+        long totalTokens,
+        CancellationToken cancellationToken = default)
+    {
+        if (totalTokens <= 0)
+        {
+            return;
+        }
+
+        _ = await _db.Conversations
+            .Where(c => c.Id == conversationId)
+            .ExecuteUpdateAsync(
+                s => s.SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)
     {
         _db.WorkspaceContexts.Add(context);
@@ -545,6 +564,31 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .Where(c => c.Id == conversationId)
             .ExecuteUpdateAsync(
                 s => s.SetProperty(c => c.LastSummarizedMessageAt, watermark),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task UpdateConversationCampaignRollupAsync(
+        Guid conversationId,
+        string summary,
+        DateTime lastSummarizedMessageAt,
+        CancellationToken cancellationToken = default)
+    {
+        bool exists = await _db.Conversations
+            .AnyAsync(c => c.Id == conversationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!exists)
+        {
+            return;
+        }
+
+        await _db.Conversations
+            .Where(c => c.Id == conversationId)
+            .ExecuteUpdateAsync(
+                s => s
+                    .SetProperty(c => c.Summary, summary)
+                    .SetProperty(c => c.LastSummarizedMessageAt, lastSummarizedMessageAt),
                 cancellationToken)
             .ConfigureAwait(false);
     }

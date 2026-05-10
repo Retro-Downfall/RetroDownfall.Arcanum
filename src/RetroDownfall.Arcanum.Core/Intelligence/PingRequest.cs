@@ -16,5 +16,16 @@ public sealed record PingRequest(
     List<AttachedFileDto>? AttachedFiles = null,
     ChronosyncReport? ChronosyncDelta = null,
     List<CoreChatMessage>? StatelessMessages = null,
-    string? OverrideSpellName = null);
+    string? OverrideSpellName = null,
+    bool SkipSpellRouting = false,
+    float? Temperature = null,
+    float? TopP = null,
+    int? MaxOutputTokens = null,
+    IReadOnlyList<string>? Stop = null,
+    long? Seed = null,
+    string? ResponseFormat = null,
+    float? PresencePenalty = null,
+    float? FrequencyPenalty = null,
+    string? User = null,
+    bool? ParallelToolCalls = null);
 

@@ -12,5 +12,7 @@ public sealed class Conversation
 
     public DateTime? LastSummarizedMessageAt { get; set; }
 
+    public long TotalTokensUsed { get; set; }
+
     public ICollection<ChatMessage> Messages { get; set; } = new List<ChatMessage>();
 }

@@ -57,6 +57,9 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Title).HasMaxLength(512).IsRequired();
             entity.Property(e => e.Summary);
             entity.Property(e => e.LastSummarizedMessageAt);
+
+            entity.Property(e => e.TotalTokensUsed).HasDefaultValue(0L);
+
             entity.HasIndex(e => e.CreatedAt);
             entity.HasMany(e => e.Messages)
                 .WithOne(m => m.Conversation!)
