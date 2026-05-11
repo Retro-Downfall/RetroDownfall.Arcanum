@@ -198,9 +198,12 @@ All commands use `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfa
 | `ask <prompt>` | Single-turn query (streams response via NDJSON) |
 | `ask <prompt> -n` | Start a new conversation thread |
 | `ask <prompt> -m <model>` | Override the model for this request |
+| `ask <prompt> --unattended` | Auto-reply to `ask_human` so the Mage proceeds without an operator |
 | `chat` | Interactive multi-turn REPL with Markdig rendering |
 | `chat --new` | Start REPL with a fresh conversation |
+| `chat -m <model>` | Pin the active model for the REPL session |
 | `chat --no-tools` | Disable MCP tools for the session |
+| `chat --unattended` | Auto-reply to `ask_human` for the REPL session |
 | `look` | Print Eye of the World workspace snapshot (domain + TOC) |
 | `doctor` | Run environment diagnostics (version, paths, API health) |
 | `lore list` | List all operator memory entries |
@@ -215,6 +218,23 @@ All commands use `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfa
 | `daemon alert <message>` | Send a Comm Link test alert (`--title`, `--severity`, `--source`); **`POST /api/commlink/send`**; same API requirements as `daemon jobs` |
 
 **Chat slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model <name>`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`.
+
+**Inference flags** (both `ask` and `chat`):
+
+| Flag | Forwarded to | Notes |
+|------|--------------|-------|
+| `--temperature <0..2>` | `ChatOptions.Temperature` | Sampling temperature. |
+| `--top-p <0..1>` | `ChatOptions.TopP` | Nucleus sampling cutoff. |
+| `--max-tokens <N>` | `ChatOptions.MaxOutputTokens` | Maximum output tokens per turn. |
+| `--seed <N>` | `ChatOptions.Seed` | Provider support varies. |
+| `--stop <sequence>` | `ChatOptions.StopSequences` | Repeat the flag for several sequences. |
+| `--response-format <kind>` | `ChatOptions.ResponseFormat` | `text` / `json_object` / `json_schema`. |
+| `--presence-penalty <-2..2>` | `ChatOptions.PresencePenalty` | Positive discourages repetition. |
+| `--frequency-penalty <-2..2>` | `ChatOptions.FrequencyPenalty` | Positive penalizes frequent tokens. |
+
+Flags applied to `chat` set the values for **every turn** in the REPL session; `/help` shows the active overrides via the startup banner panel.
+
+**Output detection (NO_COLOR / TTY):** The CLI auto-disables ANSI colors, interactive prompts, and the mana bar when stdout is redirected (`arcanum ask ... | tee out.txt`) or when **`NO_COLOR`** / **`ARCANUM_NO_COLOR`** is set to any non-empty value (see [no-color.org](https://no-color.org)). The detected state is shown in `arcanum doctor` under **System**.
 
 ## API reference
 

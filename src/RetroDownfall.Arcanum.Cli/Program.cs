@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
+using Spectre.Console;
 using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli;
@@ -57,6 +58,15 @@ internal static class Program
         services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
 
         services.AddArcanumThemeDetection();
+
+        services.AddSingleton<ICliEnvironment>(sp =>
+        {
+            bool showManaBar = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value.Cli.ShowManaBar;
+
+            return new CliEnvironment(showManaBar);
+        });
+
+        ConfigureAnsiConsoleForEnvironment(configuration);
 
         services.AddSingleton<IThemePalette>(sp =>
         {
@@ -210,5 +220,36 @@ internal static class Program
         var argv = args.Length == 0 ? new[] { "--help" } : args;
 
         return await app.RunAsync(argv);
+    }
+
+    private static void ConfigureAnsiConsoleForEnvironment(IConfiguration configuration)
+    {
+
+        bool noColor = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ARCANUM_NO_COLOR"));
+
+        bool stdoutRedirected = Console.IsOutputRedirected;
+
+        if (!noColor && !stdoutRedirected)
+        {
+            // Leave Spectre's auto-detected capabilities alone for normal interactive use.
+            return;
+        }
+
+        AnsiSupport ansi = noColor || stdoutRedirected ? AnsiSupport.No : AnsiSupport.Detect;
+
+        ColorSystemSupport colorSystem = noColor ? ColorSystemSupport.NoColors : ColorSystemSupport.Detect;
+
+        InteractionSupport interaction = stdoutRedirected ? InteractionSupport.No : InteractionSupport.Detect;
+
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = ansi,
+            ColorSystem = colorSystem,
+            Interactive = interaction,
+            Out = new AnsiConsoleOutput(Console.Out),
+        });
+
+        _ = configuration;
     }
 }

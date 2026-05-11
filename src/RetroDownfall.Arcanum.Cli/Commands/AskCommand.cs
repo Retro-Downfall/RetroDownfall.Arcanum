@@ -37,6 +37,11 @@ public sealed class AskCommand(
             return 1;
         }
 
+        if (!InferenceFlagBinder.TryParse(settings, palette, out InferenceFlagBinder.Parsed flags, out int flagsExit))
+        {
+            return flagsExit == 0 ? 1 : flagsExit;
+        }
+
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
@@ -99,7 +104,15 @@ public sealed class AskCommand(
                 snapshot,
                 conversationId,
                 UnattendedMode: settings.Unattended,
-                ChronosyncDelta: chronosyncDelta);
+                ChronosyncDelta: chronosyncDelta,
+                Temperature: flags.Temperature,
+                TopP: flags.TopP,
+                MaxOutputTokens: flags.MaxOutputTokens,
+                Stop: flags.Stop,
+                Seed: flags.Seed,
+                ResponseFormat: flags.ResponseFormat,
+                PresencePenalty: flags.PresencePenalty,
+                FrequencyPenalty: flags.FrequencyPenalty);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
@@ -226,7 +239,7 @@ public sealed class AskCommand(
         return string.Join(' ', parts);
     }
 
-    public sealed class Settings : CommandSettings
+    public sealed class Settings : CommandSettings, IInferenceFlagInputs
     {
         [CommandArgument(0, "[PROMPT...]")]
         public string[] PromptWords { get; init; } = [];
@@ -242,5 +255,37 @@ public sealed class AskCommand(
         [CommandOption("--unattended")]
         [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
         public bool Unattended { get; set; }
+
+        [CommandOption("--temperature <VALUE>")]
+        [Description("Sampling temperature 0\u20132 (lower = more deterministic).")]
+        public string? Temperature { get; init; }
+
+        [CommandOption("--top-p <VALUE>")]
+        [Description("Nucleus sampling cutoff 0\u20131.")]
+        public string? TopP { get; init; }
+
+        [CommandOption("--max-tokens <N>")]
+        [Description("Maximum output tokens for this turn.")]
+        public string? MaxTokens { get; init; }
+
+        [CommandOption("--seed <N>")]
+        [Description("Seed for sampling determinism (provider support varies).")]
+        public string? Seed { get; init; }
+
+        [CommandOption("--stop <SEQUENCE>")]
+        [Description("Stop sequence(s); pass --stop multiple times for several stops.")]
+        public string[]? Stop { get; init; }
+
+        [CommandOption("--response-format <KIND>")]
+        [Description("Response format: text | json_object | json_schema.")]
+        public string? ResponseFormat { get; init; }
+
+        [CommandOption("--presence-penalty <VALUE>")]
+        [Description("Presence penalty \u22122..2 (positive discourages repetition).")]
+        public string? PresencePenalty { get; init; }
+
+        [CommandOption("--frequency-penalty <VALUE>")]
+        [Description("Frequency penalty \u22122..2 (positive penalizes frequent tokens).")]
+        public string? FrequencyPenalty { get; init; }
     }
 }

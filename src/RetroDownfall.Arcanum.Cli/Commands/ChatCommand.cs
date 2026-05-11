@@ -29,7 +29,8 @@ public sealed class ChatCommand(
     CliSessionManager cliSession,
     MarkdigSpectreRenderer markdig,
     IGrimoireCliInitialization grimoireBootstrapper,
-    IServiceScopeFactory scopeFactory) : AsyncCommand<ChatCommand.Settings>
+    IServiceScopeFactory scopeFactory,
+    ICliEnvironment cliEnvironment) : AsyncCommand<ChatCommand.Settings>
 {
 
     private long MaxAttachFileSizeBytes =>
@@ -67,19 +68,22 @@ public sealed class ChatCommand(
             cliSession.ClearSession();
         }
 
+        if (!InferenceFlagBinder.TryParse(settings, themePalette, out InferenceFlagBinder.Parsed flags, out int flagsExit))
+        {
+            return flagsExit == 0 ? 1 : flagsExit;
+        }
+
         IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
 
         await grimoireBootstrapper.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        AnsiConsole.MarkupLine(
-            themePalette.MutedMarkup(
-                Markup.Escape("Arcanum chat — /help for slash commands, /exit to quit, Ctrl+C to cancel a turn.")));
 
         SessionMut session = new()
         {
             CurrentModel = string.IsNullOrWhiteSpace(settings.Model) ? null : settings.Model.Trim(),
             DisableTools = settings.NoTools,
         };
+
+        WriteStartupBanner(session, settings, flags);
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
@@ -93,7 +97,7 @@ public sealed class ChatCommand(
                 ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedFiles.Count} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
                 : $"{themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >";
 
-            if (arcanumSettings.Value.Cli.ShowManaBar
+            if (cliEnvironment.ShouldShowManaBar
                 && TryGetManaBarContextLimit(session, out int manaContextLimit))
             {
                 int used = session.SessionMana?.TotalTokens ?? 0;
@@ -160,10 +164,29 @@ public sealed class ChatCommand(
 
                 string tokenPath = match.Groups[1].Value;
 
-                string fullPath = Path.GetFullPath(Path.Combine(cwdForAt, tokenPath));
+                string fullPath;
+
+                try
+                {
+                    fullPath = Path.GetFullPath(Path.Combine(cwdForAt, tokenPath));
+                }
+                catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+                {
+                    AnsiConsole.MarkupLine(
+                        themePalette.ErrorLabelMarkup(
+                            Markup.Escape($"@{tokenPath}"),
+                            Markup.Escape($"could not be resolved as a path ({ex.GetType().Name}). The literal token was kept in the prompt.")));
+
+                    continue;
+                }
 
                 if (!File.Exists(fullPath))
                 {
+                    AnsiConsole.MarkupLine(
+                        themePalette.ErrorLabelMarkup(
+                            Markup.Escape($"@{tokenPath}"),
+                            Markup.Escape($"not found at {fullPath}; the literal token was kept in the prompt. Use /attach to browse interactively.")));
+
                     continue;
                 }
 
@@ -176,6 +199,9 @@ public sealed class ChatCommand(
                 else
                 {
                     stagedFiles.Add(fullPath);
+
+                    AnsiConsole.MarkupLine(
+                        $"{themePalette.HighlightMarkup(Markup.Escape("Staged:"))} {themePalette.TextMarkup(Markup.Escape(Path.GetFileName(fullPath)))}");
                 }
 
                 prompt = prompt.Remove(match.Index, match.Length);
@@ -243,6 +269,7 @@ public sealed class ChatCommand(
                     settings,
                     stderrConsole,
                     cancellationToken,
+                    flags,
                     attachedFilesForRequest)
                 .ConfigureAwait(false);
         }
@@ -674,6 +701,104 @@ public sealed class ChatCommand(
         return true;
     }
 
+    private void WriteStartupBanner(SessionMut session, Settings settings, InferenceFlagBinder.Parsed flags)
+    {
+
+        Table table = new();
+
+        table.Border(TableBorder.None);
+
+        table.HideHeaders();
+
+        table.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        table.AddColumn(new TableColumn(string.Empty));
+
+        string modelLabel = session.CurrentModel ?? arcanumSettings.Value.DefaultModel ?? "(first configured)";
+
+        table.AddRow(
+            themePalette.MutedMarkup(Markup.Escape("Model:")),
+            themePalette.HighlightMarkup(Markup.Escape(modelLabel)));
+
+        table.AddRow(
+            themePalette.MutedMarkup(Markup.Escape("MCP tools:")),
+            themePalette.TextMarkup(Markup.Escape(session.DisableTools ? "disabled (--no-tools)" : "enabled")));
+
+        if (settings.Unattended)
+        {
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("Mode:")),
+                themePalette.HighlightMarkup(Markup.Escape("unattended (ask_human auto-replies)")));
+        }
+
+        List<string> overrides = new();
+
+        if (flags.Temperature is { } t)
+        {
+            overrides.Add($"temperature={t.ToString("0.##", CultureInfo.InvariantCulture)}");
+        }
+
+        if (flags.TopP is { } tp)
+        {
+            overrides.Add($"top_p={tp.ToString("0.##", CultureInfo.InvariantCulture)}");
+        }
+
+        if (flags.MaxOutputTokens is { } mx)
+        {
+            overrides.Add($"max_tokens={mx.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (flags.Seed is { } sd)
+        {
+            overrides.Add($"seed={sd.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (flags.PresencePenalty is { } pp)
+        {
+            overrides.Add($"presence_penalty={pp.ToString("0.##", CultureInfo.InvariantCulture)}");
+        }
+
+        if (flags.FrequencyPenalty is { } fp)
+        {
+            overrides.Add($"frequency_penalty={fp.ToString("0.##", CultureInfo.InvariantCulture)}");
+        }
+
+        if (!string.IsNullOrEmpty(flags.ResponseFormat))
+        {
+            overrides.Add($"response_format={flags.ResponseFormat}");
+        }
+
+        if (flags.Stop is { Count: > 0 } stops)
+        {
+            overrides.Add($"stop=[{string.Join(", ", stops)}]");
+        }
+
+        if (overrides.Count > 0)
+        {
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("Inference:")),
+                themePalette.TextMarkup(Markup.Escape(string.Join("  ", overrides))));
+        }
+
+        table.AddRow(
+            themePalette.MutedMarkup(Markup.Escape("Tip:")),
+            themePalette.MutedMarkup(
+                Markup.Escape("/help for slash commands  -  /exit to quit  -  Ctrl+C to cancel a turn")));
+
+        Panel banner = new(table)
+        {
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Arcanum chat"))),
+            Border = BoxBorder.Rounded,
+            BorderStyle = themePalette.HeadingStyle(),
+            Padding = new Padding(1, 0, 1, 0),
+        };
+
+        AnsiConsole.Write(banner);
+
+        AnsiConsole.WriteLine();
+
+    }
+
     private void RenderHelp()
     {
         Table table = new();
@@ -1091,6 +1216,7 @@ public sealed class ChatCommand(
         Settings settings,
         IAnsiConsole stderrConsole,
         CancellationToken cancellationToken,
+        InferenceFlagBinder.Parsed flags,
         List<AttachedFileDto>? attachedFiles = null)
     {
         using CancellationTokenSource perTurnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1155,7 +1281,15 @@ public sealed class ChatCommand(
                 CliTerminalFormatting: true,
                 UnattendedMode: settings.Unattended,
                 AttachedFiles: attachedFiles,
-                ChronosyncDelta: chronosyncDelta);
+                ChronosyncDelta: chronosyncDelta,
+                Temperature: flags.Temperature,
+                TopP: flags.TopP,
+                MaxOutputTokens: flags.MaxOutputTokens,
+                Stop: flags.Stop,
+                Seed: flags.Seed,
+                ResponseFormat: flags.ResponseFormat,
+                PresencePenalty: flags.PresencePenalty,
+                FrequencyPenalty: flags.FrequencyPenalty);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {
@@ -1251,8 +1385,15 @@ public sealed class ChatCommand(
 
                         AnsiConsole.WriteLine();
 
-                        AnsiConsole.MarkupLine(
-                            themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(evt.Message)));
+                        Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(evt.Message))))
+                        {
+                            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Error"))),
+                            Border = BoxBorder.Rounded,
+                            BorderStyle = themePalette.ErrorStyle(),
+                            Padding = new Padding(1, 0, 1, 0),
+                        };
+
+                        AnsiConsole.Write(errorPanel);
 
                         errored = true;
 
@@ -1278,7 +1419,11 @@ public sealed class ChatCommand(
         {
             AnsiConsole.WriteLine();
 
-            AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape("<Cancelled>")));
+            AnsiConsole.Write(new Rule(themePalette.HighlightMarkup(Markup.Escape("\u29D6 Turn cancelled")))
+            {
+                Justification = Justify.Left,
+                Style = themePalette.MutedStyle(),
+            });
 
             return;
         }
@@ -1361,53 +1506,141 @@ public sealed class ChatCommand(
 
         int c = (running?.CompletionTokens ?? 0) + round.CompletionTokens;
 
-        return new ChatCompletionUsage(p, c, p + c);
+        // Prefer the provider-reported total when the round itself reports one; providers can
+        // (and do) include extra tokens beyond prompt+completion (reasoning tokens, cached
+        // prefills, tool-call framing, etc.) and re-summing locally would understate usage.
+        // When the provider returned 0/missing, fall back to the recomputed p+c so the bar
+        // still reflects observable activity.
+        int previousTotal = running?.TotalTokens ?? 0;
+
+        int roundTotal = round.TotalTokens > 0 ? round.TotalTokens : (round.PromptTokens + round.CompletionTokens);
+
+        int total = previousTotal + roundTotal;
+
+        if (total < p + c)
+        {
+            total = p + c;
+        }
+
+        return new ChatCompletionUsage(p, c, total);
     }
 
     private async Task TryShowManaPanelAsync(SessionMut session, CancellationToken cancellationToken)
     {
-        string sessionLine = session.SessionMana is null
-            ? "This session: (no recorded usage yet)"
-            : $"This session — prompt_tokens: {session.SessionMana.PromptTokens}, completion_tokens: {session.SessionMana.CompletionTokens}, total_tokens: {session.SessionMana.TotalTokens}";
+        int sessionPrompt = session.SessionMana?.PromptTokens ?? 0;
+
+        int sessionCompletion = session.SessionMana?.CompletionTokens ?? 0;
+
+        int sessionTotal = session.SessionMana?.TotalTokens ?? 0;
 
         Guid? activeId = cliSession.GetLastConversationId();
 
+        long lifetime = 0L;
+
+        string? lifetimeError = null;
+
+        if (activeId is not null)
+        {
+            Result<ConversationDetailDto> detailResult =
+                await apiClient.GetConversationAsync(activeId.Value, cancellationToken).ConfigureAwait(false);
+
+            if (detailResult.IsFailure)
+            {
+                lifetimeError = detailResult.Error.Message;
+            }
+            else
+            {
+                lifetime = detailResult.Value.TotalTokensUsed;
+            }
+        }
+
+        Table inner = new();
+
+        inner.Border(TableBorder.None);
+
+        inner.HideHeaders();
+
+        inner.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        inner.AddColumn(new TableColumn(string.Empty));
+
+        if (session.SessionMana is null)
+        {
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("This session:")),
+                themePalette.MutedMarkup(Markup.Escape("(no recorded usage yet)")));
+        }
+        else
+        {
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("prompt_tokens:")),
+                themePalette.TextMarkup(Markup.Escape(sessionPrompt.ToString("N0", CultureInfo.InvariantCulture))));
+
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("completion_tokens:")),
+                themePalette.TextMarkup(Markup.Escape(sessionCompletion.ToString("N0", CultureInfo.InvariantCulture))));
+
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("total_tokens (session):")),
+                themePalette.HighlightMarkup(Markup.Escape(sessionTotal.ToString("N0", CultureInfo.InvariantCulture))));
+        }
+
         if (activeId is null)
         {
-            AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape(sessionLine)));
-
-            AnsiConsole.MarkupLine(
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("Conversation lifetime:")),
                 themePalette.MutedMarkup(
-                    Markup.Escape("No active conversation — bind one with /resume to see lifetime Grimoire totals.")));
-
-            return;
+                    Markup.Escape("no active conversation \u2014 bind one with /resume to see lifetime Grimoire totals.")));
         }
-
-        Result<ConversationDetailDto> detailResult =
-            await apiClient.GetConversationAsync(activeId.Value, cancellationToken).ConfigureAwait(false);
-
-        if (detailResult.IsFailure)
+        else if (lifetimeError is not null)
         {
-            AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape(sessionLine)));
-
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(detailResult.Error.Message)));
-
-            return;
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("Conversation lifetime:")),
+                themePalette.ErrorMarkup(Markup.Escape(lifetimeError)));
+        }
+        else
+        {
+            inner.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("Conversation lifetime:")),
+                themePalette.HighlightMarkup(Markup.Escape(lifetime.ToString("N0", CultureInfo.InvariantCulture))));
         }
 
-        ConversationDetailDto detail = detailResult.Value;
-
-        string body =
-            $"{sessionLine}\n\nLifetime (Grimoire) total_tokens: {detail.TotalTokensUsed.ToString(CultureInfo.InvariantCulture)}";
-
-        Panel panel = new(new Markup(Markup.Escape(body)))
+        Panel headerPanel = new(inner)
         {
             Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Mana"))),
             Border = BoxBorder.Rounded,
             BorderStyle = themePalette.HighlightStyle(),
+            Padding = new Padding(1, 0, 1, 0),
         };
 
-        AnsiConsole.Write(panel);
+        AnsiConsole.Write(headerPanel);
+
+        // BarChart of session prompt / completion vs lifetime total (where available).
+        if (sessionPrompt + sessionCompletion + lifetime > 0)
+        {
+            BarChart chart = new BarChart()
+                .Width(60)
+                .Label(themePalette.MutedMarkup(Markup.Escape("token mix")));
+
+            if (sessionPrompt > 0)
+            {
+                chart = chart.AddItem("session prompt", sessionPrompt, themePalette.Highlight);
+            }
+
+            if (sessionCompletion > 0)
+            {
+                chart = chart.AddItem("session completion", sessionCompletion, themePalette.Heading);
+            }
+
+            if (lifetime > 0)
+            {
+                int safeLifetime = lifetime > int.MaxValue ? int.MaxValue : (int)lifetime;
+
+                chart = chart.AddItem("conversation lifetime", safeLifetime, themePalette.Muted);
+            }
+
+            AnsiConsole.Write(chart);
+        }
 
         AnsiConsole.WriteLine();
     }
@@ -1466,7 +1699,7 @@ public sealed class ChatCommand(
         AnsiConsole.WriteLine();
     }
 
-    public sealed class Settings : CommandSettings
+    public sealed class Settings : CommandSettings, IInferenceFlagInputs
     {
         [CommandOption("-m|--model")]
         [Description("The specific model to use for this inference request")]
@@ -1483,6 +1716,38 @@ public sealed class ChatCommand(
         [CommandOption("--unattended")]
         [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
         public bool Unattended { get; set; }
+
+        [CommandOption("--temperature <VALUE>")]
+        [Description("Sampling temperature 0\u20132 (lower = more deterministic). Applies to every turn.")]
+        public string? Temperature { get; init; }
+
+        [CommandOption("--top-p <VALUE>")]
+        [Description("Nucleus sampling cutoff 0\u20131. Applies to every turn.")]
+        public string? TopP { get; init; }
+
+        [CommandOption("--max-tokens <N>")]
+        [Description("Maximum output tokens per turn.")]
+        public string? MaxTokens { get; init; }
+
+        [CommandOption("--seed <N>")]
+        [Description("Seed for sampling determinism (provider support varies). Applies to every turn.")]
+        public string? Seed { get; init; }
+
+        [CommandOption("--stop <SEQUENCE>")]
+        [Description("Stop sequence(s); pass --stop multiple times for several stops.")]
+        public string[]? Stop { get; init; }
+
+        [CommandOption("--response-format <KIND>")]
+        [Description("Response format: text | json_object | json_schema.")]
+        public string? ResponseFormat { get; init; }
+
+        [CommandOption("--presence-penalty <VALUE>")]
+        [Description("Presence penalty \u22122..2.")]
+        public string? PresencePenalty { get; init; }
+
+        [CommandOption("--frequency-penalty <VALUE>")]
+        [Description("Frequency penalty \u22122..2.")]
+        public string? FrequencyPenalty { get; init; }
     }
 
 }
