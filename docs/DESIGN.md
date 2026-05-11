@@ -77,7 +77,6 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:DefaultModel` | `string?` | `null` | When non-empty, must match a `models` entry on some provider (see `ProviderResolver`); used when `PingRequest.Model` is omitted. If null/empty, the first model of the first provider is used. |
 | `Arcanum:FastModel` | `string?` | `null` | When non-empty, must match a `models` entry on some provider. **Campaign Logger** headless summarization passes this as `PingRequest.Model` when set; if null/empty, summarization falls back to `DefaultModel` then the first configured model (same resolution order as `ProviderResolver` for an explicit model). |
 | `Arcanum:Providers` | array | `[]` | Multi-provider hub. Each element: `name`, `type` (`Ollama` or `OpenAICompatible`), `endpoint`, `apiKey` (optional; use `ARCANUM_` env vars for secrets), `models` (string[]), `contextWindowLimit` (int, default **8192**, clamped via `ArcanumSettingClamps.ContextWindowLimit`). `OpenAICompatible` targets OpenAI-shaped HTTP APIs (DeepSeek, Groq, GitHub Models, LM Studio, etc.). |
-| `Arcanum:Bureau:Enabled` | `bool` | `false` | Placeholder for future Bureau integration. |
 | `Arcanum:CommLink:WebhookUrl` | `string` | `null` | Optional absolute URL for **Comm Link** outbound JSON `POST` alerts (`WebhookCommLinkDispatcher`). When unset, dispatchers log and return success without HTTP. |
 | `Arcanum:Daemon:Jobs` | array | `[]` | Unseen Servant background jobs (see `README.md`). Each entry: `name`, `intervalMinutes`, `targetSpell`, `enabled` (default `true`). Phase 2: runtime overrides via **`IUnseenServantPacer`** and MCP **`adjust_initiative`** (§5.5.2). Phase 4 (§5.5.3): when **`Arcanum:Intelligence:EnableLoreSystem`** is **`true`**, per-job lore key **`daemon_state_{job.Name}`** is pre-fetched and injected into the headless kickoff with **`scribe_lore`** instructions; when **`false`**, kickoff remains Phase 1 stateless (no lore read, no tool instructions). Phase 5 (§5.5.4): both kickoff variants instruct the model to call MCP **`use_commlink`** for high-alpha / critical operator alerts. |
 | `Arcanum:Intelligence:ExecuteCommandTimeoutSeconds` | `int` | `30` | Hard wall-clock cap for MCP `execute_command` and `run_spell_script` (clamped 1–600s); cooperative cancel also terminates spawned process trees immediately, independent of this timeout. |
@@ -227,7 +226,7 @@ The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (section 11)
 |---------|---------|
 | `serve` | Builds `WebApplication` with slim defaults, configures Kestrel, registers API services, runs the host (§5.3). |
 | `ask` | Single-prompt streaming inference via NDJSON. Resolves cwd, runs Eye of the World and Chronosync (scoped `IChronosyncEngine`), sends `PingRequest` with workspace context, `ChronosyncDelta`, and optional conversation continuation. |
-| `chat` | Interactive multi-turn REPL with Mana bar, slash commands (`/exit`, `/clear`, `/help`, `/new`, `/model`, `/look`, `/tools`, `/mcp`, `/arsenal`, `/history`, `/resume`, `/delete`, `/rest`, `/log`, `/memory`, `/summary`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering via `MarkdigSpectreRenderer`. When a **`MemoryCompressionNotice`** status is received, the Mana bar gains a persistent muted **Memory Compressed** suffix until **`/new`**. |
+| `chat` | Interactive multi-turn REPL with Mana bar, slash commands (`/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering via `MarkdigSpectreRenderer`. `/mcp reload` is parsed as the verb `/mcp` with the required argument `reload`; the verb alone prints a usage hint. When a **`MemoryCompressionNotice`** status is received, the Mana bar gains a persistent muted **Memory Compressed** suffix until **`/new`**. |
 | `look` | Prints `PatternSnapshot` from Eye of the World (no HTTP dependency). |
 | `doctor` | Environment diagnostics: assembly version, OS, runtime, Grimoire path checks, and API health probe with 2-second timeout. No infrastructure services required beyond `IHttpClientFactory`, `ISecretStore`, and `IOptions<ArcanumSettings>`. |
 | `lore list\|get\|set\|delete` | CRUD on `MageSettings` via `/api/lore`. |
@@ -789,7 +788,11 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.3 Security and identity
 
 - No user identity, sessions, or OAuth. Loopback + API key only.
-- API key rotation requires deleting `security.dat`, recreating Grimoire, and restarting.
+- **API key rotation is destructive.** The Grimoire SQLCipher passphrase is derived from the master API key via `GrimoireKeyDerivation.DerivePassphraseFromApiKey` (HKDF-SHA256 over the UTF-8 key bytes; constants `Arcanum.Grimoire.SQLCipher.salt.v1` / `Arcanum.Grimoire.SQLCipher.hkdf.v1`, 32-byte output). Rotating the master key changes the derived passphrase, so the existing on-disk Grimoire database becomes unreadable. The supported flow is:
+  1. Stop the host.
+  2. Move (or delete) `{ApplicationData}/arcanum/security.dat` and the encrypted Grimoire `.db` file under `~/.config/arcanum/`. Both **must** be replaced together — a new key cannot open the old database.
+  3. Restart `arcanum serve`. A new 32-byte random master key is generated, written via Data Protection, and printed once to stdout; a new empty Grimoire SQLite database is provisioned and migrated.
+  4. (Optional) restore conversations from the previous database into the new one only via the deliberate export/import path — there is no automatic key re-derivation that preserves the existing ciphertext.
 
 ### 16.4 Testing
 
