@@ -27,5 +27,5 @@ public sealed record PingRequest(
     float? PresencePenalty = null,
     float? FrequencyPenalty = null,
     string? User = null,
-    bool? ParallelToolCalls = null);
-
+    bool? ParallelToolCalls = null,
+    List<DataStreamPayload>? DataStreams = null);

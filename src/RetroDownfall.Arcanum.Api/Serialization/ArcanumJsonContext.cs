@@ -1,8 +1,8 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
-using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -103,5 +103,6 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(CommLinkMessageRequestDto))]
 [JsonSerializable(typeof(CommLinkSeverity))]
 [JsonSerializable(typeof(SemanticSpellResponse))]
-
+[JsonSerializable(typeof(DataStreamPayload))]
+[JsonSerializable(typeof(List<DataStreamPayload>))]
 public partial class ArcanumJsonContext : JsonSerializerContext;

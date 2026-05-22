@@ -603,21 +603,50 @@ The provider persists through `IGrimoireRepository`. When `conversationId` is se
 
 **Problem:** The API daemon's cwd is not the operator's shell cwd.
 
-**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `ConversationId`, optional `StatelessMessages` (`CoreChatMessage` transcript for enterprise or OpenAI-compatible callers without Grimoire thread replay), optional `AttachedFiles`, and optional `ChronosyncDelta` (`ChronosyncReport`). The CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before each HTTP call.
+**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional
+`ConversationId`, optional `StatelessMessages` (`CoreChatMessage` transcript for enterprise or OpenAI-compatible callers
+without Grimoire thread replay), optional `AttachedFiles`, optional `ChronosyncDelta` (`ChronosyncReport`), and optional
+`DataStreams` (`List<DataStreamPayload>?`; reserved for real-time JSON payload injection). The CLI resolves
+`Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local
+Grimoire, and populates these fields before each HTTP call.
 
 **CLI Grimoire bootstrap:** `ask` and `chat` call `IGrimoireCliInitialization` once per process so SQLCipher passphrase setup and first-run migrations match the API host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
 
-**`SystemPromptBuilder.Build` ordering:**
+**`SystemPromptBuilder.Build` ordering (DCI architecture):**
 
-1. Base persona.
-2. `### Workspace Context` / `### Table of Contents` (from `ContextSnapshot`).
-3. `### Chronosync Report (Temporal Delta)` (from `PingRequest.ChronosyncDelta` when it carries a prior snapshot time and a non-empty diff — new threads, missing threads, or domain change; uses `PreviousDomain` and current snapshot domain when available; omitted when null, no prior baseline, or zero net change).
-4. `### Master Codex (CODEX.md)` (global cascaded with optional local).
-5. `### Campaign Summary (compressed context)` (optional; only when read-time compression injects **`Conversation.Summary`** — placed after Codex, before the active spell).
-6. `### Active Operational Spell` (from `SemanticRouter` when spell routing runs; omitted when `SkipSpellRouting` is true).
-7. `### Available Spell Scripts` (when scripts exist).
-8. `### Attached Files for this Turn` (ephemeral, not persisted to Grimoire).
-9. `### Output Formatting Directive` (when `CliTerminalFormatting` is true — restricts model to headings, bold, italic, and code blocks for terminal rendering).
+**Position 0 — Base Persona (Preamble):** Raw text before any DCI block. Establishes identity, explains the DCI
+structure, and declares that INSTRUCTIONS override conflicting DATA — foundational behavior is set before the model
+encounters any block boundaries.
+
+**DATA (The "What") — Read-only state, immutable facts:**
+
+- When no data elements are present for a sub-section, the sterile placeholder `[None]` is emitted. Never an empty
+  block, never a chatty placeholder sentence — prevents smaller models from wasting attention compute hallucinating
+  about missing text.
+- `### Chronosync Report (Temporal Delta)` — delta vs Grimoire baseline (when available; from
+  `PingRequest.ChronosyncDelta` when it carries a prior snapshot time and a non-empty diff).
+- `### Attached Files for this Turn` — ephemeral, per-turn file contents (from `PingRequest.AttachedFiles`).
+- `### Data Stream: {StreamId}` — real-time JSON payloads (from `PingRequest.DataStreams`; reserved for future phase).
+
+**CONTEXT (The "Why/Who") — Situational awareness, rules, background, identity:**
+
+- `### Workspace Context` / `### Table of Contents` (from `ContextSnapshot`).
+- `### Master Codex (CODEX.md)` (persistent rules from global + local; when present).
+- `### Campaign Summary (compressed context)` (compressed history; only when read-time compression injects
+  `Conversation.Summary`).
+
+**INSTRUCTIONS (The "How") — Operational objective for this turn:**
+
+- `### Active Operational Spell ({Name})` (from `SemanticRouter` when spell routing runs; omitted when
+  `SkipSpellRouting` is true).
+- `### Available Spell Scripts` (when scripts exist under the active spell).
+- `### Output Formatting Directive` (when `CliTerminalFormatting` is true — restricts model to headings, bold, italic,
+  and code blocks for terminal rendering).
+
+**Allocation discipline:** `SystemPromptBuilder` uses a `StringBuilder` (initial capacity 2048) with chained
+`.Append()`/`.AppendLine()` calls exclusively. String interpolation (`$"{...}"`) is forbidden for large content blocks (
+Master Codex, Attached Files, Campaign Summary) — raw strings are passed through without intermediate concatenation to
+minimize GC pressure during high-velocity inference loops.
 
 The same `WorkingDirectory` scopes `McpConnectionManager`, `CodexReader`, and `SpellScanner`.
 
