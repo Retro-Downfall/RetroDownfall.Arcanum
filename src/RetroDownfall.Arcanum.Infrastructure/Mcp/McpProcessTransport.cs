@@ -42,6 +42,10 @@ internal sealed class McpProcessTransport : IMcpTransport
 
     private readonly IReadOnlyDictionary<string, string>? _environment;
 
+    private readonly bool _stripUserEnvironment;
+
+    private readonly string? _workingDirectory;
+
     private readonly McpJsonSerializerContext _json;
 
     private readonly Channel<McpInboundEnvelope> _inbound;
@@ -70,19 +74,28 @@ internal sealed class McpProcessTransport : IMcpTransport
     /// </summary>
     public Action<string>? OnStderrLine { get; init; }
 
+    /// <summary>
+    /// Optional callback when the child process exits and the inbound channel is completed.
+    /// </summary>
+    public Action? OnTransportEnded { get; init; }
+
     public McpProcessTransport(
         string fileName,
         string arguments,
         McpJsonSerializerContext? jsonContext = null,
         int inboundChannelCapacity = 256,
         IReadOnlyList<string>? argumentList = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        string? workingDirectory = null,
+        bool stripUserEnvironment = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         _fileName = fileName;
         _arguments = arguments;
         _argumentList = argumentList;
         _environment = environment;
+        _stripUserEnvironment = stripUserEnvironment;
+        _workingDirectory = workingDirectory;
         _json = jsonContext ?? McpJsonSerializerContext.Default;
 
         BoundedChannelOptions channelOptions = new(inboundChannelCapacity)
@@ -147,18 +160,22 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         }
 
-        if (_environment is not null)
+        IReadOnlyDictionary<string, string>? scrubbedEnvironment = McpSecurityLimits.ScrubProcessEnvironment(
+            _environment,
+            _stripUserEnvironment);
+
+        if (_stripUserEnvironment)
         {
 
-            foreach (KeyValuePair<string, string> kv in _environment)
+            psi.Environment.Clear();
+
+        }
+
+        if (scrubbedEnvironment is not null)
+        {
+
+            foreach (KeyValuePair<string, string> kv in scrubbedEnvironment)
             {
-
-                if (string.IsNullOrEmpty(kv.Key))
-                {
-
-                    continue;
-
-                }
 
                 psi.Environment[kv.Key] = kv.Value;
 
@@ -166,9 +183,19 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         }
 
+        if (!string.IsNullOrWhiteSpace(_workingDirectory))
+        {
+            psi.WorkingDirectory = _workingDirectory;
+        }
+
         Process process = new() { StartInfo = psi, EnableRaisingEvents = true };
 
-        process.Exited += (_, _) => _inbound.Writer.TryComplete();
+        process.Exited += (_, _) =>
+        {
+            _inbound.Writer.TryComplete();
+
+            OnTransportEnded?.Invoke();
+        };
 
         if (!process.Start())
         {
@@ -346,7 +373,22 @@ internal sealed class McpProcessTransport : IMcpTransport
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                string? line = await stdout.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                string? line;
+
+                try
+                {
+
+                    line = await McpSecurityLimits.ReadLineUtf8CappedAsync(stdout, cancellationToken).ConfigureAwait(false);
+
+                }
+                catch (JsonException ex)
+                {
+
+                    OnParseError?.Invoke("(line exceeds size cap)", ex);
+
+                    continue;
+
+                }
 
                 if (line is null)
                 {
@@ -399,7 +441,23 @@ internal sealed class McpProcessTransport : IMcpTransport
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                string? line = await stderr.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                string? line;
+
+                try
+                {
+
+                    line = await McpSecurityLimits.ReadLineUtf8CappedAsync(stderr, cancellationToken).ConfigureAwait(false);
+
+                }
+                catch (JsonException)
+                {
+
+                    OnStderrLine?.Invoke(
+                        $"[stderr line truncated: exceeded {McpSecurityLimits.MaxJsonRpcLineUtf8Bytes} UTF-8 bytes]");
+
+                    continue;
+
+                }
 
                 if (line is null)
                 {

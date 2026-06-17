@@ -1,0 +1,10 @@
+  Determining projects to restore...
+  Restored /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj (in 218 ms).
+  Restored /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj (in 224 ms).
+  Restored /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj (in 224 ms).
+  Restored /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj (in 245 ms).
+  RetroDownfall.Arcanum.Core -> /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Core/bin/Release/net10.0/RetroDownfall.Arcanum.Core.dll
+  RetroDownfall.Arcanum.Infrastructure -> /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Infrastructure/bin/Release/net10.0/RetroDownfall.Arcanum.Infrastructure.dll
+  RetroDownfall.Arcanum.Api -> /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Api/bin/Release/net10.0/RetroDownfall.Arcanum.Api.dll
+  RetroDownfall.Arcanum.Cli -> /Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Cli/bin/Release/net10.0/win-x64/RetroDownfall.Arcanum.Cli.dll
+/var/folders/6b/rz977tt52m95zpkqr8sbnv000000gn/T/cursor-sandbox-cache/6ed6ca511f2c233f71e9219d729928a3/nuget/microsoft.dotnet.ilcompiler/10.0.9/build/Microsoft.NETCore.Native.Publish.targets(63,5): error : Cross-OS native compilation is not supported. [/Users/mat/Source/apps/RetroDownfall.Arcanum/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj]

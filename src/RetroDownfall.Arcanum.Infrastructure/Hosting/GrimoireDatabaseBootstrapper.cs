@@ -1,25 +1,21 @@
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using SQLitePCL;
+using System.Security.Cryptography;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Shared first-run Grimoire initialization: SQLCipher passphrase, key probe, and migrations when the database file is absent.
+/// Shared first-run Grimoire initialization: SQLCipher passphrase, key probe, and embedded SQL schema migrations (AOT-safe).
 /// </summary>
 public static class GrimoireDatabaseBootstrapper
 {
-    [UnconditionalSuppressMessage(
-        "AOT",
-        "IL3050",
-        Justification = "MigrateAsync is RequiresDynamicCode; used only for first-run empty-database bootstrap with the compiled EF model—design-time model builds are not executed here.")]
 
     public static async Task EnsureInitializedAsync(
         ISecretStore secretStore,
@@ -35,16 +31,18 @@ public static class GrimoireDatabaseBootstrapper
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
+
             Log.Fatal("Grimoire startup aborted: master API key is not present. Persist a key before enabling the database.");
 
             Environment.FailFast("Arcanum Grimoire requires the master API key.");
+
         }
 
-        string passphrase = GrimoireKeyDerivation.DerivePassphraseFromApiKey(apiKey);
+        string dbPath = ArcanumPaths.GrimoireDatabaseFile;
+
+        string passphrase = await ResolveGrimoirePassphraseAsync(secretStore, apiKey, dbPath, cancellationToken).ConfigureAwait(false);
 
         passphraseSource.SetPassphrase(passphrase);
-
-        string dbPath = ArcanumPaths.GrimoireDatabaseFile;
 
         string connectionString = new SqliteConnectionStringBuilder
         {
@@ -59,6 +57,8 @@ public static class GrimoireDatabaseBootstrapper
                 await using SqliteConnection probe = new(connectionString);
 
                 await probe.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+                await SqliteConnectionPragmas.ApplyAsync(probe, cancellationToken).ConfigureAwait(false);
 
                 await using SqliteCommand cmd = probe.CreateCommand();
 
@@ -76,13 +76,58 @@ public static class GrimoireDatabaseBootstrapper
                 Environment.FailFast("Arcanum Grimoire database key verification failed.");
             }
         }
-        else
+
+        await using SqliteConnection migrationConnection = new(connectionString);
+
+        await migrationConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        await SqliteConnectionPragmas.ApplyAsync(migrationConnection, cancellationToken).ConfigureAwait(false);
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(migrationConnection, cancellationToken).ConfigureAwait(false);
+
+        await migrationConnection.CloseAsync().ConfigureAwait(false);
+
+        await using (AsyncServiceScope scope = scopeFactory.CreateAsyncScope())
         {
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+            IGrimoireDbReadiness readiness = scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>();
 
-            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
-
-            await db.Database.MigrateAsync(cancellationToken).ConfigureAwait(false);
+            readiness.MarkReady();
         }
     }
+
+    private static async Task<string> ResolveGrimoirePassphraseAsync(
+        ISecretStore secretStore,
+        string apiKey,
+        string dbPath,
+        CancellationToken cancellationToken)
+    {
+
+        string? dedicatedSecret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
+
+        if (!string.IsNullOrEmpty(dedicatedSecret))
+        {
+
+            return GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(dedicatedSecret);
+
+        }
+
+        if (!File.Exists(dbPath))
+        {
+
+            byte[] secretBytes = new byte[32];
+
+            RandomNumberGenerator.Fill(secretBytes);
+
+            string newSecret = Convert.ToBase64String(secretBytes);
+
+            await secretStore.SaveGrimoireEncryptionSecretAsync(newSecret).ConfigureAwait(false);
+
+            return GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(newSecret);
+
+        }
+
+        return GrimoireKeyDerivation.DerivePassphraseFromApiKey(apiKey);
+
+    }
+
 }

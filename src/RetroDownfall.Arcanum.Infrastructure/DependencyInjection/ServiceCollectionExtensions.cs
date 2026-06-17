@@ -6,14 +6,20 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Workspace;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
+using RetroDownfall.Arcanum.Infrastructure.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Daemons;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -21,7 +27,10 @@ using RetroDownfall.Arcanum.Infrastructure.Pattern;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 
@@ -92,10 +101,27 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers the Unseen Servant background scheduler (minute-based headless inference jobs).
+    /// Registers daemon job registry, execution history, runner, config-backed <see cref="IDaemonJob"/> instances, and the Unseen Servant scheduler.
     /// </summary>
-    public static IServiceCollection AddArcanumDaemonServices(this IServiceCollection services)
+    public static IServiceCollection AddArcanumDaemonServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddSingleton<IDaemonExecutionRepository, InMemoryDaemonExecutionRepository>();
+
+        services.AddSingleton<DaemonJobRegistry>();
+
+        services.AddSingleton<IDaemonRegistry>(static sp => sp.GetRequiredService<DaemonJobRegistry>());
+
+        services.AddSingleton<IDaemonRunner, DaemonRunner>();
+
+        List<UnseenServantJob> jobs = configuration.GetSection("Arcanum:Daemon:Jobs").Get<List<UnseenServantJob>>() ?? [];
+
+        foreach (UnseenServantJob job in jobs)
+        {
+            UnseenServantJob captured = job;
+
+            services.AddSingleton<IDaemonJob>(sp => new UnseenServantDaemonJob(captured, sp));
+        }
+
         services.AddHostedService<UnseenServantService>();
 
         return services;
@@ -108,22 +134,59 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
 
+        services.AddHostedService<PidFileService>();
+
+        services.AddSingleton<ConfigurationWriter>();
+
+        services.AddSingleton<ConfigurationValidator>();
+
         services.AddArcanumEyeOfTheWorld();
 
         services.AddArcanumSerilog();
-        services.AddDataProtection().SetApplicationName("ArcanumCore");
+
+        services.AddSingleton<InMemoryLogRingBuffer>();
+
+        services.AddSingleton<ILogRingBuffer>(static sp => sp.GetRequiredService<InMemoryLogRingBuffer>());
+
+        services.AddSingleton<ILogQueryService, LogQueryService>();
+
+        services.AddSingleton<IDaemonLogAttacher, DaemonLogAttacher>();
+
+        services.AddSingleton<SerilogLogRingBufferSink>();
+
+        services.AddDataProtection()
+            .SetApplicationName("ArcanumCore")
+            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+
+        services.AddSingleton<ConfigurationSecretProtector>();
+
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
+        services.AddSingleton<IWard, WardGate>();
+        services.AddSingleton<SanctumBreachStore>();
+        services.AddScoped<ISanctumGuard, SanctumGuard>();
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();
+        services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
-        services.AddDbContext<ArcanumDbContext>();
+
+        services.AddDbContextPool<ArcanumDbContext>(_ => { }, poolSize: 32);
+
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
+        services.AddScoped<ICampaignRepository, CampaignRepository>();
+        services.AddScoped<IPromptRepository, PromptRepository>();
+        services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());
         services.AddHostedService<CampaignLoggerBackgroundService>();
+        services.AddSingleton<ChronicleHub>();
+        services.AddSingleton<ApprenticeService>();
+        services.AddSingleton<IApprenticeRuntime>(static sp => sp.GetRequiredService<ApprenticeService>());
+        services.AddHostedService(static sp => sp.GetRequiredService<ApprenticeService>());
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
+        services.AddSingleton<InMemoryEventBus>();
+        services.AddSingleton<IEventBus>(static sp => sp.GetRequiredService<InMemoryEventBus>());
 
         services.AddHttpClient(
             WebhookCommLinkDispatcher.HttpClientName,
@@ -152,7 +215,53 @@ public static class ServiceCollectionExtensions
             return new CommLinkMultiplexer(sinks);
         });
 
+        services.AddSingleton<ITrustedMcpWorkspaceStore, TrustedMcpWorkspaceStore>();
+
         services.AddSingleton<McpConnectionManager>();
+
+        services.AddSingleton<IMcpConnectionManager>(static sp => sp.GetRequiredService<McpConnectionManager>());
+
+        services.AddHostedService<McpServerBootstrapHostedService>();
+
+        services.AddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
+
+        services.AddSingleton<IWorkspaceRegistry>(sp => new CampaignBackedWorkspaceRegistry(
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<IGrimoireDbReadiness>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+
+        services.AddScoped<ISessionRepository, SessionRepository>();
+
+        services.AddSingleton<SessionEventHub>();
+
+        services.AddSingleton<IFileSystemBrowser, PhysicalFileSystemBrowser>();
+
+        services.AddSingleton<ISpellRepository, SpellRepository>();
+
+        services.AddHttpClient(
+            GgufModelCache.HttpClientName,
+            (sp, client) =>
+            {
+                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+                int timeoutSeconds = ArcanumSettingClamps.LlamaModelDownloadTimeoutSeconds(
+                    opts.CurrentValue.LlamaCpp?.ModelDownloadTimeoutSeconds ?? new LlamaCppSettings().ModelDownloadTimeoutSeconds);
+
+                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+            });
+
+        services.AddSingleton<IGgufModelCache, GgufModelCache>();
+
+        services.AddSingleton<LlamaServerManager>();
+
+        services.AddSingleton<ILlamaServerManager>(static sp => sp.GetRequiredService<LlamaServerManager>());
+
+        services.AddHostedService<LlamaServerLifecycleHostedService>();
+
         return services;
     }
 }

@@ -5,6 +5,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
+using RetroDownfall.Arcanum.Cli.Commands.TheForge;
+using RetroDownfall.Arcanum.Cli.Commands.Llama;
 using RetroDownfall.Arcanum.Cli.Commands.Lore;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -38,6 +40,20 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreGetCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreSetCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoreDeleteCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LlamaPullCommand.Settings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(LlamaPullCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LlamaStartCommand.Settings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(LlamaStartCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LlamaStopCommand.Settings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(LlamaStopCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(LlamaStatusCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CampaignCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(SpellSearchCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(PromptRenderCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ApprenticeCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ApprenticeCreateCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ApprenticeStartCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ApprenticeChronicleCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(ArcanumApiClient))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CliTypeRegistrar))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CliSessionManager))]
@@ -49,6 +65,9 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+
+        AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupportEnabled", false);
+
         ServiceCollection services = new();
 
         ConfigurationManager configuration = new();
@@ -96,7 +115,9 @@ internal static class Program
 
         services.AddSingleton<MarkdigSpectreRenderer>();
 
-        services.AddDataProtection().SetApplicationName("ArcanumCore");
+        services.AddDataProtection()
+            .SetApplicationName("ArcanumCore")
+            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
 
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
 
@@ -149,6 +170,28 @@ internal static class Program
         services.AddTransient<LoreDeleteCommand>();
 
         services.AddTransient<DoctorCommand>();
+
+        services.AddTransient<LlamaPullCommand>();
+
+        services.AddTransient<LlamaStartCommand>();
+
+        services.AddTransient<LlamaStopCommand>();
+
+        services.AddTransient<LlamaStatusCommand>();
+
+        services.AddTransient<CampaignCommand>();
+
+        services.AddTransient<SpellSearchCommand>();
+
+        services.AddTransient<PromptRenderCommand>();
+
+        services.AddTransient<ApprenticeCommand>();
+
+        services.AddTransient<ApprenticeCreateCommand>();
+
+        services.AddTransient<ApprenticeStartCommand>();
+
+        services.AddTransient<ApprenticeChronicleCommand>();
 
         CliTypeRegistrar registrar = new(services);
 
@@ -213,6 +256,59 @@ internal static class Program
 
                 lore.AddCommand<LoreDeleteCommand>("delete")
                     .WithDescription("Delete a lore entry.");
+            });
+
+            config.AddBranch("llama", llama =>
+            {
+                llama.SetDescription("Manage local llama-server instances and GGUF model cache (requires arcanum serve).");
+
+                llama.AddCommand<LlamaPullCommand>("pull")
+                    .WithDescription("Download a GGUF model into the local cache.");
+
+                llama.AddCommand<LlamaStartCommand>("start")
+                    .WithDescription("Start llama-server for a cached model.");
+
+                llama.AddCommand<LlamaStopCommand>("stop")
+                    .WithDescription("Stop one or all llama-server instances.");
+
+                llama.AddCommand<LlamaStatusCommand>("status")
+                    .WithDescription("List running servers and cached models.");
+            });
+
+            config.AddCommand<CampaignCommand>("campaign")
+                .WithDescription("Print the /api/campaigns route table (The Forge stub; requires arcanum serve for HTTP calls).");
+
+            config.AddBranch("spell", spell =>
+            {
+                spell.SetDescription("The Forge spell utilities (stubs).");
+
+                spell.AddCommand<SpellSearchCommand>("search")
+                    .WithDescription("Print the /api/spells/search route table and related The Forge spell routes.");
+            });
+
+            config.AddBranch("prompt", prompt =>
+            {
+                prompt.SetDescription("The Forge prompt utilities (stubs).");
+
+                prompt.AddCommand<PromptRenderCommand>("render")
+                    .WithDescription("Print the /api/prompts/{id}/render route table and related prompt routes.");
+            });
+
+            config.AddBranch("apprentice", apprentice =>
+            {
+                apprentice.SetDescription("The Forge Apprentice orchestration (stubs).");
+
+                apprentice.AddCommand<ApprenticeCommand>("list")
+                    .WithDescription("Print all /api/apprentices routes.");
+
+                apprentice.AddCommand<ApprenticeCreateCommand>("create")
+                    .WithDescription("Print POST /api/apprentices route table.");
+
+                apprentice.AddCommand<ApprenticeStartCommand>("start")
+                    .WithDescription("Print POST /api/apprentices/{id}/start route table.");
+
+                apprentice.AddCommand<ApprenticeChronicleCommand>("chronicle")
+                    .WithDescription("Print GET /api/apprentices/{id}/chronicle route table.");
             });
 
         });

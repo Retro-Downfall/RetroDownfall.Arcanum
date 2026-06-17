@@ -11,9 +11,11 @@ using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -81,6 +83,8 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly IntelligenceSettings _settings;
 
+    private readonly long _maxFileReadSizeBytes;
+
     private readonly McpRequestCancellationBroker _requestCancellationBroker;
 
     private readonly string _executeCommandToolDescription;
@@ -96,6 +100,7 @@ internal sealed class ArcanumInternalToolServer
         int executeCommandTimeoutSecondsForDisplay,
         int listDirectoryMaxPaths,
         IntelligenceSettings intelligenceSettings,
+        long maxFileReadSizeBytes,
         McpRequestCancellationBroker requestCancellationBroker,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -151,6 +156,8 @@ internal sealed class ArcanumInternalToolServer
             + $"{listDirectoryMaxPaths} paths.";
 
         _settings = intelligenceSettings;
+
+        _maxFileReadSizeBytes = maxFileReadSizeBytes;
 
         _requestCancellationBroker = requestCancellationBroker;
 
@@ -222,7 +229,19 @@ internal sealed class ArcanumInternalToolServer
 
     private async Task HandleLineAsync(string line, CancellationToken cancellationToken)
     {
-        using JsonDocument doc = JsonDocument.Parse(line);
+
+        if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line))
+        {
+
+            _logger?.LogWarning(
+                "Arcanum internal MCP server rejected an inbound JSON-RPC line exceeding {MaxBytes} UTF-8 bytes.",
+                McpSecurityLimits.MaxJsonRpcLineUtf8Bytes);
+
+            return;
+
+        }
+
+        using JsonDocument doc = JsonDocument.Parse(line, McpSecurityLimits.JsonDocumentOptions);
 
         JsonElement root = doc.RootElement;
 
@@ -895,6 +914,65 @@ internal sealed class ArcanumInternalToolServer
         return new JsonRpcResponse { Id = rpcId, Result = element, Error = null };
     }
 
+    private async Task<ResourceLimits> ResolveResourceLimitsAsync(CancellationToken cancellationToken)
+    {
+        await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+        ISanctumGuard sanctumGuard = scope.ServiceProvider.GetRequiredService<ISanctumGuard>();
+
+        return await sanctumGuard
+            .GetEffectiveResourceLimitsForWorkspaceAsync(_workspaceRoot, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private McpToolsCallResultWire? TryRejectIfFileExceedsReadLimit(string absolutePath, string toolName)
+    {
+        long maxBytes = _maxFileReadSizeBytes;
+
+        try
+        {
+            long length = new FileInfo(absolutePath).Length;
+
+            if (length > maxBytes)
+            {
+                return ToolError(
+                    $"{toolName}: file size ({length} bytes) exceeds the maximum read limit ({maxBytes} bytes).");
+            }
+        }
+        catch (IOException ex)
+        {
+            _logger?.LogError(ex, "{ToolName}: could not inspect file size.", toolName);
+
+            return ToolError($"{toolName}: could not inspect the file size.");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger?.LogError(ex, "{ToolName}: access denied inspecting file size.", toolName);
+
+            return ToolError($"{toolName}: access denied.");
+        }
+
+        return null;
+    }
+
+    private static McpToolsCallResultWire? TryRejectIfWriteExceedsLimit(
+        string content,
+        int maxFileWriteMb,
+        string toolName)
+    {
+        long maxBytes = (long)maxFileWriteMb * 1024L * 1024L;
+
+        long byteCount = Encoding.UTF8.GetByteCount(content);
+
+        if (byteCount <= maxBytes)
+        {
+            return null;
+        }
+
+        return ToolError(
+            $"{toolName}: write size ({byteCount} bytes) exceeds the Sanctum MaxFileWriteMb limit ({maxFileWriteMb} MiB).");
+    }
+
     private McpToolsCallResultWire? TryRequireWorkspaceRoot()
     {
         if (string.IsNullOrWhiteSpace(_workspaceRoot))
@@ -958,6 +1036,22 @@ internal sealed class ArcanumInternalToolServer
         return true;
     }
 
+    private bool TryRevalidateBeforeIo(
+        string absolutePath,
+        out McpToolsCallResultWire? error)
+    {
+        error = null;
+
+        if (!ToolHelpers.RevalidatePathBeforeIo(_workspaceRoot!, absolutePath))
+        {
+            error = ToolError(PathEscapesSandboxMessage);
+
+            return false;
+        }
+
+        return true;
+    }
+
     private async Task<McpToolsCallResultWire> ExecuteReadFileChunkAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -993,12 +1087,38 @@ internal sealed class ArcanumInternalToolServer
                 $"read_file_chunk requires 1 <= startLine <= endLine; got startLine={args.StartLine}, endLine={args.EndLine}.");
         }
 
+        if (args.StartLine > McpSecurityLimits.ReadFileChunkMaxStartLine)
+        {
+            return ToolError(
+                $"read_file_chunk: startLine exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxStartLine}).");
+        }
+
+        int requestedLines = args.EndLine - args.StartLine + 1;
+
+        if (requestedLines > McpSecurityLimits.ReadFileChunkMaxLinesPerRequest)
+        {
+            return ToolError(
+                $"read_file_chunk: requested range ({requestedLines} lines) exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxLinesPerRequest} lines per request).");
+        }
+
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
             return resolveErr!;
         }
 
-        int take = args.EndLine - args.StartLine + 1;
+        if (!TryRevalidateBeforeIo(absolutePath, out McpToolsCallResultWire? revalidateErr))
+        {
+            return revalidateErr!;
+        }
+
+        McpToolsCallResultWire? sizeError = TryRejectIfFileExceedsReadLimit(absolutePath, "read_file_chunk");
+
+        if (sizeError is not null)
+        {
+            return sizeError;
+        }
+
+        int take = requestedLines;
 
         List<string> selected = new(take);
 
@@ -1089,6 +1209,20 @@ internal sealed class ArcanumInternalToolServer
             return resolveErr!;
         }
 
+        if (!TryRevalidateBeforeIo(absolutePath, out McpToolsCallResultWire? revalidateErr))
+        {
+            return revalidateErr!;
+        }
+
+        McpToolsCallResultWire? sizeError = TryRejectIfFileExceedsReadLimit(absolutePath, "replace_text_block");
+
+        if (sizeError is not null)
+        {
+            return sizeError;
+        }
+
+        ResourceLimits resourceLimits = await ResolveResourceLimitsAsync(cancellationToken).ConfigureAwait(false);
+
         string content;
 
         try
@@ -1129,6 +1263,16 @@ internal sealed class ArcanumInternalToolServer
         int occurrences = CountOccurrences(content, args.ExactSearchText);
 
         string updated = content.Replace(args.ExactSearchText, args.ReplacementText, StringComparison.Ordinal);
+
+        McpToolsCallResultWire? writeLimitError = TryRejectIfWriteExceedsLimit(
+            updated,
+            resourceLimits.MaxFileWriteMb,
+            "replace_text_block");
+
+        if (writeLimitError is not null)
+        {
+            return writeLimitError;
+        }
 
         try
         {
@@ -1193,6 +1337,23 @@ internal sealed class ArcanumInternalToolServer
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
             return resolveErr!;
+        }
+
+        if (!TryRevalidateBeforeIo(absolutePath, out McpToolsCallResultWire? revalidateErr))
+        {
+            return revalidateErr!;
+        }
+
+        ResourceLimits resourceLimits = await ResolveResourceLimitsAsync(cancellationToken).ConfigureAwait(false);
+
+        McpToolsCallResultWire? writeLimitError = TryRejectIfWriteExceedsLimit(
+            args.Content,
+            resourceLimits.MaxFileWriteMb,
+            "write_file");
+
+        if (writeLimitError is not null)
+        {
+            return writeLimitError;
         }
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
@@ -1276,6 +1437,11 @@ internal sealed class ArcanumInternalToolServer
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
             return Task.FromResult(resolveErr!);
+        }
+
+        if (!TryRevalidateBeforeIo(absolutePath, out McpToolsCallResultWire? revalidateErr))
+        {
+            return Task.FromResult(revalidateErr!);
         }
 
         try
@@ -1598,6 +1764,8 @@ internal sealed class ArcanumInternalToolServer
             {
                 TryKillProcessEntireTree(process);
 
+                await ObserveStreamReadTasksAsync(stdoutTask, stderrTask).ConfigureAwait(false);
+
                 if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
                     return ToolError(
@@ -1675,6 +1843,25 @@ internal sealed class ArcanumInternalToolServer
         finally
         {
             await killRegistration.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ObserveStreamReadTasksAsync(
+        Task<CappedOutput> stdoutTask,
+        Task<CappedOutput> stderrTask)
+    {
+        try
+        {
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 

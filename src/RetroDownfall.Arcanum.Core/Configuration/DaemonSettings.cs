@@ -17,4 +17,9 @@ public sealed record DaemonSettings
     /// </summary>
     public int ShutdownDrainTimeoutSeconds { get; init; } = 10;
 
+    /// <summary>
+    /// Maximum number of execution records retained per daemon in the in-memory history store.
+    /// </summary>
+    public int ExecutionHistoryLimit { get; init; } = 100;
+
 }

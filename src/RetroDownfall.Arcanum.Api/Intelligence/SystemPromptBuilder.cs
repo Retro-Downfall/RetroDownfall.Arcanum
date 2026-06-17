@@ -6,7 +6,7 @@ using RetroDownfall.Arcanum.Infrastructure.Workspace;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-internal static class SystemPromptBuilder
+public static class SystemPromptBuilder
 {
     private const string BasePersona =
         """
@@ -29,7 +29,7 @@ internal static class SystemPromptBuilder
 
     private const string NonePlaceholder = "[None]";
 
-    internal static string Build(
+    public static string Build(
         PingRequest request,
         string? codexContent,
         ParsedSpell? activeSpell = null,
@@ -203,6 +203,16 @@ internal static class SystemPromptBuilder
             sb.AppendLine();
             sb.Append(
                 "Output Formatting Directive: You are communicating via a raw CLI terminal. You must format your responses for readability in this environment. You are strictly permitted to use ONLY the following Markdown elements: Headings, Bold text, Italic text, and Code Blocks. Strictly avoid tables, blockquotes, inline HTML, or complex nested lists.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.AdditionalSystemPrompt))
+        {
+            hasInstructions = true;
+
+            sb.AppendLine();
+            sb.AppendLine("### Additional Instructions");
+            sb.AppendLine();
+            sb.Append(request.AdditionalSystemPrompt.Trim());
         }
 
         if (!hasInstructions)

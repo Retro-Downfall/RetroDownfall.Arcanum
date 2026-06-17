@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -34,133 +35,164 @@ public sealed class GrimoireRepository : IGrimoireRepository
         _arcOptions = arcOptions;
     }
 
-    public async Task<(Guid ConversationId, Guid AssistantMessageId)> BeginAssistantReplyAsync(
-        Guid? conversationId,
+    public async Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
+        Guid? sessionId,
         string prompt,
         string model,
         CancellationToken cancellationToken = default)
     {
-        Guid userMessageId = Guid.NewGuid();
-        Guid assistantMessageId = Guid.NewGuid();
-        DateTime now = DateTime.UtcNow;
-        bool useExistingThread = conversationId is { } existingId
-            && await _db.Conversations
+        Guid userEntryId = Guid.NewGuid();
+        Guid assistantEntryId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        bool useExistingThread = sessionId is { } existingId
+            && await _db.Sessions
                 .AnyAsync(c => c.Id == existingId, cancellationToken)
                 .ConfigureAwait(false);
         if (useExistingThread)
         {
-            Guid cid = conversationId!.Value;
-            _db.ChatMessages.Add(new ChatMessage
+            Guid sid = sessionId!.Value;
+
+            await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+                await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
             {
-                Id = userMessageId,
-                ConversationId = cid,
-                Role = MessageRole.User,
-                Content = prompt,
-                ModelUsed = model,
-                Timestamp = now,
-            });
-            _db.ChatMessages.Add(new ChatMessage
+                _db.Entries.Add(new Entry
+                {
+                    Id = userEntryId,
+                    SessionId = sid,
+                    Role = MessageRole.User,
+                    Content = prompt,
+                    ModelUsed = model,
+                    CreatedAt = now,
+                });
+
+                _db.Entries.Add(new Entry
+                {
+                    Id = assistantEntryId,
+                    SessionId = sid,
+                    Role = MessageRole.Assistant,
+                    Content = string.Empty,
+                    ModelUsed = model,
+                    CreatedAt = now,
+                });
+
+                await _db.Sessions
+                    .Where(s => s.Id == sid)
+                    .ExecuteUpdateAsync(
+                        s => s.SetProperty(x => x.UpdatedAt, now),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+                await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return (sid, assistantEntryId);
+            }
+            catch
             {
-                Id = assistantMessageId,
-                ConversationId = cid,
-                Role = MessageRole.Assistant,
-                Content = string.Empty,
-                ModelUsed = model,
-                Timestamp = now,
-            });
-            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return (cid, assistantMessageId);
+                await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                throw;
+            }
         }
-        // Stale or missing conversation id: start a new thread (same as null conversationId).
-        Guid newConversationId = Guid.NewGuid();
-        _db.Conversations.Add(new Conversation
+
+        Guid newSessionId = Guid.NewGuid();
+        _db.Sessions.Add(new Session
         {
-            Id = newConversationId,
+            Id = newSessionId,
             CreatedAt = now,
+            UpdatedAt = now,
+            Status = "active",
             Title = TruncateTitle(prompt),
         });
-        _db.ChatMessages.Add(new ChatMessage
+        _db.Entries.Add(new Entry
         {
-            Id = userMessageId,
-            ConversationId = newConversationId,
+            Id = userEntryId,
+            SessionId = newSessionId,
             Role = MessageRole.User,
             Content = prompt,
             ModelUsed = model,
-            Timestamp = now,
+            CreatedAt = now,
         });
-        _db.ChatMessages.Add(new ChatMessage
+        _db.Entries.Add(new Entry
         {
-            Id = assistantMessageId,
-            ConversationId = newConversationId,
+            Id = assistantEntryId,
+            SessionId = newSessionId,
             Role = MessageRole.Assistant,
             Content = string.Empty,
             ModelUsed = model,
-            Timestamp = now,
+            CreatedAt = now,
         });
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return (newConversationId, assistantMessageId);
+        return (newSessionId, assistantEntryId);
     }
 
-    public async Task FinalizeAssistantMessageAsync(
-        Guid assistantMessageId,
+    public async Task FinalizeAssistantEntryAsync(
+        Guid assistantEntryId,
         string fullContent,
         CancellationToken cancellationToken = default)
     {
-        DateTime now = DateTime.UtcNow;
-
-        int updated = await _db.ChatMessages
-            .Where(m => m.Id == assistantMessageId)
+        int updated = await _db.Entries
+            .Where(m => m.Id == assistantEntryId)
             .ExecuteUpdateAsync(
-                s => s
-                    .SetProperty(m => m.Content, fullContent)
-                    .SetProperty(m => m.Timestamp, now),
+                s => s.SetProperty(m => m.Content, fullContent),
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (updated == 0)
         {
             _logger.LogWarning(
-                "FinalizeAssistantMessageAsync updated 0 rows for assistant message {AssistantMessageId}.",
-                assistantMessageId);
+                "FinalizeAssistantEntryAsync updated 0 rows for assistant entry {AssistantEntryId}.",
+                assistantEntryId);
 
             throw new InvalidOperationException(
-                "Assistant message could not be finalized; no matching row was updated in Grimoire.");
+                "Assistant entry could not be finalized; no matching row was updated in Grimoire.");
         }
     }
 
     public async Task AppendToolInteractionAsync(
-        Guid conversationId,
+        Guid sessionId,
         string toolName,
         string arguments,
         string result,
         string modelUsed,
         CancellationToken cancellationToken = default)
     {
-        DateTime now = DateTime.UtcNow;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             string callLine = $"[ToolCall: {toolName}({arguments})]";
             string resultLine = $"[ToolResult: {result}]";
-            _db.ChatMessages.Add(new ChatMessage
+            _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
-                ConversationId = conversationId,
+                SessionId = sessionId,
                 Role = MessageRole.Assistant,
                 Content = callLine,
                 ModelUsed = modelUsed,
-                Timestamp = now,
+                CreatedAt = now,
+                ToolName = toolName,
+                ToolArguments = arguments,
             });
-            _db.ChatMessages.Add(new ChatMessage
+            _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
-                ConversationId = conversationId,
+                SessionId = sessionId,
                 Role = MessageRole.System,
                 Content = resultLine,
                 ModelUsed = modelUsed,
-                Timestamp = now,
+                CreatedAt = now,
             });
+            await _db.Sessions
+                .Where(s => s.Id == sessionId)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(x => x.UpdatedAt, now),
+                    cancellationToken)
+                .ConfigureAwait(false);
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -177,35 +209,37 @@ public sealed class GrimoireRepository : IGrimoireRepository
         string modelUsed,
         CancellationToken cancellationToken = default)
     {
-        Guid conversationId = Guid.NewGuid();
-        DateTime now = DateTime.UtcNow;
+        Guid sessionId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _db.Conversations.Add(new Conversation
+            _db.Sessions.Add(new Session
             {
-                Id = conversationId,
+                Id = sessionId,
                 CreatedAt = now,
+                UpdatedAt = now,
+                Status = "active",
                 Title = TruncateTitle(userPrompt),
             });
-            _db.ChatMessages.Add(new ChatMessage
+            _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
-                ConversationId = conversationId,
+                SessionId = sessionId,
                 Role = MessageRole.User,
                 Content = userPrompt,
                 ModelUsed = modelUsed,
-                Timestamp = now,
+                CreatedAt = now,
             });
-            _db.ChatMessages.Add(new ChatMessage
+            _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
-                ConversationId = conversationId,
+                SessionId = sessionId,
                 Role = MessageRole.Assistant,
                 Content = assistantText,
                 ModelUsed = modelUsed,
-                Timestamp = now,
+                CreatedAt = now,
             });
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -217,57 +251,19 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
     }
 
-    public async Task<IReadOnlyList<ConversationSummaryDto>> ListRecentConversationsAsync(
-        int take,
-        CancellationToken cancellationToken = default)
-    {
-        if (take <= 0)
-        {
-            return Array.Empty<ConversationSummaryDto>();
-        }
-
-        var rows = await _db.Conversations
-            .AsNoTracking()
-            .OrderByDescending(c => c.Messages.Max(m => (DateTime?)m.Timestamp) ?? c.CreatedAt)
-            .Select(c => new
-            {
-                c.Id,
-                c.CreatedAt,
-                c.TotalTokensUsed,
-                LastUpdate = c.Messages.Max(m => (DateTime?)m.Timestamp),
-                FirstMsg = c.Messages.OrderBy(m => m.Timestamp).Select(m => m.Content).FirstOrDefault(),
-            })
-            .Take(take)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        List<ConversationSummaryDto> result = new(rows.Count);
-
-        foreach (var row in rows)
-        {
-            DateTime updatedAtUtc = row.LastUpdate ?? row.CreatedAt;
-
-            string snippet = BuildSnippet(row.FirstMsg);
-
-            result.Add(new ConversationSummaryDto(row.Id, row.CreatedAt, updatedAtUtc, snippet, row.TotalTokensUsed));
-        }
-
-        return result;
-    }
-
-    public async Task<int> DeleteConversationAsync(Guid conversationId, CancellationToken cancellationToken = default)
+    public async Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        _ = await _db.ChatMessages
-            .Where(m => m.ConversationId == conversationId)
+        _ = await _db.Entries
+            .Where(m => m.SessionId == sessionId)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        int removed = await _db.Conversations
-            .Where(c => c.Id == conversationId)
+        int removed = await _db.Sessions
+            .Where(c => c.Id == sessionId)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -276,16 +272,16 @@ public sealed class GrimoireRepository : IGrimoireRepository
         return removed;
     }
 
-    public async Task<Conversation?> GetConversationAsync(
+    public async Task<Session?> GetSessionAsync(
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        Conversation? conversation = await _db.Conversations
+        Session? session = await _db.Sessions
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
             .ConfigureAwait(false);
 
-        if (conversation is null)
+        if (session is null)
         {
             return null;
         }
@@ -293,39 +289,27 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<ChatMessage> recentDescending = await _db.ChatMessages
+        List<Entry> recentDescending = await _db.Entries
             .AsNoTracking()
-            .Where(m => m.ConversationId == id)
-            .OrderByDescending(m => m.Timestamp)
+            .Where(m => m.SessionId == id)
+            .OrderByDescending(m => m.CreatedAt)
             .Take(maxMessages)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
         recentDescending.Reverse();
 
-        conversation.Messages = recentDescending;
+        session.Entries = recentDescending;
 
-        return conversation;
+        return session;
     }
 
-    public async Task<ConversationDetailDto?> GetConversationDetailAsync(
-        Guid id,
+    public async Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(
+        Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-        return await _db.Conversations
-            .AsNoTracking()
-            .Where(c => c.Id == id)
-            .Select(c => new ConversationDetailDto(c.Id, c.Title, c.CreatedAt, c.Summary, c.TotalTokensUsed))
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    public async Task<List<ConversationMessageDto>?> GetConversationMessagesAsync(
-        Guid conversationId,
-        CancellationToken cancellationToken = default)
-    {
-        bool exists = await _db.Conversations
-            .AnyAsync(c => c.Id == conversationId, cancellationToken)
+        bool exists = await _db.Sessions
+            .AnyAsync(c => c.Id == sessionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (!exists)
@@ -333,12 +317,63 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return null;
         }
 
-        return await _db.ChatMessages
+        int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
+
+        List<GrimoireEntryDto> recentDescending = await _db.Entries
             .AsNoTracking()
-            .Where(m => m.ConversationId == conversationId)
-            .OrderBy(m => m.Timestamp)
-            .Select(m => new ConversationMessageDto(m.Id, m.Role, m.Content, m.ModelUsed, m.Timestamp))
+            .Where(m => m.SessionId == sessionId)
+            .OrderByDescending(m => m.CreatedAt)
+            .Take(maxMessages)
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
             .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        recentDescending.Reverse();
+
+        return recentDescending;
+    }
+
+    public async Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(
+        Guid sessionId,
+        int takeLast,
+        CancellationToken cancellationToken = default)
+    {
+        bool exists = await _db.Sessions
+            .AnyAsync(c => c.Id == sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!exists)
+        {
+            return null;
+        }
+
+        int clampedTake = Math.Max(1, takeLast);
+
+        List<GrimoireEntryDto> recentDescending = await _db.Entries
+            .AsNoTracking()
+            .Where(m => m.SessionId == sessionId)
+            .OrderByDescending(m => m.CreatedAt)
+            .Take(clampedTake)
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        recentDescending.Reverse();
+
+        return recentDescending;
+    }
+
+    public async Task<GrimoireEntryDto?> GetEntryByIdAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default)
+    {
+        return await _db.Entries
+            .AsNoTracking()
+            .Where(m => m.SessionId == sessionId && m.Id == entryId)
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -352,12 +387,14 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .ConfigureAwait(false);
     }
 
-    public async Task ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default)
+    public async Task<LoreDto> ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default)
     {
         DateTime now = DateTime.UtcNow;
+
         MageSetting? existing = await _db.MageSettings
             .FirstOrDefaultAsync(s => s.Key == key, cancellationToken)
             .ConfigureAwait(false);
+
         if (existing is null)
         {
             _db.MageSettings.Add(
@@ -371,10 +408,13 @@ public sealed class GrimoireRepository : IGrimoireRepository
         else
         {
             existing.Value = value;
+
             existing.UpdatedAt = now;
         }
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        return new LoreDto(key, value, now);
     }
 
     public async Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default)
@@ -385,14 +425,37 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .ConfigureAwait(false) > 0;
     }
 
-    public async Task<List<LoreDto>> ListLoreAsync(CancellationToken cancellationToken = default)
+    public async Task<ListPageResult<LoreDto>> ListLoreAsync(
+        int? limit = null,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
     {
-        return await _db.MageSettings
+        GrimoireSettings settings = _arcOptions.Value.Grimoire ?? new GrimoireSettings();
+
+        int pageSize = ArcanumSettingClamps.ListQueryLimit(
+            limit ?? settings.DefaultLoreListLimit);
+
+        int skip = Math.Max(0, offset);
+
+        List<LoreDto> page = await _db.MageSettings
             .AsNoTracking()
             .OrderBy(m => m.Key)
+            .Skip(skip)
+            .Take(pageSize + 1)
             .Select(m => new LoreDto(m.Key, m.Value, m.UpdatedAt))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        bool hasMore = page.Count > pageSize;
+
+        if (hasMore)
+        {
+            page = page.Take(pageSize).ToList();
+        }
+
+        int? nextOffset = hasMore ? skip + pageSize : null;
+
+        return new ListPageResult<LoreDto>(page.ToArray(), hasMore, nextOffset);
     }
 
     public async Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default)
@@ -422,7 +485,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return "Archive search query is too long. Use a shorter phrase.";
         }
 
-        string matchQuery = SanitizeFtsMatchQuery(trimmed);
+        string matchQuery = FtsMatchQuerySanitizer.Sanitize(trimmed);
 
         if (string.IsNullOrEmpty(matchQuery))
         {
@@ -444,9 +507,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             cmd.CommandText =
                 """
-                SELECT c."Role", c."Content", c."Timestamp"
-                FROM "ChatMessages_fts" AS f
-                INNER JOIN "ChatMessages" AS c ON c."Id" = f."Id"
+                SELECT c."Role", c."Content", c."CreatedAt"
+                FROM "Entries_fts" AS f
+                INNER JOIN "Entries" AS c ON c."Id" = f."Id"
                 WHERE f MATCH @query
                 ORDER BY rank
                 LIMIT @limit
@@ -484,7 +547,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
                 string content = reader.GetString(1);
 
-                DateTime timestamp = reader.GetDateTime(2);
+                DateTimeOffset timestamp = reader.GetFieldValue<DateTimeOffset>(2);
 
                 _ = sb.Append('[')
                     .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
@@ -504,27 +567,91 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
     }
 
-    public async Task<List<Guid>> GetConversationsNeedingSummarizationAsync(
+    public async Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
         int threshold,
         DateTime idleCutoff,
         CancellationToken cancellationToken = default)
     {
-        return await _db.Conversations
+        DbConnection connection = _db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            SELECT agg."SessionId"
+            FROM (
+                SELECT e."SessionId",
+                       SUM(CASE
+                           WHEN e."CreatedAt" > COALESCE(s."LastSummarizedMessageAt", '0001-01-01 00:00:00')
+                           THEN 1
+                           ELSE 0
+                       END) AS unsummarized_count,
+                       MAX(e."CreatedAt") AS max_created
+                FROM "Entries" e
+                INNER JOIN "Sessions" s ON s."Id" = e."SessionId"
+                GROUP BY e."SessionId"
+            ) AS agg
+            WHERE agg.unsummarized_count > @threshold
+               OR (agg.unsummarized_count > 0 AND agg.max_created < @idleCutoff)
+            """;
+
+        DbParameter pThreshold = cmd.CreateParameter();
+
+        pThreshold.ParameterName = "@threshold";
+
+        pThreshold.Value = threshold;
+
+        cmd.Parameters.Add(pThreshold);
+
+        DbParameter pIdleCutoff = cmd.CreateParameter();
+
+        pIdleCutoff.ParameterName = "@idleCutoff";
+
+        pIdleCutoff.Value = new DateTimeOffset(idleCutoff, TimeSpan.Zero);
+
+        cmd.Parameters.Add(pIdleCutoff);
+
+        List<Guid> sessionIds = [];
+
+        await using DbDataReader reader = await cmd
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            sessionIds.Add(reader.GetGuid(0));
+        }
+
+        return sessionIds;
+    }
+
+    public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
+        Guid sessionId,
+        DateTime watermark,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        int take = Math.Max(1, batchSize);
+
+        return await _db.Entries
             .AsNoTracking()
-            .Where(c =>
-                c.Messages.Count(m => m.Timestamp > (c.LastSummarizedMessageAt ?? DateTime.MinValue)) > threshold
-                || (c.Messages.Any(m => m.Timestamp > (c.LastSummarizedMessageAt ?? DateTime.MinValue))
-                    && c.Messages.Max(m => (DateTime?)m.Timestamp) < idleCutoff))
-            .Select(c => c.Id)
+            .Where(m => m.SessionId == sessionId && m.CreatedAt > watermark)
+            .OrderBy(m => m.CreatedAt)
+            .Take(take)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
-    public Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default) =>
-        _db.Conversations.AnyAsync(c => c.Id == conversationId, cancellationToken);
+    public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+        _db.Sessions.AnyAsync(c => c.Id == sessionId, cancellationToken);
 
-    public async Task IncrementConversationTokensAsync(
-        Guid conversationId,
+    public async Task IncrementSessionTokensAsync(
+        Guid sessionId,
         long totalTokens,
         CancellationToken cancellationToken = default)
     {
@@ -533,8 +660,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return;
         }
 
-        _ = await _db.Conversations
-            .Where(c => c.Id == conversationId)
+        _ = await _db.Sessions
+            .Where(c => c.Id == sessionId)
             .ExecuteUpdateAsync(
                 s => s.SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens),
                 cancellationToken)
@@ -546,6 +673,26 @@ public sealed class GrimoireRepository : IGrimoireRepository
         _db.WorkspaceContexts.Add(context);
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
+            _arcOptions.Value.Grimoire.WorkspaceContextRetentionCount);
+
+        List<Guid> idsToKeep = await _db.WorkspaceContexts
+            .AsNoTracking()
+            .Where(w => w.WorkspacePath == context.WorkspacePath)
+            .OrderByDescending(w => w.CreatedAt)
+            .Take(retain)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (idsToKeep.Count >= retain)
+        {
+            _ = await _db.WorkspaceContexts
+                .Where(w => w.WorkspacePath == context.WorkspacePath && !idsToKeep.Contains(w.Id))
+                .ExecuteDeleteAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     public async Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(
@@ -560,43 +707,31 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .ConfigureAwait(false);
     }
 
-    public async Task AdvanceCampaignLogWatermarkAsync(Guid conversationId, CancellationToken cancellationToken = default)
+    public async Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
-        bool exists = await _db.Conversations
-            .AnyAsync(c => c.Id == conversationId, cancellationToken)
-            .ConfigureAwait(false);
+        DateTime utcNow = DateTime.UtcNow;
 
-        if (!exists)
-        {
-            return;
-        }
-
-        DateTime? latestMessageUtc = await _db.ChatMessages
-            .AsNoTracking()
-            .Where(m => m.ConversationId == conversationId)
-            .OrderByDescending(m => m.Timestamp)
-            .Select(m => (DateTime?)m.Timestamp)
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        DateTime watermark = latestMessageUtc ?? DateTime.UtcNow;
-
-        await _db.Conversations
-            .Where(c => c.Id == conversationId)
+        _ = await _db.Sessions
+            .Where(c => c.Id == sessionId)
             .ExecuteUpdateAsync(
-                s => s.SetProperty(c => c.LastSummarizedMessageAt, watermark),
+                s => s.SetProperty(
+                    c => c.LastSummarizedMessageAt,
+                    c => _db.Entries
+                        .Where(e => e.SessionId == c.Id)
+                        .Select(e => (DateTime?)e.CreatedAt.UtcDateTime)
+                        .Max() ?? utcNow),
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
-    public async Task UpdateConversationCampaignRollupAsync(
-        Guid conversationId,
+    public async Task UpdateSessionCampaignRollupAsync(
+        Guid sessionId,
         string summary,
         DateTime lastSummarizedMessageAt,
         CancellationToken cancellationToken = default)
     {
-        bool exists = await _db.Conversations
-            .AnyAsync(c => c.Id == conversationId, cancellationToken)
+        bool exists = await _db.Sessions
+            .AnyAsync(c => c.Id == sessionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (!exists)
@@ -604,49 +739,14 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return;
         }
 
-        await _db.Conversations
-            .Where(c => c.Id == conversationId)
+        await _db.Sessions
+            .Where(c => c.Id == sessionId)
             .ExecuteUpdateAsync(
                 s => s
                     .SetProperty(c => c.Summary, summary)
                     .SetProperty(c => c.LastSummarizedMessageAt, lastSummarizedMessageAt),
                 cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Reduces FTS5 syntax injection / parse errors: keep token characters and spaces (implicit AND between tokens).
-    /// </summary>
-    private static string SanitizeFtsMatchQuery(string query)
-    {
-        StringBuilder sb = new(query.Length);
-
-        bool pendingSpace = false;
-
-        foreach (char c in query)
-        {
-            if (char.IsLetterOrDigit(c) || c == '_')
-            {
-                if (pendingSpace && sb.Length > 0)
-                {
-                    _ = sb.Append(' ');
-                }
-
-                pendingSpace = false;
-
-                _ = sb.Append(c);
-            }
-            else if (char.IsWhiteSpace(c))
-            {
-                pendingSpace = sb.Length > 0;
-            }
-            else
-            {
-                pendingSpace = sb.Length > 0;
-            }
-        }
-
-        return sb.ToString().Trim();
     }
 
     private static string TruncateTitle(string prompt)
@@ -656,13 +756,4 @@ public sealed class GrimoireRepository : IGrimoireRepository
         return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
     }
 
-    private static string BuildSnippet(string? firstMsg)
-    {
-        if (string.IsNullOrEmpty(firstMsg))
-        {
-            return string.Empty;
-        }
-
-        return firstMsg.Length > 50 ? string.Concat(firstMsg.AsSpan(0, 50), "...") : firstMsg;
-    }
 }

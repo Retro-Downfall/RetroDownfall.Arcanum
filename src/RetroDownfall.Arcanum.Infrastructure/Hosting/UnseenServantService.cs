@@ -1,13 +1,11 @@
 using System.Collections.Concurrent;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -16,19 +14,23 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 internal sealed class UnseenServantService(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    IServiceScopeFactory scopeFactory,
     IUnseenServantPacer pacer,
+    IDaemonRunner daemonRunner,
     ILogger<UnseenServantService> logger) : BackgroundService
 {
     /// <summary>
     /// Phase 1: last completion timestamps are process-local only. After a host restart, every enabled job
-    /// has no entry here and is treated as due on the first <see cref="PeriodicTimer"/> tick (no persisted watermark).
+    /// has no entry here and is treated as due once startup jitter elapses (no persisted watermark).
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunUtc = new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _firstDispatchAfterUtc = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, byte> _runningJobs = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<Guid, Task> _activeJobTasks = new();
+
+    private readonly DateTimeOffset _startupUtc = DateTimeOffset.UtcNow;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -83,7 +85,7 @@ internal sealed class UnseenServantService(
                     job.Name,
                     maxConcurrent);
 
-                break;
+                continue;
             }
 
             string key = JobTrackingKey(job);
@@ -91,6 +93,25 @@ internal sealed class UnseenServantService(
             if (!_runningJobs.TryAdd(key, 0))
             {
                 continue;
+            }
+
+            if (!_lastRunUtc.ContainsKey(key))
+            {
+                DateTimeOffset firstAfter = _firstDispatchAfterUtc.GetOrAdd(
+                    key,
+                    _ => _startupUtc.AddSeconds(Random.Shared.Next(0, 60)));
+
+                if (now < firstAfter)
+                {
+                    logger.LogDebug(
+                        "Unseen Servant deferring job {JobName}: startup jitter until {FirstAfter:o}.",
+                        job.Name,
+                        firstAfter);
+
+                    _ = _runningJobs.TryRemove(key, out _);
+
+                    continue;
+                }
             }
 
             int intervalMinutes = ArcanumSettingClamps.UnseenServantIntervalMinutes(pacer.GetEffectiveInterval(job));
@@ -107,6 +128,8 @@ internal sealed class UnseenServantService(
 
             Guid taskId = Guid.NewGuid();
 
+            _activeJobTasks[taskId] = Task.CompletedTask;
+
             Task jobTask = Task.Run(
                 async () =>
                 {
@@ -122,6 +145,17 @@ internal sealed class UnseenServantService(
                 stoppingToken);
 
             _activeJobTasks[taskId] = jobTask;
+
+            if (jobTask.IsCanceled)
+            {
+
+                _ = _activeJobTasks.TryRemove(taskId, out _);
+
+                _ = _runningJobs.TryRemove(key, out _);
+
+                continue;
+
+            }
         }
     }
 
@@ -175,92 +209,20 @@ internal sealed class UnseenServantService(
     {
         try
         {
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+            string daemonId = UnseenServantDaemonIds.ForJobName(job.Name);
 
-            IArcanumIntelligenceProvider intelligence =
-                scope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
-
-            int clampedInterval = ArcanumSettingClamps.UnseenServantIntervalMinutes(pacer.GetEffectiveInterval(job));
-
-            bool loreEnabled = optionsMonitor.CurrentValue.Intelligence.EnableLoreSystem;
-
-            LoreDto? prior = null;
-
-            string jobKey = string.Empty;
-
-            if (loreEnabled)
-            {
-                IGrimoireRepository repository =
-                    scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
-
-                jobKey = $"daemon_state_{job.Name}";
-
-                try
-                {
-                    prior = await repository
-                        .GetLoreAsync(jobKey, stoppingToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Unseen Servant job {JobName} could not read daemon lore for key {JobKey}.",
-                        job.Name,
-                        jobKey);
-
-                    prior = null;
-                }
-            }
-
-            string kickoff;
-
-            if (!loreEnabled)
-            {
-                kickoff =
-                    $"""
-                    Execute Unseen Servant background protocol. Current polling interval is {clampedInterval} minutes.
-
-                    If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
-                    """;
-            }
-            else
-            {
-                string previousState = prior?.Value ?? "No previous state recorded.";
-
-                kickoff =
-                    $"""
-                    Unseen Servant background protocol.
-                    Job Name: '{job.Name}'
-                    Current polling interval: {clampedInterval} minutes.
-
-                    ### Previous State
-                    {previousState}
-
-                    Instructions: Analyze the environment. If you calculate new moving averages, trends, or state that you need for your next waking cycle, you MUST use the `scribe_lore` tool to update the key `{jobKey}` before you complete your turn.
-                    If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
-                    """;
-            }
-
-            PingRequest ping = new(
-                Prompt: kickoff,
-                WorkingDirectory: string.Empty,
-                UnattendedMode: true,
-                OverrideSpellName: string.IsNullOrWhiteSpace(job.TargetSpell) ? null : job.TargetSpell.Trim());
-
-            Result<PromptTurnResult> result = await intelligence
-                .ExecutePromptAsync(ping, stoppingToken)
+            Result<DaemonExecutionSummary> result = await daemonRunner
+                .RunScheduledAsync(daemonId, stoppingToken)
                 .ConfigureAwait(false);
 
             if (result.IsSuccess)
             {
-                logger.LogInformation(
-                    "Unseen Servant job {JobName} completed (spell {Spell}).",
-                    job.Name,
-                    job.TargetSpell);
+                _lastRunUtc[key] = DateTimeOffset.UtcNow;
             }
-            else
+            else if (result.Error.Code != "Daemon.Cancelled")
             {
+                _lastRunUtc[key] = DateTimeOffset.UtcNow;
+
                 logger.LogWarning(
                     "Unseen Servant job {JobName} failed: {Code} {Message}",
                     job.Name,
@@ -272,14 +234,8 @@ internal sealed class UnseenServantService(
         {
             logger.LogInformation("Unseen Servant job {JobName} cancelled during shutdown.", job.Name);
         }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Unseen Servant job {JobName} threw an unhandled exception.", job.Name);
-        }
         finally
         {
-            _lastRunUtc[key] = DateTimeOffset.UtcNow;
-
             _ = _runningJobs.TryRemove(key, out _);
         }
     }

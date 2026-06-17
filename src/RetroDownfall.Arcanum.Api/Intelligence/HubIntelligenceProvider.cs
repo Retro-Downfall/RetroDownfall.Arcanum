@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -10,13 +11,19 @@ using Microsoft.ML.Tokenizers;
 using OllamaSharp;
 using OllamaSharp.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -27,8 +34,12 @@ public sealed class HubIntelligenceProvider(
     IOptionsSnapshot<ArcanumSettings> settings,
     ILogger<HubIntelligenceProvider> logger,
     IGrimoireRepository grimoire,
-    McpConnectionManager mcpConnectionManager,
-    InferenceTokenizerResolver inferenceTokenizerResolver) : IArcanumIntelligenceProvider
+    IMcpConnectionManager mcpConnectionManager,
+    InferenceTokenizerResolver inferenceTokenizerResolver,
+    IWard ward,
+    ICampaignRepository campaignRepository,
+    ISanctumGuard sanctumGuard,
+    SessionEventHub sessionEventHub) : IArcanumIntelligenceProvider
 {
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
@@ -45,12 +56,38 @@ public sealed class HubIntelligenceProvider(
     private const string PublicToolFailureMessageForGrimoire =
         "A tool invocation failed. See server logs for details.";
 
+    private const string WardTimeoutReason =
+        "The ward held until timeout — action was not allowed";
+
     private const string PublicModelResolutionFailureMessage =
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
 
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
     private static readonly ArcanumSystemInfoTool _systemInfoTool = new();
+
+    private static readonly ConcurrentDictionary<string, OllamaModelListCacheEntry> OllamaModelListCache = new(StringComparer.Ordinal);
+
+    private sealed record OllamaModelListCacheEntry(DateTime ExpiresUtc, IReadOnlyList<Model> Models);
+
+    private sealed class TurnContext
+    {
+
+        public Campaign? Campaign { get; init; }
+
+        public string? CampaignId { get; init; }
+
+        public string? WorkspaceRoot { get; init; }
+
+        public bool CampaignRequiresWard { get; init; }
+
+        public bool SanctumEnabled { get; init; }
+
+        public SanctumMode SanctumMode { get; init; }
+
+        public IReadOnlyList<AITool> InferenceTools { get; init; } = [];
+
+    }
 
     public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
     {
@@ -70,7 +107,7 @@ public sealed class HubIntelligenceProvider(
 
         try
         {
-            lease = chatClientFactory.ResolveClient(request.Model);
+            lease = await chatClientFactory.ResolveClientAsync(request.Model, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -87,7 +124,12 @@ public sealed class HubIntelligenceProvider(
 
             if (lease.IsOllama)
             {
-                Result ensure = await EnsureModelExistsAsync(lease.OllamaApi!, targetModel, cancellationToken, pullProgress: null).ConfigureAwait(false);
+                Result ensure = await EnsureModelExistsAsync(
+                    lease.OllamaApi!,
+                    lease.Provider.Endpoint,
+                    targetModel,
+                    cancellationToken,
+                    pullProgress: null).ConfigureAwait(false);
 
                 if (ensure.IsFailure)
                 {
@@ -95,30 +137,32 @@ public sealed class HubIntelligenceProvider(
                 }
             }
 
-            Conversation? thread = null;
+            Session? thread = null;
 
-        if (!HasStatelessMessages(request) && request.ConversationId is { } existingConversationId)
+        if (!HasStatelessMessages(request) && request.SessionId is { } existingSessionId)
         {
             thread = await grimoire
-                .GetConversationAsync(existingConversationId, cancellationToken)
+                .GetSessionAsync(existingSessionId, cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        Guid? assistantMessageId = null;
+        Guid? assistantEntryId = null;
 
-        Guid? grimoireConversationId = null;
+        Guid? grimoireSessionId = null;
 
         if (!HasStatelessMessages(request))
         {
             try
             {
-                (Guid cid, Guid aid) = await grimoire
-                    .BeginAssistantReplyAsync(request.ConversationId, prompt, targetModel, cancellationToken)
+                (Guid sid, Guid aid) = await grimoire
+                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, cancellationToken)
                     .ConfigureAwait(false);
 
-                grimoireConversationId = cid;
+                grimoireSessionId = sid;
 
-                assistantMessageId = aid;
+                assistantEntryId = aid;
+
+                await PublishLatestSavedEntriesAsync(sid, 2, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception beginEx)
             {
@@ -127,7 +171,10 @@ public sealed class HubIntelligenceProvider(
         }
 
         string? codexContent = await CodexReader
-            .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
+            .ReadCodexAsync(
+                request.WorkingDirectory,
+                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
+                cancellationToken)
             .ConfigureAwait(false);
 
         ParsedSpell? activeSpell;
@@ -145,52 +192,25 @@ public sealed class HubIntelligenceProvider(
                 ? spellRoot
                 : null;
 
-            IReadOnlyList<ParsedSpell> spells = await SpellScanner
-                .ScanAsync(spellWorkspaceRoot, cancellationToken)
-                .ConfigureAwait(false);
+            Result<ParsedSpell?> routedSpell = await ResolveRoutedSpellAsync(
+                request,
+                chatClient,
+                spellWorkspaceRoot,
+                cancellationToken).ConfigureAwait(false);
 
-            if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+            if (routedSpell.IsFailure)
             {
-                if (!TryResolveOverrideSpell(request.OverrideSpellName, spells, out ParsedSpell? overridePick))
-                {
-                    return Result<PromptTurnResult>.Failure(
-                        new Error(
-                            "Validation.SpellOverride",
-                            $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
-                }
-
-                activeSpell = overridePick;
+                return Result<PromptTurnResult>.Failure(routedSpell.Error);
             }
-            else
-            {
-                TimeSpan spellPreflight = TimeSpan.FromSeconds(
-                    ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
 
-                int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-                    settings.Value.Intelligence.SemanticRouterMaxTokens);
-
-                float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-                    settings.Value.Intelligence.SemanticRouterTemperature);
-
-                string semanticProbe = GetSemanticRouterUserProbe(request);
-
-                activeSpell = await SemanticRouter
-                    .DetermineActiveSpellAsync(
-                        chatClient,
-                        semanticProbe,
-                        spells,
-                        spellPreflight,
-                        routerMaxTokens,
-                        routerTemperature,
-                        cancellationToken,
-                        logger)
-                    .ConfigureAwait(false);
-            }
+            activeSpell = routedSpell.Value;
         }
 
         string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell, request.AttachedFiles);
 
         List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, activeSpell, cancellationToken).ConfigureAwait(false);
+
+        TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, cancellationToken).ConfigureAwait(false);
 
         bool inferenceUsesTools = true;
 
@@ -218,7 +238,7 @@ public sealed class HubIntelligenceProvider(
                     logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
                 }
 
-                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, toolSet, request, lease);
+                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, turnContext.InferenceTools, request, lease);
 
                 ChatResponse? response;
 
@@ -262,15 +282,30 @@ public sealed class HubIntelligenceProvider(
 
                         (observedToolCalls ??= []).Add(new PromptToolCall(callId, fcc.Name, argsSnapshot));
 
-                        string resultText = await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+                        WardedToolExecutionResult wardedExecution = await ExecuteToolCallWithWardAsync(
+                            fcc,
+                            request,
+                            chatOptions,
+                            activeSpell,
+                            grimoireSessionId?.ToString(),
+                            turnContext,
+                            argsSnapshot,
+                            cancellationToken)
+                            .ConfigureAwait(false);
 
-                        chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [fcc]));
+                        string resultText = wardedExecution.ResultText;
+
+                        FunctionCallContent normalizedCall = string.IsNullOrEmpty(fcc.CallId)
+                            ? new FunctionCallContent(callId, fcc.Name, fcc.Arguments)
+                            : fcc;
+
+                        chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [normalizedCall]));
 
                         chatMessages.Add(
-                            new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(fcc.CallId, resultText)]));
+                            new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText)]));
 
                         await TryAppendToolInteractionToGrimoireAsync(
-                            grimoireConversationId,
+                            grimoireSessionId,
                             fcc.Name,
                             argsSnapshot,
                             resultText,
@@ -282,22 +317,28 @@ public sealed class HubIntelligenceProvider(
 
                 string finalText = response.Text;
 
-                if (assistantMessageId is { } finalizeId)
+                if (assistantEntryId is { } finalizeId)
                 {
                     try
                     {
                         await grimoire
-                            .FinalizeAssistantMessageAsync(finalizeId, finalText, cancellationToken)
+                            .FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken)
                             .ConfigureAwait(false);
+
+                        if (grimoireSessionId is { } publishSessionId)
+                        {
+                            await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
                     }
                     catch (Exception persistEx)
                     {
-                        logger.LogWarning(persistEx, "Grimoire could not finalize assistant message for model {ModelName}.", targetModel);
+                        logger.LogWarning(persistEx, "Grimoire could not finalize assistant entry for model {ModelName}.", targetModel);
                     }
                 }
 
-                await TryIncrementConversationTokensAsync(
-                    grimoireConversationId,
+                await TryIncrementSessionTokensAsync(
+                    grimoireSessionId,
                     accumulatedUsage,
                     cancellationToken)
                     .ConfigureAwait(false);
@@ -363,7 +404,7 @@ public sealed class HubIntelligenceProvider(
 
         try
         {
-            leaseOrNull = chatClientFactory.ResolveClient(request.Model);
+            leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -393,7 +434,11 @@ public sealed class HubIntelligenceProvider(
                     IntelligenceEventType.Status,
                     $"Checking local availability for {targetModel}...");
 
-                Result<bool> localCheck = await IsModelLocalAsync(lease.OllamaApi!, targetModel, cancellationToken).ConfigureAwait(false);
+                Result<bool> localCheck = await IsModelLocalAsync(
+                    lease.OllamaApi!,
+                    lease.Provider.Endpoint,
+                    targetModel,
+                    cancellationToken).ConfigureAwait(false);
 
                 if (localCheck.IsFailure)
                 {
@@ -478,19 +523,22 @@ public sealed class HubIntelligenceProvider(
 
             yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
 
-        Conversation? thread = null;
+        Session? thread = null;
 
-        if (!HasStatelessMessages(request) && request.ConversationId is { } existingConversationId)
+        if (!HasStatelessMessages(request) && request.SessionId is { } existingSessionId)
         {
             thread = await grimoire
-                .GetConversationAsync(existingConversationId, cancellationToken)
+                .GetSessionAsync(existingSessionId, cancellationToken)
                 .ConfigureAwait(false);
         }
 
         List<MeAiChatMessage> chatMessages = BuildInitialMeAiChatMessages(request, thread, prompt);
 
         string? streamCodexContent = await CodexReader
-            .ReadCodexAsync(request.WorkingDirectory, cancellationToken)
+            .ReadCodexAsync(
+                request.WorkingDirectory,
+                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
+                cancellationToken)
             .ConfigureAwait(false);
 
         ParsedSpell? streamActiveSpell;
@@ -508,48 +556,22 @@ public sealed class HubIntelligenceProvider(
                 ? streamSpellRoot
                 : null;
 
-            IReadOnlyList<ParsedSpell> streamSpells = await SpellScanner
-                .ScanAsync(streamSpellWorkspaceRoot, cancellationToken)
-                .ConfigureAwait(false);
+            Result<ParsedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
+                request,
+                chatClient,
+                streamSpellWorkspaceRoot,
+                cancellationToken).ConfigureAwait(false);
 
-            if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+            if (streamRoutedSpell.IsFailure)
             {
-                if (!TryResolveOverrideSpell(request.OverrideSpellName, streamSpells, out ParsedSpell? streamOverridePick))
-                {
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Error,
-                        $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name.");
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    streamRoutedSpell.Error.Message);
 
-                    yield break;
-                }
-
-                streamActiveSpell = streamOverridePick;
+                yield break;
             }
-            else
-            {
-                TimeSpan streamSpellPreflight = TimeSpan.FromSeconds(
-                    ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
 
-                int streamRouterMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-                    settings.Value.Intelligence.SemanticRouterMaxTokens);
-
-                float streamRouterTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-                    settings.Value.Intelligence.SemanticRouterTemperature);
-
-                string streamSemanticProbe = GetSemanticRouterUserProbe(request);
-
-                streamActiveSpell = await SemanticRouter
-                    .DetermineActiveSpellAsync(
-                        chatClient,
-                        streamSemanticProbe,
-                        streamSpells,
-                        streamSpellPreflight,
-                        streamRouterMaxTokens,
-                        streamRouterTemperature,
-                        cancellationToken,
-                        logger)
-                    .ConfigureAwait(false);
-            }
+            streamActiveSpell = streamRoutedSpell.Value;
         }
 
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
@@ -571,30 +593,37 @@ public sealed class HubIntelligenceProvider(
 
         chatMessages = streamMessages;
 
-        Guid? assistantMessageId = null;
+        Guid? assistantEntryId = null;
 
-        Guid? boundConversationId = null;
+        Guid? boundSessionId = null;
 
         if (!HasStatelessMessages(request))
         {
             try
             {
-                (Guid conversationId, Guid aid) = await grimoire
-                    .BeginAssistantReplyAsync(request.ConversationId, prompt, targetModel, cancellationToken)
+                (Guid sessionId, Guid aid) = await grimoire
+                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, cancellationToken)
                     .ConfigureAwait(false);
 
-                assistantMessageId = aid;
+                assistantEntryId = aid;
 
-                boundConversationId = conversationId;
+                boundSessionId = sessionId;
+
+                await PublishLatestSavedEntriesAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Grimoire could not start streamed conversation persistence for model {ModelName}.", targetModel);
+                logger.LogWarning(ex, "Grimoire could not start streamed session persistence for model {ModelName}.", targetModel);
             }
         }
 
-        if (boundConversationId is { } bcid)
+        if (boundSessionId is { } bcid)
         {
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.SessionBound,
+                "Session started",
+                bcid.ToString());
+
             yield return new IntelligenceEvent(
                 IntelligenceEventType.ConversationBound,
                 "Conversation started",
@@ -609,6 +638,8 @@ public sealed class HubIntelligenceProvider(
         StringBuilder accumulator;
 
         List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamActiveSpell, cancellationToken).ConfigureAwait(false);
+
+        TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, cancellationToken).ConfigureAwait(false);
 
         bool streamUsesTools = true;
 
@@ -626,7 +657,7 @@ public sealed class HubIntelligenceProvider(
 
             streamAccumulatedUsage = null;
 
-            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamToolSet, request, lease);
+            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
 
             int streamToolRoundCount = 0;
 
@@ -674,11 +705,13 @@ public sealed class HubIntelligenceProvider(
 
                         ChatResponseUpdate update = streamEnumerator.Current;
 
-                        roundUpdates.Add(update);
-
                         if (string.IsNullOrEmpty(update.Text))
                         {
+
+                            roundUpdates.Add(update);
+
                             continue;
+
                         }
 
                         _ = accumulator.Append(update.Text);
@@ -752,9 +785,9 @@ public sealed class HubIntelligenceProvider(
 
                 foreach (FunctionCallContent fcc in toolCalls)
                 {
-                    string toolCallData = FormatToolCallEventData(fcc);
-
                     string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
+
+                    string toolCallData = FormatToolCallEventData(fcc, argsSnapshot);
 
                     string callId = string.IsNullOrEmpty(fcc.CallId) ? fcc.Name : fcc.CallId;
 
@@ -767,9 +800,20 @@ public sealed class HubIntelligenceProvider(
 
                     string resultText;
 
+                    WardedToolExecutionResult? wardedExecution = null;
+
                     try
                     {
-                        resultText = await InvokeToolCallAsync(fcc, streamChatOptions, cancellationToken).ConfigureAwait(false);
+                        wardedExecution = await ExecuteToolCallWithWardAsync(
+                            fcc,
+                            request,
+                            streamChatOptions,
+                            streamActiveSpell,
+                            boundSessionId?.ToString(),
+                            streamTurnContext,
+                            argsSnapshot,
+                            cancellationToken)
+                            .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -778,7 +822,19 @@ public sealed class HubIntelligenceProvider(
                     catch (Exception ex)
                     {
                         logger.LogError(ex, "Tool {ToolName} failed during streaming inference.", fcc.Name);
+                    }
 
+                    if (wardedExecution is not null)
+                    {
+                        foreach (IntelligenceEvent wardEvent in wardedExecution.WardEvents)
+                        {
+                            yield return wardEvent;
+                        }
+
+                        resultText = wardedExecution.ResultText;
+                    }
+                    else
+                    {
                         resultText = PublicToolFailureMessageForGrimoire;
                     }
 
@@ -789,13 +845,16 @@ public sealed class HubIntelligenceProvider(
                         null,
                         new IntelligenceToolCallEvent(callId, fcc.Name, resultText, toolCallIndex));
 
-                    chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [fcc]));
+                    chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [
+                        string.IsNullOrEmpty(fcc.CallId)
+                            ? new FunctionCallContent(callId, fcc.Name, fcc.Arguments)
+                            : fcc]));
 
                     chatMessages.Add(
-                        new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(fcc.CallId, resultText)]));
+                        new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText)]));
 
                     await TryAppendToolInteractionToGrimoireAsync(
-                        boundConversationId,
+                        boundSessionId,
                         fcc.Name,
                         argsSnapshot,
                         resultText,
@@ -824,19 +883,25 @@ public sealed class HubIntelligenceProvider(
 
         string finalText = accumulator.ToString();
 
-        if (assistantMessageId is { } finalizeId)
+        if (assistantEntryId is { } finalizeId)
         {
             try
             {
-                await grimoire.FinalizeAssistantMessageAsync(finalizeId, finalText, cancellationToken).ConfigureAwait(false);
+                await grimoire.FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken).ConfigureAwait(false);
+
+                if (boundSessionId is { } publishSessionId)
+                {
+                    await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Grimoire could not finalize streamed assistant message for model {ModelName}.", targetModel);
+                logger.LogWarning(ex, "Grimoire could not finalize streamed assistant entry for model {ModelName}.", targetModel);
             }
         }
 
-        await TryIncrementConversationTokensAsync(boundConversationId, streamAccumulatedUsage, cancellationToken)
+        await TryIncrementSessionTokensAsync(boundSessionId, streamAccumulatedUsage, cancellationToken)
             .ConfigureAwait(false);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
@@ -869,9 +934,14 @@ public sealed class HubIntelligenceProvider(
         }
     }
 
-    private async Task<Result> EnsureModelExistsAsync(IOllamaApiClient ollamaClient, string modelName, CancellationToken cancellationToken, IProgress<string>? pullProgress)
+    private async Task<Result> EnsureModelExistsAsync(
+        IOllamaApiClient ollamaClient,
+        string ollamaEndpoint,
+        string modelName,
+        CancellationToken cancellationToken,
+        IProgress<string>? pullProgress)
     {
-        Result<bool> localCheck = await IsModelLocalAsync(ollamaClient, modelName, cancellationToken).ConfigureAwait(false);
+        Result<bool> localCheck = await IsModelLocalAsync(ollamaClient, ollamaEndpoint, modelName, cancellationToken).ConfigureAwait(false);
 
         if (localCheck.IsFailure)
         {
@@ -917,11 +987,16 @@ public sealed class HubIntelligenceProvider(
         }
     }
 
-    private async Task<Result<bool>> IsModelLocalAsync(IOllamaApiClient ollamaClient, string modelName, CancellationToken cancellationToken)
+    private async Task<Result<bool>> IsModelLocalAsync(
+        IOllamaApiClient ollamaClient,
+        string ollamaEndpoint,
+        string modelName,
+        CancellationToken cancellationToken)
     {
         try
         {
-            IEnumerable<Model> models = await ollamaClient.ListLocalModelsAsync(cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<Model> models = await ListOllamaModelsCachedAsync(ollamaClient, ollamaEndpoint, cancellationToken)
+                .ConfigureAwait(false);
 
             return models.Any(m => ProviderResolver.ModelNameMatches(m.Name, modelName));
         }
@@ -935,6 +1010,188 @@ public sealed class HubIntelligenceProvider(
 
             return Result<bool>.Failure(new Error("Ollama.ListModels", PublicListLocalModelsFailureMessage));
         }
+    }
+
+    private static async Task<IReadOnlyList<Model>> ListOllamaModelsCachedAsync(
+        IOllamaApiClient ollamaClient,
+        string ollamaEndpoint,
+        CancellationToken cancellationToken)
+    {
+        string cacheKey = string.IsNullOrWhiteSpace(ollamaEndpoint)
+            ? "_default"
+            : ollamaEndpoint.Trim();
+
+        if (OllamaModelListCache.TryGetValue(cacheKey, out OllamaModelListCacheEntry? cached)
+            && cached.ExpiresUtc > DateTime.UtcNow)
+        {
+            return cached.Models;
+        }
+
+        IEnumerable<Model> models = await ollamaClient.ListLocalModelsAsync(cancellationToken).ConfigureAwait(false);
+
+        IReadOnlyList<Model> modelList = models.ToList();
+
+        OllamaModelListCache[cacheKey] = new OllamaModelListCacheEntry(DateTime.UtcNow.AddSeconds(60), modelList);
+
+        return modelList;
+    }
+
+    private async Task<TurnContext> BuildTurnContextAsync(
+        PingRequest request,
+        IReadOnlyList<AITool> toolSet,
+        CancellationToken cancellationToken)
+    {
+        Campaign? campaign = null;
+
+        string? campaignId = null;
+
+        string? workspaceRoot = null;
+
+        bool campaignRequiresWard = true;
+
+        bool sanctumEnabled = false;
+
+        SanctumMode sanctumMode = SanctumMode.Strict;
+
+        if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
+        {
+            campaign = await campaignRepository
+                .GetByPathAsync(request.WorkingDirectory, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (campaign is not null)
+            {
+                campaignId = campaign.Id.ToString();
+
+                workspaceRoot = campaign.Path;
+
+                CampaignSettings campaignSettings = CampaignRepository.DeserializeSettings(campaign.Settings);
+
+                campaignRequiresWard = campaignSettings.RequireWardForForbiddenArts;
+
+                SanctumConfig sanctumConfig = CampaignRepository.GetSanctumConfig(campaign);
+
+                sanctumEnabled = sanctumConfig.Enabled;
+
+                sanctumMode = sanctumConfig.Mode;
+            }
+        }
+
+        IReadOnlyList<AITool> inferenceTools = ApplyToolPolicyFilters(request, toolSet);
+
+        inferenceTools = request.UnattendedMode
+            ? FilterToolsForUnattended(inferenceTools)
+            : inferenceTools;
+
+        return new TurnContext
+        {
+            Campaign = campaign,
+            CampaignId = campaignId,
+            WorkspaceRoot = workspaceRoot,
+            CampaignRequiresWard = campaignRequiresWard,
+            SanctumEnabled = sanctumEnabled,
+            SanctumMode = sanctumMode,
+            InferenceTools = inferenceTools,
+        };
+    }
+
+    private static IReadOnlyList<AITool> FilterToolsForUnattended(IReadOnlyList<AITool> tools)
+    {
+        var filtered = new List<AITool>(tools.Count);
+
+        foreach (AITool tool in tools)
+        {
+            if (tool is AIFunction function && string.Equals(function.Name, "ask_human", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            filtered.Add(tool);
+        }
+
+        return filtered;
+    }
+
+    private async Task<Result<ParsedSpell?>> ResolveRoutedSpellAsync(
+        PingRequest request,
+        IChatClient chatClient,
+        string? spellWorkspaceRoot,
+        CancellationToken cancellationToken)
+    {
+        long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
+
+        if (!string.IsNullOrWhiteSpace(request.OverrideSpellPath))
+        {
+            Result<string> validated = SpellPathPolicy.ValidateOverrideSpellPath(
+                request.OverrideSpellPath,
+                spellWorkspaceRoot);
+
+            if (validated.IsFailure)
+            {
+                return Result<ParsedSpell?>.Failure(validated.Error);
+            }
+
+            ParsedSpell? overrideSpell = await SpellScanner
+                .LoadFullAsync(validated.Value, cancellationToken, maxSpellFileSizeBytes)
+                .ConfigureAwait(false);
+
+            return Result<ParsedSpell?>.Success(overrideSpell);
+        }
+
+        IReadOnlyList<SpellMetadata> spellMetadata = await SpellScanner
+            .ScanMetadataAsync(spellWorkspaceRoot, cancellationToken, maxSpellFileSizeBytes)
+            .ConfigureAwait(false);
+
+        SpellMetadata? matchedMetadata;
+
+        if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
+        {
+            if (!TryResolveOverrideSpellMetadata(request.OverrideSpellName, spellMetadata, out SpellMetadata? overridePick))
+            {
+                return Result<ParsedSpell?>.Failure(
+                    new Error(
+                        "Validation.SpellOverride",
+                        $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
+            }
+
+            matchedMetadata = overridePick;
+        }
+        else
+        {
+            TimeSpan spellPreflight = TimeSpan.FromSeconds(
+                ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+
+            int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+                settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+            float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+                settings.Value.Intelligence.SemanticRouterTemperature);
+
+            string semanticProbe = GetSemanticRouterUserProbe(request);
+
+            matchedMetadata = await SemanticRouter
+                .DetermineActiveSpellAsync(
+                    chatClient,
+                    semanticProbe,
+                    spellMetadata,
+                    spellPreflight,
+                    routerMaxTokens,
+                    routerTemperature,
+                    cancellationToken,
+                    logger)
+                .ConfigureAwait(false);
+        }
+
+        if (matchedMetadata is null)
+        {
+            return Result<ParsedSpell?>.Success(null);
+        }
+
+        ParsedSpell? activeSpell = await SpellScanner
+            .LoadFullAsync(matchedMetadata.FilePath, cancellationToken, maxSpellFileSizeBytes)
+            .ConfigureAwait(false);
+
+        return Result<ParsedSpell?>.Success(activeSpell);
     }
 
     private static void PrependDynamicSystemMessage(List<MeAiChatMessage> messages, string systemText)
@@ -952,7 +1209,7 @@ public sealed class HubIntelligenceProvider(
         List<MeAiChatMessage> chatMessages,
         string? codexContent,
         ParsedSpell? activeSpell,
-        Conversation? thread,
+        Session? thread,
         string newUserPrompt,
         ChatClientLease lease)
     {
@@ -1008,7 +1265,7 @@ public sealed class HubIntelligenceProvider(
         {
 
             logger.LogWarning(
-                "Context ({TotalTokens} tokens) exceeds compression threshold ({EffectiveLimit} tokens) but no campaign summary is available for conversation {ConversationId}; proceeding unfiltered.",
+                "Context ({TotalTokens} tokens) exceeds compression threshold ({EffectiveLimit} tokens) but no campaign summary is available for session {SessionId}; proceeding unfiltered.",
                 totalTokens,
                 effectiveLimit,
                 thread.Id);
@@ -1037,7 +1294,7 @@ public sealed class HubIntelligenceProvider(
         {
 
             logger.LogWarning(
-                "After memory compression, context is still {AfterTokens} tokens (threshold {EffectiveLimit}) for conversation {ConversationId}.",
+                "After memory compression, context is still {AfterTokens} tokens (threshold {EffectiveLimit}) for session {SessionId}.",
                 afterTokens,
                 effectiveLimit,
                 thread.Id);
@@ -1049,14 +1306,14 @@ public sealed class HubIntelligenceProvider(
     }
 
     private static List<MeAiChatMessage> MapFilteredGrimoireToMeAiMessages(
-        Conversation conversation,
+        Session session,
         DateTime watermarkExclusive,
         string newUserPrompt)
     {
 
-        List<Core.Storage.Entities.ChatMessage> ordered = conversation.Messages
-            .Where(m => m.Timestamp > watermarkExclusive)
-            .OrderBy(m => m.Timestamp)
+        List<Entry> ordered = session.Entries
+            .Where(m => m.CreatedAt.UtcDateTime > watermarkExclusive)
+            .OrderBy(m => m.CreatedAt)
             .ToList();
 
         while (ordered.Count > 0
@@ -1072,7 +1329,7 @@ public sealed class HubIntelligenceProvider(
 
         var list = new List<MeAiChatMessage>(ordered.Count + 1);
 
-        foreach (Core.Storage.Entities.ChatMessage m in ordered)
+        foreach (Entry m in ordered)
         {
 
             ChatRole role = m.Role switch
@@ -1131,10 +1388,10 @@ public sealed class HubIntelligenceProvider(
         return "\u200b";
     }
 
-    private static bool TryResolveOverrideSpell(
+    private static bool TryResolveOverrideSpellMetadata(
         string? overrideSpellName,
-        IReadOnlyList<ParsedSpell> spells,
-        out ParsedSpell? matched)
+        IReadOnlyList<SpellMetadata> spells,
+        out SpellMetadata? matched)
     {
         matched = null;
 
@@ -1147,20 +1404,22 @@ public sealed class HubIntelligenceProvider(
 
         for (int i = 0; i < spells.Count; i++)
         {
-            ParsedSpell s = spells[i];
+            SpellMetadata spell = spells[i];
 
-            if (string.Equals(s.Name, needle, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(spell.Name, needle, StringComparison.OrdinalIgnoreCase))
             {
-                matched = s;
+                matched = spell;
 
                 return true;
             }
 
-            string leaf = GetSpellDirectoryLeafName(s.DirectoryPath);
+            string? directoryPath = Path.GetDirectoryName(spell.FilePath);
+
+            string leaf = GetSpellDirectoryLeafName(directoryPath ?? string.Empty);
 
             if (string.Equals(leaf, needle, StringComparison.OrdinalIgnoreCase))
             {
-                matched = s;
+                matched = spell;
 
                 return true;
             }
@@ -1190,7 +1449,7 @@ public sealed class HubIntelligenceProvider(
 
     private static List<MeAiChatMessage> BuildInitialMeAiChatMessages(
         PingRequest request,
-        Conversation? thread,
+        Session? thread,
         string newUserPrompt)
     {
         if (HasStatelessMessages(request))
@@ -1343,17 +1602,22 @@ public sealed class HubIntelligenceProvider(
             return ChatRole.Tool;
         }
 
+        if (string.Equals(role, "developer", StringComparison.OrdinalIgnoreCase))
+        {
+            return ChatRole.System;
+        }
+
         return ChatRole.User;
     }
 
-    private static List<MeAiChatMessage> MapGrimoireToMeAiMessages(Conversation? conversation, string newUserPrompt)
+    private static List<MeAiChatMessage> MapGrimoireToMeAiMessages(Session? session, string newUserPrompt)
     {
-        if (conversation is null)
+        if (session is null)
         {
             return [new MeAiChatMessage(ChatRole.User, newUserPrompt)];
         }
 
-        var ordered = conversation.Messages.ToList();
+        var ordered = session.Entries.ToList();
 
         while (ordered.Count > 0
 
@@ -1404,7 +1668,7 @@ public sealed class HubIntelligenceProvider(
             tools.Add(new ArcanumSpellScriptTool(scriptsRoot, TimeSpan.FromSeconds(sec), sec, outputCap));
         }
 
-        if (request.DisableMcpTools)
+        if (ShouldDisableMcpTools(request))
         {
             return tools;
         }
@@ -1421,7 +1685,90 @@ public sealed class HubIntelligenceProvider(
         return tools;
     }
 
-    private ChatOptions CreateInferenceChatOptions(bool includeTools, List<AITool>? tools, PingRequest request, ChatClientLease lease)
+    private static bool ShouldDisableMcpTools(PingRequest request)
+    {
+        if (request.ToolPolicy is ToolPolicy.NoTools)
+        {
+            return true;
+        }
+
+        if (request.ToolPolicy is null or ToolPolicy.AllTools)
+        {
+            return request.DisableMcpTools;
+        }
+
+        return false;
+    }
+
+    private IReadOnlyList<AITool> ApplyToolPolicyFilters(PingRequest request, IReadOnlyList<AITool> tools)
+    {
+        if (request.ToolPolicy is null or ToolPolicy.AllTools or ToolPolicy.NoTools)
+        {
+            return tools;
+        }
+
+        if (request.ToolPolicy is ToolPolicy.ReadOnlyTools)
+        {
+            return FilterToolsToAllowlist(tools, ReadOnlyToolNames);
+        }
+
+        if (request.ToolPolicy is ToolPolicy.NoForbiddenArts)
+        {
+            WardSettings wardSettings = settings.Value.Ward ?? new WardSettings();
+
+            return FilterToolsExcludingNames(tools, wardSettings.ForbiddenArts);
+        }
+
+        return tools;
+    }
+
+    private static readonly HashSet<string> ReadOnlyToolNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "read_file_chunk",
+        "list_directory",
+        "read_lore",
+        "search_archives",
+        "ask_human",
+        "use_commlink",
+        ArcanumLocalTimeTool.ToolName,
+        ArcanumSystemInfoTool.ToolName,
+    };
+
+    private static IReadOnlyList<AITool> FilterToolsToAllowlist(IReadOnlyList<AITool> tools, HashSet<string> allowlist)
+    {
+        var filtered = new List<AITool>(tools.Count);
+
+        foreach (AITool tool in tools)
+        {
+            if (tool is AIFunction function && allowlist.Contains(function.Name))
+            {
+                filtered.Add(tool);
+            }
+        }
+
+        return filtered;
+    }
+
+    private static IReadOnlyList<AITool> FilterToolsExcludingNames(IReadOnlyList<AITool> tools, IEnumerable<string> excludedNames)
+    {
+        var excluded = new HashSet<string>(excludedNames, StringComparer.OrdinalIgnoreCase);
+
+        var filtered = new List<AITool>(tools.Count);
+
+        foreach (AITool tool in tools)
+        {
+            if (tool is AIFunction function && excluded.Contains(function.Name))
+            {
+                continue;
+            }
+
+            filtered.Add(tool);
+        }
+
+        return filtered;
+    }
+
+    private ChatOptions CreateInferenceChatOptions(bool includeTools, IReadOnlyList<AITool>? tools, PingRequest request, ChatClientLease lease)
     {
         var options = new ChatOptions();
 
@@ -1439,26 +1786,7 @@ public sealed class HubIntelligenceProvider(
             return options;
         }
 
-        if (!request.UnattendedMode)
-        {
-            options.Tools = tools;
-
-            return options;
-        }
-
-        List<AITool> filtered = [];
-
-        foreach (AITool t in tools)
-        {
-            if (t is AIFunction fn && string.Equals(fn.Name, "ask_human", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            filtered.Add(t);
-        }
-
-        options.Tools = filtered;
+        options.Tools = tools.ToList();
 
         return options;
     }
@@ -1502,12 +1830,46 @@ public sealed class HubIntelligenceProvider(
 
         if (request.ResponseFormat is { } responseFormatType && !string.IsNullOrWhiteSpace(responseFormatType))
         {
-            options.ResponseFormat = responseFormatType.ToLowerInvariant() switch
+            string normalizedFormat = responseFormatType.ToLowerInvariant();
+
+            if (normalizedFormat == "json_schema"
+                && request.ResponseFormatJsonSchema is { } jsonSchemaWrapper)
             {
-                "json_object" or "json_schema" => ChatResponseFormat.Json,
-                "text" => ChatResponseFormat.Text,
-                _ => options.ResponseFormat,
-            };
+                JsonElement schemaElement = jsonSchemaWrapper;
+
+                string schemaName = "response";
+
+                if (jsonSchemaWrapper.ValueKind == JsonValueKind.Object
+                    && jsonSchemaWrapper.TryGetProperty("schema", out JsonElement nestedSchema))
+                {
+                    schemaElement = nestedSchema;
+
+                    if (jsonSchemaWrapper.TryGetProperty("name", out JsonElement nameElement)
+                        && nameElement.ValueKind == JsonValueKind.String)
+                    {
+                        string? parsedName = nameElement.GetString();
+
+                        if (!string.IsNullOrWhiteSpace(parsedName))
+                        {
+                            schemaName = parsedName.Trim();
+                        }
+                    }
+                }
+
+                options.ResponseFormat = ChatResponseFormat.ForJsonSchema(
+                    schemaElement,
+                    schemaName,
+                    schemaDescription: string.Empty);
+            }
+            else
+            {
+                options.ResponseFormat = normalizedFormat switch
+                {
+                    "json_object" or "json_schema" => ChatResponseFormat.Json,
+                    "text" => ChatResponseFormat.Text,
+                    _ => options.ResponseFormat,
+                };
+            }
         }
     }
 
@@ -1551,12 +1913,12 @@ public sealed class HubIntelligenceProvider(
         return new ChatCompletionUsage(p, c, p + c);
     }
 
-    private async Task TryIncrementConversationTokensAsync(
-        Guid? conversationId,
+    private async Task TryIncrementSessionTokensAsync(
+        Guid? sessionId,
         ChatCompletionUsage? usage,
         CancellationToken cancellationToken)
     {
-        if (!settings.Value.Intelligence.EnableTokenTracking || !conversationId.HasValue || usage is null || usage.TotalTokens <= 0)
+        if (!settings.Value.Intelligence.EnableTokenTracking || !sessionId.HasValue || usage is null || usage.TotalTokens <= 0)
         {
             return;
         }
@@ -1564,7 +1926,7 @@ public sealed class HubIntelligenceProvider(
         try
         {
             await grimoire
-                .IncrementConversationTokensAsync(conversationId.Value, usage.TotalTokens, cancellationToken)
+                .IncrementSessionTokensAsync(sessionId.Value, usage.TotalTokens, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -1573,7 +1935,7 @@ public sealed class HubIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Grimoire could not increment token totals for conversation {ConversationId}.", conversationId);
+            logger.LogWarning(ex, "Grimoire could not increment token totals for session {SessionId}.", sessionId);
         }
     }
 
@@ -1748,11 +2110,9 @@ public sealed class HubIntelligenceProvider(
         }
     }
 
-    private static string FormatToolCallEventData(FunctionCallContent fcc)
+    private static string FormatToolCallEventData(FunctionCallContent fcc, string argsSnapshot)
     {
-        string args = SerializeToolArgumentsForGrimoire(fcc);
-
-        return string.IsNullOrEmpty(args) ? (fcc.Name) : $"{fcc.Name}: {args}";
+        return string.IsNullOrEmpty(argsSnapshot) ? fcc.Name : $"{fcc.Name}: {argsSnapshot}";
     }
 
     private static AIFunction? ResolveRegisteredFunction(ChatOptions chatOptions, string? functionName)
@@ -1801,15 +2161,481 @@ public sealed class HubIntelligenceProvider(
         };
     }
 
+    private sealed record WardedToolExecutionResult(string ResultText, IReadOnlyList<IntelligenceEvent> WardEvents);
+
+    private async Task<WardedToolExecutionResult> ExecuteToolCallWithWardAsync(
+        FunctionCallContent fcc,
+        PingRequest request,
+        ChatOptions chatOptions,
+        ParsedSpell? activeSpell,
+        string? sessionId,
+        TurnContext turnContext,
+        string argsSnapshot,
+        CancellationToken cancellationToken)
+    {
+        string toolName = fcc.Name ?? string.Empty;
+
+        WardSettings wardSettings = settings.Value.Ward ?? new WardSettings();
+
+        if (IsWardCandidate(toolName, turnContext.CampaignRequiresWard, wardSettings)
+            && request.UnattendedMode
+            && wardSettings.AutoDenyInUnattendedMode)
+        {
+            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), []);
+        }
+
+        if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
+        {
+            string directResult = await InvokeToolCallWithSanctumAsync(
+                fcc,
+                activeSpell,
+                chatOptions,
+                turnContext,
+                argsSnapshot,
+                cancellationToken).ConfigureAwait(false);
+
+            return new WardedToolExecutionResult(directResult, []);
+        }
+
+        string wardId = Guid.NewGuid().ToString();
+
+        JsonDocument? argsDocument = TryParseToolArgumentsDocument(argsSnapshot);
+
+        JsonElement? wardArguments = argsDocument?.RootElement.Clone();
+
+        DateTimeOffset wardTimestamp = DateTimeOffset.UtcNow;
+
+        var wardEvents = new List<IntelligenceEvent>(2);
+
+        wardEvents.Add(new IntelligenceEvent(
+            IntelligenceEventType.Warded,
+            toolName,
+            null,
+            null,
+            null,
+            wardId,
+            toolName,
+            wardArguments,
+            null,
+            null,
+            wardTimestamp));
+
+        int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds);
+
+        TimeSpan timeout = TimeSpan.FromSeconds(timeoutSeconds);
+
+        WardResolution resolution;
+
+        try
+        {
+            resolution = await ward
+                .WardAsync(wardId, toolName, argsDocument, sessionId, timeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            argsDocument?.Dispose();
+        }
+
+        DateTimeOffset resolvedTimestamp = DateTimeOffset.UtcNow;
+
+        wardEvents.Add(new IntelligenceEvent(
+            IntelligenceEventType.WardResolved,
+            toolName,
+            null,
+            null,
+            null,
+            wardId,
+            toolName,
+            null,
+            resolution.Allowed,
+            resolution.Reason,
+            resolvedTimestamp));
+
+        if (!resolution.Allowed)
+        {
+            string denialMessage = string.Equals(resolution.Reason, WardTimeoutReason, StringComparison.Ordinal)
+                ? TimeoutDenyMessage(resolution.Reason)
+                : OperatorDenyMessage(resolution.Reason);
+
+            return new WardedToolExecutionResult(denialMessage, wardEvents);
+        }
+
+        string allowedResult = await InvokeToolCallWithSanctumAsync(
+            fcc,
+            activeSpell,
+            chatOptions,
+            turnContext,
+            argsSnapshot,
+            cancellationToken).ConfigureAwait(false);
+
+        return new WardedToolExecutionResult(allowedResult, wardEvents);
+    }
+
+    private async Task<string> InvokeToolCallWithSanctumAsync(
+        FunctionCallContent fcc,
+        ParsedSpell? activeSpell,
+        ChatOptions chatOptions,
+        TurnContext turnContext,
+        string argsSnapshot,
+        CancellationToken cancellationToken)
+    {
+        SanctumEnforcementOutcome outcome = await EnforceSanctumAsync(
+            fcc,
+            turnContext,
+            activeSpell,
+            argsSnapshot,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!outcome.Result.Allowed && outcome.Enabled && outcome.Mode == SanctumMode.Strict)
+        {
+            return SanctumDenialMessage(outcome.Result);
+        }
+
+        return await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    private sealed record SanctumEnforcementOutcome(SanctumResult Result, SanctumMode Mode, bool Enabled);
+
+    private async Task<SanctumEnforcementOutcome> EnforceSanctumAsync(
+        FunctionCallContent fcc,
+        TurnContext turnContext,
+        ParsedSpell? activeSpell,
+        string argsSnapshot,
+        CancellationToken cancellationToken)
+    {
+        SanctumResult allowed = new() { Allowed = true };
+
+        if (turnContext.Campaign is null)
+        {
+            return new SanctumEnforcementOutcome(allowed, SanctumMode.Strict, false);
+        }
+
+        if (!turnContext.SanctumEnabled)
+        {
+            return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, false);
+        }
+
+        string campaignId = turnContext.CampaignId!;
+
+        string toolName = fcc.Name ?? string.Empty;
+
+        SanctumResult toolResult = await sanctumGuard
+            .ValidateToolAsync(campaignId, toolName, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!toolResult.Allowed)
+        {
+            return new SanctumEnforcementOutcome(toolResult, turnContext.SanctumMode, true);
+        }
+
+        using JsonDocument? argsDocument = TryParseToolArgumentsDocument(argsSnapshot);
+
+        JsonElement argsRoot = argsDocument?.RootElement ?? default;
+
+        string workspaceRoot = turnContext.WorkspaceRoot!;
+
+        SanctumResult? pathOrNetworkResult = await ValidateToolPathsAndNetworkAsync(
+            campaignId,
+            toolName,
+            workspaceRoot,
+            activeSpell,
+            argsRoot,
+            cancellationToken).ConfigureAwait(false);
+
+        if (pathOrNetworkResult is not null)
+        {
+            return new SanctumEnforcementOutcome(pathOrNetworkResult, turnContext.SanctumMode, true);
+        }
+
+        return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, true);
+    }
+
+    private async Task<SanctumResult?> ValidateToolPathsAndNetworkAsync(
+        string campaignId,
+        string toolName,
+        string workspaceRoot,
+        ParsedSpell? activeSpell,
+        JsonElement argsRoot,
+        CancellationToken cancellationToken)
+    {
+        switch (toolName)
+        {
+            case "execute_command":
+            {
+                string cwd = workspaceRoot;
+
+                if (TryGetJsonStringProperty(argsRoot, "workingDirectory", out string? relativeCwd)
+                    && !string.IsNullOrWhiteSpace(relativeCwd))
+                {
+                    if (!TryResolvePathUnderWorkspace(workspaceRoot, relativeCwd, out string? resolvedCwd))
+                    {
+                        return await sanctumGuard.ValidatePathAsync(
+                            campaignId,
+                            relativeCwd,
+                            "working directory",
+                            toolName,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    cwd = resolvedCwd;
+                }
+
+                SanctumResult cwdResult = await sanctumGuard
+                    .ValidatePathAsync(campaignId, cwd, "working directory", toolName, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!cwdResult.Allowed)
+                {
+                    return cwdResult;
+                }
+
+                break;
+            }
+
+            case "write_file":
+            case "replace_text_block":
+            case "read_file_chunk":
+            {
+                if (!TryGetJsonStringProperty(argsRoot, "relativePath", out string? relativePath)
+                    || string.IsNullOrWhiteSpace(relativePath))
+                {
+                    break;
+                }
+
+                if (!TryResolvePathUnderWorkspace(workspaceRoot, relativePath, out string? absolutePath))
+                {
+                    return await sanctumGuard.ValidatePathAsync(
+                        campaignId,
+                        relativePath,
+                        "file path",
+                        toolName,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                SanctumResult pathResult = await sanctumGuard
+                    .ValidatePathAsync(campaignId, absolutePath, "file path", toolName, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!pathResult.Allowed)
+                {
+                    return pathResult;
+                }
+
+                break;
+            }
+
+            case "run_spell_script":
+            {
+                if (activeSpell is null)
+                {
+                    break;
+                }
+
+                if (!TryGetJsonStringProperty(argsRoot, "script_name", out string? scriptName)
+                    || string.IsNullOrWhiteSpace(scriptName))
+                {
+                    break;
+                }
+
+                scriptName = scriptName.Trim();
+
+                if (!string.Equals(Path.GetFileName(scriptName), scriptName, StringComparison.Ordinal))
+                {
+                    string scriptsRoot = Path.Combine(activeSpell.DirectoryPath, "scripts");
+
+                    string invalidCandidate = Path.GetFullPath(Path.Combine(scriptsRoot, scriptName));
+
+                    SanctumResult invalidResult = await sanctumGuard
+                        .ValidatePathAsync(campaignId, invalidCandidate, "script path", toolName, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (!invalidResult.Allowed)
+                    {
+                        return invalidResult;
+                    }
+
+                    break;
+                }
+
+                string scriptsDirectory = Path.Combine(activeSpell.DirectoryPath, "scripts");
+
+                string scriptPath = Path.GetFullPath(Path.Combine(scriptsDirectory, scriptName));
+
+                SanctumResult scriptResult = await sanctumGuard
+                    .ValidatePathAsync(campaignId, scriptPath, "script path", toolName, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!scriptResult.Allowed)
+                {
+                    return scriptResult;
+                }
+
+                SanctumResult scriptsRootResult = await sanctumGuard
+                    .ValidatePathAsync(campaignId, scriptsDirectory, "working directory", toolName, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!scriptsRootResult.Allowed)
+                {
+                    return scriptsRootResult;
+                }
+
+                break;
+            }
+
+            case "use_commlink":
+            {
+                string? webhookUrl = settings.Value.CommLink?.WebhookUrl;
+
+                if (string.IsNullOrWhiteSpace(webhookUrl))
+                {
+                    break;
+                }
+
+                SanctumResult networkResult = await sanctumGuard
+                    .ValidateNetworkAsync(campaignId, webhookUrl, toolName, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!networkResult.Allowed)
+                {
+                    return networkResult;
+                }
+
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryResolvePathUnderWorkspace(string workspaceRoot, string relativePath, out string absolutePath)
+    {
+        absolutePath = string.Empty;
+
+        try
+        {
+            string root = Path.GetFullPath(workspaceRoot.Trim());
+
+            absolutePath = Path.IsPathRooted(relativePath)
+                ? Path.GetFullPath(relativePath.Trim())
+                : Path.GetFullPath(Path.Combine(root, relativePath.Trim()));
+
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetJsonStringProperty(JsonElement root, string propertyName, out string? value)
+    {
+        value = null;
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty(propertyName, out JsonElement property))
+        {
+            return false;
+        }
+
+        if (property.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = property.GetString();
+
+        return true;
+    }
+
+    private static string SanctumDenialMessage(SanctumResult result)
+    {
+        string breachType = result.Breach?.BreachType ?? "PolicyViolation";
+
+        string reason = result.DenyReason ?? "This operation is not permitted in the current Sanctum.";
+
+        return $"The Sanctum Guard has blocked this action: {breachType} — {reason}.\n"
+            + "The Dungeon Master must update the Sanctum config to allow this operation.";
+    }
+
+    private static bool IsWardCandidate(string toolName, bool campaignRequiresWard, WardSettings wardSettings) =>
+        RequiresWardForTool(toolName, campaignRequiresWard, wardSettings);
+
+    private static bool IsForbiddenArt(
+        PingRequest request,
+        string toolName,
+        bool campaignRequiresWard,
+        WardSettings wardSettings) =>
+        RequiresWardForTool(toolName, campaignRequiresWard, wardSettings)
+        && !(request.UnattendedMode && wardSettings.AutoDenyInUnattendedMode);
+
+    private static bool RequiresWardForTool(string toolName, bool campaignRequiresWard, WardSettings wardSettings)
+    {
+
+        if (!wardSettings.Enabled
+            || !wardSettings.ForbiddenArts.Contains(toolName, StringComparer.OrdinalIgnoreCase))
+        {
+
+            return false;
+
+        }
+
+        if (string.Equals(toolName, "execute_command", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return true;
+
+        }
+
+        return campaignRequiresWard;
+
+    }
+
+    private static string UnattendedDenyMessage(string toolName) =>
+        $"Forbidden art denied: unattended mode — this action requires an operator to resolve the ward";
+
+    private static string OperatorDenyMessage(string? reason) =>
+        string.IsNullOrWhiteSpace(reason)
+            ? "Operator denied this action."
+            : $"Operator denied this action: {reason}";
+
+    private static string TimeoutDenyMessage(string? reason) =>
+        string.IsNullOrWhiteSpace(reason)
+            ? "Operator denied this action: The ward held until timeout — action was not allowed"
+            : $"Operator denied this action: {reason}";
+
+    private static JsonDocument? TryParseToolArgumentsDocument(string argsSnapshot)
+    {
+        if (string.IsNullOrWhiteSpace(argsSnapshot))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonDocument.Parse(argsSnapshot);
+        }
+        catch (JsonException)
+        {
+            string encoded = JsonSerializer.Serialize(argsSnapshot, ArcanumJsonContext.Default.String);
+
+            return JsonDocument.Parse($"{{\"raw\":{encoded}}}");
+        }
+    }
+
     private async Task TryAppendToolInteractionToGrimoireAsync(
-        Guid? conversationId,
+        Guid? sessionId,
         string toolName,
         string arguments,
         string result,
         string modelUsed,
         CancellationToken cancellationToken)
     {
-        if (!conversationId.HasValue)
+        if (!sessionId.HasValue)
         {
             return;
         }
@@ -1818,13 +2644,15 @@ public sealed class HubIntelligenceProvider(
         {
             await grimoire
                 .AppendToolInteractionAsync(
-                    conversationId.Value,
+                    sessionId.Value,
                     toolName,
                     arguments,
                     result,
                     modelUsed,
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            await PublishLatestSavedEntriesAsync(sessionId.Value, 2, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -1835,6 +2663,48 @@ public sealed class HubIntelligenceProvider(
             logger.LogWarning(ex, "Grimoire could not append tool interaction for tool {ToolName}.", toolName);
         }
     }
+
+    private async Task PublishLatestSavedEntriesAsync(Guid sessionId, int takeLast, CancellationToken cancellationToken)
+    {
+        List<GrimoireEntryDto>? entries = await grimoire
+            .GetRecentSessionEntriesAsync(sessionId, takeLast, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (entries is null || entries.Count == 0)
+        {
+            return;
+        }
+
+        foreach (GrimoireEntryDto dto in entries)
+        {
+            sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
+        }
+    }
+
+    private async Task PublishSavedEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken)
+    {
+        GrimoireEntryDto? dto = await grimoire
+            .GetEntryByIdAsync(sessionId, entryId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (dto is null)
+        {
+            return;
+        }
+
+        sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
+    }
+
+    private static Entry ToEntry(GrimoireEntryDto dto, Guid sessionId) =>
+        new()
+        {
+            Id = dto.Id,
+            SessionId = sessionId,
+            Role = dto.Role,
+            Content = dto.Content,
+            ModelUsed = dto.ModelUsed,
+            CreatedAt = dto.CreatedAt,
+        };
 
     private bool TryValidateAttachedFiles(PingRequest request, out Error error)
     {

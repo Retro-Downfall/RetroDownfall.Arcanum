@@ -32,6 +32,48 @@ public static class ProviderResolver
     }
 
     /// <summary>
+    /// Returns the union of <see cref="ProviderSettings.Models"/> and, for <see cref="AiProviderKind.LlamaCppServer"/> providers, <c>LlamaCpp.ModelMap</c> keys.
+    /// </summary>
+    public static IEnumerable<string> EnumerateAdvertisedModels(ProviderSettings provider)
+    {
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        string[] models = provider.Models ?? [];
+
+        for (int i = 0; i < models.Length; i++)
+        {
+            string model = models[i];
+
+            if (!string.IsNullOrWhiteSpace(model) && seen.Add(model))
+            {
+                yield return model;
+            }
+        }
+
+        if (provider.Type != AiProviderKind.LlamaCppServer)
+        {
+            yield break;
+        }
+
+        Dictionary<string, string>? map = provider.LlamaCpp?.ModelMap;
+
+        if (map is null)
+        {
+            yield break;
+        }
+
+        foreach (string key in map.Keys)
+        {
+            if (!string.IsNullOrWhiteSpace(key) && seen.Add(key))
+            {
+                yield return key;
+            }
+        }
+
+    }
+
+    /// <summary>
     /// Resolves provider and canonical model string. Fails if an explicit <paramref name="targetModel"/> or <see cref="ArcanumSettings.DefaultModel"/> is set but does not match any configured model.
     /// Internal background callers (for example Campaign Logger) pass <paramref name="targetModel"/> from <see cref="ArcanumSettings.FastModel"/> or <see cref="ArcanumSettings.DefaultModel"/>; those properties are not read here directly.
     /// </summary>
@@ -76,16 +118,13 @@ public static class ProviderResolver
 
         if (providers.Length > 0)
         {
-            string[] firstModels = providers[0].Models ?? [];
-
-            if (firstModels.Length > 0)
+            foreach (string model in EnumerateAdvertisedModels(providers[0]))
             {
                 provider = providers[0];
 
-                resolvedModel = firstModels[0];
+                resolvedModel = model;
 
                 return true;
-
             }
 
         }
@@ -109,17 +148,8 @@ public static class ProviderResolver
         {
             ProviderSettings p = providers[pi];
 
-            string[] models = p.Models ?? [];
-
-            for (int mi = 0; mi < models.Length; mi++)
+            foreach (string configured in EnumerateAdvertisedModels(p))
             {
-                string configured = models[mi];
-
-                if (string.IsNullOrWhiteSpace(configured))
-                {
-                    continue;
-                }
-
                 if (ModelNameMatches(configured, needle))
                 {
                     provider = p;

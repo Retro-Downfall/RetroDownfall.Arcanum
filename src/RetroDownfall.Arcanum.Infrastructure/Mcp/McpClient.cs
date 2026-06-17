@@ -13,6 +13,8 @@ internal sealed class McpClient : IAsyncDisposable
 
     private readonly int _maxToolsListPages;
 
+    private readonly long _toolOutputCapBytes;
+
     private readonly IMcpTransport _transport;
 
     private readonly McpJsonSerializerContext _json;
@@ -36,6 +38,7 @@ internal sealed class McpClient : IAsyncDisposable
         IMcpTransport transport,
         TimeSpan defaultRequestTimeout,
         int maxToolsListPages,
+        long toolOutputCapBytes,
         McpRequestCancellationBroker? requestCancellationBroker = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -46,11 +49,18 @@ internal sealed class McpClient : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(maxToolsListPages));
         }
 
+        if (toolOutputCapBytes < 1L)
+        {
+            throw new ArgumentOutOfRangeException(nameof(toolOutputCapBytes));
+        }
+
         _transport = transport;
 
         _defaultRequestTimeout = defaultRequestTimeout;
 
         _maxToolsListPages = maxToolsListPages;
+
+        _toolOutputCapBytes = toolOutputCapBytes;
 
         _requestCancellationBroker = requestCancellationBroker;
 
@@ -203,24 +213,26 @@ internal sealed class McpClient : IAsyncDisposable
                 }
 
                 string description = string.Empty;
+
                 if (tool.TryGetProperty("description", out JsonElement descEl) &&
                     descEl.ValueKind == JsonValueKind.String)
                 {
-                    description = descEl.GetString() ?? string.Empty;
+                    description = McpSecurityLimits.BoundToolDescription(descEl.GetString() ?? string.Empty);
                 }
 
                 JsonElement inputSchema;
+
                 if (tool.TryGetProperty("inputSchema", out JsonElement schemaEl) &&
                     schemaEl.ValueKind == JsonValueKind.Object)
                 {
-                    inputSchema = schemaEl.Clone();
+                    inputSchema = McpSecurityLimits.BoundToolInputSchema(schemaEl, _json);
                 }
                 else
                 {
                     inputSchema = JsonSerializer.SerializeToElement(new McpEmptyJsonObject(), _json.McpEmptyJsonObject);
                 }
 
-                tools.Add(new McpBridgeTool(name, description, inputSchema, this));
+                tools.Add(new McpBridgeTool(name, description, inputSchema, this, _toolOutputCapBytes));
             }
 
             if (!pageResult.TryGetProperty("nextCursor", out JsonElement next) ||

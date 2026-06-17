@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
@@ -23,7 +24,23 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
     {
+
         cancellationToken.ThrowIfCancellationRequested();
+
+        ConfigurationManager probeConfig = new();
+
+        probeConfig.AddArcanumConfiguration();
+
+        if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(probeConfig)))
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    "Refusing to bind to all interfaces over plaintext HTTP. Enable TLS termination or bind loopback only."));
+
+            return 1;
+
+        }
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
@@ -40,7 +57,7 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 
                 int port = ArcanumSettingClamps.HostPort(configuredPort);
 
-                if (ShouldBindHostAny(ctx.Configuration))
+                if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(ctx.Configuration)))
                 {
                     options.ListenAnyIP(port);
                 }
@@ -135,26 +152,8 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
             : new HostSettings().Port;
     }
 
-    private static bool ShouldBindHostAny(IConfiguration configuration)
+    private static bool ReadConfiguredListenAny(IConfiguration configuration)
     {
-        // Environment override always wins so containerized deployments don't need rebuilds.
-        string? env = Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
-
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            string trimmed = env.Trim();
-
-            if (string.Equals(trimmed, "1", StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            if (bool.TryParse(trimmed, out bool parsedEnv))
-            {
-                return parsedEnv;
-            }
-        }
-
         string? configured = configuration["Arcanum:Host:ListenAny"];
 
         if (string.IsNullOrWhiteSpace(configured))

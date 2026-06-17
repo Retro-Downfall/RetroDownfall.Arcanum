@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.CommLink;
 
@@ -49,6 +50,19 @@ internal sealed class WebhookCommLinkDispatcher(
             logger.LogWarning(
                 "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:CommLink:AllowedSchemes; alert was not sent.",
                 endpoint.Scheme);
+
+            return Result.Success();
+
+        }
+
+        Result outbound = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url, cancellationToken).ConfigureAwait(false);
+
+        if (outbound.IsFailure)
+        {
+
+            logger.LogWarning(
+                "Comm Link webhook URL was rejected by outbound URL policy: {Reason}",
+                outbound.Error.Message);
 
             return Result.Success();
 

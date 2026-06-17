@@ -119,6 +119,17 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         try
         {
+            if (!File.Exists(candidate))
+            {
+                return $"run_spell_script: script not found: '{scriptName}'.";
+            }
+
+            if (TryResolveFinalSymlinkTarget(candidate) is { } preStartTarget
+                && !IsPathUnderRoot(_scriptsRootFull, preStartTarget))
+            {
+                return "run_spell_script: resolved path is a symlink that leaves the spell scripts directory; request rejected.";
+            }
+
             if (!process.Start())
             {
                 return "run_spell_script: failed to start the process.";
@@ -169,6 +180,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             catch (OperationCanceledException)
             {
                 TryKillProcessEntireTree(process);
+
+                await ObserveStreamReadTasksAsync(stdoutTask, stderrTask).ConfigureAwait(false);
 
                 if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
@@ -230,6 +243,25 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         finally
         {
             await killRegistration.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ObserveStreamReadTasksAsync(
+        Task<CappedOutput> stdoutTask,
+        Task<CappedOutput> stderrTask)
+    {
+        try
+        {
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 

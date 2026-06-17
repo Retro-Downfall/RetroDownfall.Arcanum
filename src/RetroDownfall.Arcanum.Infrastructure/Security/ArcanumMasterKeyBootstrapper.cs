@@ -14,7 +14,11 @@ public static class ArcanumMasterKeyBootstrapper
     public static async Task<string?> EnsureMasterApiKeyExistsAsync(CancellationToken cancellationToken = default)
     {
         ServiceCollection services = new();
-        services.AddDataProtection().SetApplicationName("ArcanumCore");
+
+        services.AddDataProtection()
+            .SetApplicationName("ArcanumCore")
+            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
         using ServiceProvider provider = services.BuildServiceProvider();
         ISecretStore store = provider.GetRequiredService<ISecretStore>();

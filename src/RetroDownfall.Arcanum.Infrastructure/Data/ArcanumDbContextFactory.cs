@@ -34,6 +34,11 @@ public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<Arcanu
     {
         public static readonly DesignTimeSecretStore Instance = new();
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+
         public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
     }
 }

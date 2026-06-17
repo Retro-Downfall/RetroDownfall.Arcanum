@@ -11,25 +11,34 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
     public partial class ArcanumDbContextModel
     {
         private ArcanumDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("86960ee7-3650-44f9-94d4-2e1b5525c6a6"), entityTypeCount: 4)
+            : base(skipDetectChanges: false, modelId: new Guid("2dba8eca-27c4-42b9-8322-5eabb5262bd2"), entityTypeCount: 7)
         {
         }
 
         partial void Initialize()
         {
-            var chatMessage = ChatMessageEntityType.Create(this);
-            var conversation = ConversationEntityType.Create(this);
+            var entry = EntryEntityType.Create(this);
             var mageSetting = MageSettingEntityType.Create(this);
+            var session = SessionEntityType.Create(this);
             var workspaceContext = WorkspaceContextEntityType.Create(this);
+            var apprentice = ApprenticeEntityType.Create(this);
+            var campaign = CampaignEntityType.Create(this);
+            var prompt = PromptEntityType.Create(this);
 
-            ChatMessageEntityType.CreateForeignKey1(chatMessage, conversation);
+            EntryEntityType.CreateForeignKey1(entry, session);
+            ApprenticeEntityType.CreateForeignKey1(apprentice, campaign);
+            ApprenticeEntityType.CreateForeignKey2(apprentice, session);
+            PromptEntityType.CreateForeignKey1(prompt, campaign);
 
-            ChatMessageEntityType.CreateAnnotations(chatMessage);
-            ConversationEntityType.CreateAnnotations(conversation);
+            EntryEntityType.CreateAnnotations(entry);
             MageSettingEntityType.CreateAnnotations(mageSetting);
+            SessionEntityType.CreateAnnotations(session);
             WorkspaceContextEntityType.CreateAnnotations(workspaceContext);
+            ApprenticeEntityType.CreateAnnotations(apprentice);
+            CampaignEntityType.CreateAnnotations(campaign);
+            PromptEntityType.CreateAnnotations(prompt);
 
-            AddAnnotation("ProductVersion", "10.0.7");
+            AddAnnotation("ProductVersion", "10.0.8");
         }
     }
 }

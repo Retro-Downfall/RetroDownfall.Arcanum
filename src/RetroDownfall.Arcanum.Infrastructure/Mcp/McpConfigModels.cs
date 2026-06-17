@@ -21,6 +21,22 @@ public sealed record McpServerConfig
     public string[]? Args { get; init; }
 
     public Dictionary<string, string>? Env { get; init; }
+
+    public bool AlwaysOn { get; init; } = true;
+
+    public string? Url { get; init; }
+
+    public string? Cwd { get; init; }
+}
+
+/// <summary>
+/// On-disk trusted workspace-local <c>mcp.json</c> approvals (workspace root path → SHA-256 hex of file bytes).
+/// </summary>
+public sealed class TrustedMcpWorkspaceDocument
+{
+
+    public Dictionary<string, string> Entries { get; init; } = new(StringComparer.Ordinal);
+
 }
 
 [JsonSourceGenerationOptions(
@@ -32,4 +48,5 @@ public sealed record McpServerConfig
 [JsonSerializable(typeof(Dictionary<string, McpServerConfig>))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(TrustedMcpWorkspaceDocument))]
 public partial class McpConfigJsonSerializerContext : JsonSerializerContext;

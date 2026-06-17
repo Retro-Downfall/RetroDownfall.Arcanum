@@ -27,12 +27,14 @@ internal static class OpenAiChatCompletionMapper
 
         string? responseFormat = ExtractResponseFormatType(request.ResponseFormat);
 
+        JsonElement? responseFormatJsonSchema = ExtractResponseFormatJsonSchema(request.ResponseFormat);
+
         return new PingRequest(
             Prompt: string.Empty,
             Model: request.Model,
             WorkingDirectory: string.Empty,
             ContextSnapshot: null,
-            ConversationId: null,
+            SessionId: null,
             DisableMcpTools: false,
             CliTerminalFormatting: false,
             UnattendedMode: true,
@@ -45,6 +47,7 @@ internal static class OpenAiChatCompletionMapper
             Stop: stop,
             Seed: request.Seed,
             ResponseFormat: responseFormat,
+            ResponseFormatJsonSchema: responseFormatJsonSchema,
             PresencePenalty: request.PresencePenalty,
             FrequencyPenalty: request.FrequencyPenalty,
             User: request.User,
@@ -203,5 +206,16 @@ internal static class OpenAiChatCompletionMapper
             "text" => "text",
             _ => responseFormat.Type.Trim(),
         };
+    }
+
+    private static JsonElement? ExtractResponseFormatJsonSchema(OpenAiResponseFormat? responseFormat)
+    {
+        if (responseFormat?.JsonSchema is not { } jsonSchema
+            || jsonSchema.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return jsonSchema.Clone();
     }
 }

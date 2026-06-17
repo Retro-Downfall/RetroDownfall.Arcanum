@@ -26,6 +26,18 @@
 
   <ItemGroup>
 
+    <EmbeddedResource Include="Data\SqlMigrations\*.sql" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Cli" />
@@ -46,11 +58,11 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.7" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.7" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
 
       <PrivateAssets>all</PrivateAssets>
 
@@ -58,9 +70,9 @@
 
     </PackageReference>
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
 
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
 
@@ -72,7 +84,7 @@
 
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
 
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.5.2" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
 
   </ItemGroup>
 

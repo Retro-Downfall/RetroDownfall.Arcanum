@@ -15,8 +15,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Periodically enqueues conversations that need campaign-log processing and runs headless inference to
-/// update <c>Conversation.Summary</c> and <c>Conversation.LastSummarizedMessageAt</c> when each id is consumed.
+/// Periodically enqueues sessions that need campaign-log processing and runs headless inference to
+/// update <c>Session.Summary</c> and <c>Session.LastSummarizedMessageAt</c> when each id is consumed.
 /// </summary>
 internal sealed class CampaignLoggerBackgroundService(
     IServiceScopeFactory scopeFactory,
@@ -25,6 +25,8 @@ internal sealed class CampaignLoggerBackgroundService(
     ILogger<CampaignLoggerBackgroundService> hostLogger)
     : BackgroundService
 {
+
+    private int _sweepRunning;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -81,6 +83,11 @@ internal sealed class CampaignLoggerBackgroundService(
                 {
                     hostLogger.LogError(ex, "Campaign Logger sweep iteration failed; will retry on next interval.");
                 }
+
+                sweepMinutes = ArcanumSettingClamps.CampaignLogSweepIntervalMinutes(
+                    options.CurrentValue.Intelligence.CampaignLogSweepIntervalMinutes);
+
+                timer.Period = TimeSpan.FromMinutes(sweepMinutes);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -90,30 +97,44 @@ internal sealed class CampaignLoggerBackgroundService(
 
     private async Task RunSweepAsync(int threshold, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        if (Interlocked.CompareExchange(ref _sweepRunning, 1, 0) != 0)
+        {
+            hostLogger.LogDebug("Campaign Logger sweep skipped: previous sweep still running.");
 
-        int idleMinutes = ArcanumSettingClamps.CampaignLogIdleTimeoutMinutes(
-            options.CurrentValue.Intelligence.CampaignLogIdleTimeoutMinutes);
+            return;
+        }
 
-        DateTime idleCutoff = DateTime.UtcNow.AddMinutes(-idleMinutes);
-
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-        IGrimoireRepository repository = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
-
-        List<Guid> ids = await repository
-            .GetConversationsNeedingSummarizationAsync(threshold, idleCutoff, cancellationToken)
-            .ConfigureAwait(false);
-
-        hostLogger.LogInformation(
-            "Campaign Logger sweep executed. Found {Count} sessions to consolidate.",
-            ids.Count);
-
-        foreach (Guid id in ids)
+        try
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
+            int idleMinutes = ArcanumSettingClamps.CampaignLogIdleTimeoutMinutes(
+                options.CurrentValue.Intelligence.CampaignLogIdleTimeoutMinutes);
+
+            DateTime idleCutoff = DateTime.UtcNow.AddMinutes(-idleMinutes);
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            IGrimoireRepository repository = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+
+            List<Guid> ids = await repository
+                .GetSessionsNeedingSummarizationAsync(threshold, idleCutoff, cancellationToken)
+                .ConfigureAwait(false);
+
+            hostLogger.LogInformation(
+                "Campaign Logger sweep executed. Found {Count} sessions to consolidate.",
+                ids.Count);
+
+            foreach (Guid id in ids)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sweepRunning, 0);
         }
     }
 
@@ -122,7 +143,7 @@ internal sealed class CampaignLoggerBackgroundService(
         try
         {
             await foreach (
-                Guid conversationId in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+                Guid sessionId in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))
             {
                 try
                 {
@@ -134,49 +155,51 @@ internal sealed class CampaignLoggerBackgroundService(
                     IArcanumIntelligenceProvider intelligence =
                         iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
-                    Conversation? conversation = await grimoire
-                        .GetConversationAsync(conversationId, stoppingToken)
+                    Session? session = await grimoire
+                        .GetSessionAsync(sessionId, stoppingToken)
                         .ConfigureAwait(false);
 
-                    if (conversation is null)
+                    if (session is null)
                     {
                         hostLogger.LogWarning(
-                            "Campaign Logger: Conversation {ConversationId} no longer exists; skipping.",
-                            conversationId);
+                            "Campaign Logger: Session {SessionId} no longer exists; skipping.",
+                            sessionId);
 
                         continue;
                     }
 
-                    DateTime watermark = conversation.LastSummarizedMessageAt ?? DateTime.MinValue;
+                    DateTime watermark = session.LastSummarizedMessageAt ?? DateTime.MinValue;
 
-                    List<ChatMessage> batch = conversation.Messages
-                        .Where(m => m.Timestamp > watermark)
-                        .OrderBy(m => m.Timestamp)
-                        .ToList();
+                    int batchSize = ArcanumSettingClamps.CampaignLogThreshold(
+                        options.CurrentValue.Intelligence.CampaignLogThreshold);
+
+                    List<Entry> batch = await grimoire
+                        .GetUnsummarizedEntriesAsync(sessionId, watermark, batchSize, stoppingToken)
+                        .ConfigureAwait(false);
 
                     if (batch.Count == 0)
                     {
                         hostLogger.LogInformation(
-                            "Campaign Logger: No messages to summarize for conversation {ConversationId}; skipping.",
-                            conversationId);
+                            "Campaign Logger: No entries to summarize for session {SessionId}; skipping.",
+                            sessionId);
 
                         continue;
                     }
 
-                    DateTime batchEndUtc = batch[^1].Timestamp;
+                    DateTime batchEndUtc = batch[^1].CreatedAt.UtcDateTime;
 
                     StringBuilder userPayload = new();
 
-                    if (!string.IsNullOrWhiteSpace(conversation.Summary))
+                    if (!string.IsNullOrWhiteSpace(session.Summary))
                     {
                         _ = userPayload.AppendLine("## Previous Summary");
 
-                        _ = userPayload.AppendLine(conversation.Summary.Trim());
+                        _ = userPayload.AppendLine(session.Summary.Trim());
 
                         _ = userPayload.AppendLine();
                     }
 
-                    foreach (ChatMessage m in batch)
+                    foreach (Entry m in batch)
                     {
                         _ = userPayload.Append('[');
 
@@ -228,8 +251,8 @@ internal sealed class CampaignLoggerBackgroundService(
                         if (result.IsFailure)
                         {
                             hostLogger.LogWarning(
-                                "Campaign Logger: Summarization failed for conversation {ConversationId}: {Code} {Message}",
-                                conversationId,
+                                "Campaign Logger: Summarization failed for session {SessionId}: {Code} {Message}",
+                                sessionId,
                                 result.Error.Code,
                                 result.Error.Message);
 
@@ -239,20 +262,20 @@ internal sealed class CampaignLoggerBackgroundService(
                         string summaryText = result.Value.Text.Trim();
 
                         await grimoire
-                            .UpdateConversationCampaignRollupAsync(conversationId, summaryText, batchEndUtc, stoppingToken)
+                            .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, stoppingToken)
                             .ConfigureAwait(false);
 
                         hostLogger.LogInformation(
-                            "Campaign Logger: Updated campaign summary for conversation {ConversationId} through {BatchEndUtc:o}.",
-                            conversationId,
+                            "Campaign Logger: Updated campaign summary for session {SessionId} through {BatchEndUtc:o}.",
+                            sessionId,
                             batchEndUtc);
                     }
                     catch (Exception inferEx)
                     {
                         hostLogger.LogWarning(
                             inferEx,
-                            "Campaign Logger: Summarization threw for conversation {ConversationId}.",
-                            conversationId);
+                            "Campaign Logger: Summarization threw for session {SessionId}.",
+                            sessionId);
                     }
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -263,8 +286,8 @@ internal sealed class CampaignLoggerBackgroundService(
                 {
                     hostLogger.LogError(
                         ex,
-                        "Campaign Logger: Failed processing conversation {ConversationId}",
-                        conversationId);
+                        "Campaign Logger: Failed processing session {SessionId}",
+                        sessionId);
                 }
             }
         }

@@ -35,30 +35,28 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
-        WritePathsPanel();
+        bool healthy = WritePathsPanel();
 
         AnsiConsole.WriteLine();
 
-        WriteMcpConfigPanel();
+        healthy &= WriteMcpConfigPanel();
 
         AnsiConsole.WriteLine();
 
-        WriteTokenizerPanel();
+        healthy &= WriteTokenizerPanel();
 
         AnsiConsole.WriteLine();
 
-        await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
+        healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
 
-        return 0;
+        return healthy ? 0 : 1;
 
     }
 
     private void WriteVersionPanel()
     {
 
-        string version = typeof(Program).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion ?? "unknown";
+        string version = RetroDownfall.Arcanum.Core.ArcanumBuildInfo.InformationalVersion;
 
         int plus = version.IndexOf('+');
 
@@ -79,7 +77,7 @@ public sealed class DoctorCommand(
 
     }
 
-    private void WritePathsPanel()
+    private bool WritePathsPanel()
     {
 
         Table table = new();
@@ -94,9 +92,11 @@ public sealed class DoctorCommand(
 
         table.AddColumn(new TableColumn(string.Empty));
 
+        bool healthy = true;
+
         string grimoireDir = ArcanumPaths.GrimoireDirectory;
 
-        AddPathRow(table, "Grimoire directory", grimoireDir, Directory.Exists(grimoireDir), optional: false);
+        healthy &= AddPathRow(table, "Grimoire directory", grimoireDir, Directory.Exists(grimoireDir), optional: false);
 
         string configFile = Path.Combine(grimoireDir, "arcanum.json");
 
@@ -104,20 +104,22 @@ public sealed class DoctorCommand(
 
         string dbFile = ArcanumPaths.GrimoireDatabaseFile;
 
-        AddPathRow(table, "Grimoire database", dbFile, File.Exists(dbFile), optional: false);
+        healthy &= AddPathRow(table, "Grimoire database", dbFile, File.Exists(dbFile), optional: false);
 
         string securityFile = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "arcanum",
             "security.dat");
 
-        AddPathRow(table, "API key store (Data Protection)", securityFile, File.Exists(securityFile), optional: false);
+        healthy &= AddPathRow(table, "API key store (Data Protection)", securityFile, File.Exists(securityFile), optional: false);
 
         WritePanel("Paths", table);
 
+        return healthy;
+
     }
 
-    private void WriteMcpConfigPanel()
+    private bool WriteMcpConfigPanel()
     {
 
         string globalMcpPath = Path.Combine(
@@ -147,8 +149,10 @@ public sealed class DoctorCommand(
 
             WritePanel("MCP", table);
 
-            return;
+            return true;
         }
+
+        bool healthy = true;
 
         try
         {
@@ -177,6 +181,8 @@ public sealed class DoctorCommand(
         }
         catch (JsonException ex)
         {
+            healthy = false;
+
             table.AddRow(
                 themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                 themePalette.ErrorLabelMarkup(
@@ -186,6 +192,8 @@ public sealed class DoctorCommand(
         }
         catch (IOException ex)
         {
+            healthy = false;
+
             table.AddRow(
                 themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                 themePalette.ErrorLabelMarkup(
@@ -195,6 +203,8 @@ public sealed class DoctorCommand(
         }
         catch (UnauthorizedAccessException ex)
         {
+            healthy = false;
+
             table.AddRow(
                 themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                 themePalette.ErrorLabelMarkup(
@@ -205,9 +215,11 @@ public sealed class DoctorCommand(
 
         WritePanel("MCP", table);
 
+        return healthy;
+
     }
 
-    private void WriteTokenizerPanel()
+    private bool WriteTokenizerPanel()
     {
 
         string encoding = string.IsNullOrWhiteSpace(options.Value.Intelligence.TokenizerEncoding)
@@ -226,6 +238,8 @@ public sealed class DoctorCommand(
 
         table.AddColumn(new TableColumn(string.Empty));
 
+        bool healthy = true;
+
         try
         {
             Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding(encoding);
@@ -241,6 +255,8 @@ public sealed class DoctorCommand(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            healthy = false;
+
             table.AddRow(
                 themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                 themePalette.ErrorLabelMarkup(
@@ -253,9 +269,11 @@ public sealed class DoctorCommand(
 
         WritePanel("Tokenizer", table);
 
+        return healthy;
+
     }
 
-    private async Task WriteApiReachabilityPanelAsync(CancellationToken cancellationToken)
+    private async Task<bool> WriteApiReachabilityPanelAsync(CancellationToken cancellationToken)
     {
 
         int port = ArcanumSettingClamps.HostPort(options.Value.Host.Port);
@@ -288,6 +306,8 @@ public sealed class DoctorCommand(
 
         table.AddColumn(new TableColumn(string.Empty));
 
+        bool healthy = true;
+
         table.AddRow(
             themePalette.MutedMarkup(Markup.Escape(" ")),
             themePalette.MutedMarkup(Markup.Escape("Target:")),
@@ -305,6 +325,8 @@ public sealed class DoctorCommand(
                 break;
 
             case DoctorProbeKind.Unauthorized:
+                healthy = false;
+
                 table.AddRow(
                     themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                     themePalette.ErrorLabelMarkup(
@@ -314,6 +336,8 @@ public sealed class DoctorCommand(
                 break;
 
             case DoctorProbeKind.UnexpectedStatus:
+                healthy = false;
+
                 table.AddRow(
                     themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
                     themePalette.ErrorLabelMarkup(
@@ -347,6 +371,8 @@ public sealed class DoctorCommand(
         }
 
         WritePanel("API Health", table);
+
+        return healthy;
 
     }
 
@@ -437,7 +463,7 @@ public sealed class DoctorCommand(
 
     }
 
-    private void AddPathRow(Table table, string label, string path, bool exists, bool optional)
+    private bool AddPathRow(Table table, string label, string path, bool exists, bool optional)
     {
 
         string escapedLabel = Markup.Escape(label + ":");
@@ -451,7 +477,7 @@ public sealed class DoctorCommand(
                 themePalette.HighlightMarkup(escapedLabel),
                 themePalette.TextMarkup(escapedPath));
 
-            return;
+            return true;
         }
 
         if (optional)
@@ -461,13 +487,15 @@ public sealed class DoctorCommand(
                 themePalette.MutedMarkup(escapedLabel),
                 themePalette.MutedMarkup(Markup.Escape($"{path} (not found, optional)")));
 
-            return;
+            return true;
         }
 
         table.AddRow(
             themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
             themePalette.ErrorMarkup(escapedLabel),
             themePalette.ErrorMarkup(Markup.Escape($"{path} (not found)")));
+
+        return false;
 
     }
 

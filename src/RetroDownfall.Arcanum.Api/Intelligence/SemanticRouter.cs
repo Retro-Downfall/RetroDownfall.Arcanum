@@ -12,10 +12,10 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal static class SemanticRouter
 {
 
-    internal static async Task<ParsedSpell?> DetermineActiveSpellAsync(
+    internal static async Task<SpellMetadata?> DetermineActiveSpellAsync(
         IChatClient client,
         string userPrompt,
-        IReadOnlyList<ParsedSpell> availableSpells,
+        IReadOnlyList<SpellMetadata> availableSpells,
         TimeSpan preflightTimeout,
         int maxOutputTokens,
         float temperature,
@@ -38,7 +38,7 @@ internal static class SemanticRouter
                 _ = toolsList.Append("; ");
             }
 
-            ParsedSpell s = availableSpells[i];
+            SpellMetadata s = availableSpells[i];
 
             _ = toolsList.Append(s.Name).Append(": ").Append(s.Description);
         }
@@ -137,7 +137,7 @@ internal static class SemanticRouter
             return null;
         }
 
-        foreach (ParsedSpell spell in availableSpells)
+        foreach (SpellMetadata spell in availableSpells)
         {
             if (spell.Name.Equals(spellName, StringComparison.OrdinalIgnoreCase))
             {

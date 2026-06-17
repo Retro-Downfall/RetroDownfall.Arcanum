@@ -22,11 +22,17 @@
 
   </PropertyGroup>
 
-  <!-- ILC-only: grouped third-party diagnostics (IL2104/IL3053) and cross-assembly IL3002/IL3000/IL2026 have no valid UnconditionalSuppressMessage target in first-party code; IlcArg scopes suppression to the native compile step only (not Roslyn <NoWarn>). -->
+  <!-- Homebrew dotnet ships nonportable.txt, so Native AOT links keg-only openssl/brotli on macOS. Add search paths when present. -->
 
-  <ItemGroup>
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
 
-    <IlcArg Include="--nowarn:IL2104,IL3053,IL3002,IL3000,IL2026" />
+    <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
+
+    <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
+
+    <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
+
+    <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
 
   </ItemGroup>
 
@@ -48,11 +54,11 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Markdig" Version="1.1.3" />
+    <PackageReference Include="Markdig" Version="1.2.0" />
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
 
     <PackageReference Include="Spectre.Console.Cli" Version="0.55.0" />
 

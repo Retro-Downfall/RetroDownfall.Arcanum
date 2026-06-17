@@ -5,8 +5,10 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -444,24 +446,34 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
     }
 
-    public async Task<Result<List<ConversationSummaryDto>>> GetConversationsAsync(
-        int take,
-        CancellationToken cancellationToken)
+    public async Task<Result<SessionQueryResult>> QuerySessionsAsync(
+        int? limit = null,
+        DateTimeOffset? beforeUpdatedAt = null,
+        CancellationToken cancellationToken = default)
     {
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (apiKey is null)
         {
-            return Result<List<ConversationSummaryDto>>.Failure(new Error(
+            return Result<SessionQueryResult>.Failure(new Error(
                 "Security.MissingApiKey",
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
         HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
 
-        int clamped = Math.Clamp(take, 1, 200);
+        string query = limit is int l
+            ? $"api/sessions?limit={l}"
+            : "api/sessions";
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Get, $"api/conversations?take={clamped}");
+        if (beforeUpdatedAt is DateTimeOffset before)
+        {
+            string encoded = Uri.EscapeDataString(before.ToString("O"));
+
+            query += query.Contains('?', StringComparison.Ordinal) ? $"&beforeUpdatedAt={encoded}" : $"?beforeUpdatedAt={encoded}";
+        }
+
+        using HttpRequestMessage httpRequest = new(HttpMethod.Get, query);
 
         _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
@@ -473,17 +485,17 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<List<ConversationSummaryDto>>? envelope = responseBytes.Length == 0
+            ApiResponse<SessionQueryResult>? envelope = responseBytes.Length == 0
                 ? null
                 : JsonSerializer.Deserialize(
                     responseBytes,
-                    ArcanumJsonContext.Default.ApiResponseListConversationSummaryDto);
+                    ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
 
             if (response.IsSuccessStatusCode)
             {
                 if (envelope is null)
                 {
-                    return Result<List<ConversationSummaryDto>>.Failure(
+                    return Result<SessionQueryResult>.Failure(
                         new Error("Api.InvalidResponse", "Empty or invalid response from API."));
                 }
 
@@ -491,20 +503,21 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 {
                     Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
 
-                    return Result<List<ConversationSummaryDto>>.Failure(err);
+                    return Result<SessionQueryResult>.Failure(err);
                 }
 
-                return Result<List<ConversationSummaryDto>>.Success(envelope.Data ?? []);
+                return Result<SessionQueryResult>.Success(
+                    envelope.Data ?? new SessionQueryResult([], null, false));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
             {
-                return Result<List<ConversationSummaryDto>>.Failure(envelope.Error.Value);
+                return Result<SessionQueryResult>.Failure(envelope.Error.Value);
             }
 
             string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
 
-            return Result<List<ConversationSummaryDto>>.Failure(new Error("Api.HttpError", fallback));
+            return Result<SessionQueryResult>.Failure(new Error("Api.HttpError", fallback));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -512,19 +525,99 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
         catch (OperationCanceledException)
         {
-            return Result<List<ConversationSummaryDto>>.Failure(new Error(
+            return Result<SessionQueryResult>.Failure(new Error(
                 "Connection.Timeout",
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
         {
-            return Result<List<ConversationSummaryDto>>.Failure(new Error(
+            return Result<SessionQueryResult>.Failure(new Error(
                 "Connection",
                 "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
         }
     }
 
-    public async Task<Result> RestAsync(Guid conversationId, CancellationToken cancellationToken = default)
+    public async Task<Result<SessionAnalytics>> GetSessionAnalyticsAsync(CancellationToken cancellationToken = default)
+    {
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<SessionAnalytics>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        using HttpRequestMessage httpRequest = new(HttpMethod.Get, "api/sessions/analytics");
+
+        _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client
+                .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<SessionAnalytics>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionAnalytics);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (envelope is null)
+                {
+                    return Result<SessionAnalytics>.Failure(
+                        new Error("Api.InvalidResponse", "Empty or invalid response from API."));
+                }
+
+                if (!envelope.IsSuccess)
+                {
+                    Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
+
+                    return Result<SessionAnalytics>.Failure(err);
+                }
+
+                if (envelope.Data is null)
+                {
+                    return Result<SessionAnalytics>.Failure(
+                        new Error("Api.InvalidResponse", "Session analytics payload was empty."));
+                }
+
+                return Result<SessionAnalytics>.Success(envelope.Data);
+            }
+
+            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<SessionAnalytics>.Failure(envelope.Error.Value);
+            }
+
+            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+            return Result<SessionAnalytics>.Failure(new Error("Api.HttpError", fallback));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<SessionAnalytics>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<SessionAnalytics>.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+    }
+
+    public async Task<Result> RestAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
@@ -537,7 +630,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Post, $"api/conversations/{conversationId:D}/rest");
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, $"api/sessions/{sessionId:D}/rest");
 
         _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
@@ -577,7 +670,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result.Failure(
-                    new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+                    new Error("Session.NotFound", "No session exists with that id."));
             }
 
             ApiResponse<string>? envelope = responseBytes.Length == 0
@@ -611,20 +704,20 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
     }
 
-    public async Task<Result<ConversationDetailDto>> GetConversationAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<Result<SessionDetailDto>> GetSessionAsync(Guid id, CancellationToken cancellationToken = default)
     {
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (apiKey is null)
         {
-            return Result<ConversationDetailDto>.Failure(new Error(
+            return Result<SessionDetailDto>.Failure(new Error(
                 "Security.MissingApiKey",
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
         HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Get, $"api/conversations/{id:D}");
+        using HttpRequestMessage httpRequest = new(HttpMethod.Get, $"api/sessions/{id:D}");
 
         _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
@@ -636,15 +729,15 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<ConversationDetailDto>? envelope = responseBytes.Length == 0
+            ApiResponse<SessionDetailDto>? envelope = responseBytes.Length == 0
                 ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseConversationDetailDto);
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
 
             if (response.IsSuccessStatusCode)
             {
                 if (envelope is null)
                 {
-                    return Result<ConversationDetailDto>.Failure(
+                    return Result<SessionDetailDto>.Failure(
                         new Error("Api.InvalidResponse", "Empty or invalid response from API."));
                 }
 
@@ -652,37 +745,37 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 {
                     Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
 
-                    return Result<ConversationDetailDto>.Failure(err);
+                    return Result<SessionDetailDto>.Failure(err);
                 }
 
                 if (envelope.Data is null)
                 {
-                    return Result<ConversationDetailDto>.Failure(
-                        new Error("Api.InvalidResponse", "Conversation payload was empty."));
+                    return Result<SessionDetailDto>.Failure(
+                        new Error("Api.InvalidResponse", "Session payload was empty."));
                 }
 
-                return Result<ConversationDetailDto>.Success(envelope.Data);
+                return Result<SessionDetailDto>.Success(envelope.Data);
             }
 
             if ((int)response.StatusCode == 404)
             {
                 if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
                 {
-                    return Result<ConversationDetailDto>.Failure(envelope.Error.Value);
+                    return Result<SessionDetailDto>.Failure(envelope.Error.Value);
                 }
 
-                return Result<ConversationDetailDto>.Failure(
-                    new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+                return Result<SessionDetailDto>.Failure(
+                    new Error("Session.NotFound", "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
             {
-                return Result<ConversationDetailDto>.Failure(envelope.Error.Value);
+                return Result<SessionDetailDto>.Failure(envelope.Error.Value);
             }
 
             string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
 
-            return Result<ConversationDetailDto>.Failure(new Error("Api.HttpError", fallback));
+            return Result<SessionDetailDto>.Failure(new Error("Api.HttpError", fallback));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -690,36 +783,55 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
         catch (OperationCanceledException)
         {
-            return Result<ConversationDetailDto>.Failure(new Error(
+            return Result<SessionDetailDto>.Failure(new Error(
                 "Connection.Timeout",
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
         {
-            return Result<ConversationDetailDto>.Failure(new Error(
+            return Result<SessionDetailDto>.Failure(new Error(
                 "Connection",
                 "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
         }
     }
 
-    public async Task<Result<List<ConversationMessageDto>>> GetConversationMessagesAsync(
-        Guid conversationId,
+    public async Task<Result<EntryDto[]>> GetSessionEntriesAsync(
+        Guid sessionId,
+        int? offset = null,
+        int? limit = null,
         CancellationToken cancellationToken = default)
     {
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (apiKey is null)
         {
-            return Result<List<ConversationMessageDto>>.Failure(new Error(
+            return Result<EntryDto[]>.Failure(new Error(
                 "Security.MissingApiKey",
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
         HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
 
-        using HttpRequestMessage httpRequest = new(
-            HttpMethod.Get,
-            $"api/conversations/{conversationId:D}/messages");
+        string query = $"api/sessions/{sessionId:D}/entries";
+
+        List<string> queryParts = new();
+
+        if (offset is int off)
+        {
+            queryParts.Add($"offset={off}");
+        }
+
+        if (limit is int lim)
+        {
+            queryParts.Add($"limit={lim}");
+        }
+
+        if (queryParts.Count > 0)
+        {
+            query += "?" + string.Join('&', queryParts);
+        }
+
+        using HttpRequestMessage httpRequest = new(HttpMethod.Get, query);
 
         _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
@@ -731,15 +843,15 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<List<ConversationMessageDto>>? envelope = responseBytes.Length == 0
+            ApiResponse<EntryDto[]>? envelope = responseBytes.Length == 0
                 ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseListConversationMessageDto);
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
 
             if (response.IsSuccessStatusCode)
             {
                 if (envelope is null)
                 {
-                    return Result<List<ConversationMessageDto>>.Failure(
+                    return Result<EntryDto[]>.Failure(
                         new Error("Api.InvalidResponse", "Empty or invalid response from API."));
                 }
 
@@ -747,37 +859,37 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 {
                     Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
 
-                    return Result<List<ConversationMessageDto>>.Failure(err);
+                    return Result<EntryDto[]>.Failure(err);
                 }
 
                 if (envelope.Data is null)
                 {
-                    return Result<List<ConversationMessageDto>>.Failure(
-                        new Error("Api.InvalidResponse", "Conversation messages payload was empty."));
+                    return Result<EntryDto[]>.Failure(
+                        new Error("Api.InvalidResponse", "Session entries payload was empty."));
                 }
 
-                return Result<List<ConversationMessageDto>>.Success(envelope.Data);
+                return Result<EntryDto[]>.Success(envelope.Data);
             }
 
             if ((int)response.StatusCode == 404)
             {
                 if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
                 {
-                    return Result<List<ConversationMessageDto>>.Failure(envelope.Error.Value);
+                    return Result<EntryDto[]>.Failure(envelope.Error.Value);
                 }
 
-                return Result<List<ConversationMessageDto>>.Failure(
-                    new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+                return Result<EntryDto[]>.Failure(
+                    new Error("Session.NotFound", "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
             {
-                return Result<List<ConversationMessageDto>>.Failure(envelope.Error.Value);
+                return Result<EntryDto[]>.Failure(envelope.Error.Value);
             }
 
             string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
 
-            return Result<List<ConversationMessageDto>>.Failure(new Error("Api.HttpError", fallback));
+            return Result<EntryDto[]>.Failure(new Error("Api.HttpError", fallback));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -785,32 +897,32 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
         catch (OperationCanceledException)
         {
-            return Result<List<ConversationMessageDto>>.Failure(new Error(
+            return Result<EntryDto[]>.Failure(new Error(
                 "Connection.Timeout",
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
         {
-            return Result<List<ConversationMessageDto>>.Failure(new Error(
+            return Result<EntryDto[]>.Failure(new Error(
                 "Connection",
                 "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
         }
     }
 
-    public async Task<Result<bool>> DeleteConversationAsync(Guid id, CancellationToken cancellationToken)
+    public async Task<Result> ArchiveSessionAsync(Guid id, CancellationToken cancellationToken = default)
     {
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (apiKey is null)
         {
-            return Result<bool>.Failure(new Error(
+            return Result.Failure(new Error(
                 "Security.MissingApiKey",
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
         HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Delete, $"api/conversations/{id:D}");
+        using HttpRequestMessage httpRequest = new(HttpMethod.Delete, $"api/sessions/{id:D}");
 
         _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
@@ -819,6 +931,11 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             using HttpResponseMessage response = await client
                 .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
+
+            if ((int)response.StatusCode == 204)
+            {
+                return Result.Success();
+            }
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -826,41 +943,25 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 ? null
                 : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
 
-            if ((int)response.StatusCode == 200)
-            {
-                if (envelope is { IsSuccess: true, Data: true })
-                {
-                    return Result<bool>.Success(true);
-                }
-
-                if (envelope is { IsSuccess: false, Error: not null })
-                {
-                    return Result<bool>.Failure(envelope.Error.Value);
-                }
-
-                return Result<bool>.Failure(
-                    new Error("Api.InvalidResponse", "Empty or invalid response from API."));
-            }
-
             if ((int)response.StatusCode == 404)
             {
                 if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
                 {
-                    return Result<bool>.Failure(envelope.Error.Value);
+                    return Result.Failure(envelope.Error.Value);
                 }
 
-                return Result<bool>.Failure(
-                    new Error("Grimoire.ConversationNotFound", "No conversation exists with that id."));
+                return Result.Failure(
+                    new Error("Session.NotFound", "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
             {
-                return Result<bool>.Failure(envelope.Error.Value);
+                return Result.Failure(envelope.Error.Value);
             }
 
             string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
 
-            return Result<bool>.Failure(new Error("Api.HttpError", fallback));
+            return Result.Failure(new Error("Api.HttpError", fallback));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -868,13 +969,109 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
         catch (OperationCanceledException)
         {
-            return Result<bool>.Failure(new Error(
+            return Result.Failure(new Error(
                 "Connection.Timeout",
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
         {
-            return Result<bool>.Failure(new Error(
+            return Result.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+    }
+
+    public async Task<Result<SessionExportResult>> ExportSessionAsync(
+        Guid id,
+        SessionExportFormat format,
+        CancellationToken cancellationToken = default)
+    {
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<SessionExportResult>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        string formatValue = format == SessionExportFormat.Markdown ? "markdown" : "json";
+
+        using HttpRequestMessage httpRequest = new(HttpMethod.Get, $"api/sessions/{id:D}/export?format={formatValue}");
+
+        _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client
+                .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<SessionExportResult>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionExportResult);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (envelope is null)
+                {
+                    return Result<SessionExportResult>.Failure(
+                        new Error("Api.InvalidResponse", "Empty or invalid response from API."));
+                }
+
+                if (!envelope.IsSuccess)
+                {
+                    Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
+
+                    return Result<SessionExportResult>.Failure(err);
+                }
+
+                if (envelope.Data is null)
+                {
+                    return Result<SessionExportResult>.Failure(
+                        new Error("Api.InvalidResponse", "Session export payload was empty."));
+                }
+
+                return Result<SessionExportResult>.Success(envelope.Data);
+            }
+
+            if ((int)response.StatusCode == 404)
+            {
+                if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<SessionExportResult>.Failure(envelope.Error.Value);
+                }
+
+                return Result<SessionExportResult>.Failure(
+                    new Error("Session.NotFound", "No session exists with that id."));
+            }
+
+            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<SessionExportResult>.Failure(envelope.Error.Value);
+            }
+
+            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+            return Result<SessionExportResult>.Failure(new Error("Api.HttpError", fallback));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<SessionExportResult>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<SessionExportResult>.Failure(new Error(
                 "Connection",
                 "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
         }
@@ -1025,67 +1222,89 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Get, "api/lore");
+        List<LoreDto> all = [];
 
-        _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+        int offset = 0;
 
-        try
+        bool hasMore;
+
+        do
         {
-            using HttpResponseMessage response = await client
-                .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpRequestMessage httpRequest = new(
+                HttpMethod.Get,
+                $"api/lore?limit=1000&offset={offset}");
 
-            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
-            ApiResponse<List<LoreDto>>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(
-                    responseBytes,
-                    ArcanumJsonContext.Default.ApiResponseListLoreDto);
-
-            if (response.IsSuccessStatusCode)
+            try
             {
-                if (envelope is null)
+                using HttpResponseMessage response = await client
+                    .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                    .ConfigureAwait(false);
+
+                byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+                ApiResponse<ListPageResult<LoreDto>>? envelope = responseBytes.Length == 0
+                    ? null
+                    : JsonSerializer.Deserialize(
+                        responseBytes,
+                        ArcanumJsonContext.Default.ApiResponseListPageResultLoreDto);
+
+                if (response.IsSuccessStatusCode)
                 {
-                    return Result<List<LoreDto>>.Failure(
-                        new Error("Api.InvalidResponse", "Empty or invalid response from API."));
-                }
+                    if (envelope is null)
+                    {
+                        return Result<List<LoreDto>>.Failure(
+                            new Error("Api.InvalidResponse", "Empty or invalid response from API."));
+                    }
 
-                if (!envelope.IsSuccess)
+                    if (!envelope.IsSuccess)
+                    {
+                        Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
+
+                        return Result<List<LoreDto>>.Failure(err);
+                    }
+
+                    ListPageResult<LoreDto> page = envelope.Data ?? new ListPageResult<LoreDto>([], false);
+
+                    all.AddRange(page.Items);
+
+                    hasMore = page.HasMore;
+
+                    offset = page.NextOffset ?? offset + page.Items.Length;
+                }
+                else
                 {
-                    Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
+                    if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+                    {
+                        return Result<List<LoreDto>>.Failure(envelope.Error.Value);
+                    }
 
-                    return Result<List<LoreDto>>.Failure(err);
+                    string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+                    return Result<List<LoreDto>>.Failure(new Error("Api.HttpError", fallback));
                 }
-
-                return Result<List<LoreDto>>.Success(envelope.Data ?? []);
             }
-
-            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return Result<List<LoreDto>>.Failure(envelope.Error.Value);
+                throw;
             }
+            catch (OperationCanceledException)
+            {
+                return Result<List<LoreDto>>.Failure(new Error(
+                    "Connection.Timeout",
+                    "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+            }
+            catch (HttpRequestException)
+            {
+                return Result<List<LoreDto>>.Failure(new Error(
+                    "Connection",
+                    "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+            }
+        }
+        while (hasMore);
 
-            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
-
-            return Result<List<LoreDto>>.Failure(new Error("Api.HttpError", fallback));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            return Result<List<LoreDto>>.Failure(new Error(
-                "Connection.Timeout",
-                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
-        }
-        catch (HttpRequestException)
-        {
-            return Result<List<LoreDto>>.Failure(new Error(
-                "Connection",
-                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
-        }
+        return Result<List<LoreDto>>.Success(all);
     }
 
     public async Task<Result<LoreDto>> GetLoreAsync(string key, CancellationToken cancellationToken = default)
@@ -1641,4 +1860,355 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
 
     }
+
+    public async IAsyncEnumerable<LlamaPullProgress> PullModelStreamAsync(
+        PullModelRequestDto body,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            yield return new LlamaPullProgress { Completed = true, Error = "No API key found. Run 'arcanum serve' once to generate and store a key." };
+
+            yield break;
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PullModelRequestDto);
+
+        using ByteArrayContent content = new(json);
+
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+
+        using HttpRequestMessage request = new(HttpMethod.Post, "api/llama/models/pull");
+
+        request.Content = content;
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        HttpResponseMessage? response = null;
+
+        string? sendErrorMessage = null;
+
+        try
+        {
+            response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            sendErrorMessage = "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.";
+        }
+        catch (HttpRequestException)
+        {
+            sendErrorMessage = "API is unreachable. Is 'arcanum serve' running in a background terminal?";
+        }
+
+        if (sendErrorMessage is not null || response is null)
+        {
+            yield return new LlamaPullProgress { Completed = true, Error = sendErrorMessage ?? "API is unreachable. Is 'arcanum serve' running in a background terminal?" };
+
+            yield break;
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+                ApiResponse<string>? envelope = responseBytes.Length == 0
+                    ? null
+                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+
+                string message = envelope is { IsSuccess: false, Error: not null }
+                    ? envelope.Error.Value.Message
+                    : $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+                yield return new LlamaPullProgress { Completed = true, Error = message };
+
+                yield break;
+            }
+
+            await using Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+            using StreamReader lineReader = new(responseStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+
+            while (true)
+            {
+                string? line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+
+                if (line is null)
+                {
+                    break;
+                }
+
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                LlamaPullProgress? item;
+                bool malformed = false;
+
+                try
+                {
+                    item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.LlamaPullProgress);
+                }
+                catch (JsonException)
+                {
+                    item = null;
+                    malformed = true;
+                }
+
+                if (malformed)
+                {
+                    continue;
+                }
+
+                if (item is not null)
+                {
+                    yield return item;
+                }
+            }
+        }
+
+    }
+
+    public async Task<Result<CachedModelInfo[]>> ListCachedModelsAsync(CancellationToken cancellationToken = default)
+    {
+
+        return await GetApiAsync<CachedModelInfo[]>("api/llama/models", cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<LlamaServerInfo[]>> ListLlamaServersAsync(CancellationToken cancellationToken = default)
+    {
+
+        return await GetApiAsync<LlamaServerInfo[]>("api/llama/servers", cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<LlamaServerInfo>> StartLlamaServerAsync(
+        string cacheKey,
+        int? gpuLayers,
+        int? port,
+        CancellationToken cancellationToken = default)
+    {
+
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<LlamaServerInfo>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        var body = new StartLlamaServerRequestDto { GpuLayers = gpuLayers, Port = port };
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.StartLlamaServerRequestDto);
+
+        using ByteArrayContent content = new(json);
+
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+
+        string encodedKey = Uri.EscapeDataString(cacheKey);
+
+        using HttpRequestMessage request = new(HttpMethod.Post, $"api/llama/servers/{encodedKey}/start");
+
+        request.Content = content;
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<LlamaServerInfo>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLlamaServerInfo);
+
+            if (envelope is { IsSuccess: true, Data: not null })
+            {
+                return Result<LlamaServerInfo>.Success(envelope.Data);
+            }
+
+            if (envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<LlamaServerInfo>.Failure(envelope.Error.Value);
+            }
+
+            return Result<LlamaServerInfo>.Failure(new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<LlamaServerInfo>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<LlamaServerInfo>.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+
+    }
+
+    public async Task<Result<bool>> StopLlamaServerAsync(string? cacheKey, CancellationToken cancellationToken = default)
+    {
+
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<bool>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        string path = string.IsNullOrWhiteSpace(cacheKey)
+            ? "api/llama/servers/stop"
+            : $"api/llama/servers/{Uri.EscapeDataString(cacheKey)}/stop";
+
+        using HttpRequestMessage request = new(HttpMethod.Post, path);
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<bool>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+            if (envelope is { IsSuccess: true })
+            {
+                return Result<bool>.Success(true);
+            }
+
+            if (envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<bool>.Failure(envelope.Error.Value);
+            }
+
+            return Result<bool>.Failure(new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<bool>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<bool>.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+
+    }
+
+    private async Task<Result<T>> GetApiAsync<T>(string path, CancellationToken cancellationToken)
+    {
+
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<T>.Failure(new Error(
+                "Security.MissingApiKey",
+                "No API key found. Run 'arcanum serve' once to generate and store a key."));
+        }
+
+        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+
+        using HttpRequestMessage request = new(HttpMethod.Get, path);
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            if (typeof(T) == typeof(CachedModelInfo[]))
+            {
+                ApiResponse<CachedModelInfo[]>? envelope = responseBytes.Length == 0
+                    ? null
+                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseCachedModelInfoArray);
+
+                if (envelope is { IsSuccess: true, Data: not null })
+                {
+                    return Result<T>.Success((T)(object)envelope.Data);
+                }
+
+                if (envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<T>.Failure(envelope.Error.Value);
+                }
+            }
+            else if (typeof(T) == typeof(LlamaServerInfo[]))
+            {
+                ApiResponse<LlamaServerInfo[]>? envelope = responseBytes.Length == 0
+                    ? null
+                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLlamaServerInfoArray);
+
+                if (envelope is { IsSuccess: true, Data: not null })
+                {
+                    return Result<T>.Success((T)(object)envelope.Data);
+                }
+
+                if (envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<T>.Failure(envelope.Error.Value);
+                }
+            }
+
+            return Result<T>.Failure(new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<T>.Failure(new Error(
+                "Connection.Timeout",
+                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<T>.Failure(new Error(
+                "Connection",
+                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
+        }
+
+    }
+
 }

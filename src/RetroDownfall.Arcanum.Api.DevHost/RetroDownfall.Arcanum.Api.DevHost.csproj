@@ -4,11 +4,33 @@
 
     <OutputType>Exe</OutputType>
 
+    <PublishAot>true</PublishAot>
+
     <IsAotCompatible>true</IsAotCompatible>
+
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
     <EFOptimizeContext>false</EFOptimizeContext>
 
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">
+
+    <StripSymbols>false</StripSymbols>
+
+  </PropertyGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+
+    <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
+
+    <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
+
+    <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
+
+    <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
+
+  </ItemGroup>
 
   <ItemGroup>
 

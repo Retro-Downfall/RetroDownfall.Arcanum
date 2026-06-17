@@ -35,7 +35,8 @@ public static class LoggingBootstrapper
                     .MinimumLevel.Information()
                     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                     .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
-                    .Enrich.FromLogContext();
+                    .Enrich.FromLogContext()
+                    .WriteTo.Sink(serviceProvider.GetRequiredService<SerilogLogRingBufferSink>());
 
                 if (arcSettings.Host.EnableEnterpriseTelemetry)
                 {

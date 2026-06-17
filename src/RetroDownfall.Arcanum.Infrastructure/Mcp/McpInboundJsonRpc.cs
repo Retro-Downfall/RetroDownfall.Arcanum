@@ -13,9 +13,19 @@ internal static class McpInboundJsonRpc
     /// </summary>
     public static McpInboundEnvelope ParseInbound(string line, McpJsonSerializerContext json)
     {
-        using JsonDocument doc = JsonDocument.Parse(line);
+
+        if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line))
+        {
+
+            throw new JsonException(
+                $"JSON-RPC line exceeds the maximum size of {McpSecurityLimits.MaxJsonRpcLineUtf8Bytes} UTF-8 bytes.");
+
+        }
+
+        using JsonDocument doc = JsonDocument.Parse(line, McpSecurityLimits.JsonDocumentOptions);
 
         return ParseInboundCore(doc.RootElement, json);
+
     }
 
     public static McpInboundEnvelope ParseInboundCore(JsonElement root, McpJsonSerializerContext json)

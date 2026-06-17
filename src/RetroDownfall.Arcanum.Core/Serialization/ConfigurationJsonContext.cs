@@ -1,0 +1,45 @@
+using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Logging;
+
+namespace RetroDownfall.Arcanum.Core.Serialization;
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(ArcanumConfigurationFile))]
+[JsonSerializable(typeof(ArcanumSettings))]
+[JsonSerializable(typeof(HostSettings))]
+[JsonSerializable(typeof(ServerSettings))]
+[JsonSerializable(typeof(HostRateLimitSettings))]
+[JsonSerializable(typeof(ProviderSettings))]
+[JsonSerializable(typeof(ProviderSettings[]))]
+[JsonSerializable(typeof(AiProviderKind))]
+[JsonSerializable(typeof(BureauSettings))]
+[JsonSerializable(typeof(IntelligenceSettings))]
+[JsonSerializable(typeof(PerceptionSettings))]
+[JsonSerializable(typeof(SpellSettings))]
+[JsonSerializable(typeof(CampaignsSettings))]
+[JsonSerializable(typeof(CliSettings))]
+[JsonSerializable(typeof(ArcanumTheme))]
+[JsonSerializable(typeof(ThemeColors))]
+[JsonSerializable(typeof(ThemeSemanticColors))]
+[JsonSerializable(typeof(SecuritySettings))]
+[JsonSerializable(typeof(DaemonSettings))]
+[JsonSerializable(typeof(UnseenServantJob))]
+[JsonSerializable(typeof(UnseenServantJob[]))]
+[JsonSerializable(typeof(List<UnseenServantJob>))]
+[JsonSerializable(typeof(CommLinkSettings))]
+[JsonSerializable(typeof(GrimoireSettings))]
+[JsonSerializable(typeof(EventBusSettings))]
+[JsonSerializable(typeof(LogSettings))]
+[JsonSerializable(typeof(LogLevel))]
+[JsonSerializable(typeof(WorkspaceSettings))]
+[JsonSerializable(typeof(SessionSettings))]
+[JsonSerializable(typeof(LlamaCppSettings))]
+[JsonSerializable(typeof(ProviderLlamaCppSettings))]
+[JsonSerializable(typeof(WardSettings))]
+[JsonSerializable(typeof(ApprenticeSettings))]
+[JsonSerializable(typeof(CodexSettings))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(string[]))]
+
+public partial class ConfigurationJsonContext : JsonSerializerContext;

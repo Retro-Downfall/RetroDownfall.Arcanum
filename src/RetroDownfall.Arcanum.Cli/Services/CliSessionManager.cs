@@ -12,7 +12,7 @@ public sealed class CliSessionManager(IThemePalette palette)
     private string SessionFilePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
 
-    public Guid? GetLastConversationId()
+    public Guid? GetLastSessionId()
     {
         try
         {
@@ -51,7 +51,7 @@ public sealed class CliSessionManager(IThemePalette palette)
         }
     }
 
-    public void SaveConversationId(Guid id)
+    public void SaveSessionId(Guid id)
     {
         try
         {
@@ -131,7 +131,7 @@ public sealed class CliSessionManager(IThemePalette palette)
             palette.ErrorLabelMarkup(
                 Markup.Escape("Warning:"),
                 Markup.Escape(
-                    $"cli-session.txt does not contain a valid conversation id (got: '{preview}'). The file will be replaced on the next /resume or new turn.")));
+                    $"cli-session.txt does not contain a valid session id (got: '{preview}'). The file will be replaced on the next /resume or new turn.")));
     }
 
 }

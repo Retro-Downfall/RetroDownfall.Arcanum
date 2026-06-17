@@ -26,6 +26,7 @@ internal static class AskHumanToolCallStreamHandler
     public static async Task<AskHumanResult> TryHandleAskHumanAsync(
         IntelligenceEvent evt,
         bool unattended,
+        bool isInteractive,
         ArcanumApiClient apiClient,
         IThemePalette palette,
         CancellationToken cancellationToken)
@@ -49,13 +50,14 @@ internal static class AskHumanToolCallStreamHandler
 
         Result<bool> submitResult;
 
-        if (unattended)
+        if (unattended || !isInteractive)
         {
+            string autoReply = unattended
+                ? "System: The user is in unattended mode. Proceed using your best judgment."
+                : "System: No interactive terminal is available. Proceed using your best judgment.";
+
             submitResult = await apiClient
-                .SubmitHumanResponseAsync(
-                    args.PromptId,
-                    "System: The user is in unattended mode. Proceed using your best judgment.",
-                    cancellationToken)
+                .SubmitHumanResponseAsync(args.PromptId, autoReply, cancellationToken)
                 .ConfigureAwait(false);
         }
         else

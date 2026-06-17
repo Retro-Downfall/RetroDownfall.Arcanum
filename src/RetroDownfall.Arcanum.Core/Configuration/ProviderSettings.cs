@@ -15,7 +15,13 @@ public sealed record ProviderSettings
 
     public int ContextWindowLimit { get; init; } = 8192;
 
-    public override string ToString() =>
-        $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(ApiKey)} = {(ApiKey is null ? "null" : "***")}, {nameof(Models)} = [{string.Join(", ", Models)}], {nameof(ContextWindowLimit)} = {ContextWindowLimit} }}";
+    public ProviderLlamaCppSettings? LlamaCpp { get; init; }
+
+    public override string ToString()
+    {
+        int mapCount = LlamaCpp?.ModelMap?.Count ?? 0;
+
+        return $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(ApiKey)} = {(ApiKey is null ? "null" : "***")}, {nameof(Models)} = [{string.Join(", ", Models)}], {nameof(ContextWindowLimit)} = {ContextWindowLimit}, LlamaCppModelMapCount = {mapCount} }}";
+    }
 
 }

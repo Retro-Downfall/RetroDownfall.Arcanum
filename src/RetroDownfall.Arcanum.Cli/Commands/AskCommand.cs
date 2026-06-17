@@ -20,7 +20,8 @@ public sealed class AskCommand(
     IThemePalette palette,
     CliSessionManager session,
     IGrimoireCliInitialization grimoireBootstrapper,
-    IServiceScopeFactory scopeFactory) : AsyncCommand<AskCommand.Settings>
+    IServiceScopeFactory scopeFactory,
+    ICliEnvironment cliEnvironment) : AsyncCommand<AskCommand.Settings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
@@ -86,7 +87,7 @@ public sealed class AskCommand(
                 chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot).ConfigureAwait(false);
             }
 
-            Guid? conversationId = null;
+            Guid? sessionId = null;
 
             if (settings.New)
             {
@@ -94,7 +95,7 @@ public sealed class AskCommand(
             }
             else
             {
-                conversationId = session.GetLastConversationId();
+                sessionId = session.GetLastSessionId();
             }
 
             PingRequest ping = new(
@@ -102,7 +103,7 @@ public sealed class AskCommand(
                 string.IsNullOrWhiteSpace(settings.Model) ? null : settings.Model.Trim(),
                 cwd,
                 snapshot,
-                conversationId,
+                sessionId,
                 UnattendedMode: settings.Unattended,
                 ChronosyncDelta: chronosyncDelta,
                 Temperature: flags.Temperature,
@@ -139,7 +140,13 @@ public sealed class AskCommand(
                     case IntelligenceEventType.ToolCall:
 
                         AskHumanResult humanResult = await AskHumanToolCallStreamHandler
-                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, palette, linked.Token)
+                            .TryHandleAskHumanAsync(
+                                evt,
+                                settings.Unattended,
+                                cliEnvironment.IsInteractive,
+                                apiClient,
+                                palette,
+                                linked.Token)
                             .ConfigureAwait(false);
 
                         if (humanResult == AskHumanResult.SubmitFailed)
@@ -160,11 +167,12 @@ public sealed class AskCommand(
 
                         break;
 
+                    case IntelligenceEventType.SessionBound:
                     case IntelligenceEventType.ConversationBound:
 
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
-                            session.SaveConversationId(boundId);
+                            session.SaveSessionId(boundId);
                         }
 
                         break;
@@ -249,7 +257,7 @@ public sealed class AskCommand(
         public string? Model { get; init; }
 
         [CommandOption("-n|--new")]
-        [Description("Start a new conversation thread, clearing the previous session.")]
+        [Description("Start a new session thread, clearing the previous session.")]
         public bool New { get; init; }
 
         [CommandOption("--unattended")]

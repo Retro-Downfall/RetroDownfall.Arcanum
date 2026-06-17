@@ -1,9 +1,11 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-public sealed class ArcanumSettings
+public sealed record ArcanumSettings
 {
 
     public HostSettings Host { get; init; } = new();
+
+    public ServerSettings Server { get; init; } = new();
 
     public ProviderSettings[] Providers { get; init; } = [];
 
@@ -17,6 +19,10 @@ public sealed class ArcanumSettings
 
     public PerceptionSettings Perception { get; init; } = new();
 
+    public SpellSettings Spells { get; init; } = new();
+
+    public CampaignsSettings Campaigns { get; init; } = new();
+
     public CliSettings Cli { get; init; } = new();
 
     public SecuritySettings Security { get; init; } = new();
@@ -26,6 +32,22 @@ public sealed class ArcanumSettings
     public CommLinkSettings CommLink { get; init; } = new();
 
     public GrimoireSettings Grimoire { get; init; } = new();
+
+    public EventBusSettings EventBus { get; init; } = new();
+
+    public LogSettings Logs { get; init; } = new();
+
+    public WorkspaceSettings Workspaces { get; init; } = new();
+
+    public SessionSettings Sessions { get; init; } = new();
+
+    public LlamaCppSettings LlamaCpp { get; init; } = new();
+
+    public WardSettings Ward { get; init; } = new();
+
+    public ApprenticeSettings Apprentices { get; init; } = new();
+
+    public CodexSettings Codex { get; init; } = new();
 
 }
 

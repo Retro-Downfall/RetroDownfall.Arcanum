@@ -1,11 +1,14 @@
 using System.Collections.Concurrent;
-
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Events;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <inheritdoc />
-internal sealed class UnseenServantPacer : IUnseenServantPacer
+internal sealed class UnseenServantPacer(
+    IEventBus eventBus,
+    IOptionsMonitor<ArcanumSettings> optionsMonitor) : IUnseenServantPacer
 {
 
     private readonly ConcurrentDictionary<string, int> _overrides = new(StringComparer.Ordinal);
@@ -24,7 +27,26 @@ internal sealed class UnseenServantPacer : IUnseenServantPacer
 
         int clamped = ArcanumSettingClamps.UnseenServantIntervalMinutes(intervalMinutes);
 
+        if (_overrides.TryGetValue(key, out int previous) && previous == clamped)
+        {
+
+            return;
+        }
+
         _overrides[key] = clamped;
+
+        UnseenServantJob? configured = (optionsMonitor.CurrentValue.Daemon?.Jobs ?? [])
+            .FirstOrDefault(job => string.Equals(job.Name.Trim(), key, StringComparison.Ordinal));
+
+        string targetSpell = configured?.TargetSpell ?? string.Empty;
+
+        eventBus.Publish(new DaemonEvent(
+            DateTimeOffset.UtcNow,
+            Guid.Empty,
+            key,
+            targetSpell,
+            DaemonEventType.IntervalChanged,
+            Message: clamped.ToString()));
     }
 
     /// <inheritdoc />

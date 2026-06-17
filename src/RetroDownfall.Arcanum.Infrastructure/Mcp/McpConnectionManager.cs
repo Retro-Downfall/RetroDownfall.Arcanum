@@ -1,13 +1,14 @@
 using System.Collections.Concurrent;
-using System.Linq;
-using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -15,30 +16,29 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Loads standard <c>mcp.json</c> from the user profile and from each workspace, spawns MCP servers, and exposes merged tools as <see cref="AITool"/>.
 /// </summary>
-/// <remarks>
-/// <para>
-/// Global config is <c>~/.config/arcanum/mcp.json</c>. Workspace <c>mcp.json</c> is merged per normalized workspace root; duplicate tool names use the local registration.
-/// Merged tool lists and spawned processes are cached per workspace for the process lifetime.
-/// </para>
-/// <para>
-/// The in-process Arcanum internal MCP server is started once per partition key (including a sentinel when no workspace is set) so <c>ask_human</c> remains available globally.
-/// </para>
-/// </remarks>
 public sealed class McpConnectionManager(
     ILogger<McpConnectionManager> logger,
     IHumanPromptRegistry humanPromptRegistry,
     IServiceScopeFactory scopeFactory,
     IUnseenServantPacer pacer,
-    IOptionsMonitor<ArcanumSettings> settings) : IAsyncDisposable
+    IEventBus eventBus,
+    ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
+    IOptionsMonitor<ArcanumSettings> settings) : IMcpConnectionManager, IAsyncDisposable
 {
 
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
     private const string NoWorkspaceKey = "__arcanum_no_workspace__";
 
+    private const int MaxMcpConfigBytes = McpSecurityLimits.MaxMcpConfigBytes;
+
+    private static readonly TimeSpan AlwaysOnRestartBackoff = TimeSpan.FromSeconds(60);
+
     private static readonly McpServerConfig InternalMcpServerConfig = new() { Command = "arcanum-internal" };
 
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
+
+    private readonly SemaphoreSlim _registryLock = new(1, 1);
 
     private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _workspaceInitLocks = new(StringComparer.Ordinal);
 
@@ -46,17 +46,374 @@ public sealed class McpConnectionManager(
 
     private readonly ConcurrentDictionary<string, Lazy<McpPartitionClients>> _partitionClients = new(StringComparer.Ordinal);
 
+    private readonly ConcurrentDictionary<(string Name, string? WorkingDirectory), ManagedMcpServerEntry> _registry = new();
+
     private bool _globalInitialized;
 
-    private Dictionary<string, LoadedMcpTool> _globalFirstByToolName = new(StringComparer.Ordinal);
+    private bool _globalRegistryLoaded;
+
+    private Dictionary<string, LoadedMcpToolRow> _globalFirstByToolName = new(StringComparer.Ordinal);
 
     private IReadOnlyList<AITool> _globalSurfaceTools = [];
 
     private volatile bool _disposed;
 
-    /// <summary>
-    /// Returns merged MCP bridge tools: global <c>mcp.json</c> plus workspace-local <c>mcp.json</c> when present.
-    /// </summary>
+    /// <inheritdoc />
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (ManagedMcpServerEntry entry in _registry.Values)
+        {
+            if (entry.ScopeWorkingDirectory is not null)
+            {
+                continue;
+            }
+
+            if (!entry.AlwaysOn)
+            {
+                continue;
+            }
+
+            await StartAsync(entry.Name, null, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task StopAllAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
+        {
+            await StopAsync(entry.Name, entry.ScopeWorkingDirectory, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> StartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
+
+        if (resolved.IsFailure)
+        {
+            return resolved.Error;
+        }
+
+        ManagedMcpServerEntry entry = resolved.Value;
+
+        if (entry.ScopeWorkingDirectory is not null)
+        {
+
+            bool trusted = await trustedMcpWorkspaces
+                .IsTrustedAsync(entry.ScopeWorkingDirectory, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!trusted)
+            {
+
+                return new Error(
+                    "Mcp.WorkspaceNotTrusted",
+                    "Workspace-local MCP servers require operator approval. POST /api/mcp/trust-workspace for this workspace before starting.");
+
+            }
+
+        }
+
+        List<McpServerEvent> pendingEvents = [];
+
+        Result result;
+
+        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (entry.State is McpServerState.Running or McpServerState.Starting)
+            {
+                result = Result.Success();
+            }
+            else if (entry.Transport is McpServerTransport.Sse)
+            {
+                entry.State = McpServerState.Error;
+
+                entry.ErrorMessage = "SSE transport is not yet supported.";
+
+                pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+                result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
+            }
+            else
+            {
+                entry.State = McpServerState.Starting;
+
+                pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
+
+                Result startResult = await StartManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+
+                if (startResult.IsFailure)
+                {
+                    entry.State = McpServerState.Error;
+
+                    entry.ErrorMessage = startResult.Error.Message;
+
+                    ScheduleRestartBackoff(entry);
+
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+                    result = startResult;
+                }
+                else
+                {
+                    entry.State = McpServerState.Running;
+
+                    entry.LastConnectedAt = DateTimeOffset.UtcNow;
+
+                    entry.ErrorMessage = null;
+
+                    entry.RestartAfterUtc = null;
+
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+
+                    InvalidateCachesForServer(entry);
+
+                    SyncPartitionServerMetadata(entry);
+
+                    result = Result.Success();
+                }
+            }
+        }
+        finally
+        {
+            entry.Gate.Release();
+        }
+
+        foreach (McpServerEvent ev in pendingEvents)
+        {
+            PublishEvent(ev);
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> StopAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
+
+        if (resolved.IsFailure)
+        {
+            return resolved.Error;
+        }
+
+        ManagedMcpServerEntry entry = resolved.Value;
+
+        McpServerEvent? pendingEvent = null;
+
+        Result result;
+
+        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (entry.State is McpServerState.Stopped or McpServerState.Error)
+            {
+                result = Result.Success();
+            }
+            else
+            {
+                await StopManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+
+                entry.State = McpServerState.Stopped;
+
+                entry.Tools = [];
+
+                entry.ErrorMessage = null;
+
+                pendingEvent = BuildEvent(entry, McpServerState.Stopped, null, []);
+
+                InvalidateCachesForServer(entry);
+
+                RemoveServerMetadataFromPartition(entry);
+
+                result = Result.Success();
+            }
+        }
+        finally
+        {
+            entry.Gate.Release();
+        }
+
+        if (pendingEvent is not null)
+        {
+            PublishEvent(pendingEvent);
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> RestartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
+
+        if (resolved.IsFailure)
+        {
+            return resolved.Error;
+        }
+
+        ManagedMcpServerEntry entry = resolved.Value;
+
+        if (entry.State is McpServerState.Stopped)
+        {
+            return await StartAsync(name, workingDirectory, cancellationToken).ConfigureAwait(false);
+        }
+
+        List<McpServerEvent> pendingEvents = [];
+
+        Result result;
+
+        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            entry.State = McpServerState.Restarting;
+
+            pendingEvents.Add(BuildEvent(entry, McpServerState.Restarting, null, []));
+
+            await StopManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+
+            entry.State = McpServerState.Stopped;
+
+            entry.Tools = [];
+
+            entry.ErrorMessage = null;
+
+            pendingEvents.Add(BuildEvent(entry, McpServerState.Stopped, null, []));
+
+            InvalidateCachesForServer(entry);
+
+            RemoveServerMetadataFromPartition(entry);
+
+            if (entry.Transport is McpServerTransport.Sse)
+            {
+                entry.State = McpServerState.Error;
+
+                entry.ErrorMessage = "SSE transport is not yet supported.";
+
+                pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+                result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
+            }
+            else
+            {
+                entry.State = McpServerState.Starting;
+
+                pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
+
+                Result startResult = await StartManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+
+                if (startResult.IsFailure)
+                {
+                    entry.State = McpServerState.Error;
+
+                    entry.ErrorMessage = startResult.Error.Message;
+
+                    ScheduleRestartBackoff(entry);
+
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+                    result = startResult;
+                }
+                else
+                {
+                    entry.State = McpServerState.Running;
+
+                    entry.LastConnectedAt = DateTimeOffset.UtcNow;
+
+                    entry.ErrorMessage = null;
+
+                    entry.RestartAfterUtc = null;
+
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+
+                    InvalidateCachesForServer(entry);
+
+                    SyncPartitionServerMetadata(entry);
+
+                    result = Result.Success();
+                }
+            }
+        }
+        finally
+        {
+            entry.Gate.Release();
+        }
+
+        foreach (McpServerEvent ev in pendingEvents)
+        {
+            PublishEvent(ev);
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public async Task<McpServerInfo?> GetStatusAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<ManagedMcpServerEntry> resolved = ResolveEntry(name, workingDirectory);
+
+        if (resolved.IsFailure)
+        {
+            return null;
+        }
+
+        ManagedMcpServerEntry entry = resolved.Value;
+
+        if (!await IsWorkspaceServerVisibleAsync(entry, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return ToInfo(entry);
+    }
+
+    /// <inheritdoc />
+    public async Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        List<McpServerInfo> statuses = [];
+
+        foreach (ManagedMcpServerEntry entry in _registry.Values
+                     .OrderBy(static e => e.ScopeWorkingDirectory ?? string.Empty, StringComparer.Ordinal)
+                     .ThenBy(static e => e.Name, StringComparer.Ordinal))
+        {
+            if (!await IsWorkspaceServerVisibleAsync(entry, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            statuses.Add(ToInfo(entry));
+        }
+
+        return statuses.ToArray();
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -99,9 +456,7 @@ public sealed class McpConnectionManager(
         }
     }
 
-    /// <summary>
-    /// Returns MCP server rows for the global profile plus the workspace partition (internal + workspace-local servers), in merge order.
-    /// </summary>
+    /// <inheritdoc />
     public async Task<List<McpServerStatusDto>> GetServerStatusesAsync(
         string workingDirectory,
         CancellationToken cancellationToken = default)
@@ -123,11 +478,20 @@ public sealed class McpConnectionManager(
 
         string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
 
+        bool workspaceTrusted = workspaceKey == NoWorkspaceKey
+            || await trustedMcpWorkspaces.IsTrustedAsync(workspaceKey, cancellationToken).ConfigureAwait(false);
+
         if (_partitionClients.TryGetValue(workspaceKey, out Lazy<McpPartitionClients>? workspacePartitionLazy)
             && workspacePartitionLazy.IsValueCreated)
         {
             foreach (McpServerMetadata meta in workspacePartitionLazy.Value.Servers)
             {
+                if (!workspaceTrusted
+                    && !string.Equals(meta.ServerName, "arcanum-internal", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 result.Add(ToStatusDto(meta));
             }
         }
@@ -135,9 +499,7 @@ public sealed class McpConnectionManager(
         return result;
     }
 
-    /// <summary>
-    /// Disposes all MCP clients, clears workspace caches and partition state, disposes per-workspace locks, resets global bootstrap flags, and immediately re-loads global <c>mcp.json</c>.
-    /// </summary>
+    /// <inheritdoc />
     public async Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -146,6 +508,30 @@ public sealed class McpConnectionManager(
 
         try
         {
+            foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
+            {
+                await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                try
+                {
+                    await StopManagedServerCoreAsync(entry, CancellationToken.None).ConfigureAwait(false);
+
+                    entry.State = McpServerState.Stopped;
+
+                    entry.Tools = [];
+
+                    entry.ErrorMessage = null;
+                }
+                finally
+                {
+                    entry.Gate.Release();
+                }
+            }
+
+            _registry.Clear();
+
+            _globalRegistryLoaded = false;
+
             foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
             {
                 if (!partitionLazy.IsValueCreated)
@@ -202,9 +588,79 @@ public sealed class McpConnectionManager(
 
         await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
 
+        await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (ManagedMcpServerEntry entry in _registry.Values)
+        {
+            if (entry.ScopeWorkingDirectory is not null || !entry.AlwaysOn)
+            {
+                continue;
+            }
+
+            await StartAsync(entry.Name, null, cancellationToken).ConfigureAwait(false);
+        }
+
         logger.LogInformation(
             "MCP connection manager reloaded (workspace hint: {WorkingDirectory}); global re-bootstrapped, all partitions cleared.",
             string.IsNullOrWhiteSpace(workingDirectory) ? "(empty)" : workingDirectory);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default)
+    {
+
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+
+            return new Error("Mcp.MissingWorkspace", "workingDirectory is required to trust a workspace-local mcp.json.");
+
+        }
+
+        string normalized;
+
+        try
+        {
+
+            normalized = TrustedMcpWorkspaceStore.NormalizeWorkspaceRoot(workingDirectory);
+
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+
+            return new Error("Mcp.InvalidWorkspace", "workingDirectory is not a valid path.");
+
+        }
+
+        string mcpPath = Path.Combine(normalized, "mcp.json");
+
+        if (!File.Exists(mcpPath))
+        {
+
+            return new Error("Mcp.MissingConfig", "Workspace mcp.json was not found.");
+
+        }
+
+        try
+        {
+
+            await trustedMcpWorkspaces.TrustAsync(normalized, cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(ex, "Failed to trust workspace MCP config at {Workspace}.", normalized);
+
+            return new Error("Mcp.TrustFailed", "Could not record workspace MCP approval.");
+
+        }
+
+        logger.LogInformation("Workspace MCP config trusted at {Workspace}.", normalized);
+
+        return Result.Success();
+
     }
 
     public async ValueTask DisposeAsync()
@@ -215,6 +671,8 @@ public sealed class McpConnectionManager(
         }
 
         _disposed = true;
+
+        await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
 
         foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
         {
@@ -246,6 +704,8 @@ public sealed class McpConnectionManager(
 
         _globalInitLock.Dispose();
 
+        _registryLock.Dispose();
+
         foreach (Lazy<SemaphoreSlim> slimLazy in _workspaceInitLocks.Values)
         {
             if (!slimLazy.IsValueCreated)
@@ -257,6 +717,904 @@ public sealed class McpConnectionManager(
         }
 
         _workspaceInitLocks.Clear();
+
+        foreach (ManagedMcpServerEntry entry in _registry.Values)
+        {
+            entry.Gate.Dispose();
+        }
+
+        _registry.Clear();
+    }
+
+    private async Task EnsureGlobalRegistryLoadedAsync(CancellationToken cancellationToken)
+    {
+        if (_globalRegistryLoaded)
+        {
+            return;
+        }
+
+        await _registryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (_globalRegistryLoaded)
+            {
+                return;
+            }
+
+            string globalPath = GetGlobalMcpConfigPath();
+
+            if (File.Exists(globalPath))
+            {
+                McpConfig? config = await ReadMcpConfigAsync(globalPath, cancellationToken).ConfigureAwait(false);
+
+                if (config?.McpServers is { Count: > 0 })
+                {
+                    RegisterFromConfig(config, scopeWorkingDirectory: null);
+                }
+            }
+
+            _globalRegistryLoaded = true;
+        }
+        finally
+        {
+            _registryLock.Release();
+        }
+    }
+
+    private void RegisterFromConfig(McpConfig config, string? scopeWorkingDirectory)
+    {
+        foreach (KeyValuePair<string, McpServerConfig> pair in config.McpServers!)
+        {
+            string serverName = pair.Key;
+
+            McpServerConfig cfg = pair.Value;
+
+            if (string.IsNullOrWhiteSpace(cfg.Command) && string.IsNullOrWhiteSpace(cfg.Url))
+            {
+                logger.LogWarning(
+                    "Skipping MCP server {ServerName} ({Scope}): missing command and url.",
+                    serverName,
+                    scopeWorkingDirectory ?? "global");
+
+                continue;
+            }
+
+            McpServerTransport transport = InferTransport(cfg);
+
+            (string Name, string? WorkingDirectory) key = (serverName, scopeWorkingDirectory);
+
+            if (_registry.ContainsKey(key))
+            {
+                continue;
+            }
+
+            ManagedMcpServerEntry entry = new(
+                serverName,
+                scopeWorkingDirectory,
+                cfg,
+                transport,
+                cfg.AlwaysOn);
+
+            _registry[key] = entry;
+        }
+    }
+
+    private async Task EnsureGlobalLoadedAsync(CancellationToken cancellationToken)
+    {
+        if (_globalInitialized)
+        {
+            return;
+        }
+
+        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (_globalInitialized)
+            {
+                return;
+            }
+
+            await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
+
+            McpPartitionClients globalPartition = GetOrCreatePartition(GlobalPartitionKey);
+
+            List<LoadedMcpToolRow> tagged = [];
+
+            foreach (ManagedMcpServerEntry entry in _registry.Values.Where(static e => e.ScopeWorkingDirectory is null))
+            {
+                if (!entry.AlwaysOn && entry.State is not McpServerState.Running)
+                {
+                    continue;
+                }
+
+                if (IsRestartBackoffActive(entry))
+                {
+                    continue;
+                }
+
+                if (entry.State is not McpServerState.Running)
+                {
+                    Result startResult = await StartAsync(entry.Name, null, cancellationToken).ConfigureAwait(false);
+
+                    if (startResult.IsFailure && entry.State is not McpServerState.Running)
+                    {
+                        SyncPartitionServerMetadata(entry);
+
+                        continue;
+                    }
+                }
+
+                AttachEntryToPartition(entry, globalPartition, tagged);
+            }
+
+            FinalizeGlobalState(tagged);
+        }
+        finally
+        {
+            _globalInitLock.Release();
+        }
+    }
+
+    private void FinalizeGlobalState(List<LoadedMcpToolRow> tagged)
+    {
+        Dictionary<string, LoadedMcpToolRow> byName = new(StringComparer.Ordinal);
+
+        List<AITool> surface = [];
+
+        foreach (LoadedMcpToolRow row in tagged)
+        {
+            if (byName.TryAdd(row.Tool.Name, row))
+            {
+                surface.Add(row.Tool);
+            }
+        }
+
+        _globalFirstByToolName = byName;
+
+        _globalSurfaceTools = surface;
+
+        _globalInitialized = true;
+    }
+
+    private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(string workspaceKey, CancellationToken cancellationToken)
+    {
+        McpPartitionClients partition = GetOrCreatePartition(workspaceKey);
+
+        List<LoadedMcpToolRow> internalTagged = await EnsurePartitionInternalToolsAsync(partition, workspaceKey, cancellationToken).ConfigureAwait(false);
+
+        List<LoadedMcpToolRow> workspaceLocalTagged = [];
+
+        if (workspaceKey != NoWorkspaceKey)
+        {
+            string localPath = Path.Combine(workspaceKey, "mcp.json");
+
+            if (File.Exists(localPath))
+            {
+                McpConfig? localConfig = await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
+
+                if (localConfig?.McpServers is { Count: > 0 })
+                {
+                    RegisterFromConfig(localConfig, workspaceKey);
+
+                    bool workspaceTrusted = await trustedMcpWorkspaces
+                        .IsTrustedAsync(workspaceKey, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (!workspaceTrusted)
+                    {
+
+                        return MergeInternalProfileAndLocal(internalTagged, workspaceLocalTagged);
+
+                    }
+
+                    foreach (ManagedMcpServerEntry entry in _registry.Values.Where(e => e.ScopeWorkingDirectory == workspaceKey))
+                    {
+                        if (!entry.AlwaysOn && entry.State is not McpServerState.Running)
+                        {
+                            continue;
+                        }
+
+                        if (IsRestartBackoffActive(entry))
+                        {
+                            continue;
+                        }
+
+                        if (entry.State is not McpServerState.Running)
+                        {
+                            Result startResult = await StartAsync(entry.Name, workspaceKey, cancellationToken).ConfigureAwait(false);
+
+                            if (startResult.IsFailure && entry.State is not McpServerState.Running)
+                            {
+                                SyncPartitionServerMetadata(entry);
+
+                                continue;
+                            }
+                        }
+
+                        AttachEntryToPartition(entry, partition, workspaceLocalTagged);
+                    }
+                }
+            }
+        }
+
+        return MergeInternalProfileAndLocal(internalTagged, workspaceLocalTagged);
+    }
+
+    private void AttachEntryToPartition(ManagedMcpServerEntry entry, McpPartitionClients partition, List<LoadedMcpToolRow> toolsSink)
+    {
+        if (entry.Client is not null && !partition.Clients.Contains(entry.Client))
+        {
+            partition.Clients.Add(entry.Client);
+        }
+
+        foreach (LoadedMcpToolRow row in entry.LoadedTools)
+        {
+            toolsSink.Add(row);
+        }
+
+        SyncPartitionServerMetadata(entry);
+    }
+
+    private async Task<List<LoadedMcpToolRow>> EnsurePartitionInternalToolsAsync(
+        McpPartitionClients partition,
+        string workspaceKey,
+        CancellationToken cancellationToken)
+    {
+        if (partition.InternalServerStarted && partition.CachedInternalTools is { } cached)
+        {
+            return new List<LoadedMcpToolRow>(cached);
+        }
+
+        List<LoadedMcpToolRow> internalTagged = [];
+
+        await StartInternalInProcessServerForPartitionAsync(
+                partition,
+                workspaceKey,
+                internalTagged,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        partition.InternalServerStarted = true;
+
+        partition.CachedInternalTools = new List<LoadedMcpToolRow>(internalTagged);
+
+        return internalTagged;
+    }
+
+    private IReadOnlyList<AITool> MergeInternalProfileAndLocal(
+        IReadOnlyList<LoadedMcpToolRow> internalTagged,
+        IReadOnlyList<LoadedMcpToolRow> workspaceLocalTagged)
+    {
+        List<AITool> surface = [];
+
+        Dictionary<string, LoadedMcpToolRow> mergedByName = new(StringComparer.Ordinal);
+
+        foreach (LoadedMcpToolRow row in internalTagged)
+        {
+            if (mergedByName.TryAdd(row.Tool.Name, row))
+            {
+                surface.Add(row.Tool);
+            }
+        }
+
+        foreach (KeyValuePair<string, LoadedMcpToolRow> kv in _globalFirstByToolName)
+        {
+            if (mergedByName.TryAdd(kv.Key, kv.Value))
+            {
+                surface.Add(kv.Value.Tool);
+            }
+        }
+
+        if (workspaceLocalTagged.Count == 0)
+        {
+            return surface;
+        }
+
+        return MergeGlobalAndLocal(surface, mergedByName, workspaceLocalTagged);
+    }
+
+    private IReadOnlyList<AITool> MergeGlobalAndLocal(
+        IReadOnlyList<AITool> globalSurface,
+        IReadOnlyDictionary<string, LoadedMcpToolRow> globalByName,
+        IReadOnlyList<LoadedMcpToolRow> localTagged)
+    {
+        List<AITool> merged = new(globalSurface.Count + localTagged.Count);
+
+        Dictionary<string, int> indexByName = new(StringComparer.Ordinal);
+
+        foreach (AITool t in globalSurface)
+        {
+            if (t is not AIFunction fn)
+            {
+                merged.Add(t);
+
+                continue;
+            }
+
+            string name = fn.Name;
+
+            if (!indexByName.TryAdd(name, merged.Count))
+            {
+                continue;
+            }
+
+            merged.Add(t);
+        }
+
+        foreach (LoadedMcpToolRow localRow in localTagged)
+        {
+            string name = localRow.Tool.Name;
+
+            if (!indexByName.TryGetValue(name, out int idx))
+            {
+                indexByName[name] = merged.Count;
+
+                merged.Add(localRow.Tool);
+
+                continue;
+            }
+
+            if (!globalByName.TryGetValue(name, out LoadedMcpToolRow globalRow)
+                || McpServerRegistrationComparer.Equals(globalRow.Config, localRow.Config))
+            {
+                merged[idx] = localRow.Tool;
+
+                continue;
+            }
+
+            McpBridgeTool replacement = new(
+                localRow.Tool.Name,
+                localRow.Tool.Description,
+                localRow.Tool.JsonSchema,
+                localRow.Client,
+                localRow.Tool.ToolOutputCapBytes,
+                fallbackClient: globalRow.Client,
+                fallbackLogger: logger);
+
+            merged[idx] = replacement;
+        }
+
+        return merged;
+    }
+
+    private async Task<Result> StartManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
+    {
+        McpServerConfig cfg = entry.Config;
+
+        if (entry.Transport is McpServerTransport.Sse)
+        {
+            return new Error("Mcp.SseNotSupported", "SSE transport is not yet supported.");
+        }
+
+        string? command = cfg.Command;
+
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return new Error("Mcp.MissingCommand", $"MCP server '{entry.Name}' has no command.");
+        }
+
+        McpClient? client = null;
+
+        try
+        {
+            string[] args = cfg.Args ?? [];
+
+            string logScope = entry.ScopeWorkingDirectory ?? "global";
+
+            ManagedMcpServerEntry capturedEntry = entry;
+
+            long transportGeneration = ++entry.TransportGeneration;
+
+            bool stripUserEnvironment = entry.ScopeWorkingDirectory is not null;
+
+            Result<string?> cwdResult = ResolveValidatedSubprocessCwd(cfg.Cwd, entry.ScopeWorkingDirectory);
+
+            if (cwdResult.IsFailure)
+            {
+                return cwdResult.Error;
+            }
+
+            McpProcessTransport transport = new(
+                command.Trim(),
+                arguments: string.Empty,
+                argumentList: args,
+                environment: cfg.Env,
+                workingDirectory: cwdResult.Value,
+                stripUserEnvironment: stripUserEnvironment)
+            {
+                OnStderrLine = line => logger.LogDebug(
+                    "MCP server {ServerName} ({Scope}) stderr: {Line}",
+                    entry.Name,
+                    logScope,
+                    line),
+                OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration),
+            };
+
+            client = new McpClient(
+                transport,
+                GetClampedMcpRequestTimeout(),
+                GetClampedMcpMaxPaginationPages(),
+                GetClampedToolOutputCapBytes());
+
+            await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+            IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
+
+            entry.Client = client;
+
+            client = null;
+
+            entry.LoadedTools.Clear();
+
+            foreach (McpBridgeTool t in tools)
+            {
+                entry.LoadedTools.Add(new LoadedMcpToolRow(t, cfg, entry.Client));
+            }
+
+            entry.Tools = tools.Select(static t => t.Name).ToArray();
+
+            logger.LogInformation(
+                "Started MCP server {ServerName} ({Scope}) with {ToolCount} tools.",
+                entry.Name,
+                logScope,
+                tools.Count);
+
+            return Result.Success();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (client is not null)
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
+            }
+
+            Exception baseEx = ex.GetBaseException();
+
+            entry.Client = null;
+
+            entry.LoadedTools.Clear();
+
+            entry.Tools = [];
+
+            logger.LogError(
+                ex,
+                "MCP server {ServerName} ({Scope}) failed to start or list tools.",
+                entry.Name,
+                entry.ScopeWorkingDirectory ?? "global");
+
+            return new Error("Mcp.StartFailed", baseEx.Message);
+        }
+    }
+
+    private async Task StopManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
+    {
+        McpClient? client = entry.Client;
+
+        entry.Client = null;
+
+        entry.LoadedTools.Clear();
+
+        if (client is not null)
+        {
+            try
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error disposing MCP client for server {ServerName}.", entry.Name);
+            }
+        }
+
+        string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
+
+        if (client is not null
+            && _partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
+            && partitionLazy.IsValueCreated
+            && partitionLazy.Value.Clients.Contains(client))
+        {
+            partitionLazy.Value.Clients.Remove(client);
+        }
+    }
+
+    private void RemoveClientFromPartition(ManagedMcpServerEntry entry, McpClient client)
+    {
+        string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
+
+        if (_partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
+            && partitionLazy.IsValueCreated
+            && partitionLazy.Value.Clients.Contains(client))
+        {
+            partitionLazy.Value.Clients.Remove(client);
+        }
+    }
+
+    private static bool IsRestartBackoffActive(ManagedMcpServerEntry entry) =>
+        entry.RestartAfterUtc is { } until && DateTimeOffset.UtcNow < until;
+
+    private static void ScheduleRestartBackoff(ManagedMcpServerEntry entry)
+    {
+        if (entry.AlwaysOn)
+        {
+            entry.RestartAfterUtc = DateTimeOffset.UtcNow + AlwaysOnRestartBackoff;
+        }
+    }
+
+    private async Task<bool> IsWorkspaceServerVisibleAsync(
+        ManagedMcpServerEntry entry,
+        CancellationToken cancellationToken)
+    {
+        if (entry.ScopeWorkingDirectory is null)
+        {
+            return true;
+        }
+
+        return await trustedMcpWorkspaces
+            .IsTrustedAsync(entry.ScopeWorkingDirectory, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static Result<string?> ResolveValidatedSubprocessCwd(string? configuredCwd, string? scopeWorkspace)
+    {
+        if (string.IsNullOrWhiteSpace(configuredCwd))
+        {
+            return Result<string?>.Success(null);
+        }
+
+        string trimmed = configuredCwd.Trim();
+
+        try
+        {
+            if (scopeWorkspace is not null)
+            {
+                string workspaceRoot = Path.GetFullPath(scopeWorkspace);
+
+                string resolved = Path.IsPathRooted(trimmed)
+                    ? Path.GetFullPath(trimmed)
+                    : Path.GetFullPath(Path.Combine(workspaceRoot, trimmed));
+
+                if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, resolved, out _))
+                {
+                    return Result<string?>.Failure(new Error(
+                        "Mcp.InvalidCwd",
+                        "MCP server cwd must stay within the workspace sandbox."));
+                }
+
+                if (!Directory.Exists(resolved))
+                {
+                    return Result<string?>.Failure(new Error(
+                        "Mcp.InvalidCwd",
+                        "MCP server cwd does not exist or is not a directory."));
+                }
+
+                return Result<string?>.Success(resolved);
+            }
+
+            if (!Path.IsPathRooted(trimmed))
+            {
+                return Result<string?>.Failure(new Error(
+                    "Mcp.InvalidCwd",
+                    "Global MCP server cwd must be an absolute path."));
+            }
+
+            string globalResolved = Path.GetFullPath(trimmed);
+
+            if (!Directory.Exists(globalResolved))
+            {
+                return Result<string?>.Failure(new Error(
+                    "Mcp.InvalidCwd",
+                    "MCP server cwd does not exist or is not a directory."));
+            }
+
+            return Result<string?>.Success(globalResolved);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            return Result<string?>.Failure(new Error("Mcp.InvalidCwd", "MCP server cwd could not be resolved."));
+        }
+    }
+
+    private void HandleTransportEnded(ManagedMcpServerEntry entry, long transportGeneration)
+    {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        _ = Task.Run(async () =>
+        {
+
+            if (_disposed)
+            {
+
+                return;
+
+            }
+
+            if (!ManagedMcpServerEntry.IsTransportGenerationCurrent(transportGeneration, entry.TransportGeneration))
+            {
+
+                return;
+
+            }
+
+            McpServerEvent? pendingEvent = null;
+
+            try
+            {
+                await entry.Gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            try
+            {
+                if (_disposed || entry.State is not McpServerState.Running)
+                {
+                    return;
+                }
+
+                entry.State = McpServerState.Error;
+
+                entry.ErrorMessage = "MCP server process exited unexpectedly.";
+
+                McpClient? client = entry.Client;
+
+                entry.Client = null;
+
+                entry.LoadedTools.Clear();
+
+                entry.Tools = [];
+
+                if (client is not null)
+                {
+                    try
+                    {
+                        await client.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Error disposing MCP client after transport exit for server {ServerName}.", entry.Name);
+                    }
+
+                    RemoveClientFromPartition(entry, client);
+                }
+
+                ScheduleRestartBackoff(entry);
+
+                pendingEvent = BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []);
+
+                InvalidateCachesForServer(entry);
+
+                RemoveServerMetadataFromPartition(entry);
+            }
+            finally
+            {
+                try
+                {
+                    entry.Gate.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Host is shutting down and disposed the per-server gate.
+                }
+            }
+
+            if (pendingEvent is not null)
+            {
+                PublishEvent(pendingEvent);
+            }
+        });
+    }
+
+    private Result<ManagedMcpServerEntry> ResolveEntry(string name, string? workingDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return new Error("Mcp.InvalidName", "Server name is required.");
+        }
+
+        string? normalizedScope = NormalizeScopeWorkingDirectory(workingDirectory);
+
+        if (normalizedScope is not null || !string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            if (normalizedScope is null && !string.IsNullOrWhiteSpace(workingDirectory))
+            {
+                return new Error("Mcp.InvalidWorkingDirectory", "The working directory could not be resolved.");
+            }
+
+            (string Name, string? WorkingDirectory) key = (name, normalizedScope);
+
+            if (_registry.TryGetValue(key, out ManagedMcpServerEntry? exact))
+            {
+                return exact;
+            }
+
+            return new Error("Mcp.NotFound", $"MCP server '{name}' was not found.");
+        }
+
+        List<ManagedMcpServerEntry> matches = _registry.Values
+            .Where(e => string.Equals(e.Name, name, StringComparison.Ordinal))
+            .ToList();
+
+        if (matches.Count == 1)
+        {
+            return matches[0];
+        }
+
+        if (matches.Count == 0)
+        {
+            return new Error("Mcp.NotFound", $"MCP server '{name}' was not found.");
+        }
+
+        return new Error("Mcp.AmbiguousServer", $"Multiple MCP servers named '{name}' exist; specify workingDirectory.");
+    }
+
+    private static string? NormalizeScopeWorkingDirectory(string? workingDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(workingDirectory.Trim());
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static McpServerTransport InferTransport(McpServerConfig cfg)
+    {
+        if (!string.IsNullOrWhiteSpace(cfg.Url))
+        {
+            return McpServerTransport.Sse;
+        }
+
+        return McpServerTransport.Stdio;
+    }
+
+    private static McpServerInfo ToInfo(ManagedMcpServerEntry entry)
+    {
+        return new McpServerInfo(
+            entry.Name,
+            entry.ScopeWorkingDirectory,
+            entry.Transport,
+            entry.AlwaysOn,
+            entry.Config.Command,
+            entry.Config.Args ?? [],
+            entry.Config.Url,
+            entry.State,
+            entry.ErrorMessage,
+            entry.Tools,
+            entry.LastConnectedAt);
+    }
+
+    private static McpServerEvent BuildEvent(
+        ManagedMcpServerEntry entry,
+        McpServerState state,
+        string? message,
+        string[] tools)
+    {
+        return new McpServerEvent(DateTimeOffset.UtcNow)
+        {
+            ServerName = entry.Name,
+            State = state,
+            Message = message,
+            Tools = tools,
+        };
+    }
+
+    private void PublishEvent(McpServerEvent ev)
+    {
+        eventBus.Publish(ev);
+    }
+
+    private void InvalidateCachesForServer(ManagedMcpServerEntry entry)
+    {
+        _mergedToolsByWorkspace.Clear();
+
+        if (entry.ScopeWorkingDirectory is null)
+        {
+            _globalInitialized = false;
+        }
+    }
+
+    private void SyncPartitionServerMetadata(ManagedMcpServerEntry entry)
+    {
+        string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
+
+        McpPartitionClients partition = GetOrCreatePartition(partitionKey);
+
+        string status = entry.State switch
+        {
+            McpServerState.Running => "Online",
+            McpServerState.Error => "Failed",
+            McpServerState.Stopped => "Stopped",
+            McpServerState.Starting => "Starting",
+            McpServerState.Restarting => "Restarting",
+            _ => "Stopped",
+        };
+
+        McpServerMetadata metadata = new(
+            entry.Name,
+            status,
+            entry.Tools.ToList(),
+            entry.ErrorMessage);
+
+        int existingIndex = partition.Servers.FindIndex(m => string.Equals(m.ServerName, entry.Name, StringComparison.Ordinal));
+
+        if (existingIndex >= 0)
+        {
+            partition.Servers[existingIndex] = metadata;
+        }
+        else
+        {
+            partition.Servers.Add(metadata);
+        }
+    }
+
+    private void RemoveServerMetadataFromPartition(ManagedMcpServerEntry entry)
+    {
+        string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
+
+        if (!_partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
+            || !partitionLazy.IsValueCreated)
+        {
+            return;
+        }
+
+        partitionLazy.Value.Servers.RemoveAll(m => string.Equals(m.ServerName, entry.Name, StringComparison.Ordinal));
+    }
+
+    private McpPartitionClients GetOrCreatePartition(string partitionKey)
+    {
+        return _partitionClients
+            .GetOrAdd(
+                partitionKey,
+                static _ => new Lazy<McpPartitionClients>(
+                    static () => new McpPartitionClients(),
+                    LazyThreadSafetyMode.ExecutionAndPublication))
+            .Value;
+    }
+
+    private sealed class McpPartitionClients
+    {
+
+        public List<McpClient> Clients { get; } = [];
+
+        public List<McpServerMetadata> Servers { get; } = [];
+
+        public bool InternalServerStarted { get; set; }
+
+        public IReadOnlyList<LoadedMcpToolRow>? CachedInternalTools { get; set; }
+
+    }
+
+    private sealed record McpServerMetadata(
+        string ServerName,
+        string Status,
+        List<string> ToolNames,
+        string? ErrorMessage);
+
+    private static McpServerStatusDto ToStatusDto(McpServerMetadata meta)
+    {
+        return new McpServerStatusDto(
+            meta.ServerName,
+            meta.Status,
+            meta.ToolNames.Count,
+            new List<string>(meta.ToolNames),
+            meta.ErrorMessage);
     }
 
     private static string NormalizeWorkspaceKey(string? workingDirectory)
@@ -306,291 +1664,15 @@ public sealed class McpConnectionManager(
         return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.CurrentValue.Intelligence.ListDirectoryMaxPaths);
     }
 
-    private async Task EnsureGlobalLoadedAsync(CancellationToken cancellationToken)
+    private long GetClampedToolOutputCapBytes()
     {
-        if (_globalInitialized)
-        {
-            return;
-        }
-
-        await _globalInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            if (_globalInitialized)
-            {
-                return;
-            }
-
-            McpPartitionClients globalPartition = GetOrCreatePartition(GlobalPartitionKey);
-
-            List<McpClient> globalClients = globalPartition.Clients;
-
-            List<LoadedMcpTool> tagged = [];
-
-            string globalPath = GetGlobalMcpConfigPath();
-
-            if (!File.Exists(globalPath))
-            {
-                FinalizeGlobalState(tagged);
-
-                return;
-            }
-
-            McpConfig? config = await ReadMcpConfigAsync(globalPath, cancellationToken).ConfigureAwait(false);
-
-            if (config is null)
-            {
-                FinalizeGlobalState(tagged);
-
-                return;
-            }
-
-            if (config.McpServers is null || config.McpServers.Count == 0)
-            {
-                logger.LogInformation("MCP config at {ConfigPath} has no mcpServers entries.", globalPath);
-
-                FinalizeGlobalState(tagged);
-
-                return;
-            }
-
-            await StartServersFromConfigAsync(
-                    config,
-                    logScope: "global",
-                    clientsSink: globalClients,
-                    serverMetadataSink: globalPartition.Servers,
-                    toolsSink: tagged,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            FinalizeGlobalState(tagged);
-        }
-        finally
-        {
-            _globalInitLock.Release();
-        }
-    }
-
-    private void FinalizeGlobalState(List<LoadedMcpTool> tagged)
-    {
-        Dictionary<string, LoadedMcpTool> byName = new(StringComparer.Ordinal);
-
-        List<AITool> surface = [];
-
-        foreach (LoadedMcpTool row in tagged)
-        {
-            if (byName.TryAdd(row.Tool.Name, row))
-            {
-                surface.Add(row.Tool);
-            }
-        }
-
-        _globalFirstByToolName = byName;
-
-        _globalSurfaceTools = surface;
-
-        _globalInitialized = true;
-    }
-
-    private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(string workspaceKey, CancellationToken cancellationToken)
-    {
-        McpPartitionClients partition = GetOrCreatePartition(workspaceKey);
-
-        List<LoadedMcpTool> internalTagged = await EnsurePartitionInternalToolsAsync(partition, workspaceKey, cancellationToken).ConfigureAwait(false);
-
-        List<LoadedMcpTool> workspaceLocalTagged = [];
-
-        if (workspaceKey != NoWorkspaceKey)
-        {
-            string localPath = Path.Combine(workspaceKey, "mcp.json");
-
-            if (File.Exists(localPath))
-            {
-                McpConfig? localConfig = await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
-
-                if (localConfig?.McpServers is { Count: > 0 })
-                {
-                    await StartServersFromConfigAsync(
-                            localConfig,
-                            logScope: workspaceKey,
-                            clientsSink: partition.Clients,
-                            serverMetadataSink: partition.Servers,
-                            toolsSink: workspaceLocalTagged,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-        }
-
-        return MergeInternalProfileAndLocal(internalTagged, workspaceLocalTagged);
-    }
-
-    private async Task<List<LoadedMcpTool>> EnsurePartitionInternalToolsAsync(
-        McpPartitionClients partition,
-        string workspaceKey,
-        CancellationToken cancellationToken)
-    {
-        if (partition.InternalServerStarted && partition.CachedInternalTools is { } cached)
-        {
-            return new List<LoadedMcpTool>(cached);
-        }
-
-        List<LoadedMcpTool> internalTagged = [];
-
-        await StartInternalInProcessServerForPartitionAsync(
-                partition,
-                workspaceKey,
-                internalTagged,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        partition.InternalServerStarted = true;
-
-        partition.CachedInternalTools = new List<LoadedMcpTool>(internalTagged);
-
-        return internalTagged;
-    }
-
-    private IReadOnlyList<AITool> MergeInternalProfileAndLocal(
-        IReadOnlyList<LoadedMcpTool> internalTagged,
-        IReadOnlyList<LoadedMcpTool> workspaceLocalTagged)
-    {
-        List<AITool> surface = [];
-
-        Dictionary<string, LoadedMcpTool> mergedByName = new(StringComparer.Ordinal);
-
-        foreach (LoadedMcpTool row in internalTagged)
-        {
-            if (mergedByName.TryAdd(row.Tool.Name, row))
-            {
-                surface.Add(row.Tool);
-            }
-        }
-
-        foreach (KeyValuePair<string, LoadedMcpTool> kv in _globalFirstByToolName)
-        {
-            if (mergedByName.TryAdd(kv.Key, kv.Value))
-            {
-                surface.Add(kv.Value.Tool);
-            }
-        }
-
-        if (workspaceLocalTagged.Count == 0)
-        {
-            return surface;
-        }
-
-        return MergeGlobalAndLocal(surface, mergedByName, workspaceLocalTagged);
-    }
-
-    private IReadOnlyList<AITool> MergeGlobalAndLocal(
-        IReadOnlyList<AITool> globalSurface,
-        IReadOnlyDictionary<string, LoadedMcpTool> globalByName,
-        IReadOnlyList<LoadedMcpTool> localTagged)
-    {
-        List<AITool> merged = new(globalSurface.Count + localTagged.Count);
-
-        Dictionary<string, int> indexByName = new(StringComparer.Ordinal);
-
-        foreach (AITool t in globalSurface)
-        {
-            if (t is not AIFunction fn)
-            {
-                merged.Add(t);
-
-                continue;
-            }
-
-            string name = fn.Name;
-
-            if (!indexByName.TryAdd(name, merged.Count))
-            {
-                continue;
-            }
-
-            merged.Add(t);
-        }
-
-        foreach (LoadedMcpTool localRow in localTagged)
-        {
-            string name = localRow.Tool.Name;
-
-            if (!indexByName.TryGetValue(name, out int idx))
-            {
-                indexByName[name] = merged.Count;
-
-                merged.Add(localRow.Tool);
-
-                continue;
-            }
-
-            if (!globalByName.TryGetValue(name, out LoadedMcpTool globalRow)
-                || McpServerRegistrationComparer.Equals(globalRow.Config, localRow.Config))
-            {
-                merged[idx] = localRow.Tool;
-
-                continue;
-            }
-
-            McpBridgeTool replacement = new(
-                localRow.Tool.Name,
-                localRow.Tool.Description,
-                localRow.Tool.JsonSchema,
-                localRow.Client,
-                fallbackClient: globalRow.Client,
-                fallbackLogger: logger);
-
-            merged[idx] = replacement;
-        }
-
-        return merged;
-    }
-
-    private McpPartitionClients GetOrCreatePartition(string partitionKey)
-    {
-        return _partitionClients
-            .GetOrAdd(
-                partitionKey,
-                static _ => new Lazy<McpPartitionClients>(
-                    static () => new McpPartitionClients(),
-                    LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
-    }
-
-    private sealed class McpPartitionClients
-    {
-
-        public List<McpClient> Clients { get; } = [];
-
-        public List<McpServerMetadata> Servers { get; } = [];
-
-        public bool InternalServerStarted { get; set; }
-
-        public IReadOnlyList<LoadedMcpTool>? CachedInternalTools { get; set; }
-
-    }
-
-    private sealed record McpServerMetadata(
-        string ServerName,
-        string Status,
-        List<string> ToolNames,
-        string? ErrorMessage);
-
-    private static McpServerStatusDto ToStatusDto(McpServerMetadata meta)
-    {
-        return new McpServerStatusDto(
-            meta.ServerName,
-            meta.Status,
-            meta.ToolNames.Count,
-            new List<string>(meta.ToolNames),
-            meta.ErrorMessage);
+        return ArcanumSettingClamps.ToolOutputCapBytes(settings.CurrentValue.Intelligence.ToolOutputCapBytes);
     }
 
     private async Task StartInternalInProcessServerForPartitionAsync(
         McpPartitionClients partition,
         string workspaceKey,
-        List<LoadedMcpTool> tagged,
+        List<LoadedMcpToolRow> tagged,
         CancellationToken cancellationToken)
     {
         int timeoutSeconds = GetClampedExecuteCommandTimeoutSeconds();
@@ -601,6 +1683,9 @@ public sealed class McpConnectionManager(
 
         int listDirectoryMaxPaths = GetClampedListDirectoryMaxPaths();
 
+        long maxFileReadSizeBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
+            settings.CurrentValue.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes);
+
         (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
             humanPromptRegistry,
             scopeFactory,
@@ -610,6 +1695,7 @@ public sealed class McpConnectionManager(
             timeoutSeconds,
             listDirectoryMaxPaths,
             settings.CurrentValue.Intelligence,
+            maxFileReadSizeBytes,
             logger: null);
 
         Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);
@@ -626,6 +1712,7 @@ public sealed class McpConnectionManager(
                 transport,
                 GetClampedMcpRequestTimeout(),
                 GetClampedMcpMaxPaginationPages(),
+                GetClampedToolOutputCapBytes(),
                 requestCancellationBroker: transport.RequestCancellation);
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -638,7 +1725,7 @@ public sealed class McpConnectionManager(
 
             foreach (McpBridgeTool t in tools)
             {
-                tagged.Add(new LoadedMcpTool(t, InternalMcpServerConfig, partitionClients[^1]));
+                tagged.Add(new LoadedMcpToolRow(t, InternalMcpServerConfig, partitionClients[^1]));
             }
 
             partition.Servers.Add(new McpServerMetadata(
@@ -684,9 +1771,35 @@ public sealed class McpConnectionManager(
     {
         try
         {
+            FileInfo fileInfo = new(configPath);
+
+            if (fileInfo.Exists && fileInfo.Length > MaxMcpConfigBytes)
+            {
+
+                logger.LogError(
+                    "MCP config at {ConfigPath} exceeds the maximum size of {MaxBytes} bytes.",
+                    configPath,
+                    MaxMcpConfigBytes);
+
+                return null;
+
+            }
+
             byte[] utf8 = await File.ReadAllBytesAsync(configPath, cancellationToken).ConfigureAwait(false);
 
-            return JsonSerializer.Deserialize(utf8, McpConfigJsonSerializerContext.Default.McpConfig);
+            if (utf8.Length > MaxMcpConfigBytes)
+            {
+
+                logger.LogError(
+                    "MCP config at {ConfigPath} exceeds the maximum size of {MaxBytes} bytes.",
+                    configPath,
+                    MaxMcpConfigBytes);
+
+                return null;
+
+            }
+
+            return System.Text.Json.JsonSerializer.Deserialize(utf8, McpConfigJsonSerializerContext.Default.McpConfig);
         }
         catch (Exception ex)
         {
@@ -695,100 +1808,5 @@ public sealed class McpConnectionManager(
             return null;
         }
     }
-
-    private async Task StartServersFromConfigAsync(
-        McpConfig config,
-        string logScope,
-        List<McpClient> clientsSink,
-        List<McpServerMetadata> serverMetadataSink,
-        List<LoadedMcpTool> toolsSink,
-        CancellationToken cancellationToken)
-    {
-        foreach (KeyValuePair<string, McpServerConfig> pair in config.McpServers!)
-        {
-            string serverName = pair.Key;
-
-            McpServerConfig cfg = pair.Value;
-
-            string? command = cfg.Command;
-
-            if (string.IsNullOrWhiteSpace(command))
-            {
-                logger.LogWarning("Skipping MCP server {ServerName} ({Scope}): missing command.", serverName, logScope);
-
-                continue;
-            }
-
-            McpClient? client = null;
-
-            try
-            {
-                string[] args = cfg.Args ?? [];
-
-                McpProcessTransport transport = new(
-                    command.Trim(),
-                    arguments: string.Empty,
-                    argumentList: args,
-                    environment: cfg.Env)
-                {
-                    OnStderrLine = line => logger.LogDebug(
-                        "MCP server {ServerName} ({Scope}) stderr: {Line}",
-                        serverName,
-                        logScope,
-                        line),
-                };
-
-                client = new McpClient(transport, GetClampedMcpRequestTimeout(), GetClampedMcpMaxPaginationPages());
-
-                await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
-
-                IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
-
-                clientsSink.Add(client);
-
-                client = null;
-
-                foreach (McpBridgeTool t in tools)
-                {
-                    toolsSink.Add(new LoadedMcpTool(t, cfg, clientsSink[^1]));
-                }
-
-                serverMetadataSink.Add(new McpServerMetadata(
-                    serverName,
-                    "Online",
-                    tools.Select(static t => t.Name).ToList(),
-                    null));
-
-                logger.LogInformation(
-                    "Started MCP server {ServerName} ({Scope}) with {ToolCount} tools.",
-                    serverName,
-                    logScope,
-                    tools.Count);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (client is not null)
-                {
-                    await client.DisposeAsync().ConfigureAwait(false);
-                }
-
-                Exception baseEx = ex.GetBaseException();
-
-                serverMetadataSink.Add(new McpServerMetadata(
-                    serverName,
-                    "Failed",
-                    [],
-                    baseEx.Message));
-
-                logger.LogError(
-                    ex,
-                    "MCP server {ServerName} ({Scope}) failed to start or list tools; continuing with other servers.",
-                    serverName,
-                    logScope);
-            }
-        }
-    }
-
-    private readonly record struct LoadedMcpTool(McpBridgeTool Tool, McpServerConfig Config, McpClient Client);
 
 }

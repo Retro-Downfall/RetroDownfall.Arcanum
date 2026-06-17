@@ -56,15 +56,10 @@ internal static class ToolHelpers
     }
 
     /// <summary>
-    /// Lexical prefix check plus symlink target resolution. When the candidate path exists and
-    /// is a symlink (or any ancestor along the candidate path is a symlink whose final target
-    /// leaves the workspace), the call returns <c>false</c>.
+    /// Lexical prefix check plus symlink target resolution for every path component from the workspace root
+    /// to the candidate. Rejects when any existing ancestor is a symlink whose final target leaves the root,
+    /// including when the leaf path does not yet exist (write/create through a symlinked parent).
     /// </summary>
-    /// <remarks>
-    /// AOT-safe: no reflection. Returns the (possibly link-resolved) final path through
-    /// <paramref name="resolvedFinalPath"/> for callers that want to open the resolved target,
-    /// or <c>null</c> when the candidate does not yet exist on disk (allowed for write-style ops).
-    /// </remarks>
     internal static bool IsPathUnderWorkspaceWithSymlinkCheck(
         string workspaceRootFull,
         string candidateFull,
@@ -77,20 +72,124 @@ internal static class ToolHelpers
             return false;
         }
 
-        string? finalTarget = TryResolveFinalSymlinkTarget(candidateFull);
-
-        if (finalTarget is null)
+        if (!TryValidatePathComponentsUnderRoot(workspaceRootFull, candidateFull, out string? validatedPath))
         {
+            return false;
+        }
+
+        resolvedFinalPath = validatedPath;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Re-validates containment immediately before I/O to mitigate TOCTOU between resolution and use.
+    /// </summary>
+    internal static bool RevalidatePathBeforeIo(string workspaceRootFull, string absolutePath)
+    {
+        return IsPathUnderWorkspaceWithSymlinkCheck(workspaceRootFull, absolutePath, out _);
+    }
+
+    private static bool TryValidatePathComponentsUnderRoot(
+        string workspaceRootFull,
+        string candidateFull,
+        out string? resolvedFinalPath)
+    {
+        resolvedFinalPath = null;
+
+        char sep = Path.DirectorySeparatorChar;
+
+        string root = workspaceRootFull.TrimEnd(sep);
+
+        string candidate = Path.GetFullPath(candidateFull);
+
+        StringComparison rootCmp = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        if (!IsPathUnderWorkspace(root, candidate))
+        {
+            return false;
+        }
+
+        if (string.Equals(root, candidate, rootCmp))
+        {
+            resolvedFinalPath = candidate;
+
             return true;
         }
 
-        resolvedFinalPath = finalTarget;
+        string relative;
 
-        return IsPathUnderWorkspace(workspaceRootFull, finalTarget);
+        try
+        {
+            relative = Path.GetRelativePath(root, candidate);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        if (relative.StartsWith("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(relative))
+        {
+            return false;
+        }
+
+        string current = root;
+
+        string[] parts = relative.Split(sep, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (string part in parts)
+        {
+            current = Path.GetFullPath(Path.Combine(current, part));
+
+            if (!File.Exists(current) && !Directory.Exists(current))
+            {
+                continue;
+            }
+
+            if (!TryResolveFinalSymlinkTarget(current, out string? linkTarget))
+            {
+                return false;
+            }
+
+            if (linkTarget is not null)
+            {
+                if (!IsPathUnderWorkspace(root, linkTarget))
+                {
+                    return false;
+                }
+
+                current = linkTarget;
+            }
+        }
+
+        if (File.Exists(candidate) || Directory.Exists(candidate))
+        {
+            if (!TryResolveFinalSymlinkTarget(candidate, out string? finalTarget))
+            {
+                return false;
+            }
+
+            resolvedFinalPath = finalTarget ?? candidate;
+
+            return IsPathUnderWorkspace(root, resolvedFinalPath);
+        }
+
+        resolvedFinalPath = null;
+
+        return true;
     }
 
-    private static string? TryResolveFinalSymlinkTarget(string path)
+    /// <summary>
+    /// Resolves a symlink target when present. Returns false when resolution fails (fail-closed).
+    /// When the path is not a symlink, <paramref name="resolvedTarget"/> is null and the method returns true.
+    /// </summary>
+    private static bool TryResolveFinalSymlinkTarget(string path, out string? resolvedTarget)
     {
+        resolvedTarget = null;
+
         try
         {
             if (File.Exists(path))
@@ -99,10 +198,12 @@ internal static class ToolHelpers
 
                 if (linkTarget is null)
                 {
-                    return null;
+                    return true;
                 }
 
-                return Path.GetFullPath(linkTarget.FullName);
+                resolvedTarget = Path.GetFullPath(linkTarget.FullName);
+
+                return true;
             }
 
             if (Directory.Exists(path))
@@ -111,18 +212,20 @@ internal static class ToolHelpers
 
                 if (linkTarget is null)
                 {
-                    return null;
+                    return true;
                 }
 
-                return Path.GetFullPath(linkTarget.FullName);
+                resolvedTarget = Path.GetFullPath(linkTarget.FullName);
+
+                return true;
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
         {
-            return null;
+            return false;
         }
 
-        return null;
+        return true;
     }
 
 }

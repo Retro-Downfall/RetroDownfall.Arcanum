@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -87,6 +88,8 @@ public sealed class ChatCommand(
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
+        int exitCode = 0;
+
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -105,6 +108,13 @@ public sealed class ChatCommand(
                 RenderManaBarLine(session, used, manaContextLimit);
             }
 
+            void OnReplCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+            {
+                e.Cancel = true;
+            }
+
+            Console.CancelKeyPress += OnReplCancelKeyPress;
+
             try
             {
                 raw = AnsiConsole.Prompt(new TextPrompt<string>(promptMarkup).AllowEmpty());
@@ -113,7 +123,11 @@ public sealed class ChatCommand(
             {
                 await PrintExitSummaryAsync(session, cancellationToken).ConfigureAwait(false);
 
-                return 0;
+                return exitCode;
+            }
+            finally
+            {
+                Console.CancelKeyPress -= OnReplCancelKeyPress;
             }
 
             string prompt = raw.Trim();
@@ -211,6 +225,8 @@ public sealed class ChatCommand(
 
             List<AttachedFileDto>? attachedFilesForRequest = null;
 
+            bool attachFailed = false;
+
             if (stagedFiles.Count > 0)
             {
                 string cwd = Environment.CurrentDirectory;
@@ -231,6 +247,8 @@ public sealed class ChatCommand(
                         {
                             WriteCannotStageTooLarge(fileName, MaxAttachFileSizeBytes);
 
+                            attachFailed = true;
+
                             continue;
                         }
 
@@ -242,15 +260,35 @@ public sealed class ChatCommand(
 
                         relativePathsForFooter.Add(relativePath);
                     }
+                    catch (DecoderFallbackException ex)
+                    {
+                        AnsiConsole.MarkupLine(
+                            $"{themePalette.ErrorMarkup(Markup.Escape(file + ":"))} {themePalette.TextMarkup(Markup.Escape("file is not valid UTF-8 text: " + ex.Message))}");
+
+                        attachFailed = true;
+                    }
                     catch (IOException ex)
                     {
                         AnsiConsole.MarkupLine(
                             $"{themePalette.ErrorMarkup(Markup.Escape(file + ":"))} {themePalette.TextMarkup(Markup.Escape(ex.Message))}");
+
+                        attachFailed = true;
                     }
                     catch (UnauthorizedAccessException ex)
                     {
                         AnsiConsole.MarkupLine($"{themePalette.ErrorMarkup(Markup.Escape(file + ":"))} {themePalette.TextMarkup(Markup.Escape(ex.Message))}");
+
+                        attachFailed = true;
                     }
+                }
+
+                if (attachFailed && relativePathsForFooter.Count == 0)
+                {
+                    stagedFiles.Clear();
+
+                    exitCode = 1;
+
+                    continue;
                 }
 
                 if (relativePathsForFooter.Count > 0)
@@ -263,7 +301,7 @@ public sealed class ChatCommand(
 
             stagedFiles.Clear();
 
-            await RunTurnAsync(
+            bool turnOk = await RunTurnAsync(
                     prompt,
                     session,
                     settings,
@@ -272,11 +310,16 @@ public sealed class ChatCommand(
                     flags,
                     attachedFilesForRequest)
                 .ConfigureAwait(false);
+
+            if (!turnOk)
+            {
+                exitCode = 1;
+            }
         }
 
         await PrintExitSummaryAsync(session, cancellationToken).ConfigureAwait(false);
 
-        return 0;
+        return exitCode;
     }
 
     private async Task<(bool Handled, bool ExitRepl)> TrySlashCommandAsync(
@@ -325,7 +368,7 @@ public sealed class ChatCommand(
 
             session.SessionMana = null;
 
-            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Started new conversation.")));
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Started new session.")));
 
             return (true, false);
         }
@@ -449,8 +492,8 @@ public sealed class ChatCommand(
 
         if (verb.Equals("/history", StringComparison.OrdinalIgnoreCase))
         {
-            Result<List<ConversationSummaryDto>> historyResult =
-                await apiClient.GetConversationsAsync(50, cancellationToken).ConfigureAwait(false);
+            Result<SessionQueryResult> historyResult =
+                await apiClient.QuerySessionsAsync(50, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             if (historyResult.IsFailure)
             {
@@ -459,9 +502,9 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            if (historyResult.Value.Count == 0)
+            if (historyResult.Value.Summaries.Length == 0)
             {
-                AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No past conversations found.")));
+                AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No past sessions found.")));
 
                 return (true, false);
             }
@@ -474,23 +517,25 @@ public sealed class ChatCommand(
 
             historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("ID")));
 
+            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Title")));
+
             historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Updated")));
 
-            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Snippet")));
+            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Entries")));
 
-            historyTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Mana")));
-
-            foreach (ConversationSummaryDto row in historyResult.Value)
+            foreach (SessionSummaryDto row in historyResult.Value.Summaries)
             {
                 string idShort = row.Id.ToString("N")[..8].ToUpperInvariant();
 
-                string updatedLocal = row.UpdatedAtUtc.ToLocalTime().ToString("g");
+                string updatedLocal = row.UpdatedAt.ToLocalTime().ToString("g");
+
+                string title = string.IsNullOrWhiteSpace(row.Title) ? "(untitled)" : row.Title;
 
                 historyTable.AddRow(
                     Markup.Escape(idShort),
+                    Markup.Escape(title),
                     Markup.Escape(updatedLocal),
-                    Markup.Escape(row.Snippet),
-                    Markup.Escape(row.TotalTokensUsed.ToString(CultureInfo.InvariantCulture)));
+                    Markup.Escape(row.EntryCount.ToString(CultureInfo.InvariantCulture)));
             }
 
             AnsiConsole.Write(historyTable);
@@ -509,7 +554,7 @@ public sealed class ChatCommand(
             }
 
             (bool resumeOk, Guid resumeId, string? resumeErr) =
-                await TryResolveConversationIdForSlashAsync(tail, cancellationToken).ConfigureAwait(false);
+                await TryResolveSessionIdForSlashAsync(tail, cancellationToken).ConfigureAwait(false);
 
             if (!resumeOk)
             {
@@ -521,9 +566,9 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            cliSession.SaveConversationId(resumeId);
+            cliSession.SaveSessionId(resumeId);
 
-            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Resumed conversation.")));
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Resumed session.")));
 
             return (true, false);
         }
@@ -539,7 +584,7 @@ public sealed class ChatCommand(
             }
 
             (bool delOk, Guid deleteId, string? deleteErr) =
-                await TryResolveConversationIdForSlashAsync(tail, cancellationToken).ConfigureAwait(false);
+                await TryResolveSessionIdForSlashAsync(tail, cancellationToken).ConfigureAwait(false);
 
             if (!delOk)
             {
@@ -551,43 +596,43 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            Result<bool> deleteResult = await apiClient.DeleteConversationAsync(deleteId, cancellationToken).ConfigureAwait(false);
+            Result archiveResult = await apiClient.ArchiveSessionAsync(deleteId, cancellationToken).ConfigureAwait(false);
 
-            if (deleteResult.IsFailure)
+            if (archiveResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(deleteResult.Error.Message)));
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(archiveResult.Error.Message)));
 
                 return (true, false);
             }
 
-            Guid? active = cliSession.GetLastConversationId();
+            Guid? active = cliSession.GetLastSessionId();
 
             if (active == deleteId)
             {
                 cliSession.ClearSession();
             }
 
-            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Conversation deleted.")));
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Session archived.")));
 
             return (true, false);
         }
 
         if (verb.Equals("/rest", StringComparison.OrdinalIgnoreCase))
         {
-            Guid? activeConversationId = cliSession.GetLastConversationId();
+            Guid? activeSessionId = cliSession.GetLastSessionId();
 
-            if (activeConversationId is null)
+            if (activeSessionId is null)
             {
                 AnsiConsole.MarkupLine(
                     themePalette.HighlightMarkup(
                         Markup.Escape(
-                            "No active conversation. Send a message first or use /resume to bind a session.")));
+                            "No active session. Send a message first or use /resume to bind a session.")));
 
                 return (true, false);
             }
 
             Result restResult = await apiClient
-                .RestAsync(activeConversationId.Value, cancellationToken)
+                .RestAsync(activeSessionId.Value, cancellationToken)
                 .ConfigureAwait(false);
 
             if (restResult.IsFailure)
@@ -634,7 +679,7 @@ public sealed class ChatCommand(
         throw new InvalidOperationException($"Unhandled whitelisted slash verb: {verb}");
     }
 
-    private async Task<(bool Ok, Guid Id, string? ErrorMarkup)> TryResolveConversationIdForSlashAsync(
+    private async Task<(bool Ok, Guid Id, string? ErrorMarkup)> TryResolveSessionIdForSlashAsync(
         string tail,
         CancellationToken cancellationToken)
     {
@@ -647,21 +692,21 @@ public sealed class ChatCommand(
 
         if (IsEightCharHexDigitPrefix(t))
         {
-            Result<List<ConversationSummaryDto>> listResult =
-                await apiClient.GetConversationsAsync(200, cancellationToken).ConfigureAwait(false);
+            Result<SessionQueryResult> listResult =
+                await apiClient.QuerySessionsAsync(200, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             if (listResult.IsFailure)
             {
                 return (false, default, themePalette.ErrorMarkup(Markup.Escape(listResult.Error.Message)));
             }
 
-            List<ConversationSummaryDto> matches = listResult.Value
+            List<SessionSummaryDto> matches = listResult.Value.Summaries
                 .Where(c => c.Id.ToString("N").StartsWith(t, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             if (matches.Count == 0)
             {
-                return (false, default, themePalette.ErrorMarkup(Markup.Escape("No conversation matches that ID.")));
+                return (false, default, themePalette.ErrorMarkup(Markup.Escape("No session matches that ID.")));
             }
 
             if (matches.Count > 1)
@@ -670,7 +715,7 @@ public sealed class ChatCommand(
                     false,
                     default,
                     themePalette.ErrorMarkup(
-                        Markup.Escape("Multiple conversations match that ID. Please provide the full Guid.")));
+                        Markup.Escape("Multiple sessions match that ID. Please provide the full Guid.")));
             }
 
             return (true, matches[0].Id, null);
@@ -815,23 +860,23 @@ public sealed class ChatCommand(
 
         table.AddRow("/help", "Show this table.");
 
-        table.AddRow("/new", "Clear session file; next turn starts a new Grimoire thread.");
+        table.AddRow("/new", "Clear session file; next turn starts a new session thread.");
 
-        table.AddRow("/history", "List recent conversations (time travel).");
+        table.AddRow("/history", "List recent sessions (time travel).");
 
         table.AddRow(
             "/resume " + themePalette.HighlightMarkup(Markup.Escape("<id>")),
-            "Continue a past conversation (full Guid or 8-char hex prefix).");
+            "Continue a past session (full Guid or 8-char hex prefix).");
 
         table.AddRow(
             "/delete " + themePalette.HighlightMarkup(Markup.Escape("<id>")),
-            "Delete a conversation from Grimoire (full Guid or 8-char prefix).");
+            "Archive a session from Grimoire (full Guid or 8-char prefix).");
 
         table.AddRow("/rest", "Manually trigger memory consolidation for the current session.");
 
         table.AddRow("/log", "View the Campaign Log (summarized history) for this session.");
 
-        table.AddRow("/mana", "Token usage for this REPL session and conversation lifetime (Grimoire).");
+        table.AddRow("/mana", "Token usage for this REPL session and session lifetime (Grimoire).");
 
         table.AddRow("/memory, /summary", "View the Campaign Summary (compressed memory context) for this session.");
 
@@ -1165,20 +1210,20 @@ public sealed class ChatCommand(
 
     private async Task TryShowCampaignSummaryPanelAsync(string panelTitle, CancellationToken cancellationToken)
     {
-        Guid? logConversationId = cliSession.GetLastConversationId();
+        Guid? logSessionId = cliSession.GetLastSessionId();
 
-        if (logConversationId is null)
+        if (logSessionId is null)
         {
             AnsiConsole.MarkupLine(
                 themePalette.HighlightMarkup(
                     Markup.Escape(
-                        "No active conversation. Send a message first or use /resume to bind a session.")));
+                        "No active session. Send a message first or use /resume to bind a session.")));
 
             return;
         }
 
-        Result<ConversationDetailDto> logResult = await apiClient
-            .GetConversationAsync(logConversationId.Value, cancellationToken)
+        Result<SessionDetailDto> logResult = await apiClient
+            .GetSessionAsync(logSessionId.Value, cancellationToken)
             .ConfigureAwait(false);
 
         if (logResult.IsFailure)
@@ -1188,7 +1233,7 @@ public sealed class ChatCommand(
             return;
         }
 
-        ConversationDetailDto detail = logResult.Value;
+        SessionDetailDto detail = logResult.Value;
 
         if (string.IsNullOrWhiteSpace(detail.Summary))
         {
@@ -1210,7 +1255,7 @@ public sealed class ChatCommand(
         AnsiConsole.Write(logPanel);
     }
 
-    private async Task RunTurnAsync(
+    private async Task<bool> RunTurnAsync(
         string prompt,
         SessionMut session,
         Settings settings,
@@ -1244,6 +1289,8 @@ public sealed class ChatCommand(
 
         int width = Math.Max(1, AnsiConsole.Profile.Width);
 
+        bool streamWithMarkdownRewrite = cliEnvironment.IsInteractive && cliEnvironment.ColorEnabled;
+
         string? finalText = null;
 
         bool cancelled = false;
@@ -1269,14 +1316,14 @@ public sealed class ChatCommand(
                 chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot).ConfigureAwait(false);
             }
 
-            Guid? conversationId = cliSession.GetLastConversationId();
+            Guid? sessionId = cliSession.GetLastSessionId();
 
             PingRequest ping = new(
                 prompt,
                 session.CurrentModel,
                 cwd,
                 snapshot,
-                conversationId,
+                sessionId,
                 session.DisableTools,
                 CliTerminalFormatting: true,
                 UnattendedMode: settings.Unattended,
@@ -1320,16 +1367,25 @@ public sealed class ChatCommand(
 
                         full.Append(chunk);
 
-                        AnsiConsole.Markup(Markup.Escape(chunk));
+                        if (streamWithMarkdownRewrite)
+                        {
+                            AnsiConsole.Markup(Markup.Escape(chunk));
 
-                        AdvanceLineCounter(chunk, width, ref linesPrinted, ref currentLineLen);
+                            AdvanceLineCounter(chunk, width, ref linesPrinted, ref currentLineLen);
+                        }
 
                         break;
 
                     case IntelligenceEventType.ToolCall:
 
                         AskHumanResult humanResult = await AskHumanToolCallStreamHandler
-                            .TryHandleAskHumanAsync(evt, settings.Unattended, apiClient, themePalette, perTurnCts.Token)
+                            .TryHandleAskHumanAsync(
+                                evt,
+                                settings.Unattended,
+                                cliEnvironment.IsInteractive,
+                                apiClient,
+                                themePalette,
+                                perTurnCts.Token)
                             .ConfigureAwait(false);
 
                         if (humanResult == AskHumanResult.SubmitFailed)
@@ -1354,11 +1410,12 @@ public sealed class ChatCommand(
 
                         break;
 
+                    case IntelligenceEventType.SessionBound:
                     case IntelligenceEventType.ConversationBound:
 
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
-                            cliSession.SaveConversationId(boundId);
+                            cliSession.SaveSessionId(boundId);
                         }
 
                         break;
@@ -1425,12 +1482,12 @@ public sealed class ChatCommand(
                 Style = themePalette.MutedStyle(),
             });
 
-            return;
+            return true;
         }
 
         if (errored)
         {
-            return;
+            return false;
         }
 
         string body = finalText ?? full.ToString();
@@ -1439,10 +1496,10 @@ public sealed class ChatCommand(
         {
             AnsiConsole.WriteLine();
 
-            return;
+            return true;
         }
 
-        if (full.Length > 0)
+        if (streamWithMarkdownRewrite && full.Length > 0)
         {
             if (linesPrinted > 0)
             {
@@ -1450,11 +1507,24 @@ public sealed class ChatCommand(
             }
 
             Console.Write("\r\u001b[0J");
+
+            AnsiConsole.Write(markdig.Render(body));
+        }
+        else if (!streamWithMarkdownRewrite)
+        {
+            if (cliEnvironment.IsInteractive)
+            {
+                AnsiConsole.Write(markdig.Render(body));
+            }
+            else
+            {
+                await Console.Out.WriteLineAsync(body).ConfigureAwait(false);
+            }
         }
 
-        AnsiConsole.Write(markdig.Render(body));
-
         AnsiConsole.WriteLine();
+
+        return true;
     }
 
     private static void AdvanceLineCounter(string chunk, int width, ref int linesPrinted, ref int currentLineLen)
@@ -1533,7 +1603,7 @@ public sealed class ChatCommand(
 
         int sessionTotal = session.SessionMana?.TotalTokens ?? 0;
 
-        Guid? activeId = cliSession.GetLastConversationId();
+        Guid? activeId = cliSession.GetLastSessionId();
 
         long lifetime = 0L;
 
@@ -1541,8 +1611,8 @@ public sealed class ChatCommand(
 
         if (activeId is not null)
         {
-            Result<ConversationDetailDto> detailResult =
-                await apiClient.GetConversationAsync(activeId.Value, cancellationToken).ConfigureAwait(false);
+            Result<SessionDetailDto> detailResult =
+                await apiClient.GetSessionAsync(activeId.Value, cancellationToken).ConfigureAwait(false);
 
             if (detailResult.IsFailure)
             {
@@ -1588,20 +1658,20 @@ public sealed class ChatCommand(
         if (activeId is null)
         {
             inner.AddRow(
-                themePalette.MutedMarkup(Markup.Escape("Conversation lifetime:")),
+                themePalette.MutedMarkup(Markup.Escape("Session lifetime:")),
                 themePalette.MutedMarkup(
-                    Markup.Escape("no active conversation \u2014 bind one with /resume to see lifetime Grimoire totals.")));
+                    Markup.Escape("no active session \u2014 bind one with /resume to see lifetime Grimoire totals.")));
         }
         else if (lifetimeError is not null)
         {
             inner.AddRow(
-                themePalette.MutedMarkup(Markup.Escape("Conversation lifetime:")),
+                themePalette.MutedMarkup(Markup.Escape("Session lifetime:")),
                 themePalette.ErrorMarkup(Markup.Escape(lifetimeError)));
         }
         else
         {
             inner.AddRow(
-                themePalette.MutedMarkup(Markup.Escape("Conversation lifetime:")),
+                themePalette.MutedMarkup(Markup.Escape("Session lifetime:")),
                 themePalette.HighlightMarkup(Markup.Escape(lifetime.ToString("N0", CultureInfo.InvariantCulture))));
         }
 
@@ -1636,7 +1706,7 @@ public sealed class ChatCommand(
             {
                 int safeLifetime = lifetime > int.MaxValue ? int.MaxValue : (int)lifetime;
 
-                chart = chart.AddItem("conversation lifetime", safeLifetime, themePalette.Muted);
+                chart = chart.AddItem("session lifetime", safeLifetime, themePalette.Muted);
             }
 
             AnsiConsole.Write(chart);
@@ -1651,14 +1721,14 @@ public sealed class ChatCommand(
 
         long lifetime = 0L;
 
-        Guid? id = cliSession.GetLastConversationId();
+        Guid? id = cliSession.GetLastSessionId();
 
         if (id is not null)
         {
             try
             {
-                Result<ConversationDetailDto> r =
-                    await apiClient.GetConversationAsync(id.Value, cancellationToken).ConfigureAwait(false);
+                Result<SessionDetailDto> r =
+                    await apiClient.GetSessionAsync(id.Value, cancellationToken).ConfigureAwait(false);
 
                 if (r.IsSuccess)
                 {
@@ -1679,7 +1749,7 @@ public sealed class ChatCommand(
         }
 
         string exitBody =
-            $"Session total_tokens: {sessionTotal.ToString(CultureInfo.InvariantCulture)}\nConversation lifetime (Grimoire): {lifetime.ToString(CultureInfo.InvariantCulture)}";
+            $"Session total_tokens: {sessionTotal.ToString(CultureInfo.InvariantCulture)}\nSession lifetime (Grimoire): {lifetime.ToString(CultureInfo.InvariantCulture)}";
 
         if (session.SessionMana is not null)
         {
@@ -1706,7 +1776,7 @@ public sealed class ChatCommand(
         public string? Model { get; init; }
 
         [CommandOption("-n|--new")]
-        [Description("Start a new conversation thread, clearing the previous session at REPL startup.")]
+        [Description("Start a new session thread, clearing the previous session at REPL startup.")]
         public bool New { get; init; }
 
         [CommandOption("--no-tools")]

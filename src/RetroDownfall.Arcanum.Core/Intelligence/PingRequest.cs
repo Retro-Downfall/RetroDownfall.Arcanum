@@ -1,3 +1,4 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -9,7 +10,7 @@ public sealed record PingRequest(
     string? Model = null,
     string WorkingDirectory = "",
     PatternSnapshot? ContextSnapshot = null,
-    Guid? ConversationId = null,
+    Guid? SessionId = null,
     bool DisableMcpTools = false,
     bool CliTerminalFormatting = false,
     bool UnattendedMode = false,
@@ -24,8 +25,13 @@ public sealed record PingRequest(
     IReadOnlyList<string>? Stop = null,
     long? Seed = null,
     string? ResponseFormat = null,
+    JsonElement? ResponseFormatJsonSchema = null,
     float? PresencePenalty = null,
     float? FrequencyPenalty = null,
     string? User = null,
     bool? ParallelToolCalls = null,
-    List<DataStreamPayload>? DataStreams = null);
+    List<DataStreamPayload>? DataStreams = null,
+    Guid? CampaignId = null,
+    ToolPolicy? ToolPolicy = null,
+    string? AdditionalSystemPrompt = null,
+    string? OverrideSpellPath = null);

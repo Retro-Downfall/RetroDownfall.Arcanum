@@ -6,15 +6,36 @@
 
   </PropertyGroup>
 
+  <Target Name="GenerateArcanumBuildInfo" BeforeTargets="BeforeCompile">
+
+    <PropertyGroup>
+
+      <_ArcanumBuildInfoGenerated>$(IntermediateOutputPath)ArcanumBuildInfo.g.cs</_ArcanumBuildInfoGenerated>
+
+    </PropertyGroup>
+
+    <WriteLinesToFile
+      File="$(_ArcanumBuildInfoGenerated)"
+      Overwrite="true"
+      Lines="namespace RetroDownfall.Arcanum.Core%3B%0A%0Apublic static partial class ArcanumBuildInfo%0A{%0A%0A    public const string InformationalVersion = &quot;$(Version)&quot;%3B%0A%0A}" />
+
+    <ItemGroup>
+
+      <Compile Include="$(_ArcanumBuildInfoGenerated)" />
+
+    </ItemGroup>
+
+  </Target>
+
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
 
-    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.5.2" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
 
   </ItemGroup>
 

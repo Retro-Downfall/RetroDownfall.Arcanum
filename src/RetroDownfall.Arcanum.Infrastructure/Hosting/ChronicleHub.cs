@@ -1,0 +1,82 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.TheForge;
+
+namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
+
+public sealed class ChronicleHub
+{
+
+    private readonly ConcurrentDictionary<Guid, PerApprenticeHub> _hubs = new();
+
+    private readonly IOptionsMonitor<ArcanumSettings> _options;
+
+    public ChronicleHub(IOptionsMonitor<ArcanumSettings> options)
+    {
+        _options = options;
+    }
+
+    public void Publish(Guid apprenticeId, ApprenticeEvent @event)
+    {
+        PerApprenticeHub hub = GetOrCreateHub(apprenticeId);
+
+        hub.Publish(@event);
+    }
+
+    public async IAsyncEnumerable<ApprenticeEvent> SubscribeAsync(
+        Guid apprenticeId,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        PerApprenticeHub hub = GetOrCreateHub(apprenticeId);
+
+        ChannelReader<ApprenticeEvent> reader = hub.Subscribe(out Guid subscriptionId);
+
+        try
+        {
+            await foreach (ApprenticeEvent item in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                yield return item;
+            }
+        }
+        finally
+        {
+
+            if (hub.Unsubscribe(subscriptionId))
+            {
+
+                _ = _hubs.TryRemove(apprenticeId, out _);
+            }
+        }
+    }
+
+    private PerApprenticeHub GetOrCreateHub(Guid apprenticeId)
+    {
+        int capacity = ArcanumSettingClamps.ChronicleChannelCapacity(
+            _options.CurrentValue.Apprentices?.ChronicleChannelCapacity ?? new ApprenticeSettings().ChronicleChannelCapacity);
+
+        return _hubs.GetOrAdd(apprenticeId, _ => new PerApprenticeHub(capacity));
+    }
+
+    private sealed class PerApprenticeHub
+    {
+
+        private readonly EventHub<ApprenticeEvent> _inner;
+
+        public PerApprenticeHub(int capacity)
+        {
+            _inner = new EventHub<ApprenticeEvent>(capacity);
+        }
+
+        public void Publish(ApprenticeEvent @event) => _inner.Publish(@event);
+
+        public ChannelReader<ApprenticeEvent> Subscribe(out Guid subscriptionId) =>
+            _inner.Subscribe(out subscriptionId);
+
+        public bool Unsubscribe(Guid subscriptionId) => _inner.Unsubscribe(subscriptionId);
+
+    }
+
+}

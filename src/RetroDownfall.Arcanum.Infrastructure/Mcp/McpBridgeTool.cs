@@ -24,11 +24,16 @@ internal sealed class McpBridgeTool : AIFunction
 
     private readonly ILogger? _fallbackLogger;
 
+    private readonly long _toolOutputCapBytes;
+
+    internal long ToolOutputCapBytes => _toolOutputCapBytes;
+
     public McpBridgeTool(
         string name,
         string description,
         JsonElement inputSchema,
         McpClient client,
+        long toolOutputCapBytes,
         McpClient? fallbackClient = null,
         ILogger? fallbackLogger = null)
     {
@@ -38,6 +43,7 @@ internal sealed class McpBridgeTool : AIFunction
         _description = description;
         _inputSchema = inputSchema.Clone();
         _client = client;
+        _toolOutputCapBytes = toolOutputCapBytes;
         _fallbackClient = fallbackClient;
         _fallbackLogger = fallbackLogger;
     }
@@ -86,12 +92,12 @@ internal sealed class McpBridgeTool : AIFunction
 
         if (result.TryGetProperty("isError", out JsonElement isError) && isError.ValueKind == JsonValueKind.True)
         {
-            string errText = McpToolResultFormatter.FormatContentText(result);
+            string errText = McpToolResultFormatter.FormatContentText(result, _toolOutputCapBytes);
 
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(errText) ? "MCP tool returned isError: true." : errText);
         }
 
-        return McpToolResultFormatter.FormatContentText(result);
+        return McpToolResultFormatter.FormatContentText(result, _toolOutputCapBytes);
     }
 
     private JsonElement BuildToolsCallParamsElement(AIFunctionArguments arguments)
@@ -212,11 +218,11 @@ internal sealed class McpBridgeTool : AIFunction
 /// </summary>
 internal static class McpToolResultFormatter
 {
-    public static string FormatContentText(JsonElement result)
+    public static string FormatContentText(JsonElement result, long maxUtf8Bytes = long.MaxValue)
     {
         if (!result.TryGetProperty("content", out JsonElement content) || content.ValueKind != JsonValueKind.Array)
         {
-            return result.GetRawText();
+            return McpSecurityLimits.TruncateUtf8(result.GetRawText(), maxUtf8Bytes);
         }
 
         StringBuilder sb = new();
@@ -264,6 +270,8 @@ internal static class McpToolResultFormatter
             }
         }
 
-        return sb.Length == 0 ? result.GetRawText() : sb.ToString();
+        string formatted = sb.Length == 0 ? result.GetRawText() : sb.ToString();
+
+        return McpSecurityLimits.TruncateUtf8(formatted, maxUtf8Bytes);
     }
 }

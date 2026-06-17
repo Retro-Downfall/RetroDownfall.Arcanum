@@ -90,6 +90,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int executeCommandTimeoutSecondsForDisplay,
         int listDirectoryMaxPaths,
         IntelligenceSettings intelligenceSettings,
+        long maxFileReadSizeBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -132,6 +133,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             executeCommandTimeoutSecondsForDisplay,
             listDirectoryMaxPaths,
             intelligenceSettings,
+            maxFileReadSizeBytes,
             requestCancellationBroker,
             logger,
             jsonContext);

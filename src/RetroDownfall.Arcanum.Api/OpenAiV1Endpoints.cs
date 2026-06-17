@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Reflection;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -99,10 +98,10 @@ internal static class OpenAiV1Endpoints
                 .ReadFromJsonAsync(ArcanumJsonContext.Default.OpenAiChatRequest, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
             return JsonError(
-                "Request body could not be parsed as a chat completion request: " + ex.Message,
+                "Request body could not be parsed as a chat completion request.",
                 "invalid_request_error",
                 code: "invalid_json",
                 param: null,
@@ -164,6 +163,37 @@ internal static class OpenAiV1Endpoints
             }
         }
 
+        if (body.N is int n && n != 1)
+        {
+            return JsonError(
+                "`n` must be 1 when specified. Arcanum does not support multiple completion choices.",
+                "invalid_request_error",
+                code: "invalid_value",
+                param: "n",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (body.Tools is { Length: > 0 })
+        {
+            return JsonError(
+                "Client-supplied `tools` are not supported. Arcanum uses its own server-side MCP toolset.",
+                "invalid_request_error",
+                code: "unsupported_parameter",
+                param: "tools",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (body.ToolChoice is { } toolChoice
+            && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
+        {
+            return JsonError(
+                "Client-supplied `tool_choice` is not supported. Arcanum uses its own server-side MCP toolset.",
+                "invalid_request_error",
+                code: "unsupported_parameter",
+                param: "tool_choice",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
         PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body);
 
         if (!ProviderResolver.TryResolveProviderForModel(settings.Value, body.Model, out _, out string resolvedModel)
@@ -174,12 +204,14 @@ internal static class OpenAiV1Endpoints
                 "invalid_request_error",
                 code: "model_not_found",
                 param: "model",
-                statusCode: StatusCodes.Status400BadRequest);
+                statusCode: StatusCodes.Status404NotFound);
         }
 
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         string completionId = "chatcmpl-" + Guid.NewGuid().ToString("N");
+
+        string echoModel = body.Model.Trim();
 
         string systemFingerprint = ResolveSystemFingerprint(settings.Value);
 
@@ -190,7 +222,7 @@ internal static class OpenAiV1Endpoints
                 ping,
                 completionId,
                 created,
-                resolvedModel,
+                echoModel,
                 systemFingerprint,
                 cancellationToken)
                 .ConfigureAwait(false);
@@ -206,7 +238,7 @@ internal static class OpenAiV1Endpoints
             ping,
             completionId,
             created,
-            resolvedModel,
+            echoModel,
             systemFingerprint,
             includeUsage,
             streamLogger,
@@ -219,7 +251,7 @@ internal static class OpenAiV1Endpoints
         PingRequest ping,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         CancellationToken cancellationToken)
     {
@@ -228,11 +260,11 @@ internal static class OpenAiV1Endpoints
         if (result.IsFailure)
         {
             return JsonError(
-                "Inference failed. See server logs for details.",
+                ResolvePublicInferenceFailureMessage(result.Error.Code),
                 "api_error",
-                code: result.Error.Code,
+                code: MapPublicOpenAiErrorCode(result.Error.Code),
                 param: null,
-                statusCode: StatusCodes.Status500InternalServerError);
+                statusCode: ResolveOpenAiInferenceFailureStatusCode(result.Error.Code));
         }
 
         PromptTurnResult turn = result.Value;
@@ -251,7 +283,7 @@ internal static class OpenAiV1Endpoints
             Id: completionId,
             ObjectKind: "chat.completion",
             Created: created,
-            Model: resolvedModel,
+            Model: echoModel,
             Choices:
             [
                 new OpenAiChatChoice(
@@ -273,7 +305,7 @@ internal static class OpenAiV1Endpoints
         PingRequest ping,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         bool includeUsage,
         ILogger logger,
@@ -291,6 +323,8 @@ internal static class OpenAiV1Endpoints
 
         CancellationToken ct = streamCts.Token;
 
+        ArrayBufferWriter<byte> sseBuffer = new(512);
+
         ChatCompletionUsage? sseUsage = null;
 
         bool aborted = false;
@@ -299,18 +333,18 @@ internal static class OpenAiV1Endpoints
 
         try
         {
-            await WriteRoleChunkAsync(httpContext, completionId, created, resolvedModel, systemFingerprint, ct).ConfigureAwait(false);
+            await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
 
             await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(ping, ct).ConfigureAwait(false))
             {
                 switch (ev.Type)
                 {
                     case IntelligenceEventType.Token when !string.IsNullOrEmpty(ev.Data):
-                        await WriteContentChunkAsync(httpContext, completionId, created, resolvedModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
+                        await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
                         break;
 
                     case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCall:
-                        await WriteToolCallChunkAsync(httpContext, completionId, created, resolvedModel, systemFingerprint, toolCall, ct).ConfigureAwait(false);
+                        await WriteToolCallChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, toolCall, ct).ConfigureAwait(false);
                         break;
 
                     case IntelligenceEventType.Result:
@@ -318,13 +352,24 @@ internal static class OpenAiV1Endpoints
                         break;
 
                     case IntelligenceEventType.Error:
-                        await WriteStreamErrorAsync(httpContext, ev.Message, ct).ConfigureAwait(false);
+                        await WriteStreamErrorAsync(
+                            httpContext,
+                            sseBuffer,
+                            completionId,
+                            created,
+                            echoModel,
+                            systemFingerprint,
+                            ev.Data,
+                            ct).ConfigureAwait(false);
                         streamErrored = true;
                         return Results.Empty;
 
                     case IntelligenceEventType.Status:
                     case IntelligenceEventType.ToolResult:
+                    case IntelligenceEventType.SessionBound:
                     case IntelligenceEventType.ConversationBound:
+                    case IntelligenceEventType.Warded:
+                    case IntelligenceEventType.WardResolved:
                     default:
                         break;
                 }
@@ -342,7 +387,12 @@ internal static class OpenAiV1Endpoints
             {
                 await WriteStreamErrorAsync(
                     httpContext,
-                    "Inference failed. See server logs for details.",
+                    sseBuffer,
+                    completionId,
+                    created,
+                    echoModel,
+                    systemFingerprint,
+                    rawMessage: null,
                     CancellationToken.None)
                     .ConfigureAwait(false);
             }
@@ -363,13 +413,13 @@ internal static class OpenAiV1Endpoints
         {
             if (includeUsage)
             {
-                await WriteFinalContentChunkAsync(httpContext, completionId, created, resolvedModel, systemFingerprint, finishReason: "stop", ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: "stop", ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
 
-                await WriteUsageOnlyChunkAsync(httpContext, completionId, created, resolvedModel, systemFingerprint, sseUsage, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                await WriteUsageOnlyChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, sseUsage, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
             }
             else
             {
-                await WriteFinalContentChunkAsync(httpContext, completionId, created, resolvedModel, systemFingerprint, finishReason: "stop", ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: "stop", ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
             }
 
             await httpContext.Response.Body.WriteAsync(SseDone, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
@@ -389,9 +439,10 @@ internal static class OpenAiV1Endpoints
 
     private static async Task WriteRoleChunkAsync(
         HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         CancellationToken ct)
     {
@@ -399,7 +450,7 @@ internal static class OpenAiV1Endpoints
             Id: completionId,
             ObjectKind: "chat.completion.chunk",
             Created: created,
-            Model: resolvedModel,
+            Model: echoModel,
             Choices:
             [
                 new OpenAiChatStreamChoice(
@@ -411,14 +462,15 @@ internal static class OpenAiV1Endpoints
             Usage: null,
             SystemFingerprint: systemFingerprint);
 
-        await WriteSseJsonAsync(httpContext, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
     }
 
     private static async Task WriteContentChunkAsync(
         HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         string content,
         CancellationToken ct)
@@ -427,7 +479,7 @@ internal static class OpenAiV1Endpoints
             Id: completionId,
             ObjectKind: "chat.completion.chunk",
             Created: created,
-            Model: resolvedModel,
+            Model: echoModel,
             Choices:
             [
                 new OpenAiChatStreamChoice(
@@ -439,14 +491,15 @@ internal static class OpenAiV1Endpoints
             Usage: null,
             SystemFingerprint: systemFingerprint);
 
-        await WriteSseJsonAsync(httpContext, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
     }
 
     private static async Task WriteToolCallChunkAsync(
         HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         IntelligenceToolCallEvent toolCall,
         CancellationToken ct)
@@ -463,7 +516,7 @@ internal static class OpenAiV1Endpoints
             Id: completionId,
             ObjectKind: "chat.completion.chunk",
             Created: created,
-            Model: resolvedModel,
+            Model: echoModel,
             Choices:
             [
                 new OpenAiChatStreamChoice(
@@ -475,14 +528,15 @@ internal static class OpenAiV1Endpoints
             Usage: null,
             SystemFingerprint: systemFingerprint);
 
-        await WriteSseJsonAsync(httpContext, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
     }
 
     private static async Task WriteFinalContentChunkAsync(
         HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         string finishReason,
         CancellationToken ct)
@@ -491,7 +545,7 @@ internal static class OpenAiV1Endpoints
             Id: completionId,
             ObjectKind: "chat.completion.chunk",
             Created: created,
-            Model: resolvedModel,
+            Model: echoModel,
             Choices:
             [
                 new OpenAiChatStreamChoice(
@@ -503,14 +557,15 @@ internal static class OpenAiV1Endpoints
             Usage: null,
             SystemFingerprint: systemFingerprint);
 
-        await WriteSseJsonAsync(httpContext, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
     }
 
     private static async Task WriteUsageOnlyChunkAsync(
         HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
         string completionId,
         long created,
-        string resolvedModel,
+        string echoModel,
         string systemFingerprint,
         ChatCompletionUsage? usage,
         CancellationToken ct)
@@ -519,43 +574,111 @@ internal static class OpenAiV1Endpoints
             Id: completionId,
             ObjectKind: "chat.completion.chunk",
             Created: created,
-            Model: resolvedModel,
+            Model: echoModel,
             Choices: [],
             Usage: usage,
             SystemFingerprint: systemFingerprint);
 
-        await WriteSseJsonAsync(httpContext, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
     }
 
-    private static async Task WriteStreamErrorAsync(HttpContext httpContext, string message, CancellationToken ct)
+    private static async Task WriteStreamErrorAsync(
+        HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
+        string completionId,
+        long created,
+        string echoModel,
+        string systemFingerprint,
+        string? rawMessage,
+        CancellationToken ct)
     {
-        OpenAiErrorResponse error = new(
-            new OpenAiErrorDetail(
-                Message: message ?? "Inference failed.",
+
+        string message = SanitizeStreamErrorMessage(rawMessage);
+
+        string errorCode = ResolveStreamErrorCode(rawMessage);
+
+        OpenAiChatStreamErrorChunk chunk = new(
+            Id: completionId,
+            ObjectKind: "chat.completion.chunk",
+            Created: created,
+            Model: echoModel,
+            Choices:
+            [
+                new OpenAiChatStreamChoice(
+                    Index: 0,
+                    Delta: new OpenAiDelta(),
+                    FinishReason: "error",
+                    Logprobs: null),
+            ],
+            Error: new OpenAiErrorDetail(
+                Message: message,
                 Type: "api_error",
                 Param: null,
-                Code: "inference_failed"));
+                Code: errorCode),
+            SystemFingerprint: systemFingerprint);
 
-        await WriteSseJsonAsync(httpContext, error, ArcanumJsonContext.Default.OpenAiErrorResponse, ct).ConfigureAwait(false);
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatStreamErrorChunk, ct).ConfigureAwait(false);
 
         await httpContext.Response.Body.WriteAsync(SseDone, ct).ConfigureAwait(false);
 
         await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+
+    }
+
+    private static string SanitizeStreamErrorMessage(string? rawMessage)
+    {
+        if (string.IsNullOrWhiteSpace(rawMessage))
+        {
+            return "Inference failed. See server logs for details.";
+        }
+
+        if (rawMessage.Contains("Tool invocation limit", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Tool invocation limit reached.";
+        }
+
+        if (rawMessage.Length <= 200
+            && !rawMessage.Contains('\n')
+            && !rawMessage.Contains("Exception", StringComparison.Ordinal))
+        {
+            return rawMessage;
+        }
+
+        return "Inference failed. See server logs for details.";
+    }
+
+    private static string ResolveStreamErrorCode(string? rawMessage)
+    {
+        if (string.IsNullOrWhiteSpace(rawMessage))
+        {
+            return "inference_failed";
+        }
+
+        if (rawMessage.Contains("Tool invocation limit", StringComparison.OrdinalIgnoreCase))
+        {
+            return "server_error";
+        }
+
+        return "inference_failed";
     }
 
     private static async Task WriteSseJsonAsync<T>(
         HttpContext httpContext,
+        ArrayBufferWriter<byte> buffer,
         T value,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo,
         CancellationToken cancellationToken)
     {
-        ArrayBufferWriter<byte> buffer = new(512);
+
+        buffer.Clear();
 
         await httpContext.Response.Body.WriteAsync(SseDataPrefix, cancellationToken).ConfigureAwait(false);
 
         await using (Utf8JsonWriter jsonWriter = new(buffer, new JsonWriterOptions { Indented = false }))
         {
+
             JsonSerializer.Serialize(jsonWriter, value, typeInfo);
+
         }
 
         await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
@@ -563,6 +686,7 @@ internal static class OpenAiV1Endpoints
         await httpContext.Response.Body.WriteAsync(SseLineBreak, cancellationToken).ConfigureAwait(false);
 
         await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+
     }
 
     private static OpenAiToolCall[]? MapToolCalls(List<PromptToolCall>? promptToolCalls)
@@ -611,28 +735,20 @@ internal static class OpenAiV1Endpoints
 
     private static string BuildDefaultSystemFingerprint()
     {
-        try
+
+        string version = RetroDownfall.Arcanum.Core.ArcanumBuildInfo.InformationalVersion;
+
+        int plus = version.IndexOf('+');
+
+        if (plus >= 0)
         {
-            Assembly asm = typeof(OpenAiV1Endpoints).Assembly;
 
-            string version = asm
-                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-                ?? asm.GetName().Version?.ToString()
-                ?? "unknown";
+            version = version[..plus];
 
-            int plus = version.IndexOf('+');
-
-            if (plus >= 0)
-            {
-                version = version[..plus];
-            }
-
-            return "arcanum-" + version.Trim();
         }
-        catch (Exception)
-        {
-            return "arcanum";
-        }
+
+        return "arcanum-" + version.Trim();
+
     }
 
     private static IResult JsonError(string message, string type, string? code, string? param, int statusCode)
@@ -641,5 +757,42 @@ internal static class OpenAiV1Endpoints
 
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiErrorResponse, statusCode: statusCode);
     }
+
+    private static string MapPublicOpenAiErrorCode(string internalCode) =>
+        internalCode switch
+        {
+            "Hub.Model" => "model_not_found",
+            "Validation.InvalidPrompt" => "missing_required_parameter",
+            "Validation.AttachedFiles" => "invalid_value",
+            "Hub.ToolLoop" => "server_error",
+            _ => "inference_failed",
+        };
+
+    private static string ResolvePublicInferenceFailureMessage(string internalCode) =>
+        internalCode switch
+        {
+            "Hub.Model" =>
+                "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
+            "Validation.InvalidPrompt" => "Prompt is required.",
+            "Validation.AttachedFiles" => "Attached file validation failed.",
+            "Hub.ToolLoop" => "Tool invocation limit reached.",
+            _ => "Inference failed. See server logs for details.",
+        };
+
+    private static int ResolveOpenAiInferenceFailureStatusCode(string internalCode) =>
+        internalCode switch
+        {
+            "Hub.Model" =>
+                StatusCodes.Status404NotFound,
+            "Validation.InvalidPrompt" or "Validation.AttachedFiles" =>
+                StatusCodes.Status400BadRequest,
+            _ => StatusCodes.Status500InternalServerError,
+        };
+
+    internal static string MapPublicOpenAiErrorCodeForTests(string internalCode) =>
+        MapPublicOpenAiErrorCode(internalCode);
+
+    internal static int ResolveOpenAiInferenceFailureStatusCodeForTests(string internalCode) =>
+        ResolveOpenAiInferenceFailureStatusCode(internalCode);
 
 }

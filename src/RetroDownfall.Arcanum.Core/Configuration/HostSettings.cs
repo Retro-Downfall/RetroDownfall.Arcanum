@@ -47,6 +47,12 @@ public sealed record HostSettings
     public long MaxRequestBodyBytes { get; init; } = 10L * 1024L * 1024L;
 
     /// <summary>
+    /// Optional default workspace root for spell management and other workspace-scoped API routes.
+    /// Relative paths resolve against the process current directory. Prefer absolute paths in config.
+    /// </summary>
+    public string? Workspace { get; init; }
+
+    /// <summary>
     /// Optional request rate-limit configuration applied to <c>/api</c> and <c>/v1</c> groups.
     /// </summary>
     public HostRateLimitSettings RateLimit { get; init; } = new();
@@ -61,7 +67,9 @@ public sealed record HostRateLimitSettings
 
     /// <summary>
     /// When <c>true</c>, registers <c>AddRateLimiter</c> and applies a fixed-window limiter to
-    /// the <c>/api</c> and <c>/v1</c> endpoint groups. Default <c>false</c>.
+    /// the <c>/api</c> and <c>/v1</c> endpoint groups. Default <c>false</c>. Also enabled
+    /// automatically when the host binds to all interfaces (<see cref="HostSettings.ListenAny"/>
+    /// or <c>ARCANUM_HOST_ANY</c>).
     /// </summary>
     public bool Enabled { get; init; } = false;
 

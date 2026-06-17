@@ -1,0 +1,14 @@
+========== RID: osx-arm64 ==========
+AOT IL gate passed for RID osx-arm64
+PASS: osx-arm64
+
+========== RID: osx-x64 ==========
+AOT IL gate passed for RID osx-x64
+PASS: osx-x64
+
+========== RID: linux-x64 ==========
+FAIL: linux-x64 (exit 1)
+
+========== RID: win-x64 ==========
+FAIL: win-x64 (exit 1)
+

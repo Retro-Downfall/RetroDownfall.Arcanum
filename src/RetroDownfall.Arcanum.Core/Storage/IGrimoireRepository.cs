@@ -1,23 +1,25 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
 
 public interface IGrimoireRepository
 {
-    Task<(Guid ConversationId, Guid AssistantMessageId)> BeginAssistantReplyAsync(
-        Guid? conversationId,
+
+    Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
+        Guid? sessionId,
         string prompt,
         string model,
         CancellationToken cancellationToken = default);
 
-    Task FinalizeAssistantMessageAsync(
-        Guid assistantMessageId,
+    Task FinalizeAssistantEntryAsync(
+        Guid assistantEntryId,
         string fullContent,
         CancellationToken cancellationToken = default);
 
     Task AppendToolInteractionAsync(
-        Guid conversationId,
+        Guid sessionId,
         string toolName,
         string arguments,
         string result,
@@ -30,54 +32,65 @@ public interface IGrimoireRepository
         string modelUsed,
         CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<ConversationSummaryDto>> ListRecentConversationsAsync(
-        int take,
-        CancellationToken cancellationToken = default);
+    Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
-    Task<int> DeleteConversationAsync(Guid conversationId, CancellationToken cancellationToken = default);
-
-    Task<Conversation?> GetConversationAsync(
+    Task<Session?> GetSessionAsync(
         Guid id,
         CancellationToken cancellationToken = default);
 
-    Task<ConversationDetailDto?> GetConversationDetailAsync(
-        Guid id,
+    Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(
+        Guid sessionId,
         CancellationToken cancellationToken = default);
 
-    Task<List<ConversationMessageDto>?> GetConversationMessagesAsync(
-        Guid conversationId,
+    Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(
+        Guid sessionId,
+        int takeLast,
         CancellationToken cancellationToken = default);
 
-    Task<List<Guid>> GetConversationsNeedingSummarizationAsync(
+    Task<GrimoireEntryDto?> GetEntryByIdAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default);
+
+    Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
         int threshold,
         DateTime idleCutoff,
         CancellationToken cancellationToken = default);
 
-    Task<bool> ConversationExistsAsync(Guid conversationId, CancellationToken cancellationToken = default);
+    Task<List<Entry>> GetUnsummarizedEntriesAsync(
+        Guid sessionId,
+        DateTime watermark,
+        int batchSize,
+        CancellationToken cancellationToken = default);
 
-    Task IncrementConversationTokensAsync(Guid conversationId, long totalTokens, CancellationToken cancellationToken = default);
+    Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
+    Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Advances <see cref="Conversation.LastSummarizedMessageAt"/> to the latest message timestamp (or UTC now if there are no messages).
+    /// Advances <see cref="Session.LastSummarizedMessageAt"/> to the latest entry timestamp (or UTC now if there are no entries).
     /// </summary>
-    Task AdvanceCampaignLogWatermarkAsync(Guid conversationId, CancellationToken cancellationToken = default);
+    Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Atomically updates <see cref="Conversation.Summary"/> and <see cref="Conversation.LastSummarizedMessageAt"/> only. Does not modify <see cref="ChatMessage"/> rows.
+    /// Atomically updates <see cref="Session.Summary"/> and <see cref="Session.LastSummarizedMessageAt"/> only. Does not modify <see cref="Entry"/> rows.
     /// </summary>
-    Task UpdateConversationCampaignRollupAsync(
-        Guid conversationId,
+    Task UpdateSessionCampaignRollupAsync(
+        Guid sessionId,
         string summary,
         DateTime lastSummarizedMessageAt,
         CancellationToken cancellationToken = default);
 
     Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default);
 
-    Task ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default);
+    Task<LoreDto> ScribeLoreAsync(string key, string value, CancellationToken cancellationToken = default);
 
     Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default);
 
-    Task<List<LoreDto>> ListLoreAsync(CancellationToken cancellationToken = default);
+    Task<ListPageResult<LoreDto>> ListLoreAsync(
+        int? limit = null,
+        int offset = 0,
+        CancellationToken cancellationToken = default);
 
     Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default);
 
@@ -86,4 +99,5 @@ public interface IGrimoireRepository
     Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default);
 
     Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default);
+
 }
