@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -16,7 +17,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         {
           "type": "object",
           "properties": {
-            "script_name": { "type": "string", "description": "File name only of a script under the spell scripts/ folder (e.g. analyze.py)." },
+            "script_name": { "type": "string", "description": "File name only of a script under the active spell or resonant dependency scripts/ folder (e.g. analyze.py)." },
             "arguments": { "type": "string", "description": "Optional extra arguments for the script, space-separated; use quotes for tokens containing spaces." }
           },
           "required": ["script_name"],
@@ -25,7 +26,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         """);
 
-    private readonly string? _scriptsRootFull;
+    private readonly IReadOnlyList<string> _scriptsRootsFull;
 
     private readonly TimeSpan _executeTimeout;
 
@@ -33,11 +34,14 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly long _toolOutputCapBytes;
 
+    private readonly ILogger? _logger;
+
     public ArcanumSpellScriptTool(
-        string scriptsDirectoryPath,
+        IReadOnlyList<string> scriptsDirectoryPaths,
         TimeSpan executeTimeout,
         int executeTimeoutSecondsForDisplay,
-        long toolOutputCapBytes = 1L * 1024L * 1024L)
+        long toolOutputCapBytes = 1L * 1024L * 1024L,
+        ILogger? logger = null)
     {
         _executeTimeout = executeTimeout;
 
@@ -45,20 +49,48 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         _toolOutputCapBytes = toolOutputCapBytes < 2048L ? 2048L : toolOutputCapBytes;
 
-        try
+        _logger = logger;
+
+        var roots = new List<string>(scriptsDirectoryPaths.Count);
+
+        foreach (string path in scriptsDirectoryPaths)
         {
-            _scriptsRootFull = Path.GetFullPath(scriptsDirectoryPath);
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                string full = Path.GetFullPath(path);
+
+                if (full.Length > 0)
+                {
+                    roots.Add(full);
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+            {
+            }
         }
-        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            _scriptsRootFull = null;
-        }
+
+        _scriptsRootsFull = roots;
+    }
+
+    public ArcanumSpellScriptTool(
+        string scriptsDirectoryPath,
+        TimeSpan executeTimeout,
+        int executeTimeoutSecondsForDisplay,
+        long toolOutputCapBytes = 1L * 1024L * 1024L,
+        ILogger? logger = null)
+        : this([scriptsDirectoryPath], executeTimeout, executeTimeoutSecondsForDisplay, toolOutputCapBytes, logger)
+    {
     }
 
     public override string Name => "run_spell_script";
 
     public override string Description =>
-        $"Runs a script file only from the active spell's scripts/ directory (no path traversal). "
+        $"Runs a script file only from the active spell and its resonant dependency scripts/ directories (no path traversal). "
         + $"Stdout and stderr are captured; execution uses UseShellExecute=false. "
         + $"Hard timeout {_executeTimeoutSeconds}s with full process tree termination on timeout or cancel.";
 
@@ -66,7 +98,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
-        if (_scriptsRootFull is null || _scriptsRootFull.Length == 0)
+        if (_scriptsRootsFull.Count == 0)
         {
             return "run_spell_script: scripts directory path could not be resolved.";
         }
@@ -83,27 +115,36 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             return "run_spell_script: 'script_name' must be a bare file name (no directories or path separators).";
         }
 
-        string candidate = Path.GetFullPath(Path.Combine(_scriptsRootFull, scriptName));
+        List<(string Root, string Candidate)> matches = FindScriptMatches(scriptName);
 
-        if (!IsPathUnderRoot(_scriptsRootFull, candidate))
-        {
-            return "run_spell_script: resolved path would leave the spell scripts directory; request rejected.";
-        }
-
-        if (!File.Exists(candidate))
+        if (matches.Count == 0)
         {
             return $"run_spell_script: script not found: '{scriptName}'.";
         }
 
+        if (matches.Count > 1)
+        {
+            string rootsList = string.Join(", ", matches.Select(static m => m.Root));
+
+            _logger?.LogWarning(
+                "run_spell_script ambiguous script {Script} across roots {Roots}",
+                scriptName,
+                rootsList);
+
+            return $"run_spell_script: ambiguous script '{scriptName}'; it exists in multiple resonant spells ({rootsList}). Rename the script to a unique file name.";
+        }
+
+        (string scriptsRootFull, string candidate) = matches[0];
+
         if (TryResolveFinalSymlinkTarget(candidate) is { } finalTarget
-            && !IsPathUnderRoot(_scriptsRootFull, finalTarget))
+            && !IsPathUnderRoot(scriptsRootFull, finalTarget))
         {
             return "run_spell_script: resolved path is a symlink that leaves the spell scripts directory; request rejected.";
         }
 
         _ = TryGetStringArgument(arguments, "arguments", out string? extraArgs);
 
-        ProcessStartInfo psi = BuildProcessStartInfo(_scriptsRootFull, candidate, extraArgs);
+        ProcessStartInfo psi = BuildProcessStartInfo(scriptsRootFull, candidate, extraArgs);
 
         using Process process = new();
 
@@ -125,7 +166,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             }
 
             if (TryResolveFinalSymlinkTarget(candidate) is { } preStartTarget
-                && !IsPathUnderRoot(_scriptsRootFull, preStartTarget))
+                && !IsPathUnderRoot(scriptsRootFull, preStartTarget))
             {
                 return "run_spell_script: resolved path is a symlink that leaves the spell scripts directory; request rejected.";
             }
@@ -244,6 +285,45 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         {
             await killRegistration.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    private List<(string Root, string Candidate)> FindScriptMatches(string scriptName)
+    {
+        var matches = new List<(string Root, string Candidate)>();
+
+        foreach (string scriptsRootFull in _scriptsRootsFull)
+        {
+            string candidate;
+
+            try
+            {
+                candidate = Path.GetFullPath(Path.Combine(scriptsRootFull, scriptName));
+            }
+            catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+            {
+                continue;
+            }
+
+            if (!IsPathUnderRoot(scriptsRootFull, candidate))
+            {
+                continue;
+            }
+
+            if (!File.Exists(candidate))
+            {
+                continue;
+            }
+
+            if (TryResolveFinalSymlinkTarget(candidate) is { } symlinkTarget
+                && !IsPathUnderRoot(scriptsRootFull, symlinkTarget))
+            {
+                continue;
+            }
+
+            matches.Add((scriptsRootFull, candidate));
+        }
+
+        return matches;
     }
 
     private static async Task ObserveStreamReadTasksAsync(

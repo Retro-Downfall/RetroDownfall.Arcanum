@@ -276,6 +276,44 @@ public sealed record UseCommlinkParams
 }
 
 /// <summary>
+/// Arguments accepted by the in-process <c>petition_dungeon_master</c> tool (Divine Intervention).
+/// </summary>
+public sealed record PetitionDungeonMasterParams
+{
+
+    [JsonPropertyName("reason")]
+    public required string Reason { get; init; }
+
+    [JsonPropertyName("source")]
+    public string? Source { get; init; }
+}
+
+/// <summary>
+/// Arguments accepted by the in-process <c>cast_sending</c> tool (Conclave cross-Apprentice delegation).
+/// </summary>
+public sealed record CastSendingParams
+{
+
+    [JsonPropertyName("goal")]
+    public required string Goal { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+}
+
+/// <summary>
+/// Result payload returned by the in-process <c>cast_sending</c> tool: the id of the newly created child Apprentice.
+/// </summary>
+public sealed record CastSendingResultWire
+{
+
+    [JsonPropertyName("childApprenticeId")]
+    public required Guid ChildApprenticeId { get; init; }
+
+}
+
+/// <summary>
 /// MCP <c>notifications/cancelled</c> notification <c>params</c> (JSON-RPC cooperative cancellation over the wire).
 /// </summary>
 public sealed record McpCancelledParams

@@ -39,19 +39,65 @@ public static class ApprenticePlanParser
 
     }
 
-    public static bool IsPlanEmpty(string? planJson)
+    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps)
     {
 
-        if (string.IsNullOrWhiteSpace(planJson))
+        steps = null;
+
+        if (string.IsNullOrWhiteSpace(responseText))
         {
+
+            return false;
+
+        }
+
+        string trimmed = StripMarkdownFences(responseText.Trim());
+
+        if (string.Equals(trimmed, "NO_CHANGE", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return false;
+
+        }
+
+        try
+        {
+
+            List<PlanStep>? parsed = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
+
+            if (parsed is null || parsed.Count == 0)
+            {
+
+                return false;
+
+            }
+
+            List<PlanStep> normalized = new(parsed.Count);
+
+            for (int i = 0; i < parsed.Count; i++)
+            {
+
+                PlanStep step = parsed[i];
+
+                normalized.Add(step with
+                {
+                    Index = step.Index > 0 ? step.Index : i + 1,
+                    Status = string.IsNullOrWhiteSpace(step.Status) ? "pending" : step.Status,
+                });
+
+            }
+
+            steps = normalized;
 
             return true;
 
         }
+        catch (JsonException)
+        {
 
-        List<PlanStep>? steps = JsonSerializer.Deserialize(planJson, TheForgeJsonContext.Default.ListPlanStep);
+            return false;
 
-        return steps is null || steps.Count == 0;
+        }
 
     }
 

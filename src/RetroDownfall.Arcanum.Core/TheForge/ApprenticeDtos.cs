@@ -6,6 +6,12 @@ public sealed record CreateApprenticeRequest(
     Guid? CampaignId = null,
     string? WorkspacePath = null);
 
+public sealed record ReweaveApprenticeRequest(IReadOnlyList<PlanStep> Steps);
+
+public sealed record InterveneApprenticeRequest(string Guidance, bool Resume = true);
+
+public sealed record CastApprenticeRequest(string Goal, string? Name = null);
+
 public sealed record ApprenticeSummaryDto(
     Guid Id,
     Guid? CampaignId,
@@ -20,6 +26,7 @@ public sealed record ApprenticeSummaryDto(
 public sealed record ApprenticeDetailDto(
     Guid Id,
     Guid? CampaignId,
+    Guid? ParentApprenticeId,
     string Name,
     string Goal,
     IReadOnlyList<PlanStep> Plan,

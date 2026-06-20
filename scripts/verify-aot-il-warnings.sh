@@ -149,14 +149,18 @@ publish_rid() {
     -r "$rid"
   )
 
-  if dotnet "${publish_args[@]}" >"$log" 2>&1; then
+  echo "  Publishing $rid via Native AOT — this performs native compilation and can take several minutes..." >&2
+
+  # Stream publish output to the screen while capturing it for IL-warning analysis.
+  # pipefail (set at top) makes the pipeline surface dotnet's exit status, not tee's.
+  if dotnet "${publish_args[@]}" 2>&1 | tee "$log"; then
     return 0
   fi
 
   if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
     echo "  Symbol stripper missing; retrying $rid with StripSymbols=false..." >&2
 
-    if dotnet "${publish_args[@]}" -p:StripSymbols=false >"$log" 2>&1; then
+    if dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee "$log"; then
       echo "  Publish succeeded after disabling symbol stripping." >&2
       return 0
     fi

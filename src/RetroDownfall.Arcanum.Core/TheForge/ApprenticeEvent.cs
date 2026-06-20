@@ -39,6 +39,10 @@ public sealed record ApprenticeEvent
 
     public int? FromStep { get; init; }
 
+    public int? Attempt { get; init; }
+
+    public long? BackoffMs { get; init; }
+
     public IntelligenceEvent? WizardEvent { get; init; }
 
 }

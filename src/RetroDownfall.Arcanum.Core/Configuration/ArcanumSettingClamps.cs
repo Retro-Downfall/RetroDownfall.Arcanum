@@ -160,6 +160,14 @@ public static class ArcanumSettingClamps
 
     public static int ChronicleChannelCapacity(int value) => Math.Clamp(value, 100, 10_000);
 
+    public static int MaxSimulacra(int value) => Math.Clamp(value, 1, 10);
+
+    public static int MaxStepRetries(int value) => Math.Clamp(value, 0, 10);
+
+    public static int RetryBackoffSeconds(int value) => Math.Clamp(value, 1, 300);
+
+    public static int RetryBackoffMaxSeconds(int value) => Math.Clamp(value, 1, 3600);
+
     public static int SanctumMaxProcessMemoryMb(int value) => Math.Clamp(value, 64, 8192);
 
     public static int SanctumMaxProcessCount(int value) => Math.Clamp(value, 1, 100);
@@ -169,6 +177,12 @@ public static class ArcanumSettingClamps
     public static int SanctumProcessTimeoutSeconds(int value) => Math.Clamp(value, 10, 3600);
 
     public static int SanctumBreachQueryLimit(int value) => Math.Clamp(value, 1, 1000);
+
+    public static int MaxInquisitorsPerTrial(int value) => Math.Clamp(value, 1, 200);
+
+    public static int SemanticJudgeMaxTokens(int value) => Math.Clamp(value, 1, 256);
+
+    public static int SemanticJudgeTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
 }
 

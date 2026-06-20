@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -81,9 +82,15 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly JsonElement _useCommlinkSchema;
 
+    private readonly JsonElement _petitionDungeonMasterSchema;
+
+    private readonly JsonElement _castSendingSchema;
+
     private readonly IntelligenceSettings _settings;
 
     private readonly long _maxFileReadSizeBytes;
+
+    private readonly bool _conclaveEnabled;
 
     private readonly McpRequestCancellationBroker _requestCancellationBroker;
 
@@ -101,6 +108,7 @@ internal sealed class ArcanumInternalToolServer
         int listDirectoryMaxPaths,
         IntelligenceSettings intelligenceSettings,
         long maxFileReadSizeBytes,
+        bool conclaveEnabled,
         McpRequestCancellationBroker requestCancellationBroker,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -159,6 +167,8 @@ internal sealed class ArcanumInternalToolServer
 
         _maxFileReadSizeBytes = maxFileReadSizeBytes;
 
+        _conclaveEnabled = conclaveEnabled;
+
         _requestCancellationBroker = requestCancellationBroker;
 
         _readFileChunkSchema = BuildReadFileChunkSchema();
@@ -184,6 +194,10 @@ internal sealed class ArcanumInternalToolServer
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
         _useCommlinkSchema = BuildUseCommlinkSchema();
+
+        _petitionDungeonMasterSchema = BuildPetitionDungeonMasterSchema();
+
+        _castSendingSchema = BuildCastSendingSchema();
 
         _executeCommandToolDescription =
             $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout or cooperative cancel). Optional workingDirectory is relative to the workspace root.";
@@ -386,12 +400,31 @@ internal sealed class ArcanumInternalToolServer
             },
             new McpToolDefinitionWire
             {
+                Name = "petition_dungeon_master",
+                Description =
+                    "Petition the Dungeon Master (human operator) when the Apprentice is stuck on an unresolvable path. Pauses escalation and alerts the operator via Comm Link.",
+                InputSchema = _petitionDungeonMasterSchema,
+            },
+            new McpToolDefinitionWire
+            {
                 Name = "ask_human",
                 Description =
                     "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
                 InputSchema = _askHumanSchema,
             },
         ];
+
+        if (_conclaveEnabled)
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "cast_sending",
+                    Description =
+                        "Conclave delegation: cast a Sending to spawn a new child Apprentice that pursues a delegated sub-task outside your immediate spell. Returns the new child Apprentice id.",
+                    InputSchema = _castSendingSchema,
+                });
+        }
 
         if (_settings.EnableLoreSystem)
         {
@@ -479,6 +512,11 @@ internal sealed class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("Archive search is disabled in configuration."));
         }
 
+        if (call.Name == "cast_sending" && !_conclaveEnabled)
+        {
+            return BuildToolsCallResponse(rpcId, ToolError("The Conclave is disabled; cross-Apprentice delegation is not available."));
+        }
+
         using CancellationTokenSource toolScope = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             _requestCancellationBroker.GetTokenOrFallback(McpClient.NormalizeRpcId(rpcId), cancellationToken));
@@ -494,6 +532,8 @@ internal sealed class ArcanumInternalToolServer
             "execute_command" => await ExecuteCommandAsync(call.Arguments, toolToken).ConfigureAwait(false),
             "adjust_initiative" => await ExecuteAdjustInitiativeAsync(call.Arguments, toolToken).ConfigureAwait(false),
             "use_commlink" => await ExecuteUseCommlinkAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "petition_dungeon_master" => await ExecutePetitionDungeonMasterAsync(call.Arguments, toolToken).ConfigureAwait(false),
+            "cast_sending" => await ExecuteCastSendingAsync(call.Arguments, toolToken).ConfigureAwait(false),
             "ask_human" => await ExecuteAskHumanAsync(call.Arguments, toolToken).ConfigureAwait(false),
             "read_lore" => await ExecuteReadLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
             "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
@@ -682,6 +722,168 @@ internal sealed class ArcanumInternalToolServer
 
         }
 
+    }
+
+    private async Task<McpToolsCallResultWire> ExecutePetitionDungeonMasterAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+
+        PetitionDungeonMasterParams? args;
+
+        try
+        {
+
+            args = JsonSerializer.Deserialize(arguments, _json.PetitionDungeonMasterParams);
+
+        }
+        catch (JsonException ex)
+        {
+
+            _logger?.LogError(ex, "petition_dungeon_master argument deserialization failed.");
+
+            return ToolError("Invalid arguments for petition_dungeon_master.");
+
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Reason))
+        {
+
+            return ToolError("petition_dungeon_master requires a non-empty 'reason'.");
+
+        }
+
+        string reason = args.Reason.Trim();
+
+        string source = string.IsNullOrWhiteSpace(args.Source) ? "petition_dungeon_master" : args.Source.Trim();
+
+        CommLinkMessage message = new(
+            "Apprentice petitions the Dungeon Master",
+            reason,
+            CommLinkSeverity.Critical,
+            source);
+
+        try
+        {
+
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
+
+            Result r = await dispatcher
+                .DispatchAsync(message, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (r.IsFailure)
+            {
+
+                return ToolError($"petition_dungeon_master failed: {r.Error.Message}");
+
+            }
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire
+                    {
+                        Text = "Petition sent to the Dungeon Master. The Apprentice awaits Divine Intervention.",
+                    },
+                ],
+                IsError = false,
+            };
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            _logger?.LogError(ex, "petition_dungeon_master dispatch failed.");
+
+            return ToolError("An internal error occurred during petition_dungeon_master.");
+
+        }
+
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteCastSendingAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+
+        if (!_conclaveEnabled)
+        {
+            return ToolError("The Conclave is disabled; cross-Apprentice delegation is not available.");
+        }
+
+        if (string.IsNullOrWhiteSpace(_workspaceRoot))
+        {
+            return ToolError(WorkspaceNotConfiguredMessage);
+        }
+
+        CastSendingParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.CastSendingParams);
+        }
+        catch (JsonException ex)
+        {
+            _logger?.LogError(ex, "cast_sending argument deserialization failed.");
+
+            return ToolError("Invalid arguments for cast_sending.");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Goal))
+        {
+            return ToolError("cast_sending requires a non-empty 'goal'.");
+        }
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IConclaveArchmage archmage = scope.ServiceProvider.GetRequiredService<IConclaveArchmage>();
+
+            Result<Apprentice> result = await archmage
+                .CastAsync(
+                    new ConclaveCastRequest(args.Goal.Trim(), args.Name, _workspaceRoot!),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result.IsFailure)
+            {
+                return ToolError($"cast_sending failed: {result.Error.Message}");
+            }
+
+            CastSendingResultWire payload = new() { ChildApprenticeId = result.Value!.Id };
+
+            string json = JsonSerializer.Serialize(payload, _json.CastSendingResultWire);
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = json },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "cast_sending failed.");
+
+            return ToolError("An internal error occurred during cast_sending.");
+        }
     }
 
     private async Task<McpToolsCallResultWire> ExecuteReadLoreAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -2451,6 +2653,69 @@ internal sealed class ArcanumInternalToolServer
 
         });
 
+    }
+
+    private static JsonElement BuildPetitionDungeonMasterSchema()
+    {
+
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "reason",
+                "Clear explanation of why the Apprentice is stuck and requires Dungeon Master guidance.");
+
+            WriteStringProperty(
+                w,
+                "source",
+                "Optional origin label (defaults to petition_dungeon_master).");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("reason");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+
+        });
+
+    }
+
+    private static JsonElement BuildCastSendingSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "goal",
+                "The goal for the new child Apprentice. Describe the delegated sub-task clearly and self-containedly.");
+
+            WriteStringProperty(
+                w,
+                "name",
+                "Optional display name for the child Apprentice. A themed default is used when omitted.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("goal");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
     }
 
     private static JsonElement BuildSchema(Action<Utf8JsonWriter> writeBody)

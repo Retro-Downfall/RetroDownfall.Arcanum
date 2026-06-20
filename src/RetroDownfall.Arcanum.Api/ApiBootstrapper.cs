@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Api.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Spells;
@@ -38,6 +39,7 @@ using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -265,7 +267,11 @@ public static class ApiBootstrapper
 
         services.AddSingleton<PromptRenderer>();
 
-        services.AddScoped<IArcanumIntelligenceProvider, HubIntelligenceProvider>();
+        services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();
+
+        services.AddScoped<IProvingGroundsArbiter, ProvingGroundsArbiter>();
+
+        services.AddScoped<ProvingGroundsRunner>();
 
         services.AddSingleton<SpellWorkspaceResolver>();
 
@@ -1287,6 +1293,8 @@ public static class ApiBootstrapper
         apiGroup.MapCodexEndpoints();
 
         apiGroup.MapProviderTestEndpoints();
+
+        apiGroup.MapProvingGroundsEndpoints();
 
         apiGroup.MapGet(
             "/workspaces",

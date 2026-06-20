@@ -4,12 +4,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -248,6 +250,167 @@ internal sealed class ApprenticeService(
         return Result<string>.Success(apprenticeId.ToString());
     }
 
+    public async Task<Result<ApprenticeDetailDto>> ReweaveAsync(
+        Guid apprenticeId,
+        IReadOnlyList<PlanStep> steps,
+        CancellationToken cancellationToken = default)
+    {
+        Result<List<PlanStep>> validated = ApprenticeExecutionPolicy.ValidateReweaveSteps(steps);
+
+        if (validated.IsFailure)
+        {
+
+            return Result<ApprenticeDetailDto>.Failure(validated.Error);
+
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (apprentice is null)
+        {
+
+            return Result<ApprenticeDetailDto>.Failure(
+                new Error("Apprentice.NotFound", "Apprentice was not found."));
+
+        }
+
+        if (!ApprenticeExecutionPolicy.IsReweavableStatus(apprentice.Status))
+        {
+
+            return Result<ApprenticeDetailDto>.Failure(
+                new Error("Apprentice.CannotReweave", "Apprentice is not in a state that allows re-weaving the plan."));
+
+        }
+
+        List<PlanStep> currentPlan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+        List<PlanStep> merged = ApprenticeExecutionPolicy.MergePlanTail(
+            currentPlan,
+            apprentice.CurrentStep,
+            validated.Value!);
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(merged);
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.PlanRevised,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            Plan = merged,
+            AtStep = apprentice.CurrentStep,
+        });
+
+        return Result<ApprenticeDetailDto>.Success(ToDetailDto(apprentice));
+
+    }
+
+    public async Task<Result<string>> InterveneAsync(
+        Guid apprenticeId,
+        string guidance,
+        bool resume,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(guidance))
+        {
+
+            return Result<string>.Failure(
+                new Error("Apprentice.InvalidGuidance", "Dungeon Master guidance is required."));
+
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (apprentice is null)
+        {
+
+            return Result<string>.Failure(
+                new Error("Apprentice.NotFound", "Apprentice was not found."));
+
+        }
+
+        if (!ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
+        {
+
+            return Result<string>.Failure(
+                new Error("Apprentice.NotEscalated", "Apprentice is not awaiting Divine Intervention."));
+
+        }
+
+        List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+        int stepIndex = apprentice.CurrentStep;
+
+        if (stepIndex < plan.Count)
+        {
+
+            PlanStep current = plan[stepIndex];
+
+            plan[stepIndex] = current with
+            {
+                Status = "pending",
+                Attempts = 0,
+                StartedAt = null,
+                CompletedAt = null,
+                Result = null,
+            };
+
+            apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
+
+        }
+
+        ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        {
+            CurrentStep = apprentice.CurrentStep,
+            ConversationSummary = existing?.ConversationSummary,
+            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
+            Timestamp = DateTimeOffset.UtcNow,
+            EscalationReason = existing?.EscalationReason,
+            DmGuidance = guidance.Trim(),
+            ParentApprenticeId = existing?.ParentApprenticeId,
+        });
+
+        apprentice.ErrorMessage = null;
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.ApprenticeIntervened,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            AtStep = apprentice.CurrentStep,
+            Summary = guidance.Trim(),
+        });
+
+        if (!resume)
+        {
+
+            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+            return Result<string>.Success(apprenticeId.ToString());
+
+        }
+
+        apprentice.Status = ApprenticeStatus.Running.ToString();
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+        SpawnExecution(apprenticeId);
+
+        return Result<string>.Success(apprenticeId.ToString());
+
+    }
+
     public IAsyncEnumerable<ApprenticeEvent> SubscribeChronicleAsync(
         Guid apprenticeId,
         CancellationToken cancellationToken = default) =>
@@ -374,25 +537,42 @@ internal sealed class ApprenticeService(
                 return;
             }
 
-            if (string.Equals(apprentice.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal))
+            if (ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
             {
+
                 return;
+
             }
 
-            apprentice.Status = ApprenticeStatus.Planning.ToString();
-
-            await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
-
-            Publish(apprenticeId, new ApprenticeEvent
+            if (string.Equals(apprentice.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal))
             {
-                Type = ApprenticeEventType.ApprenticeStarted,
-                ApprenticeId = apprenticeId,
-                Timestamp = DateTimeOffset.UtcNow,
-                Name = apprentice.Name,
-                Goal = apprentice.Goal,
-            });
+
+                return;
+
+            }
 
             List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+            bool isContinuation = string.Equals(apprentice.Status, ApprenticeStatus.Running.ToString(), StringComparison.Ordinal)
+                || string.Equals(apprentice.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal);
+
+            if (!isContinuation)
+            {
+
+                apprentice.Status = ApprenticeStatus.Planning.ToString();
+
+                await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
+
+                Publish(apprenticeId, new ApprenticeEvent
+                {
+                    Type = ApprenticeEventType.ApprenticeStarted,
+                    ApprenticeId = apprenticeId,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Name = apprentice.Name,
+                    Goal = apprentice.Goal,
+                });
+
+            }
 
             if (plan.Count == 0)
             {
@@ -461,6 +641,12 @@ internal sealed class ApprenticeService(
 
             int stepTimeoutMinutes = ArcanumSettingClamps.StepTimeoutMinutes(settings.StepTimeoutMinutes);
 
+            int maxStepRetries = ArcanumSettingClamps.MaxStepRetries(settings.MaxStepRetries);
+
+            int retryBackoffSeconds = ArcanumSettingClamps.RetryBackoffSeconds(settings.RetryBackoffSeconds);
+
+            int retryBackoffMaxSeconds = ArcanumSettingClamps.RetryBackoffMaxSeconds(settings.RetryBackoffMaxSeconds);
+
             while (apprentice.CurrentStep < plan.Count)
             {
                 linkedCts.Token.ThrowIfCancellationRequested();
@@ -469,13 +655,18 @@ internal sealed class ApprenticeService(
 
                 if (fresh is null)
                 {
+
                     return;
+
                 }
 
                 if (string.Equals(fresh.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
-                    || string.Equals(fresh.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal))
+                    || string.Equals(fresh.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal)
+                    || ApprenticeExecutionPolicy.IsEscalatedStatus(fresh.Status))
                 {
+
                     return;
+
                 }
 
                 apprentice = fresh;
@@ -484,188 +675,292 @@ internal sealed class ApprenticeService(
 
                 if (apprentice.CurrentStep >= plan.Count)
                 {
+
                     break;
+
                 }
 
                 int stepIndex = apprentice.CurrentStep;
 
-                PlanStep current = plan[stepIndex] with
+                int simulacrumGroupEnd = ComputeParallelGroupEnd(plan, stepIndex);
+
+                if (simulacrumGroupEnd - stepIndex > 1)
                 {
-                    Status = "in_progress",
-                    StartedAt = DateTimeOffset.UtcNow,
-                };
 
-                plan[stepIndex] = current;
+                    bool advanced = await ExecuteSimulacrumGroupAsync(
+                        repo,
+                        intelligence,
+                        apprentice,
+                        plan,
+                        stepIndex,
+                        simulacrumGroupEnd,
+                        settings,
+                        stepTimeoutMinutes,
+                        maxStepRetries,
+                        retryBackoffSeconds,
+                        retryBackoffMaxSeconds,
+                        apprenticeId,
+                        linkedCts).ConfigureAwait(false);
 
-                apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
-
-                await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
-
-                Publish(apprenticeId, new ApprenticeEvent
-                {
-                    Type = ApprenticeEventType.StepStarted,
-                    ApprenticeId = apprenticeId,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    StepIndex = current.Index,
-                    Description = current.Description,
-                });
-
-                string stepPrompt = ApprenticePromptBuilder.BuildStepExecutionPrompt(apprentice, plan, stepIndex);
-
-                using CancellationTokenSource stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(linkedCts.Token);
-
-                stepTimeout.CancelAfter(TimeSpan.FromMinutes(stepTimeoutMinutes));
-
-                DateTimeOffset stepStarted = DateTimeOffset.UtcNow;
-
-                string stepResultText = string.Empty;
-
-                bool stepFailed = false;
-
-                string? stepError = null;
-
-                try
-                {
-                    PingRequest stepRequest = new(
-                        Prompt: stepPrompt,
-                        Model: ResolveModel(),
-                        WorkingDirectory: apprentice.WorkspacePath,
-                        SessionId: apprentice.SessionId,
-                        UnattendedMode: true,
-                        SkipSpellRouting: true);
-
-                    await foreach (IntelligenceEvent frame in intelligence
-                        .StreamPromptAsync(stepRequest, stepTimeout.Token)
-                        .ConfigureAwait(false))
+                    if (!advanced)
                     {
-                        if (IsPassThrough(frame.Type))
-                        {
-                            Publish(apprenticeId, new ApprenticeEvent
-                            {
-                                Type = MapPassThrough(frame.Type),
-                                ApprenticeId = apprenticeId,
-                                Timestamp = frame.Timestamp ?? DateTimeOffset.UtcNow,
-                                WizardEvent = frame,
-                            });
-                        }
 
-                        if (frame.Type == IntelligenceEventType.Result && !string.IsNullOrWhiteSpace(frame.Message))
-                        {
-                            stepResultText = frame.Message;
-                        }
-
-                        if (frame.Type == IntelligenceEventType.Error)
-                        {
-                            stepFailed = true;
-
-                            stepError = frame.Message;
-                        }
-
-                        if (frame.Type == IntelligenceEventType.ToolResult
-                            && frame.Message.Contains(UnattendedDenySnippet, StringComparison.OrdinalIgnoreCase))
-                        {
-                            stepFailed = true;
-
-                            stepError = frame.Message;
-                        }
-
-                        if (frame.Type == IntelligenceEventType.WardResolved && frame.WardAllowed == false)
-                        {
-                            stepFailed = true;
-
-                            stepError = frame.WardReason ?? "Ward denied.";
-                        }
-                    }
-                }
-                catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
-                {
-                    Apprentice? pausedCheck = await repo.GetByIdAsync(apprenticeId, CancellationToken.None).ConfigureAwait(false);
-
-                    if (pausedCheck is not null
-                        && (string.Equals(pausedCheck.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
-                            || string.Equals(pausedCheck.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal)))
-                    {
                         return;
+
                     }
 
-                    stepFailed = true;
+                    continue;
 
-                    stepError = "Step execution was cancelled.";
-                }
-                catch (OperationCanceledException)
-                {
-                    stepFailed = true;
-
-                    stepError = $"Step timed out after {stepTimeoutMinutes} minutes.";
                 }
 
-                if (stepFailed)
+                StepExecutionOutcome? outcome = null;
+
+                for (int attempt = 1; attempt <= maxStepRetries + 1; attempt++)
                 {
-                    plan[stepIndex] = current with
+
+                    linkedCts.Token.ThrowIfCancellationRequested();
+
+                    plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+                    if (stepIndex >= plan.Count)
                     {
-                        Status = "failed",
-                        CompletedAt = DateTimeOffset.UtcNow,
-                        Result = stepError,
+
+                        break;
+
+                    }
+
+                    PlanStep current = plan[stepIndex] with
+                    {
+                        Status = "in_progress",
+                        StartedAt = DateTimeOffset.UtcNow,
+                        Attempts = attempt - 1,
                     };
+
+                    plan[stepIndex] = current;
 
                     apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
 
-                    apprentice.Status = ApprenticeStatus.Failed.ToString();
+                    await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
 
-                    apprentice.ErrorMessage = stepError;
+                    if (attempt == 1)
+                    {
+
+                        Publish(apprenticeId, new ApprenticeEvent
+                        {
+                            Type = ApprenticeEventType.StepStarted,
+                            ApprenticeId = apprenticeId,
+                            Timestamp = DateTimeOffset.UtcNow,
+                            StepIndex = current.Index,
+                            Description = current.Description,
+                        });
+
+                    }
+
+                    ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+                    string stepPrompt = ApprenticePromptBuilder.BuildStepExecutionPrompt(
+                        apprentice,
+                        plan,
+                        stepIndex,
+                        checkpoint);
+
+                    outcome = await ExecuteStepStreamAsync(
+                        intelligence,
+                        apprentice,
+                        stepPrompt,
+                        stepTimeoutMinutes,
+                        linkedCts,
+                        apprenticeId).ConfigureAwait(false);
+
+                    StepFailureKind failureKind = ApprenticeExecutionPolicy.ClassifyStepFailure(
+                        outcome.StepFailed,
+                        outcome.EscalationRequested,
+                        outcome.WardDenied,
+                        outcome.ForbiddenArtDenied,
+                        outcome.PauseOrCancel,
+                        outcome.IsRetryable);
+
+                    if (failureKind == StepFailureKind.PausedOrCancelled)
+                    {
+
+                        return;
+
+                    }
+
+                    if (failureKind == StepFailureKind.None)
+                    {
+
+                        break;
+
+                    }
+
+                    if (failureKind == StepFailureKind.EscalationRequested)
+                    {
+
+                        await EscalateAsync(
+                            repo,
+                            apprentice,
+                            apprenticeId,
+                            stepIndex,
+                            outcome.ErrorMessage ?? "The Apprentice petitioned the Dungeon Master.",
+                            outcome.AlreadyAlerted,
+                            linkedCts.Token).ConfigureAwait(false);
+
+                        return;
+
+                    }
+
+                    if (failureKind == StepFailureKind.Terminal)
+                    {
+
+                        await FailStepAsync(
+                            repo,
+                            apprentice,
+                            plan,
+                            stepIndex,
+                            current,
+                            outcome.ErrorMessage ?? "Step execution failed.",
+                            apprenticeId,
+                            linkedCts.Token).ConfigureAwait(false);
+
+                        return;
+
+                    }
+
+                    if (attempt > maxStepRetries)
+                    {
+
+                        if (settings.EnableDivineIntervention)
+                        {
+
+                            await EscalateAsync(
+                                repo,
+                                apprentice,
+                                apprenticeId,
+                                stepIndex,
+                                outcome.ErrorMessage ?? "Step retries were exhausted.",
+                                alreadyAlerted: false,
+                                linkedCts.Token).ConfigureAwait(false);
+
+                        }
+                        else
+                        {
+
+                            await FailStepAsync(
+                                repo,
+                                apprentice,
+                                plan,
+                                stepIndex,
+                                current,
+                                outcome.ErrorMessage ?? "Step retries were exhausted.",
+                                apprenticeId,
+                                linkedCts.Token).ConfigureAwait(false);
+
+                        }
+
+                        return;
+
+                    }
+
+                    TimeSpan backoff = ApprenticeExecutionPolicy.ComputeBackoff(
+                        attempt,
+                        retryBackoffSeconds,
+                        retryBackoffMaxSeconds);
+
+                    long backoffMs = (long)backoff.TotalMilliseconds;
+
+                    string retryMessage = ApprenticeExecutionPolicy.SanitizeOperatorMessage(outcome.ErrorMessage);
+
+                    plan[stepIndex] = current with { Attempts = attempt };
+
+                    apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
 
                     await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
 
                     Publish(apprenticeId, new ApprenticeEvent
                     {
-                        Type = ApprenticeEventType.StepFailed,
+                        Type = ApprenticeEventType.StepRetrying,
                         ApprenticeId = apprenticeId,
                         Timestamp = DateTimeOffset.UtcNow,
                         StepIndex = current.Index,
-                        Error = stepError,
+                        Attempt = attempt,
+                        BackoffMs = backoffMs,
+                        Error = retryMessage,
                     });
 
-                    Publish(apprenticeId, new ApprenticeEvent
+                    try
                     {
-                        Type = ApprenticeEventType.ApprenticeFailed,
-                        ApprenticeId = apprenticeId,
-                        Timestamp = DateTimeOffset.UtcNow,
-                        Error = stepError,
-                    });
+
+                        await Task.Delay(backoff, linkedCts.Token).ConfigureAwait(false);
+
+                    }
+                    catch (OperationCanceledException)
+                    {
+
+                        Apprentice? pausedCheck = await repo
+                            .GetByIdAsync(apprenticeId, CancellationToken.None)
+                            .ConfigureAwait(false);
+
+                        if (pausedCheck is not null
+                            && (string.Equals(pausedCheck.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
+                                || string.Equals(pausedCheck.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal)))
+                        {
+
+                            return;
+
+                        }
+
+                        throw;
+
+                    }
+
+                }
+
+                if (outcome is null || outcome.StepFailed)
+                {
 
                     return;
+
                 }
+
+                if (outcome.SpawnedChildIds.Count > 0)
+                {
+
+                    await StampCastSendingsAsync(repo, apprenticeId, outcome.SpawnedChildIds, linkedCts.Token)
+                        .ConfigureAwait(false);
+
+                }
+
+                DateTimeOffset stepStarted = outcome.StepStarted;
 
                 long durationMs = (long)(DateTimeOffset.UtcNow - stepStarted).TotalMilliseconds;
 
-                plan[stepIndex] = current with
+                if (settings.EnableShiftingFate)
                 {
-                    Status = "completed",
-                    CompletedAt = DateTimeOffset.UtcNow,
-                    Result = stepResultText,
-                };
 
-                apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
+                    plan = await AttemptShiftingFateAsync(
+                        repo,
+                        intelligence,
+                        apprentice,
+                        plan,
+                        stepIndex,
+                        apprenticeId,
+                        linkedCts.Token).ConfigureAwait(false);
 
-                apprentice.CurrentStep = stepIndex + 1;
+                }
 
-                apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
-                {
-                    CurrentStep = apprentice.CurrentStep,
-                    Timestamp = DateTimeOffset.UtcNow,
-                });
+                apprentice = await CompleteStepAsync(
+                    repo,
+                    apprentice,
+                    plan,
+                    stepIndex,
+                    outcome.ResultText ?? string.Empty,
+                    durationMs,
+                    apprenticeId,
+                    linkedCts.Token).ConfigureAwait(false);
 
-                await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
+                plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
-                Publish(apprenticeId, new ApprenticeEvent
-                {
-                    Type = ApprenticeEventType.StepCompleted,
-                    ApprenticeId = apprenticeId,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    StepIndex = current.Index,
-                    Result = stepResultText,
-                    DurationMs = durationMs,
-                });
             }
 
             apprentice.Status = ApprenticeStatus.Completed.ToString();
@@ -720,9 +1015,11 @@ internal sealed class ApprenticeService(
         Guid apprenticeId,
         CancellationToken cancellationToken)
     {
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(errorMessage);
+
         apprentice.Status = ApprenticeStatus.Failed.ToString();
 
-        apprentice.ErrorMessage = errorMessage;
+        apprentice.ErrorMessage = sanitized;
 
         await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
 
@@ -731,9 +1028,1187 @@ internal sealed class ApprenticeService(
             Type = ApprenticeEventType.ApprenticeFailed,
             ApprenticeId = apprenticeId,
             Timestamp = DateTimeOffset.UtcNow,
-            Error = errorMessage,
+            Error = sanitized,
         });
     }
+
+    private async Task FailStepAsync(
+        IApprenticeRepository repo,
+        Apprentice apprentice,
+        List<PlanStep> plan,
+        int stepIndex,
+        PlanStep current,
+        string errorMessage,
+        Guid apprenticeId,
+        CancellationToken cancellationToken)
+    {
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(errorMessage);
+
+        plan[stepIndex] = current with
+        {
+            Status = "failed",
+            CompletedAt = DateTimeOffset.UtcNow,
+            Result = sanitized,
+        };
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
+
+        apprentice.Status = ApprenticeStatus.Failed.ToString();
+
+        apprentice.ErrorMessage = sanitized;
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.StepFailed,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            StepIndex = current.Index,
+            Error = sanitized,
+        });
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.ApprenticeFailed,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            Error = sanitized,
+        });
+    }
+
+    private async Task EscalateAsync(
+        IApprenticeRepository repo,
+        Apprentice apprentice,
+        Guid apprenticeId,
+        int stepIndex,
+        string reason,
+        bool alreadyAlerted,
+        CancellationToken cancellationToken)
+    {
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(reason);
+
+        apprentice.Status = ApprenticeStatus.Escalated.ToString();
+
+        apprentice.ErrorMessage = sanitized;
+
+        ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        {
+            CurrentStep = apprentice.CurrentStep,
+            ConversationSummary = existing?.ConversationSummary,
+            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
+            Timestamp = DateTimeOffset.UtcNow,
+            EscalationReason = sanitized,
+            DmGuidance = existing?.DmGuidance,
+            ParentApprenticeId = existing?.ParentApprenticeId,
+        });
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.ApprenticeEscalated,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            StepIndex = stepIndex < ApprenticeRepository.DeserializePlan(apprentice.Plan).Count
+                ? ApprenticeRepository.DeserializePlan(apprentice.Plan)[stepIndex].Index
+                : stepIndex + 1,
+            Error = sanitized,
+        });
+
+        if (!alreadyAlerted)
+        {
+
+            await DispatchEscalationAlertAsync(apprentice, sanitized, cancellationToken).ConfigureAwait(false);
+
+        }
+
+    }
+
+    private async Task DispatchEscalationAlertAsync(
+        Apprentice apprentice,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
+
+            CommLinkMessage message = new(
+                $"Apprentice '{apprentice.Name}' requires Divine Intervention",
+                reason,
+                CommLinkSeverity.Critical,
+                "apprentice-escalation");
+
+            Result dispatch = await dispatcher.DispatchAsync(message, cancellationToken).ConfigureAwait(false);
+
+            if (dispatch.IsFailure)
+            {
+
+                logger.LogWarning(
+                    "Comm Link dispatch failed for Apprentice {ApprenticeId}: {Message}",
+                    apprentice.Id,
+                    dispatch.Error.Message);
+
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogError(ex, "Comm Link dispatch threw for Apprentice {ApprenticeId}.", apprentice.Id);
+
+        }
+
+    }
+
+    private async Task<List<PlanStep>> AttemptShiftingFateAsync(
+        IApprenticeRepository repo,
+        IArcanumIntelligenceProvider intelligence,
+        Apprentice apprentice,
+        List<PlanStep> plan,
+        int completedStepIndex,
+        Guid apprenticeId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+
+            string weavePrompt = ApprenticePromptBuilder.BuildWeaveEvaluationPrompt(
+                apprentice,
+                plan,
+                completedStepIndex);
+
+            PingRequest weaveRequest = new(
+                Prompt: weavePrompt,
+                Model: ResolveModel(),
+                WorkingDirectory: apprentice.WorkspacePath,
+                UnattendedMode: true,
+                SkipSpellRouting: true);
+
+            Result<PromptTurnResult> weaveResult = await intelligence
+                .ExecutePromptAsync(weaveRequest, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (weaveResult.IsFailure)
+            {
+
+                logger.LogWarning(
+                    "Shifting Fate evaluation failed for Apprentice {ApprenticeId}: {Message}",
+                    apprenticeId,
+                    weaveResult.Error.Message);
+
+                return plan;
+
+            }
+
+            if (!ApprenticePlanParser.TryParseRevisedPlan(weaveResult.Value.Text, out List<PlanStep>? revisedTail)
+                || revisedTail is null)
+            {
+
+                return plan;
+
+            }
+
+            List<PlanStep> merged = ApprenticeExecutionPolicy.MergePlanTail(
+                plan,
+                completedStepIndex + 1,
+                revisedTail);
+
+            apprentice.Plan = ApprenticeRepository.SerializePlan(merged);
+
+            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.PlanRevised,
+                ApprenticeId = apprenticeId,
+                Timestamp = DateTimeOffset.UtcNow,
+                Plan = merged,
+                AtStep = completedStepIndex + 1,
+            });
+
+            return merged;
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(ex, "Shifting Fate evaluation threw for Apprentice {ApprenticeId}.", apprenticeId);
+
+            return plan;
+
+        }
+
+    }
+
+    private async Task<Apprentice> CompleteStepAsync(
+        IApprenticeRepository repo,
+        Apprentice apprentice,
+        List<PlanStep> plan,
+        int stepIndex,
+        string stepResultText,
+        long durationMs,
+        Guid apprenticeId,
+        CancellationToken cancellationToken)
+    {
+        Apprentice? fresh = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (fresh is null)
+        {
+
+            return apprentice;
+
+        }
+
+        apprentice = fresh;
+
+        plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+        if (stepIndex >= plan.Count)
+        {
+
+            return apprentice;
+
+        }
+
+        PlanStep current = plan[stepIndex];
+
+        plan[stepIndex] = current with
+        {
+            Status = "completed",
+            CompletedAt = DateTimeOffset.UtcNow,
+            Result = stepResultText,
+        };
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
+
+        apprentice.CurrentStep = stepIndex + 1;
+
+        ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        {
+            CurrentStep = apprentice.CurrentStep,
+            ConversationSummary = existing?.ConversationSummary,
+            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
+            Timestamp = DateTimeOffset.UtcNow,
+            EscalationReason = existing?.EscalationReason,
+            DmGuidance = null,
+            ParentApprenticeId = existing?.ParentApprenticeId,
+        });
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.StepCompleted,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            StepIndex = current.Index,
+            Result = stepResultText,
+            DurationMs = durationMs,
+        });
+
+        return apprentice;
+
+    }
+
+    private static int ComputeParallelGroupEnd(IReadOnlyList<PlanStep> plan, int start)
+    {
+        if (start >= plan.Count || !plan[start].IsParallel)
+        {
+
+            return start + 1;
+
+        }
+
+        int end = start;
+
+        while (end < plan.Count && plan[end].IsParallel)
+        {
+
+            end++;
+
+        }
+
+        return end;
+
+    }
+
+    private async Task<bool> ExecuteSimulacrumGroupAsync(
+        IApprenticeRepository repo,
+        IArcanumIntelligenceProvider intelligence,
+        Apprentice apprentice,
+        List<PlanStep> plan,
+        int groupStart,
+        int groupEnd,
+        ApprenticeSettings settings,
+        int stepTimeoutMinutes,
+        int maxStepRetries,
+        int retryBackoffSeconds,
+        int retryBackoffMaxSeconds,
+        Guid apprenticeId,
+        CancellationTokenSource linkedCts)
+    {
+        DateTimeOffset groupStarted = DateTimeOffset.UtcNow;
+
+        for (int i = groupStart; i < groupEnd; i++)
+        {
+
+            plan[i] = plan[i] with
+            {
+                Status = "in_progress",
+                StartedAt = groupStarted,
+                Attempts = 0,
+            };
+
+        }
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
+
+        await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.SimulacrumStarted,
+            ApprenticeId = apprenticeId,
+            Timestamp = groupStarted,
+            StepIndex = plan[groupStart].Index,
+            Summary = $"Simulacrum: {groupEnd - groupStart} parallel steps.",
+        });
+
+        for (int i = groupStart; i < groupEnd; i++)
+        {
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.StepStarted,
+                ApprenticeId = apprenticeId,
+                Timestamp = groupStarted,
+                StepIndex = plan[i].Index,
+                Description = plan[i].Description,
+            });
+
+        }
+
+        int maxSimulacra = ArcanumSettingClamps.MaxSimulacra(settings.MaxSimulacra);
+
+        using SemaphoreSlim gate = new(maxSimulacra, maxSimulacra);
+
+        Apprentice snapshot = apprentice;
+
+        List<PlanStep> planSnapshot = plan;
+
+        List<Task<SingleStepResult>> branchTasks = new(groupEnd - groupStart);
+
+        for (int i = groupStart; i < groupEnd; i++)
+        {
+
+            int branchIndex = i;
+
+            branchTasks.Add(RunSimulacrumBranchAsync(
+                gate,
+                snapshot,
+                planSnapshot,
+                branchIndex,
+                settings,
+                stepTimeoutMinutes,
+                maxStepRetries,
+                retryBackoffSeconds,
+                retryBackoffMaxSeconds,
+                apprenticeId,
+                linkedCts));
+
+        }
+
+        SingleStepResult[] results = await Task.WhenAll(branchTasks).ConfigureAwait(false);
+
+        bool anyPaused = false;
+
+        SingleStepResult? terminal = null;
+
+        SingleStepResult? escalated = null;
+
+        List<Guid> spawned = [];
+
+        foreach (SingleStepResult branch in results)
+        {
+
+            foreach (Guid childId in branch.SpawnedChildIds)
+            {
+
+                spawned.Add(childId);
+
+            }
+
+            if (branch.Kind == StepResultKind.PausedOrCancelled)
+            {
+
+                anyPaused = true;
+
+            }
+            else if (branch.Kind == StepResultKind.Terminal)
+            {
+
+                terminal ??= branch;
+
+            }
+            else if (branch.Kind == StepResultKind.Escalated)
+            {
+
+                escalated ??= branch;
+
+            }
+
+        }
+
+        if (anyPaused)
+        {
+
+            return false;
+
+        }
+
+        Apprentice? fresh = await repo.GetByIdAsync(apprenticeId, linkedCts.Token).ConfigureAwait(false);
+
+        if (fresh is null)
+        {
+
+            return false;
+
+        }
+
+        if (string.Equals(fresh.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
+            || string.Equals(fresh.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal)
+            || ApprenticeExecutionPolicy.IsEscalatedStatus(fresh.Status))
+        {
+
+            return false;
+
+        }
+
+        apprentice = fresh;
+
+        plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+        if (terminal is not null)
+        {
+
+            if (terminal.StepIndex < plan.Count)
+            {
+
+                await FailStepAsync(
+                    repo,
+                    apprentice,
+                    plan,
+                    terminal.StepIndex,
+                    plan[terminal.StepIndex],
+                    terminal.ErrorMessage ?? "Step execution failed.",
+                    apprenticeId,
+                    linkedCts.Token).ConfigureAwait(false);
+
+            }
+            else
+            {
+
+                await FailApprenticeAsync(
+                    repo,
+                    apprentice,
+                    terminal.ErrorMessage ?? "Step execution failed.",
+                    apprenticeId,
+                    linkedCts.Token).ConfigureAwait(false);
+
+            }
+
+            return false;
+
+        }
+
+        if (escalated is not null)
+        {
+
+            await EscalateAsync(
+                repo,
+                apprentice,
+                apprenticeId,
+                escalated.StepIndex,
+                escalated.ErrorMessage ?? "A Simulacrum step requires Divine Intervention.",
+                escalated.AlreadyAlerted,
+                linkedCts.Token).ConfigureAwait(false);
+
+            return false;
+
+        }
+
+        long groupDurationMs = (long)(DateTimeOffset.UtcNow - groupStarted).TotalMilliseconds;
+
+        foreach (SingleStepResult branch in results)
+        {
+
+            if (branch.StepIndex >= plan.Count)
+            {
+
+                continue;
+
+            }
+
+            PlanStep done = plan[branch.StepIndex];
+
+            plan[branch.StepIndex] = done with
+            {
+                Status = "completed",
+                CompletedAt = DateTimeOffset.UtcNow,
+                Result = branch.ResultText ?? string.Empty,
+            };
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.StepCompleted,
+                ApprenticeId = apprenticeId,
+                Timestamp = DateTimeOffset.UtcNow,
+                StepIndex = done.Index,
+                Result = branch.ResultText ?? string.Empty,
+                DurationMs = groupDurationMs,
+            });
+
+        }
+
+        apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
+
+        apprentice.CurrentStep = groupEnd;
+
+        ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+        apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+        {
+            CurrentStep = groupEnd,
+            ConversationSummary = existing?.ConversationSummary,
+            CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
+            Timestamp = DateTimeOffset.UtcNow,
+            EscalationReason = existing?.EscalationReason,
+            DmGuidance = null,
+            ParentApprenticeId = existing?.ParentApprenticeId,
+        });
+
+        await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.SimulacrumCompleted,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            AtStep = groupEnd,
+            Summary = $"Simulacrum complete: {groupEnd - groupStart} parallel steps.",
+            TotalDurationMs = groupDurationMs,
+        });
+
+        if (spawned.Count > 0)
+        {
+
+            await StampCastSendingsAsync(repo, apprenticeId, spawned, linkedCts.Token).ConfigureAwait(false);
+
+        }
+
+        if (settings.EnableShiftingFate)
+        {
+
+            await AttemptShiftingFateAsync(
+                repo,
+                intelligence,
+                apprentice,
+                plan,
+                groupEnd - 1,
+                apprenticeId,
+                linkedCts.Token).ConfigureAwait(false);
+
+        }
+
+        return true;
+
+    }
+
+    private async Task<SingleStepResult> RunSimulacrumBranchAsync(
+        SemaphoreSlim gate,
+        Apprentice snapshot,
+        IReadOnlyList<PlanStep> planSnapshot,
+        int stepIndex,
+        ApprenticeSettings settings,
+        int stepTimeoutMinutes,
+        int maxStepRetries,
+        int retryBackoffSeconds,
+        int retryBackoffMaxSeconds,
+        Guid apprenticeId,
+        CancellationTokenSource linkedCts)
+    {
+        try
+        {
+
+            await gate.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, 0, []);
+
+        }
+
+        try
+        {
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            IArcanumIntelligenceProvider branchIntelligence =
+                scope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
+
+            return await RunStepAttemptsAsync(
+                branchIntelligence,
+                snapshot,
+                planSnapshot,
+                stepIndex,
+                stateless: true,
+                settings,
+                stepTimeoutMinutes,
+                maxStepRetries,
+                retryBackoffSeconds,
+                retryBackoffMaxSeconds,
+                apprenticeId,
+                linkedCts).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, 0, []);
+
+        }
+        finally
+        {
+
+            gate.Release();
+
+        }
+
+    }
+
+    private async Task<SingleStepResult> RunStepAttemptsAsync(
+        IArcanumIntelligenceProvider intelligence,
+        Apprentice snapshot,
+        IReadOnlyList<PlanStep> planSnapshot,
+        int stepIndex,
+        bool stateless,
+        ApprenticeSettings settings,
+        int stepTimeoutMinutes,
+        int maxStepRetries,
+        int retryBackoffSeconds,
+        int retryBackoffMaxSeconds,
+        Guid apprenticeId,
+        CancellationTokenSource linkedCts)
+    {
+        ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(snapshot.CheckpointData);
+
+        StepExecutionOutcome? outcome = null;
+
+        for (int attempt = 1; attempt <= maxStepRetries + 1; attempt++)
+        {
+
+            linkedCts.Token.ThrowIfCancellationRequested();
+
+            string stepPrompt = ApprenticePromptBuilder.BuildStepExecutionPrompt(
+                snapshot,
+                planSnapshot,
+                stepIndex,
+                checkpoint);
+
+            outcome = await ExecuteStepStreamAsync(
+                intelligence,
+                snapshot,
+                stepPrompt,
+                stepTimeoutMinutes,
+                linkedCts,
+                apprenticeId,
+                stateless).ConfigureAwait(false);
+
+            StepFailureKind failureKind = ApprenticeExecutionPolicy.ClassifyStepFailure(
+                outcome.StepFailed,
+                outcome.EscalationRequested,
+                outcome.WardDenied,
+                outcome.ForbiddenArtDenied,
+                outcome.PauseOrCancel,
+                outcome.IsRetryable);
+
+            if (failureKind == StepFailureKind.PausedOrCancelled)
+            {
+
+                return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, attempt - 1, outcome.SpawnedChildIds);
+
+            }
+
+            if (failureKind == StepFailureKind.None)
+            {
+
+                return new SingleStepResult(stepIndex, StepResultKind.Completed, outcome.ResultText, null, false, attempt - 1, outcome.SpawnedChildIds);
+
+            }
+
+            if (failureKind == StepFailureKind.EscalationRequested)
+            {
+
+                return new SingleStepResult(
+                    stepIndex,
+                    StepResultKind.Escalated,
+                    null,
+                    outcome.ErrorMessage ?? "The Apprentice petitioned the Dungeon Master.",
+                    outcome.AlreadyAlerted,
+                    attempt - 1,
+                    outcome.SpawnedChildIds);
+
+            }
+
+            if (failureKind == StepFailureKind.Terminal)
+            {
+
+                return new SingleStepResult(
+                    stepIndex,
+                    StepResultKind.Terminal,
+                    null,
+                    outcome.ErrorMessage ?? "Step execution failed.",
+                    false,
+                    attempt - 1,
+                    outcome.SpawnedChildIds);
+
+            }
+
+            if (attempt > maxStepRetries)
+            {
+
+                return settings.EnableDivineIntervention
+                    ? new SingleStepResult(stepIndex, StepResultKind.Escalated, null, outcome.ErrorMessage ?? "Step retries were exhausted.", false, attempt - 1, outcome.SpawnedChildIds)
+                    : new SingleStepResult(stepIndex, StepResultKind.Terminal, null, outcome.ErrorMessage ?? "Step retries were exhausted.", false, attempt - 1, outcome.SpawnedChildIds);
+
+            }
+
+            TimeSpan backoff = ApprenticeExecutionPolicy.ComputeBackoff(
+                attempt,
+                retryBackoffSeconds,
+                retryBackoffMaxSeconds);
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.StepRetrying,
+                ApprenticeId = apprenticeId,
+                Timestamp = DateTimeOffset.UtcNow,
+                StepIndex = planSnapshot[stepIndex].Index,
+                Attempt = attempt,
+                BackoffMs = (long)backoff.TotalMilliseconds,
+                Error = ApprenticeExecutionPolicy.SanitizeOperatorMessage(outcome.ErrorMessage),
+            });
+
+            try
+            {
+
+                await Task.Delay(backoff, linkedCts.Token).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, attempt, outcome.SpawnedChildIds);
+
+            }
+
+        }
+
+        return new SingleStepResult(
+            stepIndex,
+            StepResultKind.Terminal,
+            null,
+            outcome?.ErrorMessage ?? "Step execution failed.",
+            false,
+            maxStepRetries,
+            outcome?.SpawnedChildIds ?? []);
+
+    }
+
+    private enum StepResultKind
+    {
+
+        Completed,
+
+        Terminal,
+
+        Escalated,
+
+        PausedOrCancelled,
+
+    }
+
+    private sealed record SingleStepResult(
+        int StepIndex,
+        StepResultKind Kind,
+        string? ResultText,
+        string? ErrorMessage,
+        bool AlreadyAlerted,
+        int Attempts,
+        IReadOnlyList<Guid> SpawnedChildIds);
+
+    private async Task StampCastSendingsAsync(
+        IApprenticeRepository repo,
+        Guid parentApprenticeId,
+        IReadOnlyList<Guid> childIds,
+        CancellationToken cancellationToken)
+    {
+        foreach (Guid childId in childIds)
+        {
+            try
+            {
+                Apprentice? child = await repo.GetByIdAsync(childId, cancellationToken).ConfigureAwait(false);
+
+                if (child is null)
+                {
+
+                    continue;
+
+                }
+
+                ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(child.CheckpointData);
+
+                child.ParentApprenticeId = parentApprenticeId;
+
+                child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+                {
+                    CurrentStep = existing?.CurrentStep ?? 0,
+                    ConversationSummary = existing?.ConversationSummary,
+                    CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
+                    Timestamp = DateTimeOffset.UtcNow,
+                    EscalationReason = existing?.EscalationReason,
+                    DmGuidance = existing?.DmGuidance,
+                    ParentApprenticeId = parentApprenticeId,
+                });
+
+                await repo.UpdateAsync(child, cancellationToken).ConfigureAwait(false);
+
+                Publish(parentApprenticeId, new ApprenticeEvent
+                {
+                    Type = ApprenticeEventType.CastSent,
+                    ApprenticeId = parentApprenticeId,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Summary = child.Id.ToString(),
+                    Name = child.Name,
+                    Goal = child.Goal,
+                });
+
+                Result<string> start = await StartAsync(childId, cancellationToken).ConfigureAwait(false);
+
+                if (start.IsFailure)
+                {
+
+                    logger.LogInformation(
+                        "Cast Sending child {ChildId} was created but not started: {Message}",
+                        childId,
+                        start.Error.Message);
+
+                }
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                throw;
+
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogWarning(ex, "Failed to stamp Cast Sending lineage for child {ChildId}.", childId);
+
+            }
+
+        }
+
+    }
+
+    private static bool TryParseCastSendingChildId(string resultText, out Guid childId)
+    {
+        childId = Guid.Empty;
+
+        try
+        {
+            CastSendingResultWire? payload = System.Text.Json.JsonSerializer.Deserialize(
+                resultText.Trim(),
+                McpJsonSerializerContext.Default.CastSendingResultWire);
+
+            if (payload is not null && payload.ChildApprenticeId != Guid.Empty)
+            {
+
+                childId = payload.ChildApprenticeId;
+
+                return true;
+
+            }
+
+        }
+        catch (System.Text.Json.JsonException)
+        {
+
+        }
+
+        return false;
+
+    }
+
+    private async Task<StepExecutionOutcome> ExecuteStepStreamAsync(
+        IArcanumIntelligenceProvider intelligence,
+        Apprentice apprentice,
+        string stepPrompt,
+        int stepTimeoutMinutes,
+        CancellationTokenSource linkedCts,
+        Guid apprenticeId,
+        bool stateless = false)
+    {
+        using CancellationTokenSource stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(linkedCts.Token);
+
+        stepTimeout.CancelAfter(TimeSpan.FromMinutes(stepTimeoutMinutes));
+
+        DateTimeOffset stepStarted = DateTimeOffset.UtcNow;
+
+        string stepResultText = string.Empty;
+
+        bool stepFailed = false;
+
+        bool escalationRequested = false;
+
+        bool wardDenied = false;
+
+        bool forbiddenArtDenied = false;
+
+        bool pauseOrCancel = false;
+
+        bool alreadyAlerted = false;
+
+        string? stepError = null;
+
+        string? escalationReason = null;
+
+        List<Guid> spawnedChildIds = [];
+
+        try
+        {
+
+            PingRequest stepRequest = stateless
+                ? new PingRequest(
+                    Prompt: stepPrompt,
+                    Model: ResolveModel(),
+                    WorkingDirectory: apprentice.WorkspacePath,
+                    UnattendedMode: true,
+                    SkipSpellRouting: true,
+                    StatelessMessages: [new CoreChatMessage("user", stepPrompt)])
+                : new PingRequest(
+                    Prompt: stepPrompt,
+                    Model: ResolveModel(),
+                    WorkingDirectory: apprentice.WorkspacePath,
+                    SessionId: apprentice.SessionId,
+                    UnattendedMode: true,
+                    SkipSpellRouting: true);
+
+            await foreach (IntelligenceEvent frame in intelligence
+                .StreamPromptAsync(stepRequest, stepTimeout.Token)
+                .ConfigureAwait(false))
+            {
+
+                if (IsPassThrough(frame.Type))
+                {
+
+                    Publish(apprenticeId, new ApprenticeEvent
+                    {
+                        Type = MapPassThrough(frame.Type),
+                        ApprenticeId = apprenticeId,
+                        Timestamp = frame.Timestamp ?? DateTimeOffset.UtcNow,
+                        WizardEvent = frame,
+                    });
+
+                }
+
+                if (frame.Type == IntelligenceEventType.ToolCall
+                    && string.Equals(
+                        frame.ToolCall?.Name,
+                        ApprenticeExecutionPolicy.PetitionDungeonMasterToolName,
+                        StringComparison.Ordinal))
+                {
+
+                    escalationRequested = true;
+
+                    alreadyAlerted = true;
+
+                    escalationReason = TryExtractPetitionReason(frame.ToolCall?.ArgumentsJson);
+
+                }
+
+                if (frame.Type == IntelligenceEventType.Result && !string.IsNullOrWhiteSpace(frame.Message))
+                {
+
+                    stepResultText = frame.Message;
+
+                }
+
+                if (frame.Type == IntelligenceEventType.Error)
+                {
+
+                    stepFailed = true;
+
+                    stepError = frame.Message;
+
+                }
+
+                if (frame.Type == IntelligenceEventType.ToolResult
+                    && frame.Message.Contains(UnattendedDenySnippet, StringComparison.OrdinalIgnoreCase))
+                {
+
+                    stepFailed = true;
+
+                    forbiddenArtDenied = true;
+
+                    stepError = frame.Message;
+
+                }
+
+                if (frame.Type == IntelligenceEventType.ToolResult
+                    && string.Equals(frame.ToolCall?.Name, "cast_sending", StringComparison.Ordinal)
+                    && !string.IsNullOrWhiteSpace(frame.Data)
+                    && TryParseCastSendingChildId(frame.Data, out Guid spawnedChildId))
+                {
+
+                    spawnedChildIds.Add(spawnedChildId);
+
+                }
+
+                if (frame.Type == IntelligenceEventType.WardResolved && frame.WardAllowed == false)
+                {
+
+                    stepFailed = true;
+
+                    wardDenied = true;
+
+                    stepError = frame.WardReason ?? "Ward denied.";
+
+                }
+
+            }
+
+        }
+        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
+        {
+
+            pauseOrCancel = true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            stepFailed = true;
+
+            stepError = $"Step timed out after {stepTimeoutMinutes} minutes.";
+
+        }
+
+        if (escalationRequested)
+        {
+
+            stepFailed = true;
+
+            stepError = escalationReason ?? "The Apprentice petitioned the Dungeon Master for guidance.";
+
+        }
+
+        return new StepExecutionOutcome(
+            StepFailed: stepFailed,
+            EscalationRequested: escalationRequested,
+            WardDenied: wardDenied,
+            ForbiddenArtDenied: forbiddenArtDenied,
+            PauseOrCancel: pauseOrCancel,
+            IsRetryable: stepFailed && !wardDenied && !forbiddenArtDenied && !escalationRequested,
+            ResultText: stepResultText,
+            ErrorMessage: stepError,
+            AlreadyAlerted: alreadyAlerted,
+            StepStarted: stepStarted,
+            SpawnedChildIds: spawnedChildIds);
+
+    }
+
+    private static string? TryExtractPetitionReason(string? argumentsJson)
+    {
+
+        if (string.IsNullOrWhiteSpace(argumentsJson))
+        {
+
+            return null;
+
+        }
+
+        try
+        {
+
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(argumentsJson);
+
+            if (doc.RootElement.TryGetProperty("reason", out System.Text.Json.JsonElement reason)
+                && reason.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+
+                return reason.GetString();
+
+            }
+
+        }
+        catch (System.Text.Json.JsonException)
+        {
+
+        }
+
+        return null;
+
+    }
+
+    private static ApprenticeDetailDto ToDetailDto(Apprentice apprentice)
+    {
+        List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+        ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+        return new ApprenticeDetailDto(
+            apprentice.Id,
+            apprentice.CampaignId,
+            apprentice.ParentApprenticeId ?? checkpoint?.ParentApprenticeId,
+            apprentice.Name,
+            apprentice.Goal,
+            plan,
+            apprentice.CurrentStep,
+            apprentice.Status,
+            apprentice.SessionId,
+            apprentice.WorkspacePath,
+            checkpoint,
+            apprentice.ErrorMessage,
+            apprentice.CreatedAt,
+            apprentice.UpdatedAt);
+    }
+
+    private sealed record StepExecutionOutcome(
+        bool StepFailed,
+        bool EscalationRequested,
+        bool WardDenied,
+        bool ForbiddenArtDenied,
+        bool PauseOrCancel,
+        bool IsRetryable,
+        string? ResultText,
+        string? ErrorMessage,
+        bool AlreadyAlerted,
+        DateTimeOffset StepStarted,
+        IReadOnlyList<Guid> SpawnedChildIds);
 
     private void Publish(Guid apprenticeId, ApprenticeEvent @event) =>
         chronicleHub.Publish(apprenticeId, @event);
@@ -765,7 +2240,8 @@ internal sealed class ApprenticeService(
 
     private static bool IsCancellable(string status) =>
         IsPausable(status)
-        || string.Equals(status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal);
+        || string.Equals(status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
+        || ApprenticeExecutionPolicy.IsEscalatedStatus(status);
 
     private static bool IsPassThrough(IntelligenceEventType type) =>
         type is IntelligenceEventType.ToolCall

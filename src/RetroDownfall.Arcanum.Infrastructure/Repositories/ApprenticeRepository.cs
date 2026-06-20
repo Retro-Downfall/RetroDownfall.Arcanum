@@ -27,10 +27,17 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
     public async Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        return await _db.Apprentices
+        Apprentice? apprentice = await _db.Apprentices
             .AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
             .ConfigureAwait(false);
+
+        if (apprentice is not null)
+        {
+            apprentice.ParentApprenticeId = DeserializeCheckpoint(apprentice.CheckpointData)?.ParentApprenticeId;
+        }
+
+        return apprentice;
     }
 
     public async Task<ListPageResult<Apprentice>> ListAsync(

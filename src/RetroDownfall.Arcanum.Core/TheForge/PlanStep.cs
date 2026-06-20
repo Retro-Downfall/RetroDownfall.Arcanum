@@ -15,4 +15,8 @@ public sealed record PlanStep
 
     public DateTimeOffset? CompletedAt { get; init; }
 
+    public int Attempts { get; init; }
+
+    public bool IsParallel { get; init; }
+
 }

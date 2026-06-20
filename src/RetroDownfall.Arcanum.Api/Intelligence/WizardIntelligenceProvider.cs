@@ -22,6 +22,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Workspace;
@@ -29,10 +30,10 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-public sealed class HubIntelligenceProvider(
+public sealed class WizardIntelligenceProvider(
     IChatClientFactory chatClientFactory,
     IOptionsSnapshot<ArcanumSettings> settings,
-    ILogger<HubIntelligenceProvider> logger,
+    ILogger<WizardIntelligenceProvider> logger,
     IGrimoireRepository grimoire,
     IMcpConnectionManager mcpConnectionManager,
     InferenceTokenizerResolver inferenceTokenizerResolver,
@@ -177,11 +178,11 @@ public sealed class HubIntelligenceProvider(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        ParsedSpell? activeSpell;
+        ResolvedSpell? resolvedSpell;
 
         if (request.SkipSpellRouting)
         {
-            activeSpell = null;
+            resolvedSpell = null;
         }
         else
         {
@@ -192,7 +193,7 @@ public sealed class HubIntelligenceProvider(
                 ? spellRoot
                 : null;
 
-            Result<ParsedSpell?> routedSpell = await ResolveRoutedSpellAsync(
+            Result<ResolvedSpell?> routedSpell = await ResolveRoutedSpellAsync(
                 request,
                 chatClient,
                 spellWorkspaceRoot,
@@ -203,12 +204,21 @@ public sealed class HubIntelligenceProvider(
                 return Result<PromptTurnResult>.Failure(routedSpell.Error);
             }
 
-            activeSpell = routedSpell.Value;
+            resolvedSpell = routedSpell.Value;
         }
 
-        string builtSystemPrompt = SystemPromptBuilder.Build(request, codexContent, activeSpell, request.AttachedFiles);
+        ParsedSpell? activeSpell = resolvedSpell?.Primary;
 
-        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, activeSpell, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell>? resonants = resolvedSpell?.Resonants;
+
+        string builtSystemPrompt = SystemPromptBuilder.Build(
+            request,
+            codexContent,
+            activeSpell,
+            request.AttachedFiles,
+            dependencySpells: resonants);
+
+        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, resolvedSpell, cancellationToken).ConfigureAwait(false);
 
         TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, cancellationToken).ConfigureAwait(false);
 
@@ -227,6 +237,7 @@ public sealed class HubIntelligenceProvider(
                     chatMessages,
                     codexContent,
                     activeSpell,
+                    resonants,
                     thread,
                     prompt,
                     lease);
@@ -541,11 +552,11 @@ public sealed class HubIntelligenceProvider(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        ParsedSpell? streamActiveSpell;
+        ResolvedSpell? streamResolvedSpell;
 
         if (request.SkipSpellRouting)
         {
-            streamActiveSpell = null;
+            streamResolvedSpell = null;
         }
         else
         {
@@ -556,7 +567,7 @@ public sealed class HubIntelligenceProvider(
                 ? streamSpellRoot
                 : null;
 
-            Result<ParsedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
+            Result<ResolvedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
                 request,
                 chatClient,
                 streamSpellWorkspaceRoot,
@@ -571,14 +582,19 @@ public sealed class HubIntelligenceProvider(
                 yield break;
             }
 
-            streamActiveSpell = streamRoutedSpell.Value;
+            streamResolvedSpell = streamRoutedSpell.Value;
         }
+
+        ParsedSpell? streamActiveSpell = streamResolvedSpell?.Primary;
+
+        IReadOnlyList<ParsedSpell>? streamResonants = streamResolvedSpell?.Resonants;
 
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
             request,
             streamCodexContent,
             streamActiveSpell,
-            request.AttachedFiles);
+            request.AttachedFiles,
+            dependencySpells: streamResonants);
 
         PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -587,6 +603,7 @@ public sealed class HubIntelligenceProvider(
             chatMessages,
             streamCodexContent,
             streamActiveSpell,
+            streamResonants,
             thread,
             prompt,
             lease);
@@ -637,7 +654,7 @@ public sealed class HubIntelligenceProvider(
 
         StringBuilder accumulator;
 
-        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamActiveSpell, cancellationToken).ConfigureAwait(false);
+        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamResolvedSpell, cancellationToken).ConfigureAwait(false);
 
         TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, cancellationToken).ConfigureAwait(false);
 
@@ -1112,7 +1129,7 @@ public sealed class HubIntelligenceProvider(
         return filtered;
     }
 
-    private async Task<Result<ParsedSpell?>> ResolveRoutedSpellAsync(
+    private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
         PingRequest request,
         IChatClient chatClient,
         string? spellWorkspaceRoot,
@@ -1128,14 +1145,23 @@ public sealed class HubIntelligenceProvider(
 
             if (validated.IsFailure)
             {
-                return Result<ParsedSpell?>.Failure(validated.Error);
+                return Result<ResolvedSpell?>.Failure(validated.Error);
             }
 
             ParsedSpell? overrideSpell = await SpellScanner
                 .LoadFullAsync(validated.Value, cancellationToken, maxSpellFileSizeBytes)
                 .ConfigureAwait(false);
 
-            return Result<ParsedSpell?>.Success(overrideSpell);
+            if (overrideSpell is null)
+            {
+                return Result<ResolvedSpell?>.Success(null);
+            }
+
+            ResolvedSpell resolvedOverride = await SpellDependencyResolver
+                .ResolveAsync(overrideSpell, spellWorkspaceRoot, maxSpellFileSizeBytes, cancellationToken, logger)
+                .ConfigureAwait(false);
+
+            return Result<ResolvedSpell?>.Success(resolvedOverride);
         }
 
         IReadOnlyList<SpellMetadata> spellMetadata = await SpellScanner
@@ -1148,7 +1174,7 @@ public sealed class HubIntelligenceProvider(
         {
             if (!TryResolveOverrideSpellMetadata(request.OverrideSpellName, spellMetadata, out SpellMetadata? overridePick))
             {
-                return Result<ParsedSpell?>.Failure(
+                return Result<ResolvedSpell?>.Failure(
                     new Error(
                         "Validation.SpellOverride",
                         $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
@@ -1184,14 +1210,23 @@ public sealed class HubIntelligenceProvider(
 
         if (matchedMetadata is null)
         {
-            return Result<ParsedSpell?>.Success(null);
+            return Result<ResolvedSpell?>.Success(null);
         }
 
         ParsedSpell? activeSpell = await SpellScanner
             .LoadFullAsync(matchedMetadata.FilePath, cancellationToken, maxSpellFileSizeBytes)
             .ConfigureAwait(false);
 
-        return Result<ParsedSpell?>.Success(activeSpell);
+        if (activeSpell is null)
+        {
+            return Result<ResolvedSpell?>.Success(null);
+        }
+
+        ResolvedSpell resolved = await SpellDependencyResolver
+            .ResolveAsync(activeSpell, spellWorkspaceRoot, maxSpellFileSizeBytes, cancellationToken, logger)
+            .ConfigureAwait(false);
+
+        return Result<ResolvedSpell?>.Success(resolved);
     }
 
     private static void PrependDynamicSystemMessage(List<MeAiChatMessage> messages, string systemText)
@@ -1209,6 +1244,7 @@ public sealed class HubIntelligenceProvider(
         List<MeAiChatMessage> chatMessages,
         string? codexContent,
         ParsedSpell? activeSpell,
+        IReadOnlyList<ParsedSpell>? dependencySpells,
         Session? thread,
         string newUserPrompt,
         ChatClientLease lease)
@@ -1284,7 +1320,8 @@ public sealed class HubIntelligenceProvider(
             codexContent,
             activeSpell,
             request.AttachedFiles,
-            thread.Summary);
+            thread.Summary,
+            dependencySpells);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 
@@ -1650,22 +1687,24 @@ public sealed class HubIntelligenceProvider(
 
     private async Task<List<AITool>> BuildToolSetWithMcpAsync(
         PingRequest request,
-        ParsedSpell? activeSpell,
+        ResolvedSpell? resolvedSpell,
         CancellationToken cancellationToken)
     {
         string workingDirectory = request.WorkingDirectory;
 
+        ParsedSpell? activeSpell = resolvedSpell?.Primary;
+
         List<AITool> tools = [_localTimeTool, _systemInfoTool];
 
-        if (activeSpell?.AvailableScripts is { Count: > 0 })
+        List<string> scriptRoots = CollectScriptRoots(resolvedSpell);
+
+        if (scriptRoots.Count > 0)
         {
             int sec = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(settings.Value.Intelligence.ExecuteCommandTimeoutSeconds);
 
             long outputCap = ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.Intelligence.ToolOutputCapBytes);
 
-            string scriptsRoot = Path.Combine(activeSpell.DirectoryPath, "scripts");
-
-            tools.Add(new ArcanumSpellScriptTool(scriptsRoot, TimeSpan.FromSeconds(sec), sec, outputCap));
+            tools.Add(new ArcanumSpellScriptTool(scriptRoots, TimeSpan.FromSeconds(sec), sec, outputCap, logger));
         }
 
         if (ShouldDisableMcpTools(request))
@@ -1677,12 +1716,54 @@ public sealed class HubIntelligenceProvider(
             .GetAvailableToolsAsync(workingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (AITool t in mcpTools)
+        AttunementResult attunement = ArtifactAttunement.ApplyAttunement(
+            mcpTools,
+            activeSpell?.SkillMetadata?.DeclaredTools);
+
+        if (attunement.Excluded.Count > 0)
+        {
+            logger.LogDebug(
+                "Artifact Attunement: spell {Spell} restricted MCP toolset to {Allowed}/{Total}; excluded {Count}: {Names}",
+                activeSpell?.Name ?? "(none)",
+                attunement.Allowed.Count,
+                mcpTools.Count,
+                attunement.Excluded.Count,
+                string.Join(", ", attunement.Excluded));
+        }
+
+        foreach (AITool t in attunement.Allowed)
         {
             tools.Add(t);
         }
 
         return tools;
+    }
+
+    private static List<string> CollectScriptRoots(ResolvedSpell? resolvedSpell)
+    {
+        if (resolvedSpell is null)
+        {
+            return [];
+        }
+
+        var roots = new List<string>();
+
+        if (resolvedSpell.Primary.AvailableScripts is { Count: > 0 }
+            && !string.IsNullOrWhiteSpace(resolvedSpell.Primary.DirectoryPath))
+        {
+            roots.Add(Path.Combine(resolvedSpell.Primary.DirectoryPath, "scripts"));
+        }
+
+        foreach (ParsedSpell dep in resolvedSpell.Resonants)
+        {
+            if (dep.AvailableScripts is { Count: > 0 }
+                && !string.IsNullOrWhiteSpace(dep.DirectoryPath))
+            {
+                roots.Add(Path.Combine(dep.DirectoryPath, "scripts"));
+            }
+        }
+
+        return roots;
     }
 
     private static bool ShouldDisableMcpTools(PingRequest request)
@@ -1730,6 +1811,7 @@ public sealed class HubIntelligenceProvider(
         "search_archives",
         "ask_human",
         "use_commlink",
+        "petition_dungeon_master",
         ArcanumLocalTimeTool.ToolName,
         ArcanumSystemInfoTool.ToolName,
     };
@@ -2484,6 +2566,7 @@ public sealed class HubIntelligenceProvider(
             }
 
             case "use_commlink":
+            case "petition_dungeon_master":
             {
                 string? webhookUrl = settings.Value.CommLink?.WebhookUrl;
 

@@ -223,6 +223,130 @@ internal static class ApprenticeEndpoints
             })
         .WithName("CancelApprentice");
 
+        apiGroup.MapPost(
+            "/apprentices/{id:guid}/reweave",
+            async (
+                Guid id,
+                ReweaveApprenticeRequest? request,
+                IApprenticeRuntime runtime,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || request.Steps is null || request.Steps.Count == 0)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<ApprenticeDetailDto>.FromResult(
+                            Result<ApprenticeDetailDto>.Failure(
+                                new Error("Apprentice.InvalidPlan", "Request body must include at least one plan step.")),
+                            traceId));
+
+                }
+
+                Result<ApprenticeDetailDto> result = await runtime
+                    .ReweaveAsync(id, request.Steps, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return MapReweaveResult(result, traceId);
+
+            })
+        .WithName("ReweaveApprentice");
+
+        apiGroup.MapPost(
+            "/apprentices/{id:guid}/intervene",
+            async (
+                Guid id,
+                InterveneApprenticeRequest? request,
+                IApprenticeRuntime runtime,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || string.IsNullOrWhiteSpace(request.Guidance))
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<string>.FromResult(
+                            Result<string>.Failure(
+                                new Error("Apprentice.InvalidGuidance", "Dungeon Master guidance is required.")),
+                            traceId));
+
+                }
+
+                Result<string> result = await runtime
+                    .InterveneAsync(id, request.Guidance, request.Resume, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return MapInterveneResult(result, traceId);
+
+            })
+        .WithName("InterveneApprentice");
+
+        apiGroup.MapPost(
+            "/apprentices/{id:guid}/cast",
+            async (
+                Guid id,
+                CastApprenticeRequest? request,
+                IApprenticeRepository repo,
+                IConclaveArchmage archmage,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || string.IsNullOrWhiteSpace(request.Goal))
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<ApprenticeDetailDto>.FromResult(
+                            Result<ApprenticeDetailDto>.Failure(
+                                new Error("Apprentice.InvalidGoal", "Apprentice goal is required.")),
+                            traceId));
+
+                }
+
+                Apprentice? parent = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (parent is null)
+                {
+
+                    return Results.Json(
+                        ApiResponse<ApprenticeDetailDto>.FromResult(
+                            Result<ApprenticeDetailDto>.Failure(
+                                new Error("Apprentice.NotFound", "Apprentice was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                        statusCode: StatusCodes.Status404NotFound);
+
+                }
+
+                Result<Apprentice> result = await archmage
+                    .CastAsync(
+                        new ConclaveCastRequest(
+                            request.Goal,
+                            request.Name,
+                            parent.WorkspacePath,
+                            parent.CampaignId,
+                            parent.Id),
+                        ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+
+                    return MapCastResult(result.Error, traceId);
+
+                }
+
+                ApprenticeDetailDto dto = ApprenticeMapping.ToDetailDto(result.Value!);
+
+                return Results.Created(
+                    $"/api/apprentices/{result.Value!.Id}",
+                    ApiResponse<ApprenticeDetailDto>.FromResult(Result<ApprenticeDetailDto>.Success(dto), traceId));
+
+            })
+        .WithName("CastApprentice");
+
         apiGroup.MapGet(
             "/apprentices/{id:guid}/chronicle",
             async (Guid id, IApprenticeRepository repo, IApprenticeRuntime runtime, HttpContext httpContext) =>
@@ -271,6 +395,24 @@ internal static class ApprenticeEndpoints
                             Plan = plan,
                         },
                         httpContext.RequestAborted).ConfigureAwait(false);
+                }
+
+                if (ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
+                {
+
+                    ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+                    await sseWriter.WriteEventAsync(
+                        new ApprenticeEvent
+                        {
+                            Type = ApprenticeEventType.ApprenticeEscalated,
+                            ApprenticeId = id,
+                            Timestamp = DateTimeOffset.UtcNow,
+                            StepIndex = apprentice.CurrentStep < plan.Count ? plan[apprentice.CurrentStep].Index : apprentice.CurrentStep + 1,
+                            Error = checkpoint?.EscalationReason ?? apprentice.ErrorMessage,
+                        },
+                        httpContext.RequestAborted).ConfigureAwait(false);
+
                 }
 
                 if (apprentice.CurrentStep < plan.Count
@@ -394,7 +536,79 @@ internal static class ApprenticeEndpoints
     private static bool IsActiveStatus(string status) =>
         string.Equals(status, ApprenticeStatus.Planning.ToString(), StringComparison.Ordinal)
         || string.Equals(status, ApprenticeStatus.Running.ToString(), StringComparison.Ordinal)
-        || string.Equals(status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal);
+        || string.Equals(status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
+        || ApprenticeExecutionPolicy.IsEscalatedStatus(status);
+
+    private static IResult MapReweaveResult(Result<ApprenticeDetailDto> result, string traceId)
+    {
+
+        if (result.IsSuccess)
+        {
+
+            return Results.Ok(ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId));
+
+        }
+
+        return result.Error.Code switch
+        {
+            "Apprentice.NotFound" => Results.Json(
+                ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId),
+                ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                statusCode: StatusCodes.Status404NotFound),
+            "Apprentice.CannotReweave" => Results.Json(
+                ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId),
+                ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                statusCode: StatusCodes.Status409Conflict),
+            _ => Results.BadRequest(ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId)),
+        };
+
+    }
+
+    private static IResult MapCastResult(Error error, string traceId)
+    {
+        if (error.Code == "Apprentice.ConclaveDisabled")
+        {
+
+            return Results.Json(
+                ApiResponse<ApprenticeDetailDto>.FromResult(
+                    Result<ApprenticeDetailDto>.Failure(error),
+                    traceId),
+                ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                statusCode: StatusCodes.Status409Conflict);
+
+        }
+
+        return Results.BadRequest(
+            ApiResponse<ApprenticeDetailDto>.FromResult(
+                Result<ApprenticeDetailDto>.Failure(error),
+                traceId));
+
+    }
+
+    private static IResult MapInterveneResult(Result<string> result, string traceId)
+    {
+
+        if (result.IsSuccess)
+        {
+
+            return Results.Accepted($"/api/apprentices/{result.Value}", ApiResponse<string>.FromResult(result, traceId));
+
+        }
+
+        return result.Error.Code switch
+        {
+            "Apprentice.NotFound" => Results.Json(
+                ApiResponse<string>.FromResult(result, traceId),
+                ArcanumJsonContext.Default.ApiResponseString,
+                statusCode: StatusCodes.Status404NotFound),
+            "Apprentice.NotEscalated" => Results.Json(
+                ApiResponse<string>.FromResult(result, traceId),
+                ArcanumJsonContext.Default.ApiResponseString,
+                statusCode: StatusCodes.Status409Conflict),
+            _ => Results.BadRequest(ApiResponse<string>.FromResult(result, traceId)),
+        };
+
+    }
 
     private static IResult MapRuntimeResult(Result<string> result, string traceId)
     {

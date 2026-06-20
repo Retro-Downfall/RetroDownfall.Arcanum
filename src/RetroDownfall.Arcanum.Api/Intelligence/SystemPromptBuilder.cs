@@ -34,7 +34,8 @@ public static class SystemPromptBuilder
         string? codexContent,
         ParsedSpell? activeSpell = null,
         List<AttachedFileDto>? attachedFiles = null,
-        string? campaignSummary = null)
+        string? campaignSummary = null,
+        IReadOnlyList<ParsedSpell>? dependencySpells = null)
     {
         var sb = new StringBuilder(2048);
 
@@ -44,7 +45,7 @@ public static class SystemPromptBuilder
 
         AppendContextBlock(sb, request, codexContent, campaignSummary);
 
-        AppendInstructionsBlock(sb, activeSpell, request);
+        AppendInstructionsBlock(sb, activeSpell, request, dependencySpells);
 
         return sb.ToString();
     }
@@ -157,7 +158,11 @@ public static class SystemPromptBuilder
         }
     }
 
-    private static void AppendInstructionsBlock(StringBuilder sb, ParsedSpell? activeSpell, PingRequest request)
+    private static void AppendInstructionsBlock(
+        StringBuilder sb,
+        ParsedSpell? activeSpell,
+        PingRequest request,
+        IReadOnlyList<ParsedSpell>? dependencySpells)
     {
         sb.AppendLine();
         sb.AppendLine(InstructionsHeader);
@@ -175,22 +180,26 @@ public static class SystemPromptBuilder
             sb.AppendLine();
             sb.Append(activeSpell.FullContent);
 
-            if (activeSpell.AvailableScripts.Count > 0)
+            AppendSpellScriptsSection(sb, activeSpell);
+        }
+
+        if (dependencySpells is { Count: > 0 })
+        {
+            hasInstructions = true;
+
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine("### Resonant Spells (Dependencies)");
+            sb.AppendLine();
+
+            foreach (ParsedSpell dep in dependencySpells)
             {
+                sb.Append("#### ");
+                sb.AppendLine(dep.Name);
                 sb.AppendLine();
-                sb.AppendLine();
-                sb.AppendLine("### Available Spell Scripts");
-                sb.AppendLine();
+                sb.Append(dep.Body);
 
-                foreach (string scriptName in activeSpell.AvailableScripts)
-                {
-                    sb.Append("- ");
-                    sb.AppendLine(scriptName);
-                }
-
-                sb.AppendLine();
-                sb.AppendLine(
-                    "You may run these scripts only via the run_spell_script tool: pass script_name (file name only) and optional arguments.");
+                AppendSpellScriptsSection(sb, dep);
             }
         }
 
@@ -219,6 +228,29 @@ public static class SystemPromptBuilder
         {
             sb.AppendLine(NonePlaceholder);
         }
+    }
+
+    private static void AppendSpellScriptsSection(StringBuilder sb, ParsedSpell spell)
+    {
+        if (spell.AvailableScripts.Count == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine();
+        sb.AppendLine("#### Available Spell Scripts");
+        sb.AppendLine();
+
+        foreach (string scriptName in spell.AvailableScripts)
+        {
+            sb.Append("- ");
+            sb.AppendLine(scriptName);
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(
+            "You may run these scripts only via the run_spell_script tool: pass script_name (file name only) and optional arguments.");
     }
 
     private static bool HasChronosyncContent(PingRequest request)

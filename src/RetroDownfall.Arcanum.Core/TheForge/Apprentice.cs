@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace RetroDownfall.Arcanum.Core.TheForge;
 
 public sealed class Apprentice
@@ -28,5 +30,13 @@ public sealed class Apprentice
     public DateTimeOffset CreatedAt { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Lineage to the Conclave Apprentice that cast this child via <c>cast_sending</c>, when any.
+    /// Not a mapped column: the persisted source of truth is <see cref="ApprenticeCheckpoint.ParentApprenticeId"/>
+    /// inside the <c>CheckpointData</c> JSON. Hydrated by the repository on load.
+    /// </summary>
+    [NotMapped]
+    public Guid? ParentApprenticeId { get; set; }
 
 }

@@ -167,6 +167,16 @@ internal static class ChronicleSseWriter
             writer.WriteNumber("fromStep", fromStep);
         }
 
+        if (@event.Attempt is { } attempt)
+        {
+            writer.WriteNumber("attempt", attempt);
+        }
+
+        if (@event.BackoffMs is { } backoffMs)
+        {
+            writer.WriteNumber("backoffMs", backoffMs);
+        }
+
         writer.WriteEndObject();
     }
 
@@ -191,6 +201,10 @@ internal static class ChronicleSseWriter
         ApprenticeEventType.ApprenticeCompleted => "apprenticeCompleted",
         ApprenticeEventType.ApprenticeFailed => "apprenticeFailed",
         ApprenticeEventType.ApprenticeCancelled => "apprenticeCancelled",
+        ApprenticeEventType.StepRetrying => "stepRetrying",
+        ApprenticeEventType.PlanRevised => "planRevised",
+        ApprenticeEventType.ApprenticeEscalated => "apprenticeEscalated",
+        ApprenticeEventType.ApprenticeIntervened => "apprenticeIntervened",
         _ => type.ToString(),
     };
 

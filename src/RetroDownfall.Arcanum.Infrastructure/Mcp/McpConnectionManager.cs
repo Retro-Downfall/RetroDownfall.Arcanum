@@ -1696,6 +1696,7 @@ public sealed class McpConnectionManager(
             listDirectoryMaxPaths,
             settings.CurrentValue.Intelligence,
             maxFileReadSizeBytes,
+            settings.CurrentValue.Conclave.Enabled,
             logger: null);
 
         Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);

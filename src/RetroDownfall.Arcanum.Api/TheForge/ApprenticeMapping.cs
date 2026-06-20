@@ -26,9 +26,12 @@ internal static class ApprenticeMapping
     {
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
+        ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
         return new ApprenticeDetailDto(
             apprentice.Id,
             apprentice.CampaignId,
+            apprentice.ParentApprenticeId ?? checkpoint?.ParentApprenticeId,
             apprentice.Name,
             apprentice.Goal,
             plan,
@@ -36,7 +39,7 @@ internal static class ApprenticeMapping
             apprentice.Status,
             apprentice.SessionId,
             apprentice.WorkspacePath,
-            ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData),
+            checkpoint,
             apprentice.ErrorMessage,
             apprentice.CreatedAt,
             apprentice.UpdatedAt);

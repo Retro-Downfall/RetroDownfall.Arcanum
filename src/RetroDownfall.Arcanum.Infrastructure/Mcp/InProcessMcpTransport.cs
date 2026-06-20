@@ -91,6 +91,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int listDirectoryMaxPaths,
         IntelligenceSettings intelligenceSettings,
         long maxFileReadSizeBytes,
+        bool conclaveEnabled,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -134,6 +135,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             listDirectoryMaxPaths,
             intelligenceSettings,
             maxFileReadSizeBytes,
+            conclaveEnabled,
             requestCancellationBroker,
             logger,
             jsonContext);

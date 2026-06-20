@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(ProviderSettings))]
 [JsonSerializable(typeof(ProviderSettings[]))]
 [JsonSerializable(typeof(AiProviderKind))]
-[JsonSerializable(typeof(BureauSettings))]
+[JsonSerializable(typeof(ConclaveSettings))]
 [JsonSerializable(typeof(IntelligenceSettings))]
 [JsonSerializable(typeof(PerceptionSettings))]
 [JsonSerializable(typeof(SpellSettings))]
@@ -39,6 +39,7 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(WardSettings))]
 [JsonSerializable(typeof(ApprenticeSettings))]
 [JsonSerializable(typeof(CodexSettings))]
+[JsonSerializable(typeof(ProvingGroundsSettings))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(string[]))]
 

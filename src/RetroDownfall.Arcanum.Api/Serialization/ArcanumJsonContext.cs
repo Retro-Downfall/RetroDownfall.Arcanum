@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -236,7 +237,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ProviderSettings))]
 [JsonSerializable(typeof(ProviderSettings[]))]
 [JsonSerializable(typeof(AiProviderKind))]
-[JsonSerializable(typeof(BureauSettings))]
+[JsonSerializable(typeof(ConclaveSettings))]
 [JsonSerializable(typeof(IntelligenceSettings))]
 [JsonSerializable(typeof(PerceptionSettings))]
 [JsonSerializable(typeof(SpellSettings))]
@@ -358,6 +359,9 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(List<PlanStep>))]
 [JsonSerializable(typeof(ApprenticeCheckpoint))]
 [JsonSerializable(typeof(CreateApprenticeRequest))]
+[JsonSerializable(typeof(ReweaveApprenticeRequest))]
+[JsonSerializable(typeof(InterveneApprenticeRequest))]
+[JsonSerializable(typeof(CastApprenticeRequest))]
 [JsonSerializable(typeof(ApprenticeSummaryDto))]
 [JsonSerializable(typeof(ApprenticeSummaryDto[]))]
 [JsonSerializable(typeof(ListPageResult<ApprenticeSummaryDto>))]
@@ -366,6 +370,21 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<ListPageResult<ApprenticeSummaryDto>>))]
 [JsonSerializable(typeof(ApiResponse<ApprenticeDetailDto>))]
 [JsonSerializable(typeof(Result<ApprenticeDetailDto>))]
+[JsonSerializable(typeof(Inquisitor))]
+[JsonSerializable(typeof(RegexInquisitor))]
+[JsonSerializable(typeof(JsonSchemaInquisitor))]
+[JsonSerializable(typeof(SemanticInquisitor))]
+[JsonSerializable(typeof(List<Inquisitor>))]
+[JsonSerializable(typeof(Inquisitor[]))]
+[JsonSerializable(typeof(Trial))]
+[JsonSerializable(typeof(TrialTargetKind))]
+[JsonSerializable(typeof(TrialResult))]
+[JsonSerializable(typeof(InquisitorVerdict))]
+[JsonSerializable(typeof(InquisitorVerdict[]))]
+[JsonSerializable(typeof(List<InquisitorVerdict>))]
+[JsonSerializable(typeof(ApiResponse<TrialResult>))]
+[JsonSerializable(typeof(Result<TrialResult>))]
+[JsonSerializable(typeof(ProvingGroundsSettings))]
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
 [JsonSerializable(typeof(System.Text.Json.JsonDocument))]
 [JsonSerializable(typeof(Dictionary<string, double>))]

@@ -45,10 +45,14 @@ Arcanum exposes a maximum-parity **OpenAI Chat Completions** surface so existing
 
 Inference flows through one hub behind a single `IChatClient` abstraction. See [DESIGN.md §10](docs/DESIGN.md#10-intelligence-pipeline).
 
-- **`HubIntelligenceProvider`** (Api) implements **`IArcanumIntelligenceProvider`** (Core); **`IChatClientFactory`** builds a per-turn `IChatClient` per provider kind.
+- **`WizardIntelligenceProvider`** (Api) implements **`IArcanumIntelligenceProvider`** (Core); **`IChatClientFactory`** builds a per-turn `IChatClient` per provider kind.
 - **Providers (`AiProviderKind`):** `Ollama` (OllamaSharp), `OpenAICompatible` (`Microsoft.Extensions.AI.OpenAI` — DeepSeek, Groq, GitHub Models, LM Studio, …), and `LlamaCppServer` (local GGUF via spawned `llama-server`, fully managed lifecycle + GGUF cache).
 - **No hard-coded model names.** `ProviderResolver` maps a requested/default model to a provider+model. Everything is configured under `Arcanum:Providers`.
 - The engine adds agentic **MCP tool loops**, **semantic spell routing**, **read-time context compression**, **wards** (approval gates), and **Sanctum** (sandboxing) on top of raw inference.
+
+### The Proving Grounds
+
+**The Proving Grounds** is Arcanum's validation subsystem for spell outcomes, prompt accuracy, and Apprentice plan structure. Submit a **Trial** (target + variables + **Inquisitors**) via `POST /api/proving-grounds/trials/run` and receive a `TrialResult` with per-Inquisitor verdicts. Phase 1 is ephemeral (in-memory only; no Grimoire persistence). Inquisitor kinds: `regex`, `jsonSchema` (lightweight subset), and `semantic` (FastModel yes/no judge). The legacy industry term for LLM testing is intentionally **not** used anywhere in this project — use *Proving Grounds*, *Trial*, and *Inquisitor* instead. See [DESIGN.md §20](docs/DESIGN.md#20-the-proving-grounds--trials-and-inquisitors).
 
 ### 5. Local-first security posture
 
@@ -88,17 +92,18 @@ Any change to architecture, contracts, configuration, persistence, MCP surfaces,
 |---------|------|------|-----|
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`) | `IsAotCompatible` |
 | **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), workspace scanning, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link, GGUF cache + `llama-server` manager | `IsTrimmable` + `PublishAot` (analysis signal) |
-| **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `HubIntelligenceProvider`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
+| **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Single shipping executable | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` (the native image) |
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | — |
 
-**Key entry points to know:** `ApiBootstrapper.AddArcanumApiServices` / `MapArcanumEndpoints` (wire everything), `AddArcanumInfrastructure` (Infrastructure DI), `HubIntelligenceProvider.StreamPromptAsync` (the inference loop), `Cli/Program.cs` (command registration).
+**Key entry points to know:** `ApiBootstrapper.AddArcanumApiServices` / `MapArcanumEndpoints` (wire everything), `AddArcanumInfrastructure` (Infrastructure DI), `WizardIntelligenceProvider.StreamPromptAsync` (the inference loop), `Cli/Program.cs` (command registration).
 
 ### Repository map
 
 ```
 src/
   RetroDownfall.Arcanum.Core/            # domain, contracts, config, source-gen JSON contexts
+    ProvingGrounds/                      # Trial / Inquisitor models and IProvingGroundsArbiter
   RetroDownfall.Arcanum.Infrastructure/  # Grimoire, MCP, perception, llama, Comm Link, Serilog
     Generated/                           # EF Core compiled model (commit regenerations)
     Data/Migrations/                     # EF Core migrations
@@ -120,7 +125,7 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **Result flow.** Domain ops return `Result` / `Result<T>` and rely on implicit conversions; the endpoint is the single place that turns a `Result` into an envelope + status code.
 - **New endpoint checklist:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or documented streaming shape) → register every new payload type on `ArcanumJsonContext` → `.WithName(...)` for OpenAPI → use explicit `JsonTypeInfo` on failable `Results.Json` → update DESIGN.md §4.3 + this README's API map.
 - **New CLI verb:** add an `AsyncCommand` under `Cli/Commands`, register in `Program.Configure`, add `[DynamicDependency]`; prefer `AddArcanumEyeOfTheWorld()` over full infrastructure for lightweight verbs.
-- **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `HubIntelligenceProvider` contract intact.
+- **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact.
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor workspace path containment and `ToolOutputCapBytes`; decide whether it's a **Forbidden Art** (ward-gated).
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [DESIGN.md §8.2](docs/DESIGN.md#82-arcanumjsoncontext--source-generated-public)).
 
@@ -139,6 +144,7 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Per-campaign execution sandbox | **Sanctum** | `/api/campaigns/{id}/sanctum` |
 | High-risk gated tools | **Forbidden Arts** | `Arcanum:Ward:ForbiddenArts` |
 | Autonomous sub-agent | **Apprentice** | `/api/apprentices` |
+| Multi-agent coordination network | **The Conclave** | `cast_sending` tool · `/api/apprentices/{id}/cast` |
 | Agent event stream | **Chronicle** | `/api/apprentices/{id}/chronicle` (SSE) |
 | Human operator | **Dungeon Master (DM)** | — |
 | Encrypted persistence store | **Grimoire** | (internal: EF Core + SQLCipher) |
@@ -146,10 +152,12 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Situational directory perception | **Eye of the World** | `/api/perception/look` |
 | Operator key-value memory | **Lore** | `/api/lore` |
 | Operator alert channel | **Comm Link** | `/api/commlink/send` |
+| Inference orchestrator | **Wizard** | **`WizardIntelligenceProvider`** (implements **`IArcanumIntelligenceProvider`**) |
 | Scratchpad / instructions | **Codex** | `CODEX.md`, `/api/codex` |
 | Multi-turn chat thread | **Session** (rows = **Entry**) | `/api/sessions` |
+| Spell/prompt/plan validation | **The Proving Grounds** (Trials, Inquisitors) | `POST /api/proving-grounds/trials/run` |
 
-**Reserved (do not reuse):** **Wizard** (future `HubIntelligenceProvider` rename — spawns Apprentices, wields Spells), **Bureau** (future multi-agent coordination). **Rejected:** Dispel, Glyph, Invocation (too obscure).
+**Rejected:** Dispel, Glyph, Invocation (too obscure). The placeholder **Bureau** was retired in favor of **The Conclave** (the multi-agent coordination network; see above).
 
 **Naming rules:** thematic API routes (`/api/spells`); error codes `{Noun}.{Verb}` (`Ward.NotFound`, `Campaign.DuplicateName`); config paths `Arcanum:{Noun}:{Setting}`. Propose any new concept name to the DM before implementing. Full rationale in this section's source and DESIGN.md §2.1.
 
@@ -167,10 +175,10 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Inference (OpenAI) | `POST /v1/chat/completions`, `GET /v1/models` | OpenAI-shaped JSON/SSE; **not** envelope-wrapped. |
 | Sessions (Grimoire) | `/api/sessions/*` (CRUD, `/entries`, `/export`, `/rest`, `/stream`, `/analytics`) | Single source of truth for threads; FTS5 search; SSE live stream. |
 | Lore | `/api/lore/*` | Operator key-value memory. |
-| Spells | `/api/spells/*` (CRUD, `/search`, `/validate`, `/export`, `/import`, `/execute(-stream)`, `/versions`) | Built-in spells are read-only (`source: builtin`). |
+| Spells | `/api/spells/*` (CRUD, `/search`, `/validate`, `/export`, `/import`, `/execute(-stream)`, `/versions`) | Built-in spells are read-only (`source: builtin`). `SKILL.json` `dependencies` and `declaredTools` affect **execution** (Arcane Resonance + Artifact Attunement), not just validation. |
 | The Forge — campaigns | `/api/campaigns/*` (+ `/codex`, `/export`, `/import`), `/api/codex` | Registers workspace roots; creates `.arcanum/`. |
-| The Forge — prompts | `/api/prompts/*` (`/render`, `/test`, `/execute(-stream)`, versions) | Versioned templates with parameter schemas. |
-| The Forge — apprentices | `/api/apprentices/*` (`/start`, `/pause`, `/resume`, `/cancel`, `/chronicle`) | Goal-driven autonomous agents; Chronicle is SSE. |
+| The Forge — prompts | `/api/prompts/*` (`/render`, `/test`, `/execute(-stream)`, versions) | Versioned templates with parameter schemas; `/execute(-stream)` renders and runs session-backed inference (NDJSON stream). |
+| The Forge — apprentices | `/api/apprentices/*` (`/start`, `/pause`, `/resume`, `/cancel`, `/reweave`, `/intervene`, `/cast`, `/chronicle`) | Goal-driven autonomous agents with **Second Wind** (retry/backoff), **Shifting Fate** (plan re-weave), **Divine Intervention** (`Escalated` → `/intervene`), **The Conclave** cross-Apprentice delegation (`/cast` + `cast_sending`), and **Simulacrum** parallel steps; Chronicle is SSE. |
 | Wards & Sanctum | `/api/wards/*`, `/api/campaigns/{id}/sanctum(/breaches)` | Forbidden Arts gating + per-campaign sandbox. |
 | MCP | `/api/mcp/*` (`/start`, `/stop`, `/restart`, `/reload`, `/trust-workspace`) | Manage external + in-process MCP servers. |
 | LlamaCpp | `/api/llama/models(/pull)`, `/api/llama/servers/*` | GGUF cache + `llama-server` lifecycle; pull is **NDJSON**. |
@@ -180,6 +188,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Comm Link | `/api/commlink/send` | Outbound webhook alerts; `502` on webhook failure. |
 | Perception | `/api/perception/look` | Eye of the World snapshot (allowlisted roots). |
 | Providers | `/api/providers/test` | Read-only connectivity probe; does not persist. |
+| The Proving Grounds | `POST /api/proving-grounds/trials/run` | Ephemeral **Trial** runner: targets a Spell, Prompt, or Apprentice Goal and adjudicates output with **Inquisitors** (`regex`, `jsonSchema`, `semantic`). Returns `ApiResponse<TrialResult>`. |
 | Logs | `/api/logs` | Paginated in-memory ring buffer query. |
 | Docs | `/api/openapi/v1.json`, `/api/scalar` | OpenAPI always on; Scalar opt-in + strict CSP. |
 
@@ -194,6 +203,7 @@ Breaking or client-visible HTTP contract fixes (document here when no `CHANGELOG
 | `/api` **404** responses | Bare **404** with empty body on some routes | **`ApiResponse<T>`** envelope with `isSuccess: false`, `error`, and `traceId` |
 | OpenAI **`model_not_found`** | **400** `invalid_request_error` | **404** `invalid_request_error` with `code: "model_not_found"` |
 | OpenAI **`tool_calls` + `finish_reason`** | Clients might retry when `content` empty | **`finish_reason: "stop"`** with observability-only `tool_calls`; see [DESIGN.md §8.8.1](docs/DESIGN.md#881-sdk-client-caveat-tool_calls--finish_reason-stop-option-a) |
+| **Config key rename** | `Arcanum:Bureau:Enabled` (reserved no-op) | `Arcanum:Conclave:Enabled` (gates Cast Sending). Operator configs that set `Arcanum:Bureau` no longer bind and should be renamed. |
 
 ---
 
@@ -201,7 +211,7 @@ Breaking or client-visible HTTP contract fixes (document here when no `CHANGELOG
 
 - **Provider hub:** configure one or more entries under `Arcanum:Providers`; each has `name`, `type` (`Ollama` | `OpenAICompatible` | `LlamaCppServer`), `endpoint`, optional `apiKey`, `models[]`, and `contextWindowLimit` (default 8192). `Arcanum:DefaultModel` selects the default; `Arcanum:FastModel` is used for internal background summarization.
 - **Local GGUF (`LlamaCppServer`):** Arcanum spawns and health-manages `llama-server` child processes and downloads/caches GGUF files under `~/.config/arcanum/models/`. `endpoint`/`apiKey` are ignored (the hub talks to the spawned local port). Pull models with `arcanum llama pull <url>` while `serve` runs. See [DESIGN.md §8.20](docs/DESIGN.md#820-llamacpp-management-api-apillama).
-- **Agentic features layered on inference:** semantic **spell routing** (frontmatter-only preflight → lazy body load), **MCP tool loops** (bounded by `MaxToolInferenceRounds`), **read-time context compression** (swaps old entries for `Session.Summary` near the context limit; never deletes rows), **Wards** (operator approval for Forbidden Arts), **Sanctum** (per-campaign path/network/tool sandbox). Token counting uses `Microsoft.ML.Tokenizers` Tiktoken (`o200k_base`).
+- **Agentic features layered on inference:** semantic **spell routing** (frontmatter-only preflight → lazy body load), **Arcane Resonance** (spells declare `dependencies` in `SKILL.json`; at execution they are resolved recursively with a hard depth limit of 3, cycle-safe, their markdown bodies are concatenated into the system prompt, and `run_spell_script` is unified across the primary spell and resonant dependencies), **Artifact Attunement** (when a spell's `SKILL.json` `declaredTools` is populated, the Wizard restricts its MCP toolset — internal + external servers — to that allowlist; built-in native tools stay exempt and an empty/absent list leaves all tools available), **MCP tool loops** (bounded by `MaxToolInferenceRounds`), **read-time context compression** (swaps old entries for `Session.Summary` near the context limit; never deletes rows), **Wards** (operator approval for Forbidden Arts), **Sanctum** (per-campaign path/network/tool sandbox). Token counting uses `Microsoft.ML.Tokenizers` Tiktoken (`o200k_base`).
 
 ---
 
@@ -218,13 +228,14 @@ Settings bind under the `Arcanum` object in **`arcanum.json`**, living in the pe
 | `Arcanum:DefaultModel` / `FastModel` / `Providers` | Multi-provider hub + model resolution. |
 | `Arcanum:Intelligence` | Tool timeouts/caps, agentic round cap, MCP limits, lore/archive gates, context compression, tokenizer encoding, token tracking. |
 | `Arcanum:Ward` / Sanctum | Forbidden Arts list, ward timeout, unattended auto-deny; per-campaign Sanctum config. |
-| `Arcanum:Apprentices` | Concurrency, step timeout, Chronicle channel capacity. |
+| `Arcanum:Apprentices` | Concurrency, step timeout, Chronicle channel capacity, **Second Wind** retry/backoff (`MaxStepRetries`, `RetryBackoffSeconds`, `RetryBackoffMaxSeconds`), **Shifting Fate** / **Divine Intervention** toggles, **Simulacrum** parallel-step bound (`MaxSimulacra`, default 3, clamp 1–10). |
 | `Arcanum:LlamaCpp` | `llama-server` path, GPU layers, context size, ports, cache cap, SHA-256 verification. |
 | `Arcanum:Grimoire` / `Sessions` | Load/query caps, snapshot retention, page sizes, SSE replay caps. |
 | `Arcanum:CommLink` | Webhook URL, timeout, scheme allowlist. |
 | `Arcanum:Perception` / `Spells` / `Campaigns` | Path allowlists (**empty = deny by default**), campaign caps. `Arcanum:Spells:MaxFileSizeBytes` (default 256 KiB) caps spell/frontmatter reads; clamped against `Arcanum:Workspaces:MaxFileReadSizeBytes`. |
 | `Arcanum:Daemon` / `EventBus` / `Logs` / `Workspaces` / `Codex` / `Cli` | Unseen Servant scheduling, SSE channel capacity, log ring buffer, file-read caps, `Arcanum:Codex:MaxSizeBytes` (default 256 KiB) for CODEX reads/writes, CLI theming/attachments. |
-| `Arcanum:Bureau` | **Reserved** (no-op today). |
+| `Arcanum:Conclave` | **The Conclave** toggle (`Enabled`, default `false`): gates cross-Apprentice delegation (`cast_sending` tool + `POST /api/apprentices/{id}/cast`). |
+| `Arcanum:ProvingGrounds` | **The Proving Grounds** bounds: `MaxInquisitorsPerTrial` (default 20, clamp 1–200), `SemanticJudgeMaxTokens` (default 8), `SemanticJudgeTimeoutSeconds` (default 60). |
 
 **Minimal example** (local Ollama + OpenAI-compatible DeepSeek; keep API keys in env vars):
 
@@ -339,7 +350,7 @@ When you (an AI agent) draft a prompt or make a change in this repo, bake in the
 
 1. **States the AOT constraint up front** — "register the new DTO on `ArcanumJsonContext`; no reflection-based serialization; hand-author any `AIFunction` schema."
 2. **Routes work through the API** — new behavior is an endpoint returning `ApiResponse<T>`; domain logic in `Core`; the CLI just calls the API.
-3. **Names the right project and types** — e.g. "implement in `HubIntelligenceProvider` (Api), contract in `IArcanumIntelligenceProvider` (Core)." Use the [repository map](#repository-map) and [naming metaphor](#naming-metaphor).
+3. **Names the right project and types** — e.g. "implement in `WizardIntelligenceProvider` (Api), contract in `IArcanumIntelligenceProvider` (Core)." Use the [repository map](#repository-map) and [naming metaphor](#naming-metaphor).
 4. **Respects the metaphor** — Campaign/Spell/Ward/Apprentice/Grimoire, error codes `{Noun}.{Verb}`, config `Arcanum:{Noun}:{Setting}`.
 5. **Preserves OpenAI parity** — don't change `/v1` shapes casually; remember client `tools` are intentionally rejected.
 6. **Keeps the security posture** — loopback default, API key on every route, path containment, SSRF guard, sanitized errors, strict CSP (external JS/CSS only).

@@ -48,4 +48,25 @@ public enum ApprenticeEventType
     [JsonStringEnumMemberName("apprenticeCancelled")]
     ApprenticeCancelled,
 
+    [JsonStringEnumMemberName("stepRetrying")]
+    StepRetrying,
+
+    [JsonStringEnumMemberName("planRevised")]
+    PlanRevised,
+
+    [JsonStringEnumMemberName("apprenticeEscalated")]
+    ApprenticeEscalated,
+
+    [JsonStringEnumMemberName("apprenticeIntervened")]
+    ApprenticeIntervened,
+
+    [JsonStringEnumMemberName("castSent")]
+    CastSent,
+
+    [JsonStringEnumMemberName("simulacrumStarted")]
+    SimulacrumStarted,
+
+    [JsonStringEnumMemberName("simulacrumCompleted")]
+    SimulacrumCompleted,
+
 }

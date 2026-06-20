@@ -175,6 +175,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICampaignRepository, CampaignRepository>();
         services.AddScoped<IPromptRepository, PromptRepository>();
         services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
+        services.AddScoped<IConclaveArchmage, ConclaveArchmage>();
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());

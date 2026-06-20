@@ -13,7 +13,7 @@ public sealed record ArcanumSettings
 
     public string? FastModel { get; init; }
 
-    public BureauSettings Bureau { get; init; } = new();
+    public ConclaveSettings Conclave { get; init; } = new();
 
     public IntelligenceSettings Intelligence { get; init; } = new();
 
@@ -48,6 +48,8 @@ public sealed record ArcanumSettings
     public ApprenticeSettings Apprentices { get; init; } = new();
 
     public CodexSettings Codex { get; init; } = new();
+
+    public ProvingGroundsSettings ProvingGrounds { get; init; } = new();
 
 }
 

@@ -17,4 +17,6 @@ public enum ApprenticeStatus
 
     Cancelled,
 
+    Escalated,
+
 }

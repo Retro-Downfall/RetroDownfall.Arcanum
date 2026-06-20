@@ -11,4 +11,16 @@ public sealed record ApprenticeSettings
 
     public int ChronicleChannelCapacity { get; init; } = 1000;
 
+    public int MaxStepRetries { get; init; } = 2;
+
+    public int RetryBackoffSeconds { get; init; } = 5;
+
+    public int RetryBackoffMaxSeconds { get; init; } = 60;
+
+    public bool EnableShiftingFate { get; init; } = true;
+
+    public bool EnableDivineIntervention { get; init; } = true;
+
+    public int MaxSimulacra { get; init; } = 3;
+
 }
