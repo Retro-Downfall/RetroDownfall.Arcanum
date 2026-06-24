@@ -181,7 +181,8 @@ internal static class SpellForgeEndpoints
                     ? Results.Ok(ApiResponse<SpellSummary>.FromResult(result, traceId))
                     : Results.BadRequest(ApiResponse<SpellSummary>.FromResult(result, traceId));
             })
-        .WithName("ImportSpell");
+        .WithName("ImportSpell")
+        .WithLargeRequestBody();
 
         return apiGroup;
     }

@@ -186,7 +186,8 @@ internal static class PromptEndpoints
                         Result<PromptDetailDto>.Success(PromptMapping.ToDetailDto(prompt)),
                         traceId));
             })
-        .WithName("CreatePrompt");
+        .WithName("CreatePrompt")
+        .WithLargeRequestBody();
 
         apiGroup.MapPut(
             "/prompts/{id:guid}",
@@ -283,7 +284,8 @@ internal static class PromptEndpoints
                         Result<PromptDetailDto>.Success(PromptMapping.ToDetailDto(existing)),
                         traceId));
             })
-        .WithName("UpdatePrompt");
+        .WithName("UpdatePrompt")
+        .WithLargeRequestBody();
 
         apiGroup.MapDelete(
             "/prompts/{id:guid}",
@@ -336,7 +338,8 @@ internal static class PromptEndpoints
                     ? Results.Ok(ApiResponse<PromptRenderResultDto>.FromResult(result, traceId))
                     : Results.BadRequest(ApiResponse<PromptRenderResultDto>.FromResult(result, traceId));
             })
-        .WithName("RenderPrompt");
+        .WithName("RenderPrompt")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/prompts/{id:guid}/test",
@@ -502,7 +505,8 @@ internal static class PromptEndpoints
                         Result<PromptTestResultDto>.Success(dto),
                         traceId));
             })
-        .WithName("TestPrompt");
+        .WithName("TestPrompt")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/prompts/{id:guid}/export",
@@ -527,7 +531,8 @@ internal static class PromptEndpoints
                 return Results.Ok(
                     ApiResponse<PromptExportDto>.FromResult(Result<PromptExportDto>.Success(export), traceId));
             })
-        .WithName("ExportPrompt");
+        .WithName("ExportPrompt")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/prompts/import",
@@ -551,7 +556,8 @@ internal static class PromptEndpoints
                     ? Results.Ok(ApiResponse<PromptSummaryDto>.FromResult(result, traceId))
                     : Results.BadRequest(ApiResponse<PromptSummaryDto>.FromResult(result, traceId));
             })
-        .WithName("ImportPrompt");
+        .WithName("ImportPrompt")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/prompts/{id:guid}/execute",
@@ -670,7 +676,8 @@ internal static class PromptEndpoints
                         ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
                         statusCode: InferenceErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
-        .WithName("Prompt_Execute");
+        .WithName("Prompt_Execute")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/prompts/{id:guid}/execute-stream",
@@ -795,7 +802,8 @@ internal static class PromptEndpoints
                     .WriteStreamAsync(ctx, intelligence, resolvedPing.Value, ctx.RequestAborted)
                     .ConfigureAwait(false);
             })
-        .WithName("Prompt_ExecuteStream");
+        .WithName("Prompt_ExecuteStream")
+        .WithLargeRequestBody();
 
         return apiGroup;
     }

@@ -96,7 +96,8 @@ internal static class CodexEndpoints
 
                 return Results.Ok(ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Success(dto), traceId));
             })
-        .WithName("PutCampaignCodex");
+        .WithName("PutCampaignCodex")
+        .WithLargeRequestBody();
 
         apiGroup.MapDelete(
             "/campaigns/{id:guid}/codex",
@@ -169,7 +170,8 @@ internal static class CodexEndpoints
 
                 return Results.Ok(ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Success(dto), traceId));
             })
-        .WithName("PutGlobalCodex");
+        .WithName("PutGlobalCodex")
+        .WithLargeRequestBody();
 
         apiGroup.MapDelete(
             "/codex",

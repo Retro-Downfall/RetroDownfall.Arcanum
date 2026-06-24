@@ -42,7 +42,8 @@ internal static class ProvingGroundsEndpoints
 
                 return MapTrialFailure(result, traceId);
             })
-        .WithName("RunProvingGroundsTrial");
+        .WithName("RunProvingGroundsTrial")
+        .WithLargeRequestBody();
 
         return apiGroup;
     }

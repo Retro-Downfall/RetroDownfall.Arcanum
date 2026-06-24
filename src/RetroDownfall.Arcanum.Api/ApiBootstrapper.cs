@@ -17,6 +17,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Health;
 using RetroDownfall.Arcanum.Api.Streaming;
@@ -231,9 +232,23 @@ public static class ApiBootstrapper
                         policy.WithOrigins(origins);
                     }
 
-                    policy.AllowAnyHeader();
+                    policy.WithMethods(
+                        HttpMethods.Get,
+                        HttpMethods.Post,
+                        HttpMethods.Put,
+                        HttpMethods.Delete,
+                        HttpMethods.Patch,
+                        HttpMethods.Head,
+                        HttpMethods.Options);
 
-                    policy.AllowAnyMethod();
+                    policy.WithHeaders(
+                        HeaderNames.ContentType,
+                        HeaderNames.Accept,
+                        HeaderNames.Authorization,
+                        ArcanumApiHeaders.ApiKey,
+                        HeaderNames.CacheControl,
+                        HeaderNames.IfNoneMatch,
+                        "X-Requested-With");
                 });
         });
 
@@ -520,6 +535,7 @@ public static class ApiBootstrapper
             return Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
         })
         .WithName("UpdateConfiguration")
+        .WithLargeRequestBody()
         ;
 
         apiGroup.MapPost("/config/validate", async (
@@ -572,6 +588,7 @@ public static class ApiBootstrapper
             return Results.Ok(ApiResponse<bool>.FromResult(result, traceId));
         })
         .WithName("ValidateConfiguration")
+        .WithLargeRequestBody()
         ;
 
         apiGroup.MapPost("/intelligence/ping", async (PingRequest? body, IArcanumIntelligenceProvider intelligence, ICampaignRepository campaignRepository, IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext, CancellationToken cancellationToken) =>
@@ -637,7 +654,8 @@ public static class ApiBootstrapper
                 ? Results.Ok(response)
                 : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: StatusCodes.Status500InternalServerError);
         })
-        .WithName("PostIntelligencePing");
+        .WithName("PostIntelligencePing")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/intelligence/human-response",
@@ -695,7 +713,8 @@ public static class ApiBootstrapper
 
                 return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
             })
-        .WithName("PostIntelligenceHumanResponse");
+        .WithName("PostIntelligenceHumanResponse")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost("/intelligence/ping-stream", async (HttpContext httpContext, CancellationToken cancellationToken) =>
         {
@@ -792,7 +811,8 @@ public static class ApiBootstrapper
                 .ConfigureAwait(false);
 
         })
-        .WithName("PostIntelligencePingStream");
+        .WithName("PostIntelligencePingStream")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost("/mcp/reload", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, HttpContext httpContext, CancellationToken ct) =>
         {
@@ -1148,7 +1168,8 @@ public static class ApiBootstrapper
 
                 return Results.Ok(ApiResponse<LoreDto>.FromResult(ok, traceId));
             })
-        .WithName("UpsertLore");
+        .WithName("UpsertLore")
+        .WithLargeRequestBody();
 
         apiGroup.MapDelete(
             "/lore/{key}",
@@ -1312,6 +1333,7 @@ public static class ApiBootstrapper
                     : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
             })
         .WithName("CreateSpell")
+        .WithLargeRequestBody()
         ;
 
         apiGroup.MapPut(
@@ -1372,6 +1394,7 @@ public static class ApiBootstrapper
                     : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
             })
         .WithName("UpdateSpell")
+        .WithLargeRequestBody()
         ;
 
         apiGroup.MapDelete(
@@ -1537,6 +1560,7 @@ public static class ApiBootstrapper
                         traceId));
             })
         .WithName("RegisterWorkspace")
+        .WithLargeRequestBody()
         ;
 
         apiGroup.MapPut(
@@ -1592,6 +1616,7 @@ public static class ApiBootstrapper
                             traceId));
             })
         .WithName("UpdateWorkspace")
+        .WithLargeRequestBody()
         ;
 
         apiGroup.MapDelete(

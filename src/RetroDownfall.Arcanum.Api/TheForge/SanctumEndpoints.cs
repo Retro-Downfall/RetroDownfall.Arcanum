@@ -98,7 +98,8 @@ internal static class SanctumEndpoints
                         Result<SanctumConfig>.Success(clamped),
                         traceId));
             })
-        .WithName("UpdateCampaignSanctum");
+        .WithName("UpdateCampaignSanctum")
+        .WithLargeRequestBody();
 
         apiGroup.MapGet(
             "/campaigns/{campaignId:guid}/sanctum/breaches",

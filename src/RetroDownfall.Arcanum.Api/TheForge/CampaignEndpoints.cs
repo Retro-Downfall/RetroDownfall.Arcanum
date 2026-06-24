@@ -363,7 +363,8 @@ internal static class CampaignEndpoints
                 return Results.Ok(
                     ApiResponse<CampaignExportDto>.FromResult(Result<CampaignExportDto>.Success(export), traceId));
             })
-        .WithName("ExportCampaign");
+        .WithName("ExportCampaign")
+        .WithLargeRequestBody();
 
         apiGroup.MapPost(
             "/campaigns/{id:guid}/import",
@@ -494,7 +495,8 @@ internal static class CampaignEndpoints
                         Result<CampaignImportResultDto>.Success(new CampaignImportResultDto(1, spellsImported, promptsImported, warnings)),
                         traceId));
             })
-        .WithName("ImportCampaign");
+        .WithName("ImportCampaign")
+        .WithLargeRequestBody();
 
         return apiGroup;
     }

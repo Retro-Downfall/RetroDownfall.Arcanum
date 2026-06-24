@@ -40,7 +40,9 @@ internal static class OpenAiV1Endpoints
 
     internal static void MapOpenAiV1ChatCompletions(this RouteGroupBuilder v1)
     {
-        _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync).WithName("PostOpenAiChatCompletions");
+        _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync)
+            .WithName("PostOpenAiChatCompletions")
+            .WithLargeRequestBody();
     }
 
     internal static void MapOpenAiV1Models(this RouteGroupBuilder v1)
