@@ -83,6 +83,13 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
         if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
 
+            if (httpContext.Response.HasStarted)
+            {
+
+                return false;
+
+            }
+
             IResult openAiError = OpenAiV1Endpoints.CreateUnhandledInferenceErrorResult();
 
             await openAiError.ExecuteAsync(httpContext).ConfigureAwait(false);
