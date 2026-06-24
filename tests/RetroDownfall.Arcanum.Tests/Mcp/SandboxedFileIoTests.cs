@@ -1,3 +1,4 @@
+using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -152,6 +153,40 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
 
         }
+
+    }
+
+    [Fact]
+    public void TryGetPathIdentity_MatchesHandleIdentity_OnUnix()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string target = Path.Combine(_workspace.Root, "identity.txt");
+
+        File.WriteAllText(target, "identity");
+
+        using SafeFileHandle handle = File.OpenHandle(
+            target,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            FileOptions.None);
+
+        bool pathOk = FileHandleIdentityInterop.TryGetPathIdentity(target, out FileHandleIdentity pathIdentity);
+
+        bool handleOk = FileHandleIdentityInterop.TryGetHandleIdentity(handle, out FileHandleIdentity handleIdentity);
+
+        Assert.True(pathOk);
+
+        Assert.True(handleOk);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(pathIdentity, handleIdentity));
 
     }
 

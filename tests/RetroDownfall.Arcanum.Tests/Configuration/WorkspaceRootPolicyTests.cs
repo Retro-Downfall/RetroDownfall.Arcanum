@@ -167,4 +167,73 @@ public sealed class WorkspaceRootPolicyTests : IClassFixture<TempWorkspace>
 
     }
 
+    [Fact]
+    public void EnforceAllowedRoots_SymlinkEscapingRoot_Denies()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(outside);
+
+        try
+        {
+
+            string linkPath = Path.Combine(_workspace.Root, "escape-link");
+
+            Directory.CreateSymbolicLink(linkPath, outside);
+
+            Result<string> result = WorkspaceRootPolicy.EnforceAllowedRoots(
+                linkPath,
+                [_workspace.Root],
+                "Path.NotAllowed",
+                "Path is not allowed.");
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Path.NotAllowed", result.Error.Code);
+
+        }
+        finally
+        {
+
+            Directory.Delete(outside, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void EnforceAllowedRoots_SymlinkInsideRoot_Allows()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string realDir = _workspace.CreateSubdir("real-target");
+
+        string linkPath = Path.Combine(_workspace.Root, "inside-link");
+
+        Directory.CreateSymbolicLink(linkPath, realDir);
+
+        Result<string> result = WorkspaceRootPolicy.EnforceAllowedRoots(
+            linkPath,
+            [_workspace.Root],
+            "Path.NotAllowed",
+            "Path is not allowed.");
+
+        Assert.True(result.IsSuccess);
+
+    }
+
 }

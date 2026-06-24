@@ -102,8 +102,26 @@ public static class WorkspaceRootPolicy
 
         string prefix = normalizedRoot + sep;
 
-        return candidateFullPath.Equals(normalizedRoot, cmp)
-            || candidateFullPath.StartsWith(prefix, cmp);
+        if (!candidateFullPath.Equals(normalizedRoot, cmp)
+            && !candidateFullPath.StartsWith(prefix, cmp))
+        {
+            return false;
+        }
+
+        if (!SymlinkPathResolver.TryResolveFinalTarget(candidateFullPath, out string? resolvedTarget))
+        {
+            return false;
+        }
+
+        if (resolvedTarget is null)
+        {
+            return true;
+        }
+
+        string resolvedPrefix = normalizedRoot + sep;
+
+        return resolvedTarget.Equals(normalizedRoot, cmp)
+            || resolvedTarget.StartsWith(resolvedPrefix, cmp);
     }
 
     private static bool IsSamePath(string leftFullPath, string rightFullPath, char sep, StringComparison cmp)
