@@ -72,4 +72,43 @@ public sealed class SystemPromptBuilderResonanceTests
         Assert.DoesNotContain("### Resonant Spells (Dependencies)", prompt, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Build_TruncatesResonantBodies_WhenOverByteBudget()
+    {
+
+        ParsedSpell primary = new(
+            "Primary",
+            "desc",
+            "/primary/SPELL.md",
+            "---\nname: Primary\n---\nfull",
+            "/primary",
+            [])
+        {
+            Body = "primary body",
+        };
+
+        ParsedSpell dep = new(
+            "DepSpell",
+            "dep",
+            "/dep/SPELL.md",
+            "---\nname: DepSpell\n---\nfull dep",
+            "/dep",
+            [])
+        {
+            Body = new string('x', 200),
+        };
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            activeSpell: primary,
+            dependencySpells: [dep],
+            maxResonantBytes: 32);
+
+        Assert.Contains("exceeded the configured byte budget", prompt, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(new string('x', 200), prompt, StringComparison.Ordinal);
+
+    }
+
 }

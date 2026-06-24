@@ -12,9 +12,29 @@
 
   <ItemGroup>
 
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+
+      <PrivateAssets>all</PrivateAssets>
+
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+
+    </PackageReference>
+
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
+
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
 
+    <PackageReference Include="Spectre.Console" Version="0.55.0" />
+
+    <PackageReference Include="Spectre.Console.Cli" Version="1.0.0-alpha.0.16" />
+
+    <PackageReference Include="Spectre.Console.Cli.Testing" Version="0.55.0" />
+
+    <PackageReference Include="Spectre.Console.Testing" Version="0.55.0" />
+
     <PackageReference Include="xunit" Version="2.9.3" />
+
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
 
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0">
 
@@ -30,7 +50,21 @@
 
     <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Api\RetroDownfall.Arcanum.Api.csproj" />
 
+    <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Api.DevHost\RetroDownfall.Arcanum.Api.DevHost.csproj" />
+
+    <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Cli\RetroDownfall.Arcanum.Cli.csproj" />
+
     <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <Content Include="TestData\**\*">
+
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+
+    </Content>
 
   </ItemGroup>
 

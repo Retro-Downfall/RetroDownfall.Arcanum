@@ -26,7 +26,7 @@ public sealed class PromptExecuteFlowTests
       Temperature = 0.2,
     };
 
-    PromptRenderer renderer = new(new FakeTokenCounter());
+    PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(new FakeTokenCounter());
 
     Result<PromptRenderResultDto> render = renderer.Render(prompt, new Dictionary<string, string> { ["topic"] = "logs" });
 
@@ -66,7 +66,7 @@ public sealed class PromptExecuteFlowTests
       ParameterSchema = """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""",
     };
 
-    PromptRenderer renderer = new(new FakeTokenCounter());
+    PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(new FakeTokenCounter());
 
     Result<PromptRenderResultDto> render = renderer.Render(prompt, new Dictionary<string, string>());
 
@@ -125,7 +125,7 @@ public sealed class PromptExecuteFlowTests
     Assert.Contains("\"error\"", content, StringComparison.OrdinalIgnoreCase);
   }
 
-  private sealed class FakeTokenCounter : IInferenceTokenCounter
+  private sealed class FakeTokenCounter : IManaMeter
   {
 
     public int CountTokens(string text) => text.Length;

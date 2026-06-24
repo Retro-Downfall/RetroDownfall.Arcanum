@@ -123,8 +123,60 @@ public sealed class ConclaveSimulacrumTests
 
     }
 
+    [Fact]
+    public async Task CastAsync_WhenDepthExceeded_Fails()
+    {
+
+        FakeApprenticeRepository repo = new();
+
+        Guid root = Guid.NewGuid();
+
+        Guid child = Guid.NewGuid();
+
+        repo.Items.Add(new Apprentice
+        {
+            Id = root,
+            Name = "Root",
+            Goal = "Root",
+            Status = ApprenticeStatus.Running.ToString(),
+            WorkspacePath = "/tmp/ws",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        repo.Items.Add(new Apprentice
+        {
+            Id = child,
+            Name = "Child",
+            Goal = "Child",
+            Status = ApprenticeStatus.Running.ToString(),
+            WorkspacePath = "/tmp/ws",
+            ParentApprenticeId = root,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        ConclaveArchmage archmage = new(repo, Monitor(EnabledSettings()));
+
+        Result<Apprentice> result = await archmage.CastAsync(
+            new ConclaveCastRequest("Too deep", WorkspacePath: "/tmp/ws", ParentApprenticeId: child));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Apprentice.ConclaveDepthExceeded", result.Error.Code);
+
+    }
+
     private static ArcanumSettings EnabledSettings() =>
-        new() { Conclave = new ConclaveSettings { Enabled = true } };
+        new()
+        {
+            Conclave = new ConclaveSettings
+            {
+                Enabled = true,
+                MaxDelegationDepth = 1,
+                MaxDescendantsPerRoot = 16,
+            },
+        };
 
     private static IOptionsMonitor<ArcanumSettings> Monitor(ArcanumSettings settings) =>
         new StaticOptionsMonitor<ArcanumSettings>(settings);
@@ -174,6 +226,10 @@ public sealed class ConclaveSimulacrumTests
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult((IReadOnlyList<Apprentice>)[]);
 
+        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult((IReadOnlyList<Apprentice>)[]);
+
     }
 
 }
+

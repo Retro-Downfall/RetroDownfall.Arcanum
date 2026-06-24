@@ -1,44 +1,50 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
 
-public sealed class CodexPathPolicyTests : IDisposable
+public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 {
 
-    private readonly string _root;
+    private readonly TempWorkspace _workspace;
 
-    private readonly List<string> _cleanup = [];
-
-    public CodexPathPolicyTests()
+    public CodexPathPolicyTests(TempWorkspace workspace)
     {
 
-        _root = Path.Combine(Path.GetTempPath(), "arcanum-codex-" + Guid.NewGuid().ToString("N"));
-
-        Directory.CreateDirectory(_root);
-
-        _cleanup.Add(_root);
+        _workspace = workspace;
 
     }
 
-    [Fact]
-    public void ValidateContainedFile_PathOutsideRoot_Denies()
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ValidateContainedFile_EmptyCodexPath_ReturnsRequired(string codexPath)
     {
-
-        string outside = Path.Combine(Path.GetTempPath(), "arcanum-codex-outside-" + Guid.NewGuid().ToString("N"));
-
-        Directory.CreateDirectory(outside);
-
-        _cleanup.Add(outside);
-
-        string codexPath = Path.Combine(outside, "CODEX.md");
-
-        File.WriteAllText(codexPath, "# Outside");
 
         Result<string> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
-            _root,
-            maxFileReadSizeBytes: 1024 * 1024);
+            _workspace.Root,
+            maxFileReadSizeBytes: 1024);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Prompt.CodexPathRequired", result.Error.Code);
+
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ValidateContainedFile_EmptyContainmentRoot_ReturnsNotContained(string containmentRoot)
+    {
+
+        string codexPath = _workspace.WriteFile("CODEX.md", "# Codex");
+
+        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+            codexPath,
+            containmentRoot,
+            maxFileReadSizeBytes: 1024);
 
         Assert.True(result.IsFailure);
 
@@ -47,16 +53,48 @@ public sealed class CodexPathPolicyTests : IDisposable
     }
 
     [Fact]
+    public void ValidateContainedFile_PathOutsideRoot_Denies()
+    {
+
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "arcanum-codex-outside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(outsideRoot);
+
+        try
+        {
+
+            string codexPath = Path.Combine(outsideRoot, "CODEX.md");
+
+            File.WriteAllText(codexPath, "# Outside");
+
+            Result<string> result = CodexPathPolicy.ValidateContainedFile(
+                codexPath,
+                _workspace.Root,
+                maxFileReadSizeBytes: 1024 * 1024);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Prompt.CodexPathNotContained", result.Error.Code);
+
+        }
+        finally
+        {
+
+            Directory.Delete(outsideRoot, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
     public void ValidateContainedFile_PathInsideRoot_Allows()
     {
 
-        string codexPath = Path.Combine(_root, "CODEX.md");
-
-        File.WriteAllText(codexPath, "# Inside");
+        string codexPath = _workspace.WriteFile("CODEX.md", "# Inside");
 
         Result<string> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
-            _root,
+            _workspace.Root,
             maxFileReadSizeBytes: 1024 * 1024);
 
         Assert.True(result.IsSuccess);
@@ -66,49 +104,36 @@ public sealed class CodexPathPolicyTests : IDisposable
     }
 
     [Fact]
+    public void ValidateContainedFile_MissingFile_ReturnsNotFound()
+    {
+
+        string missing = Path.Combine(_workspace.Root, "missing-CODEX.md");
+
+        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+            missing,
+            _workspace.Root,
+            maxFileReadSizeBytes: 1024);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Prompt.CodexPathNotFound", result.Error.Code);
+
+    }
+
+    [Fact]
     public void ValidateContainedFile_ExceedsMaxSize_Denies()
     {
 
-        string codexPath = Path.Combine(_root, "CODEX.md");
-
-        File.WriteAllText(codexPath, new string('x', 64));
+        string codexPath = _workspace.WriteFile("CODEX.md", new string('x', 64));
 
         Result<string> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
-            _root,
+            _workspace.Root,
             maxFileReadSizeBytes: 32);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal("Prompt.CodexPathTooLarge", result.Error.Code);
-
-    }
-
-    public void Dispose()
-    {
-
-        foreach (string path in _cleanup)
-        {
-
-            try
-            {
-
-                if (Directory.Exists(path))
-                {
-
-                    Directory.Delete(path, recursive: true);
-
-                }
-
-            }
-            catch
-            {
-
-                // Best-effort temp cleanup.
-
-            }
-
-        }
 
     }
 

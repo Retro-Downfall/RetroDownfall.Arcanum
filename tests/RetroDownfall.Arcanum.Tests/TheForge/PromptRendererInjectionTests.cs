@@ -27,7 +27,7 @@ public sealed class PromptRendererInjectionTests
             ParameterSchema = ParameterSchema,
         };
 
-        PromptRenderer renderer = new(new ZeroTokenCounter());
+        PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(new ZeroTokenCounter());
 
         Dictionary<string, string> parameters = new(StringComparer.Ordinal)
         {
@@ -64,7 +64,7 @@ public sealed class PromptRendererInjectionTests
                 """,
         };
 
-        PromptRenderer renderer = new(new ZeroTokenCounter());
+        PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(new ZeroTokenCounter());
 
         Result<PromptRenderResultDto> result = renderer.Render(
             prompt,
@@ -79,7 +79,7 @@ public sealed class PromptRendererInjectionTests
 
     }
 
-    private sealed class ZeroTokenCounter : IInferenceTokenCounter
+    private sealed class ZeroTokenCounter : IManaMeter
     {
 
         public int CountTokens(string text) => 0;

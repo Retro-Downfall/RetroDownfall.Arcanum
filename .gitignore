@@ -5,3 +5,14 @@ artifacts/
 *.user
 .DS_Store
 .idea/**/jsLibraryMappings.xml
+
+.tmp/
+TestResults/
+*.cobertura.xml
+*.opencover.xml
+coverage.*
+mcp.db
+mcp.db-shm
+mcp.db-wal
+*.db-shm
+*.db-wal

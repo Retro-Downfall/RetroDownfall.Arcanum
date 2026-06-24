@@ -1,0 +1,106 @@
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
+
+namespace RetroDownfall.Arcanum.Tests.Configuration;
+
+public sealed class ConfigurationWriterTests : IAsyncLifetime
+{
+
+    private TempWorkspace _workspace = null!;
+
+    private string? _backupConfigPath;
+
+    public async Task InitializeAsync()
+    {
+
+        _workspace = new TempWorkspace();
+
+        await _workspace.InitializeAsync();
+
+        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        if (File.Exists(configPath))
+        {
+
+            _backupConfigPath = Path.Combine(_workspace.Root, "arcanum.json.bak");
+
+            File.Copy(configPath, _backupConfigPath, overwrite: true);
+
+        }
+
+    }
+
+    public async Task DisposeAsync()
+    {
+
+        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        if (_backupConfigPath is not null && File.Exists(_backupConfigPath))
+        {
+
+            File.Copy(_backupConfigPath, configPath, overwrite: true);
+
+            File.Delete(_backupConfigPath);
+
+        }
+        else if (File.Exists(configPath))
+        {
+
+            File.Delete(configPath);
+
+        }
+
+        await _workspace.DisposeAsync();
+
+    }
+
+    [Fact]
+    public async Task WriteAsync_persists_protected_settings_to_grimoire()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "openai", ApiKey = "sk-test" },
+            ],
+        };
+
+        Result result = await writer.WriteAsync(settings, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        Assert.True(File.Exists(configPath));
+
+        string json = await File.ReadAllTextAsync(configPath);
+
+        Assert.Contains("openai", json, StringComparison.Ordinal);
+
+        Assert.Contains("dp:v1:", json, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sk-test", json, StringComparison.Ordinal);
+
+    }
+
+    private static ConfigurationWriter CreateWriter()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.ConfigurationWriterTests");
+
+        ConfigurationSecretProtector secretProtector = new(provider);
+
+        return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance, secretProtector);
+
+    }
+
+}

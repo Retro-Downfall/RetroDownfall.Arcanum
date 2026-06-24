@@ -45,4 +45,112 @@ public sealed class ConfigurationSecretProtectorTests
 
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Protect_NullOrEmpty_ReturnsUnchanged(string? plaintext)
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        Assert.Equal(plaintext, protector.Protect(plaintext));
+
+    }
+
+    [Fact]
+    public void Protect_AlreadyProtected_ReturnsUnchanged()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        const string alreadyProtected = "dp:v1:already-encoded";
+
+        Assert.Equal(alreadyProtected, protector.Protect(alreadyProtected));
+
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void Unprotect_NullOrEmpty_ReturnsUnchanged(string? stored)
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        Assert.Equal(stored, protector.Unprotect(stored));
+
+    }
+
+    [Fact]
+    public void Unprotect_PlaintextWithoutPrefix_ReturnsUnchanged()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        const string legacyPlaintext = "legacy-plain-api-key";
+
+        Assert.Equal(legacyPlaintext, protector.Unprotect(legacyPlaintext));
+
+    }
+
+    [Fact]
+    public void ProtectSettingsForStorage_NoProviders_ReturnsSameInstance()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [],
+        };
+
+        ArcanumSettings stored = protector.ProtectSettingsForStorage(settings);
+
+        Assert.Same(settings, stored);
+
+    }
+
+    [Fact]
+    public void ProtectSettingsForStorage_NullProvidersArray_ReturnsSameInstance()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        ArcanumSettings settings = new()
+        {
+            Providers = null!,
+        };
+
+        ArcanumSettings stored = protector.ProtectSettingsForStorage(settings);
+
+        Assert.Same(settings, stored);
+
+    }
+
+    [Fact]
+    public void ResolveApiKey_DelegatesToUnprotect()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        string? protectedKey = protector.Protect("resolve-me");
+
+        Assert.Equal("resolve-me", protector.ResolveApiKey(protectedKey));
+
+    }
+
 }
