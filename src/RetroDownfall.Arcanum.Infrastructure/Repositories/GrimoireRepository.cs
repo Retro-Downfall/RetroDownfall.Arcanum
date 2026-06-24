@@ -54,6 +54,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         {
             Guid sid = sessionId!.Value;
 
+            using IDisposable _ = await SessionWriteLock.AcquireAsync(sid, cancellationToken).ConfigureAwait(false);
+
             await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
                 await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
@@ -241,6 +243,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken = default)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        using IDisposable _ = await SessionWriteLock.AcquireAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try

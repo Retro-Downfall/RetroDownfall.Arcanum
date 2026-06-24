@@ -12,6 +12,8 @@ public sealed class SessionEventHub
 
     private readonly ConcurrentDictionary<Guid, PerSessionHub> _hubs = new();
 
+    private readonly Lock _lifecycleLock = new();
+
     private readonly IOptionsMonitor<ArcanumSettings> _options;
 
     public SessionEventHub(IOptionsMonitor<ArcanumSettings> options)
@@ -30,9 +32,17 @@ public sealed class SessionEventHub
         Guid sessionId,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        PerSessionHub hub = GetOrCreateHub(sessionId);
+        PerSessionHub hub;
 
-        ChannelReader<Entry> reader = hub.Subscribe(out Guid subscriptionId);
+        ChannelReader<Entry> reader;
+
+        Guid subscriptionId;
+
+        lock (_lifecycleLock)
+        {
+            hub = GetOrCreateHub(sessionId);
+            reader = hub.Subscribe(out subscriptionId);
+        }
 
         try
         {
@@ -44,10 +54,14 @@ public sealed class SessionEventHub
         finally
         {
 
-            if (hub.Unsubscribe(subscriptionId))
+            lock (_lifecycleLock)
             {
 
-                _ = _hubs.TryRemove(sessionId, out _);
+                if (hub.Unsubscribe(subscriptionId))
+                {
+
+                    _ = _hubs.TryRemove(sessionId, out _);
+                }
             }
         }
     }

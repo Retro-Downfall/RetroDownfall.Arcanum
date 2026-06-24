@@ -22,16 +22,46 @@ internal static class HttpResponseBodyDrainer
 
         }
 
-        await using Stream stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        long? contentLength = content.Headers.ContentLength;
+
+        if (contentLength.HasValue && contentLength.Value > maxBytes)
+        {
+
+            return;
+
+        }
+
+        await using Stream stream = await content
+            .ReadAsStreamAsync(cancellationToken)
+            .ConfigureAwait(false);
 
         byte[] buffer = new byte[4096];
 
         long totalRead = 0L;
 
-        while (true)
+        while (totalRead < maxBytes)
         {
 
-            int read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            using CancellationTokenSource readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            readCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            int read;
+
+            try
+            {
+
+                read = await stream
+                    .ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, maxBytes - totalRead)), readCts.Token)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException) when (readCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+
+                break;
+
+            }
 
             if (read <= 0)
             {
@@ -42,16 +72,8 @@ internal static class HttpResponseBodyDrainer
 
             totalRead += read;
 
-            if (totalRead >= maxBytes)
-            {
-
-                break;
-
-            }
-
         }
 
     }
 
 }
-

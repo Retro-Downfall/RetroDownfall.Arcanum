@@ -333,6 +333,8 @@ internal sealed class McpStdioLineReader
 
         long utf8Bytes = 0L;
 
+        Encoder encoder = Encoding.UTF8.GetEncoder();
+
         while (true)
         {
 
@@ -359,25 +361,17 @@ internal sealed class McpStdioLineReader
 
             }
 
-            char c = _buffer[_bufferIndex++];
+            int start = _bufferIndex;
 
-            if (c == '\n')
-            {
+            int newlineIndex = Array.IndexOf(_buffer, '\n', start, _bufferLength - start);
 
-                return builder.ToString();
+            int segmentLength = newlineIndex >= 0
+                ? newlineIndex - start
+                : _bufferLength - start;
 
-            }
+            int segmentBytes = encoder.GetByteCount(_buffer, start, segmentLength, newlineIndex >= 0);
 
-            if (c == '\r')
-            {
-
-                continue;
-
-            }
-
-            int charUtf8Bytes = Encoding.UTF8.GetByteCount(new ReadOnlySpan<char>(ref c));
-
-            if (utf8Bytes + charUtf8Bytes > maxJsonRpcLineBytes)
+            if (utf8Bytes + segmentBytes > maxJsonRpcLineBytes)
             {
 
                 await DiscardUntilNewlineAsync(cancellationToken).ConfigureAwait(false);
@@ -387,9 +381,32 @@ internal sealed class McpStdioLineReader
 
             }
 
-            builder.Append(c);
+            for (int i = 0; i < segmentLength; i++)
+            {
 
-            utf8Bytes += charUtf8Bytes;
+                char c = _buffer[start + i];
+
+                if (c != '\r')
+                {
+
+                    builder.Append(c);
+
+                }
+
+            }
+
+            utf8Bytes += segmentBytes;
+
+            _bufferIndex = start + segmentLength;
+
+            if (newlineIndex >= 0)
+            {
+
+                _bufferIndex++;
+
+                return builder.ToString();
+
+            }
 
         }
 

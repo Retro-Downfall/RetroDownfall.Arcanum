@@ -12,6 +12,8 @@ public sealed class ChronicleHub
 
     private readonly ConcurrentDictionary<Guid, PerApprenticeHub> _hubs = new();
 
+    private readonly Lock _lifecycleLock = new();
+
     private readonly IOptionsMonitor<ArcanumSettings> _options;
 
     public ChronicleHub(IOptionsMonitor<ArcanumSettings> options)
@@ -50,9 +52,17 @@ public sealed class ChronicleHub
         Guid apprenticeId,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        PerApprenticeHub hub = GetOrCreateHub(apprenticeId);
+        PerApprenticeHub hub;
 
-        ChannelReader<ApprenticeEvent> reader = hub.Subscribe(out Guid subscriptionId);
+        ChannelReader<ApprenticeEvent> reader;
+
+        Guid subscriptionId;
+
+        lock (_lifecycleLock)
+        {
+            hub = GetOrCreateHub(apprenticeId);
+            reader = hub.Subscribe(out subscriptionId);
+        }
 
         try
         {
@@ -64,10 +74,14 @@ public sealed class ChronicleHub
         finally
         {
 
-            if (hub.Unsubscribe(subscriptionId))
+            lock (_lifecycleLock)
             {
 
-                _ = _hubs.TryRemove(apprenticeId, out _);
+                if (hub.Unsubscribe(subscriptionId))
+                {
+
+                    _ = _hubs.TryRemove(apprenticeId, out _);
+                }
             }
         }
     }
