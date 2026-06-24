@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Spells;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -19,6 +20,7 @@ public sealed partial class ProvingGroundsRunner(
     IArcanumIntelligenceProvider intelligence,
     IProvingGroundsArbiter arbiter,
     PromptRenderer promptRenderer,
+    SpellWorkspaceResolver workspaceResolver,
     IOptionsSnapshot<ArcanumSettings> options)
 {
 
@@ -52,7 +54,17 @@ public sealed partial class ProvingGroundsRunner(
                     $"Trial defines {trial.Inquisitors.Count} Inquisitors; the maximum is {maxInquisitors}."));
         }
 
-        Result<PingRequest> pingResult = await ResolvePingRequestAsync(trial, cancellationToken).ConfigureAwait(false);
+        Result<string> workspaceResult = workspaceResolver.ResolveRequired(trial.Workspace);
+
+        if (workspaceResult.IsFailure)
+        {
+            return Result<TrialResult>.Failure(
+                new Error("ProvingGrounds.WorkspaceNotAllowed", workspaceResult.Error.Message));
+        }
+
+        string resolvedWorkspace = workspaceResult.Value!;
+
+        Result<PingRequest> pingResult = await ResolvePingRequestAsync(trial, resolvedWorkspace, cancellationToken).ConfigureAwait(false);
 
         if (pingResult.IsFailure)
         {
@@ -108,25 +120,29 @@ public sealed partial class ProvingGroundsRunner(
         return Result<TrialResult>.Success(result);
     }
 
-    private async Task<Result<PingRequest>> ResolvePingRequestAsync(Trial trial, CancellationToken cancellationToken)
+    private async Task<Result<PingRequest>> ResolvePingRequestAsync(
+        Trial trial,
+        string resolvedWorkspace,
+        CancellationToken cancellationToken)
     {
         return trial.TargetKind switch
         {
-            TrialTargetKind.Spell => await ResolveSpellPingAsync(trial, cancellationToken).ConfigureAwait(false),
-            TrialTargetKind.Prompt => await ResolvePromptPingAsync(trial, cancellationToken).ConfigureAwait(false),
-            TrialTargetKind.ApprenticeGoal => ResolveApprenticeGoalPing(trial),
+            TrialTargetKind.Spell => await ResolveSpellPingAsync(trial, resolvedWorkspace, cancellationToken).ConfigureAwait(false),
+            TrialTargetKind.Prompt => await ResolvePromptPingAsync(trial, resolvedWorkspace, cancellationToken).ConfigureAwait(false),
+            TrialTargetKind.ApprenticeGoal => ResolveApprenticeGoalPing(trial, resolvedWorkspace),
             _ => Result<PingRequest>.Failure(new Error("ProvingGrounds.InvalidTrial", $"Unknown target kind '{trial.TargetKind}'.")),
         };
     }
 
-    private async Task<Result<PingRequest>> ResolveSpellPingAsync(Trial trial, CancellationToken cancellationToken)
+    private async Task<Result<PingRequest>> ResolveSpellPingAsync(
+        Trial trial,
+        string resolvedWorkspace,
+        CancellationToken cancellationToken)
     {
         string spellName = trial.Target.Trim();
 
-        string? workspace = string.IsNullOrWhiteSpace(trial.Workspace) ? null : trial.Workspace.Trim();
-
         SpellDetail? spell = await spellRepository
-            .GetAsync(spellName, workspace, cancellationToken)
+            .GetAsync(spellName, resolvedWorkspace, cancellationToken)
             .ConfigureAwait(false);
 
         if (spell is null)
@@ -140,7 +156,7 @@ public sealed partial class ProvingGroundsRunner(
         PingRequest ping = new(
             Prompt: userPrompt,
             Model: trial.Model,
-            WorkingDirectory: workspace ?? string.Empty,
+            WorkingDirectory: resolvedWorkspace,
             OverrideSpellName: spellName,
             SkipSpellRouting: false,
             UnattendedMode: true);
@@ -148,7 +164,10 @@ public sealed partial class ProvingGroundsRunner(
         return Result<PingRequest>.Success(ping);
     }
 
-    private async Task<Result<PingRequest>> ResolvePromptPingAsync(Trial trial, CancellationToken cancellationToken)
+    private async Task<Result<PingRequest>> ResolvePromptPingAsync(
+        Trial trial,
+        string resolvedWorkspace,
+        CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(trial.Target.Trim(), out Guid promptId))
         {
@@ -175,12 +194,10 @@ public sealed partial class ProvingGroundsRunner(
 
         string userMessage = ResolveVariable(trial.Variables, "input") ?? string.Empty;
 
-        string? workspace = string.IsNullOrWhiteSpace(trial.Workspace) ? null : trial.Workspace.Trim();
-
         PingRequest ping = new(
             Prompt: userMessage,
             Model: trial.Model ?? prompt.Model,
-            WorkingDirectory: workspace ?? string.Empty,
+            WorkingDirectory: resolvedWorkspace,
             SkipSpellRouting: true,
             UnattendedMode: true,
             DisableMcpTools: true,
@@ -189,7 +206,7 @@ public sealed partial class ProvingGroundsRunner(
         return Result<PingRequest>.Success(ping);
     }
 
-    private static Result<PingRequest> ResolveApprenticeGoalPing(Trial trial)
+    private static Result<PingRequest> ResolveApprenticeGoalPing(Trial trial, string resolvedWorkspace)
     {
         string goal = SubstituteGoalVariables(trial.Target.Trim(), trial.Variables);
 
@@ -201,12 +218,10 @@ public sealed partial class ProvingGroundsRunner(
 
         string planPrompt = ApprenticePromptBuilder.BuildPlanGenerationPrompt(apprentice);
 
-        string? workspace = string.IsNullOrWhiteSpace(trial.Workspace) ? null : trial.Workspace.Trim();
-
         PingRequest ping = new(
             Prompt: planPrompt,
             Model: trial.Model,
-            WorkingDirectory: workspace ?? string.Empty,
+            WorkingDirectory: resolvedWorkspace,
             UnattendedMode: true,
             DisableMcpTools: true,
             SkipSpellRouting: true);

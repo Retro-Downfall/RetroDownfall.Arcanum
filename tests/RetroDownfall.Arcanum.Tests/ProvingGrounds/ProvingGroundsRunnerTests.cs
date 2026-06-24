@@ -1,5 +1,8 @@
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.ProvingGrounds;
+using RetroDownfall.Arcanum.Api.Spells;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -91,12 +94,41 @@ public sealed class ProvingGroundsRunnerTests
         Assert.Equal("ProvingGrounds.InferenceFailed", result.Error.Code);
     }
 
-    private static ProvingGroundsRunner CreateRunner(IArcanumIntelligenceProvider intelligence)
+    [Fact]
+    public async Task RunAsync_WorkspaceOutsideAllowlist_Fails()
+    {
+        FakeIntelligenceProvider intelligence = new();
+
+        ProvingGroundsRunner runner = CreateRunner(
+            intelligence,
+            allowedWorkspaceRoots: [Path.GetTempPath()]);
+
+        Trial trial = new(
+            TargetKind: TrialTargetKind.ApprenticeGoal,
+            Target: "goal",
+            Inquisitors: [new RegexInquisitor("x")],
+            Workspace: "/tmp/outside-" + Guid.NewGuid().ToString("N"));
+
+        Result<TrialResult> result = await runner.RunAsync(trial, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("ProvingGrounds.WorkspaceNotAllowed", result.Error.Code);
+    }
+
+    private static ProvingGroundsRunner CreateRunner(
+        IArcanumIntelligenceProvider intelligence,
+        string[]? allowedWorkspaceRoots = null)
     {
         ArcanumSettings settings = new()
         {
             ProvingGrounds = new ProvingGroundsSettings { MaxInquisitorsPerTrial = 3 },
+            Spells = new SpellSettings { AllowedWorkspaceRoots = allowedWorkspaceRoots ?? [Path.GetTempPath(), System.Environment.CurrentDirectory] },
         };
+
+        SpellWorkspaceResolver workspaceResolver = new(
+            new FakeHostWorkspaceContext(null),
+            Microsoft.Extensions.Options.Options.Create(settings));
 
         return new ProvingGroundsRunner(
             new FakeSpellRepository(),
@@ -104,7 +136,22 @@ public sealed class ProvingGroundsRunnerTests
             intelligence,
             new ProvingGroundsArbiter(intelligence, new TestOptionsMonitor<ArcanumSettings>(settings)),
             new PromptRenderer(new FakeTokenCounter(), new TestOptionsMonitor<ArcanumSettings>(settings)),
+            workspaceResolver,
             new TestOptionsSnapshot<ArcanumSettings>(settings));
+    }
+
+    private sealed class FakeHostWorkspaceContext : IHostWorkspaceContext
+    {
+
+        public FakeHostWorkspaceContext(string? path)
+        {
+
+            WorkspacePath = path;
+
+        }
+
+        public string? WorkspacePath { get; }
+
     }
 
     private sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider

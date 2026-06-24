@@ -6,7 +6,7 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Spells;
 
-internal sealed class SpellWorkspaceResolver(
+public sealed class SpellWorkspaceResolver(
     IHostWorkspaceContext hostContext,
     IOptions<ArcanumSettings> settings)
 {
