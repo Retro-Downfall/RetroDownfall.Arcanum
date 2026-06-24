@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -16,6 +17,12 @@ public static class OutboundUrlGuard
 
     private const string BlockedMessage =
         "Outbound URL targets a loopback, private, or link-local address and is not permitted.";
+
+    /// <summary>
+    /// DNS resolver used for hostname lookups. Production code uses the real DNS;
+    /// tests can replace this with a fake to avoid network dependencies.
+    /// </summary>
+    public static IDnsResolver DnsResolver { get; set; } = new SystemDnsResolver();
 
     /// <summary>
     /// Validates an untrusted outbound URL (model pulls, webhooks, model-map downloads).
@@ -129,7 +136,7 @@ public static class OutboundUrlGuard
         try
         {
 
-            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+            addresses = await DnsResolver.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
 
         }
         catch (SocketException)

@@ -83,7 +83,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     FakeSecretStore store = new(ValidKey);
 
-    ApiKeyDigestCache cache = new();
+    ApiKeyDigestCache cache = new(new FakeTimeProvider());
 
     ArcanumSettings settings = new()
     {
@@ -185,7 +185,7 @@ public sealed class ApiKeyEndpointFilterTests
       Security = new SecuritySettings { MaxApiKeyHeaderUtf16Chars = 128 },
     };
 
-    ApiKeyEndpointFilter filter = new(new FakeSecretStore(ValidKey), new ApiKeyDigestCache(), new TestOptionsMonitor<ArcanumSettings>(settings));
+    ApiKeyEndpointFilter filter = new(new FakeSecretStore(ValidKey), new ApiKeyDigestCache(new FakeTimeProvider()), new TestOptionsMonitor<ArcanumSettings>(settings));
 
     DefaultHttpContext httpContext = new();
 
@@ -403,6 +403,8 @@ public sealed class ApiKeyEndpointFilterTests
   {
     FakeSecretStore store = new(ValidKey);
 
+    FakeTimeProvider timeProvider = new();
+
     ArcanumSettings settings = new()
     {
       Security = new SecuritySettings
@@ -412,7 +414,7 @@ public sealed class ApiKeyEndpointFilterTests
       },
     };
 
-    ApiKeyEndpointFilter filter = new(store, new ApiKeyDigestCache(), new TestOptionsMonitor<ArcanumSettings>(settings));
+    ApiKeyEndpointFilter filter = new(store, new ApiKeyDigestCache(timeProvider), new TestOptionsMonitor<ArcanumSettings>(settings));
 
     DefaultHttpContext first = new();
 
@@ -422,7 +424,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     store.GetCallCount = 0;
 
-    await Task.Delay(1100);
+    timeProvider.Advance(TimeSpan.FromSeconds(2));
 
     DefaultHttpContext second = new();
 
@@ -471,7 +473,7 @@ public sealed class ApiKeyEndpointFilterTests
       },
     };
 
-    return new ApiKeyEndpointFilter(store, new ApiKeyDigestCache(), new TestOptionsMonitor<ArcanumSettings>(settings));
+    return new ApiKeyEndpointFilter(store, new ApiKeyDigestCache(new FakeTimeProvider()), new TestOptionsMonitor<ArcanumSettings>(settings));
   }
 
   private static EndpointFilterInvocationContext CreateContext(HttpContext httpContext) =>

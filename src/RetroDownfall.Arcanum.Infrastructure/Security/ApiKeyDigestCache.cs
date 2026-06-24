@@ -7,16 +7,25 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
 
     private byte[]? _cachedDigest;
 
-    private long _cachedExpiresAtTicks;
+    private long _cachedExpiresAtMilliseconds;
+
+    private readonly TimeProvider _timeProvider;
+
+    public ApiKeyDigestCache(TimeProvider? timeProvider = null)
+    {
+
+        _timeProvider = timeProvider ?? TimeProvider.System;
+
+    }
 
     public bool TryGetDigest(out byte[]? digest)
     {
 
-        long now = Environment.TickCount64;
+        long now = _timeProvider.GetUtcNow().Ticks / TimeSpan.TicksPerMillisecond;
 
         byte[]? cached = Volatile.Read(ref _cachedDigest);
 
-        long expiresAt = Volatile.Read(ref _cachedExpiresAtTicks);
+        long expiresAt = Volatile.Read(ref _cachedExpiresAtMilliseconds);
 
         if (cached is not null && now < expiresAt)
         {
@@ -36,9 +45,9 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
     public void StoreDigest(byte[] digest, int ttlSeconds)
     {
 
-        long now = Environment.TickCount64;
+        long now = _timeProvider.GetUtcNow().Ticks / TimeSpan.TicksPerMillisecond;
 
-        Volatile.Write(ref _cachedExpiresAtTicks, now + (ttlSeconds * 1000L));
+        Volatile.Write(ref _cachedExpiresAtMilliseconds, now + (ttlSeconds * 1000L));
 
         Volatile.Write(ref _cachedDigest, digest);
 
@@ -49,7 +58,7 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
 
         Volatile.Write(ref _cachedDigest, null);
 
-        Volatile.Write(ref _cachedExpiresAtTicks, 0);
+        Volatile.Write(ref _cachedExpiresAtMilliseconds, 0);
 
     }
 

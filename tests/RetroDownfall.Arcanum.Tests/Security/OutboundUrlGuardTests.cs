@@ -3,12 +3,42 @@ using System.Net.Http;
 using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
-public sealed class OutboundUrlGuardTests
+public sealed class OutboundUrlGuardTests : IDisposable
 {
+
+    private readonly IDnsResolver _originalResolver;
+
+    public OutboundUrlGuardTests()
+    {
+
+        _originalResolver = OutboundUrlGuard.DnsResolver;
+
+        FakeDnsResolver fake = new();
+
+        fake.Add("localhost", IPAddress.Parse("127.0.0.1"));
+        fake.Add("example.com", IPAddress.Parse("93.184.216.34"));
+        fake.Add("8.8.8.8", IPAddress.Parse("8.8.8.8"));
+        fake.Add("93.184.216.34", IPAddress.Parse("93.184.216.34"));
+        fake.Add("127.0.0.1", IPAddress.Parse("127.0.0.1"));
+        fake.Add("10.1.2.3", IPAddress.Parse("10.1.2.3"));
+        fake.Add("127.0.0.1.nip.io", IPAddress.Parse("127.0.0.1"));
+
+        OutboundUrlGuard.DnsResolver = fake;
+
+    }
+
+    public void Dispose()
+    {
+
+        OutboundUrlGuard.DnsResolver = _originalResolver;
+
+    }
 
     [Theory]
     [InlineData(null)]

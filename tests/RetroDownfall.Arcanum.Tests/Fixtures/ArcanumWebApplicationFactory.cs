@@ -29,6 +29,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     private readonly TestApiKeySecretStore _secretStore = new(TestApiKey);
 
+    private readonly Dictionary<string, string?> _originalEnvironment = new();
+
     public ArcanumWebApplicationFactory()
     {
 
@@ -36,12 +38,37 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         Directory.CreateDirectory(_tempHome);
 
+        CaptureEnvironment();
+
         ApplyIsolatedUserProfile();
 
         if (GrimoireFixture.SqlCipherAvailable)
         {
 
             _grimoireFixture = new GrimoireFixture();
+
+        }
+
+    }
+
+    private void CaptureEnvironment()
+    {
+
+        _originalEnvironment["HOME"] = global::System.Environment.GetEnvironmentVariable("HOME");
+        _originalEnvironment["APPDATA"] = global::System.Environment.GetEnvironmentVariable("APPDATA");
+        _originalEnvironment["USERPROFILE"] = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
+        _originalEnvironment["XDG_DATA_HOME"] = global::System.Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        _originalEnvironment["ARCANUM_SKIP_KEY_BOOTSTRAP"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP");
+
+    }
+
+    private void RestoreEnvironment()
+    {
+
+        foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
+        {
+
+            global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
 
         }
 
@@ -227,7 +254,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         if (disposing)
         {
 
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP", null);
+            RestoreEnvironment();
 
             _grimoireFixture?.Dispose();
 

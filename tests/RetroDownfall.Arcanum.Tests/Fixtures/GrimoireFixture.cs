@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -23,6 +24,8 @@ public sealed class GrimoireFixture : IDisposable
     private readonly string _templatePath;
 
     private readonly string _passphrase;
+
+    private readonly ConcurrentBag<string> _copyPaths = new();
 
     static GrimoireFixture()
     {
@@ -105,6 +108,8 @@ public sealed class GrimoireFixture : IDisposable
     {
 
         string copyPath = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"grimoire-{Guid.NewGuid():N}.db");
+
+        _copyPaths.Add(copyPath);
 
         lock (CopyLock)
         {
@@ -194,6 +199,30 @@ public sealed class GrimoireFixture : IDisposable
 
     public void Dispose()
     {
+
+        foreach (string copyPath in _copyPaths)
+        {
+
+            try
+            {
+
+                if (File.Exists(copyPath))
+                {
+
+                    File.Delete(copyPath);
+
+                }
+
+            }
+            catch
+            {
+
+                // Best-effort cleanup; another test may still hold the handle.
+
+            }
+
+        }
+
     }
 
     private sealed class TestGrimoireDbPassphraseSource : IGrimoireDbPassphraseSource
