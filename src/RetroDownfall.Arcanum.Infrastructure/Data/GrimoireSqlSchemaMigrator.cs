@@ -201,28 +201,146 @@ internal static class GrimoireSqlSchemaMigrator
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (TrySqliteExec(db, script, out string? error))
+        string guardedScript = GuardExistingAddColumns(connection, script);
+
+        if (TrySqliteExec(db, guardedScript, out string? error))
         {
 
             return;
 
         }
 
-        if (error.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException(error);
+
+    }
+
+    private static string GuardExistingAddColumns(SqliteConnection connection, string script)
+    {
+
+        string[] lines = script.Split('\n');
+
+        List<string> kept = new(lines.Length);
+
+        foreach (string line in lines)
         {
 
-            string withoutAddColumn = StripAddColumnStatements(script);
+            string trimmed = line.Trim();
 
-            if (TrySqliteExec(db, withoutAddColumn, out error))
+            if (TryParseAddColumn(trimmed, out string? tableName, out string? columnName))
             {
 
-                return;
+                if (ColumnExists(connection, tableName!, columnName!))
+                {
+
+                    continue;
+
+                }
 
             }
 
+            kept.Add(line);
+
         }
 
-        throw new InvalidOperationException(error);
+        return string.Join('\n', kept);
+
+    }
+
+    private static bool TryParseAddColumn(string statement, out string? tableName, out string? columnName)
+    {
+
+        tableName = null;
+
+        columnName = null;
+
+        if (!statement.StartsWith("ALTER TABLE", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return false;
+
+        }
+
+        if (!statement.Contains(" ADD", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return false;
+
+        }
+
+        int tableStart = statement.IndexOf('"');
+
+        if (tableStart < 0)
+        {
+
+            return false;
+
+        }
+
+        int tableEnd = statement.IndexOf('"', tableStart + 1);
+
+        if (tableEnd < 0)
+        {
+
+            return false;
+
+        }
+
+        tableName = statement.Substring(tableStart + 1, tableEnd - tableStart - 1);
+
+        int columnStart = statement.IndexOf('"', tableEnd + 1);
+
+        if (columnStart < 0)
+        {
+
+            return false;
+
+        }
+
+        int columnEnd = statement.IndexOf('"', columnStart + 1);
+
+        if (columnEnd < 0)
+        {
+
+            return false;
+
+        }
+
+        columnName = statement.Substring(columnStart + 1, columnEnd - columnStart - 1);
+
+        return true;
+
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string tableName, string columnName)
+    {
+
+        try
+        {
+
+            using SqliteCommand cmd = connection.CreateCommand();
+
+            cmd.CommandText = """
+                SELECT 1
+                FROM pragma_table_info($tableName)
+                WHERE name = $columnName
+                LIMIT 1;
+                """;
+
+            cmd.Parameters.AddWithValue("$tableName", tableName);
+
+            cmd.Parameters.AddWithValue("$columnName", columnName);
+
+            object? result = cmd.ExecuteScalar();
+
+            return result is not null && result != DBNull.Value;
+
+        }
+        catch
+        {
+
+            return false;
+
+        }
 
     }
 
