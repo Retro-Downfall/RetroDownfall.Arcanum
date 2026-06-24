@@ -13,9 +13,16 @@ public sealed record CommLinkSettings
 
     /// <summary>
     /// URI schemes the webhook dispatcher is permitted to call. Default
-    /// <c>["https", "http"]</c>. Use a single-element array (for example <c>["https"]</c>) to
-    /// require TLS; any URL whose scheme is not in this list is rejected with a warning.
+    /// <c>["https"]</c>. Add <c>"http"</c> explicitly to opt in to plaintext webhooks;
+    /// any URL whose scheme is not in this list is rejected with a warning.
     /// </summary>
-    public string[] AllowedSchemes { get; init; } = ["https", "http"];
+    public string[] AllowedSchemes { get; init; } = ["https"];
+
+    /// <summary>
+    /// Optional list of allowed webhook hosts (e.g. <c>["hooks.example.com"]</c>). When
+    /// populated, any configured <see cref="WebhookUrl"/> whose host is not in this list is
+    /// rejected at startup.
+    /// </summary>
+    public string[] AllowedHosts { get; init; } = [];
 
 }

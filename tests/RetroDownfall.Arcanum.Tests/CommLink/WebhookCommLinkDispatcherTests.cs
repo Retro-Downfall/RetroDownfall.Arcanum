@@ -5,15 +5,41 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.CommLink;
 
-public sealed class WebhookCommLinkDispatcherTests
+public sealed class WebhookCommLinkDispatcherTests : IDisposable
 {
 
     private const string PublicWebhookUrl = "https://example.com/hooks/arcanum";
+
+    private readonly IDnsResolver _originalResolver;
+
+    public WebhookCommLinkDispatcherTests()
+    {
+
+        _originalResolver = OutboundUrlGuard.DnsResolver;
+
+        FakeDnsResolver fake = new();
+
+        fake.Add("example.com", IPAddress.Parse("93.184.216.34"));
+        fake.Add("127.0.0.1", IPAddress.Parse("127.0.0.1"));
+        fake.Add("localhost", IPAddress.Parse("127.0.0.1"));
+
+        OutboundUrlGuard.DnsResolver = fake;
+
+    }
+
+    public void Dispose()
+    {
+
+        OutboundUrlGuard.DnsResolver = _originalResolver;
+
+    }
 
     [Fact]
     public async Task DispatchAsync_missing_webhook_url_returns_success_without_http()
@@ -80,7 +106,7 @@ public sealed class WebhookCommLinkDispatcherTests
     }
 
     [Fact]
-    public async Task DispatchAsync_blocked_loopback_url_returns_success_without_http()
+    public async Task DispatchAsync_blocked_http_by_default_returns_success_without_http()
     {
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
@@ -88,6 +114,56 @@ public sealed class WebhookCommLinkDispatcherTests
         ArcanumSettings settings = new()
         {
             CommLink = new CommLinkSettings { WebhookUrl = "http://127.0.0.1/hook" },
+        };
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
+
+        Result result = await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Empty(handler.Requests);
+
+    }
+
+    [Fact]
+    public async Task DispatchAsync_http_allowed_when_explicitly_opted_in()
+    {
+
+        RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
+
+        ArcanumSettings settings = new()
+        {
+            CommLink = new CommLinkSettings
+            {
+                WebhookUrl = "http://example.com/hook",
+                AllowedSchemes = ["https", "http"],
+            },
+        };
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
+
+        Result result = await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Single(handler.Requests);
+
+    }
+
+    [Fact]
+    public async Task DispatchAsync_host_not_in_allowed_hosts_returns_success_without_http()
+    {
+
+        RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
+
+        ArcanumSettings settings = new()
+        {
+            CommLink = new CommLinkSettings
+            {
+                WebhookUrl = PublicWebhookUrl,
+                AllowedHosts = ["hooks.example.com"],
+            },
         };
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);

@@ -42,7 +42,18 @@ internal sealed class WebhookCommLinkDispatcher(
 
         }
 
-        string[] allowedSchemes = commLinkSettings?.AllowedSchemes ?? ["https", "http"];
+        string[] allowedSchemes = commLinkSettings?.AllowedSchemes ?? ["https"];
+
+        if (commLinkSettings?.AllowedHosts.Length > 0 && !IsHostAllowed(endpoint.Host, commLinkSettings.AllowedHosts))
+        {
+
+            logger.LogWarning(
+                "Comm Link webhook URL host '{Host}' is not in Arcanum:CommLink:AllowedHosts; alert was not sent.",
+                endpoint.Host);
+
+            return Result.Success();
+
+        }
 
         if (!IsSchemeAllowed(endpoint.Scheme, allowedSchemes))
         {
@@ -156,6 +167,30 @@ internal sealed class WebhookCommLinkDispatcher(
             }
 
             if (string.Equals(scheme, allowed.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+        }
+
+        return false;
+
+    }
+
+    private static bool IsHostAllowed(string host, string[] allowedHosts)
+    {
+
+        foreach (string allowed in allowedHosts)
+        {
+
+            string trimmed = allowed.Trim();
+
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                continue;
+            }
+
+            if (string.Equals(host, trimmed, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

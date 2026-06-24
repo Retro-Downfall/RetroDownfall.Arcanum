@@ -22,7 +22,7 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
     public void ValidateContainedFile_EmptyCodexPath_ReturnsRequired(string codexPath)
     {
 
-        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+        Result<CodexValidationResult> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
             _workspace.Root,
             maxFileReadSizeBytes: 1024);
@@ -41,7 +41,7 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
         string codexPath = _workspace.WriteFile("CODEX.md", "# Codex");
 
-        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+        Result<CodexValidationResult> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
             containmentRoot,
             maxFileReadSizeBytes: 1024);
@@ -67,7 +67,7 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
             File.WriteAllText(codexPath, "# Outside");
 
-            Result<string> result = CodexPathPolicy.ValidateContainedFile(
+            Result<CodexValidationResult> result = CodexPathPolicy.ValidateContainedFile(
                 codexPath,
                 _workspace.Root,
                 maxFileReadSizeBytes: 1024 * 1024);
@@ -92,14 +92,16 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
         string codexPath = _workspace.WriteFile("CODEX.md", "# Inside");
 
-        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+        Result<CodexValidationResult> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
             _workspace.Root,
             maxFileReadSizeBytes: 1024 * 1024);
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal(Path.GetFullPath(codexPath), result.Value);
+        Assert.Equal(Path.GetFullPath(codexPath), result.Value.Path);
+
+        Assert.Equal(1024 * 1024, result.Value.MaxBytes);
 
     }
 
@@ -109,7 +111,7 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
         string missing = Path.Combine(_workspace.Root, "missing-CODEX.md");
 
-        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+        Result<CodexValidationResult> result = CodexPathPolicy.ValidateContainedFile(
             missing,
             _workspace.Root,
             maxFileReadSizeBytes: 1024);
@@ -121,15 +123,45 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
     }
 
     [Fact]
-    public void ValidateContainedFile_ExceedsMaxSize_Denies()
+    public void ValidateContainedFile_ReturnsMaxBytesInsteadOfRejectingBySize()
     {
 
         string codexPath = _workspace.WriteFile("CODEX.md", new string('x', 64));
 
-        Result<string> result = CodexPathPolicy.ValidateContainedFile(
+        Result<CodexValidationResult> result = CodexPathPolicy.ValidateContainedFile(
             codexPath,
             _workspace.Root,
             maxFileReadSizeBytes: 32);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(Path.GetFullPath(codexPath), result.Value.Path);
+
+        Assert.Equal(32, result.Value.MaxBytes);
+
+    }
+
+    [Fact]
+    public async Task ReadCappedAsync_UnderLimit_ReturnsContent()
+    {
+
+        string codexPath = _workspace.WriteFile("CODEX.md", "# Hello");
+
+        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 1024).ConfigureAwait(false);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("# Hello", result.Value);
+
+    }
+
+    [Fact]
+    public async Task ReadCappedAsync_ExceedsLimit_ReturnsTooLarge()
+    {
+
+        string codexPath = _workspace.WriteFile("CODEX.md", new string('x', 64));
+
+        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 32).ConfigureAwait(false);
 
         Assert.True(result.IsFailure);
 

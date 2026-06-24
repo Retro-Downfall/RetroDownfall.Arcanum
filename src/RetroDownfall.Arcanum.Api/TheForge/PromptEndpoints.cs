@@ -423,7 +423,7 @@ internal static class PromptEndpoints
                     long maxBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
                         settings.Value.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes);
 
-                    Result<string> codexPathResult = CodexPathPolicy.ValidateContainedFile(
+                    Result<CodexValidationResult> codexPathResult = CodexPathPolicy.ValidateContainedFile(
                         request.CodexPath,
                         containmentRoot ?? string.Empty,
                         maxBytes);
@@ -438,7 +438,7 @@ internal static class PromptEndpoints
 
                     if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(
                             Path.GetFullPath(containmentRoot ?? string.Empty),
-                            codexPathResult.Value!,
+                            codexPathResult.Value!.Path,
                             out _))
                     {
                         return Results.BadRequest(
@@ -450,9 +450,20 @@ internal static class PromptEndpoints
                                 traceId));
                     }
 
-                    codexContent = await File
-                        .ReadAllTextAsync(codexPathResult.Value, ctx.RequestAborted)
-                        .ConfigureAwait(false);
+                    Result<string> codexReadResult = await CodexPathPolicy.ReadCappedAsync(
+                        codexPathResult.Value.Path,
+                        codexPathResult.Value.MaxBytes,
+                        ctx.RequestAborted).ConfigureAwait(false);
+
+                    if (codexReadResult.IsFailure)
+                    {
+                        return Results.BadRequest(
+                            ApiResponse<PromptTestResultDto>.FromResult(
+                                Result<PromptTestResultDto>.Failure(codexReadResult.Error),
+                                traceId));
+                    }
+
+                    codexContent = codexReadResult.Value;
                 }
 
                 ParsedSpell activeSpell = new(
