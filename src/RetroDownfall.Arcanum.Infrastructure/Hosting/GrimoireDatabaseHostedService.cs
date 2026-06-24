@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
@@ -5,6 +6,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+[ExcludeFromCodeCoverage] // Reason: IHostedService DB bootstrap
 public sealed class GrimoireDatabaseHostedService(
     IServiceScopeFactory scopeFactory,
     ISecretStore secretStore,

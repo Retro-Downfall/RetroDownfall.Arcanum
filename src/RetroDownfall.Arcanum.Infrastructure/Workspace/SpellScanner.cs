@@ -1,9 +1,10 @@
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
@@ -47,7 +48,25 @@ public sealed record ParsedSpell(
 internal static class SpellScanner
 {
 
-    private static readonly ConcurrentDictionary<string, ParsedSpell> FullSpellCache = new(StringComparer.Ordinal);
+    private const int FullSpellCacheCapacity = 256;
+
+    private const int MetadataScanCacheCapacity = 32;
+
+    private static readonly BoundedLruCache<string, ParsedSpell> FullSpellCache = new(FullSpellCacheCapacity);
+
+    private static readonly BoundedLruCache<MetadataScanCacheKey, MetadataScanCacheEntry> MetadataScanCache =
+        new(MetadataScanCacheCapacity);
+
+    private readonly record struct MetadataScanCacheKey(string GlobalRoot, string WorkspaceRoot);
+
+    private sealed class MetadataScanCacheEntry(IReadOnlyList<SpellMetadata> metadata, DateTimeOffset cachedAt)
+    {
+
+        public IReadOnlyList<SpellMetadata> Metadata { get; } = metadata;
+
+        public DateTimeOffset CachedAt { get; } = cachedAt;
+
+    }
 
     private static readonly HashSet<string> HeavyDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -114,7 +133,8 @@ internal static class SpellScanner
     internal static async Task<IReadOnlyList<SpellMetadata>> ScanMetadataAsync(
         string? workspaceRoot,
         CancellationToken cancellationToken,
-        long maxFileSizeBytes)
+        long maxFileSizeBytes,
+        int metadataScanCacheTtlSeconds = 0)
     {
         string globalSpellsDir = ArcanumPaths.GlobalSpellsDirectory;
 
@@ -129,6 +149,31 @@ internal static class SpellScanner
             globalRoot = string.Empty;
         }
 
+        string localRoot = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            try
+            {
+                localRoot = Path.GetFullPath(workspaceRoot.Trim());
+            }
+            catch
+            {
+                localRoot = string.Empty;
+            }
+        }
+
+        int ttlSeconds = ArcanumSettingClamps.MetadataScanCacheTtlSeconds(metadataScanCacheTtlSeconds);
+
+        MetadataScanCacheKey cacheKey = new(globalRoot, localRoot);
+
+        if (ttlSeconds > 0
+            && MetadataScanCache.TryGetValue(cacheKey, out MetadataScanCacheEntry? cachedEntry)
+            && DateTimeOffset.UtcNow - cachedEntry.CachedAt < TimeSpan.FromSeconds(ttlSeconds))
+        {
+            return cachedEntry.Metadata;
+        }
+
         List<SpellMetadata> globalSpells = [];
 
         if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
@@ -140,28 +185,21 @@ internal static class SpellScanner
 
         List<SpellMetadata> localSpells = [];
 
-        if (!string.IsNullOrWhiteSpace(workspaceRoot))
+        if (localRoot.Length > 0 && Directory.Exists(localRoot))
         {
-            string localRoot;
-
-            try
-            {
-                localRoot = Path.GetFullPath(workspaceRoot.Trim());
-            }
-            catch
-            {
-                localRoot = string.Empty;
-            }
-
-            if (localRoot.Length > 0 && Directory.Exists(localRoot))
-            {
-                localSpells = await Task.Run(
-                    () => ScanMetadataTreeAsync(localRoot, maxFileSizeBytes, cancellationToken),
-                    cancellationToken).ConfigureAwait(false);
-            }
+            localSpells = await Task.Run(
+                () => ScanMetadataTreeAsync(localRoot, maxFileSizeBytes, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
         }
 
-        return MergeSpellMetadata(globalSpells, localSpells);
+        IReadOnlyList<SpellMetadata> merged = MergeSpellMetadata(globalSpells, localSpells);
+
+        if (ttlSeconds > 0)
+        {
+            MetadataScanCache.Set(cacheKey, new MetadataScanCacheEntry(merged, DateTimeOffset.UtcNow));
+        }
+
+        return merged;
     }
 
     internal static async Task<ParsedSpell?> LoadFullAsync(
@@ -207,7 +245,7 @@ internal static class SpellScanner
 
         if (parsed is not null)
         {
-            FullSpellCache[cacheKey] = parsed;
+            FullSpellCache.Set(cacheKey, parsed);
         }
 
         return parsed;
@@ -535,14 +573,18 @@ internal static class SpellScanner
         long maxFileSizeBytes,
         CancellationToken cancellationToken)
     {
-        if (ExceedsMaxFileSize(filePath, maxFileSizeBytes))
+        if (!TryGetFileLength(filePath, out long fileLength) || ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
         {
             return null;
         }
 
         string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
 
-        string? frontmatterBlock = await ReadFrontmatterBlockAsync(filePath, maxFileSizeBytes, cancellationToken).ConfigureAwait(false);
+        string? frontmatterBlock = await ReadFrontmatterBlockAsync(
+            filePath,
+            fileLength,
+            maxFileSizeBytes,
+            cancellationToken).ConfigureAwait(false);
 
         if (frontmatterBlock is null)
         {
@@ -551,15 +593,23 @@ internal static class SpellScanner
 
         SpellParseResult parsed = SpellFileParser.Parse(frontmatterBlock, directoryFallbackName);
 
+        if (SpellFrontmatterValidator.ValidateParsed(parsed) is not null)
+        {
+
+            return null;
+
+        }
+
         return new SpellMetadata(parsed.Name, parsed.Description, filePath, parsed.Tags, parsed.Tools);
     }
 
     private static async Task<string?> ReadFrontmatterBlockAsync(
         string filePath,
+        long fileLength,
         long maxFileSizeBytes,
         CancellationToken cancellationToken)
     {
-        if (ExceedsMaxFileSize(filePath, maxFileSizeBytes))
+        if (ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
         {
             return null;
         }
@@ -632,7 +682,7 @@ internal static class SpellScanner
         long maxFileSizeBytes,
         CancellationToken cancellationToken)
     {
-        if (ExceedsMaxFileSize(filePath, maxFileSizeBytes))
+        if (!TryGetFileLength(filePath, out long fileLength) || ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
         {
             return null;
         }
@@ -660,6 +710,13 @@ internal static class SpellScanner
         string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
 
         SpellParseResult parsed = SpellFileParser.Parse(fullText, directoryFallbackName);
+
+        if (SpellFrontmatterValidator.ValidateParsed(parsed) is not null)
+        {
+
+            return null;
+
+        }
 
         string spellDirectoryPath = string.Empty;
 
@@ -689,19 +746,26 @@ internal static class SpellScanner
         {
             string skillJsonPath = Path.Combine(spellDirectoryPath, "SKILL.json");
 
-            if (File.Exists(skillJsonPath))
+            if (File.Exists(skillJsonPath)
+                && TryGetFileLength(skillJsonPath, out long skillJsonLength)
+                && !ExceedsMaxFileSize(skillJsonLength, maxFileSizeBytes))
             {
-                if (ExceedsMaxFileSize(skillJsonPath, maxFileSizeBytes))
-                {
-                    skillMetadata = null;
-                }
-                else
-                {
                 try
                 {
                     string skillJsonText = await File.ReadAllTextAsync(skillJsonPath, cancellationToken).ConfigureAwait(false);
 
                     skillMetadata = JsonSerializer.Deserialize(skillJsonText, TheForgeJsonContext.Default.SkillMetadata);
+
+                    if (skillMetadata is not null
+                        && SkillJsonBoundsValidator.Validate(
+                            skillMetadata,
+                            ArcanumSettingClamps.MaxDependencies(new SpellSettings().MaxDependencies),
+                            ArcanumSettingClamps.MaxDeclaredTools(new SpellSettings().MaxDeclaredTools)) is not null)
+                    {
+
+                        skillMetadata = null;
+
+                    }
 
                     if (skillMetadata is not null)
                     {
@@ -716,7 +780,6 @@ internal static class SpellScanner
                 }
                 catch (JsonException)
                 {
-                }
                 }
             }
         }
@@ -807,21 +870,33 @@ internal static class SpellScanner
         }
     }
 
-    private static bool ExceedsMaxFileSize(string filePath, long maxFileSizeBytes)
+    private static bool TryGetFileLength(string filePath, out long length)
     {
         try
         {
-            return new FileInfo(filePath).Length > maxFileSizeBytes;
+            length = new FileInfo(filePath).Length;
+
+            return true;
         }
         catch (IOException)
         {
-            return true;
+            length = 0L;
+
+            return false;
         }
         catch (UnauthorizedAccessException)
         {
-            return true;
+            length = 0L;
+
+            return false;
         }
     }
+
+    private static bool ExceedsMaxFileSize(long fileLength, long maxFileSizeBytes) =>
+        fileLength > maxFileSizeBytes;
+
+    private static bool ExceedsMaxFileSize(string filePath, long maxFileSizeBytes) =>
+        TryGetFileLength(filePath, out long length) && ExceedsMaxFileSize(length, maxFileSizeBytes);
 
     private static string GetSpellDirectoryFallbackName(string filePath)
     {

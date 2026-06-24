@@ -21,9 +21,29 @@ public sealed class ChronicleHub
 
     public void Publish(Guid apprenticeId, ApprenticeEvent @event)
     {
+
         PerApprenticeHub hub = GetOrCreateHub(apprenticeId);
 
-        hub.Publish(@event);
+        int drops = hub.Publish(@event);
+
+        if (drops > 0)
+        {
+
+            hub.Publish(new ApprenticeEvent
+            {
+
+                Type = ApprenticeEventType.EventsDropped,
+
+                ApprenticeId = apprenticeId,
+
+                Timestamp = DateTimeOffset.UtcNow,
+
+                Summary = $"{drops} chronicle subscriber(s) dropped events due to slow consumption.",
+
+            });
+
+        }
+
     }
 
     public async IAsyncEnumerable<ApprenticeEvent> SubscribeAsync(
@@ -63,14 +83,14 @@ public sealed class ChronicleHub
     private sealed class PerApprenticeHub
     {
 
-        private readonly EventHub<ApprenticeEvent> _inner;
+        private readonly ScryingPool<ApprenticeEvent> _inner;
 
         public PerApprenticeHub(int capacity)
         {
-            _inner = new EventHub<ApprenticeEvent>(capacity);
+            _inner = new ScryingPool<ApprenticeEvent>(capacity);
         }
 
-        public void Publish(ApprenticeEvent @event) => _inner.Publish(@event);
+        public int Publish(ApprenticeEvent @event) => _inner.Publish(@event);
 
         public ChannelReader<ApprenticeEvent> Subscribe(out Guid subscriptionId) =>
             _inner.Subscribe(out subscriptionId);

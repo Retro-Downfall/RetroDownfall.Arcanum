@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -12,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 
+[ExcludeFromCodeCoverage] // Reason: spawns and manages llama-server child processes
 public sealed class LlamaServerManager : ILlamaServerManager
 {
 
@@ -19,7 +21,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
     private const int MaxPortAttempts = 32;
 
-    private readonly IGgufModelCache _modelCache;
+    private readonly IReliquary _modelCache;
 
     private readonly IEventBus _eventBus;
 
@@ -36,7 +38,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
     private string? _resolvedExecutablePath;
 
     public LlamaServerManager(
-        IGgufModelCache modelCache,
+        IReliquary modelCache,
         IEventBus eventBus,
         IOptionsMonitor<ArcanumSettings> optionsMonitor,
         IHttpClientFactory httpClientFactory,
@@ -80,6 +82,17 @@ public sealed class LlamaServerManager : ILlamaServerManager
             }
 
             return Result<LlamaServerInfo>.Success(running);
+        }
+
+        LlamaCppSettings configuredLlama = _optionsMonitor.CurrentValue.LlamaCpp ?? new LlamaCppSettings();
+
+        if (LlamaAdditionalArgumentsPolicy.ContainsReservedBindingArgument(configuredLlama.AdditionalArguments, out string? rejectedToken))
+        {
+
+            return Result<LlamaServerInfo>.Failure(new Error(
+                "Llama.InvalidArgument",
+                $"AdditionalArguments must not include '{rejectedToken}'. Host and port are managed by Arcanum."));
+
         }
 
         if (!_modelCache.IsCached(cacheKey))
@@ -977,19 +990,6 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
             DetachAndDisposeProcess(process);
 
-            try
-            {
-
-                Semaphore.Dispose();
-
-            }
-            catch (ObjectDisposedException)
-            {
-
-                // already disposed
-
-            }
-
         }
 
         private void DetachAndDisposeProcess(Process process)
@@ -1118,7 +1118,18 @@ public sealed class LlamaServerManager : ILlamaServerManager
                 return;
             }
 
-            semaphore.Release();
+            try
+            {
+
+                semaphore.Release();
+
+            }
+            catch (ObjectDisposedException)
+            {
+
+                // server stopped while inference was in flight
+
+            }
 
         }
 

@@ -1,5 +1,4 @@
-﻿BEGIN TRANSACTION;
-CREATE TABLE "Apprentices" (
+﻿CREATE TABLE "Apprentices" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Apprentices" PRIMARY KEY,
     "CampaignId" TEXT NULL,
     "Name" TEXT NOT NULL,
@@ -22,9 +21,3 @@ CREATE INDEX "IX_Apprentices_CampaignId" ON "Apprentices" ("CampaignId");
 CREATE INDEX "IX_Apprentices_ConversationId" ON "Apprentices" ("ConversationId");
 
 CREATE INDEX "IX_Apprentices_Status" ON "Apprentices" ("Status");
-
-INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260615234706_AddApprentices', '10.0.8');
-
-COMMIT;
-

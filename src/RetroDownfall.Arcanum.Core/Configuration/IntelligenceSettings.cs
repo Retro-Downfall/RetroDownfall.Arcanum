@@ -11,10 +11,6 @@ public sealed record IntelligenceSettings
 
     public float SemanticRouterTemperature { get; init; } = 0.0f;
 
-    public int McpRequestTimeoutSeconds { get; init; } = 60;
-
-    public int McpMaxPaginationPages { get; init; } = 32;
-
     public int ListDirectoryMaxPaths { get; init; } = 500;
 
     public bool EnableLoreSystem { get; init; } = true;
@@ -69,6 +65,25 @@ public sealed record IntelligenceSettings
     /// non-OpenAI model family that ships a different encoding.
     /// </summary>
     public string TokenizerEncoding { get; init; } = "o200k_base";
+
+    public int MaxOpenApiMessages { get; init; } = 1_000;
+
+    public int MaxStatelessMessages { get; init; } = 100;
+
+    public int MaxPingPromptChars { get; init; } = 32_768;
+
+    public int MaxPlanSteps { get; init; } = 30;
+
+    /// <summary>
+    /// Wall-clock timeout (seconds) for a single inference turn (buffered or streaming), including tool rounds.
+    /// Default 600. Linked to the caller cancellation token.
+    /// </summary>
+    public int InferenceTimeoutSeconds { get; init; } = 600;
+
+    /// <summary>
+    /// When <c>true</c>, semantic spell-router preflight uses <see cref="ArcanumSettings.FastModel"/> when configured.
+    /// </summary>
+    public bool UseFastModelForSpellRouting { get; init; }
 
 }
 

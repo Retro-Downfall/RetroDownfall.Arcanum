@@ -1,4 +1,5 @@
-﻿BEGIN TRANSACTION;
+﻿PRAGMA defer_foreign_keys=ON;
+
 DROP TRIGGER IF EXISTS ChatMessages_ai;
 DROP TRIGGER IF EXISTS ChatMessages_ad;
 DROP TRIGGER IF EXISTS ChatMessages_au;
@@ -43,31 +44,6 @@ ALTER TABLE "Entries" ADD "ToolName" TEXT NULL;
 CREATE INDEX IF NOT EXISTS "IX_Sessions_Status" ON "Sessions" ("Status");
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_UpdatedAt" ON "Sessions" ("UpdatedAt");
-
-CREATE VIRTUAL TABLE IF NOT EXISTS Entries_fts USING fts5(
-    Id UNINDEXED,
-    SessionId UNINDEXED,
-    Role UNINDEXED,
-    Content
-);
-
-CREATE TRIGGER IF NOT EXISTS Entries_ai AFTER INSERT ON Entries BEGIN
-    INSERT INTO Entries_fts(Id, SessionId, Role, Content)
-    VALUES (new.Id, new.SessionId, new.Role, new.Content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS Entries_ad AFTER DELETE ON Entries BEGIN
-    DELETE FROM Entries_fts WHERE Id = old.Id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS Entries_au AFTER UPDATE ON Entries BEGIN
-    DELETE FROM Entries_fts WHERE Id = old.Id;
-    INSERT INTO Entries_fts(Id, SessionId, Role, Content)
-    VALUES (new.Id, new.SessionId, new.Role, new.Content);
-END;
-
-INSERT INTO Entries_fts(Id, SessionId, Role, Content)
-SELECT Id, SessionId, Role, Content FROM Entries;
 
 CREATE TABLE "ef_temp_Apprentices" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Apprentices" PRIMARY KEY,
@@ -124,11 +100,6 @@ INSERT INTO "ef_temp_Sessions" ("Id", "CampaignId", "CreatedAt", "LastSummarized
 SELECT "Id", "CampaignId", "CreatedAt", "LastSummarizedMessageAt", "Status", "Summary", "Title", "TotalTokensUsed", "UpdatedAt"
 FROM "Sessions";
 
-COMMIT;
-
-PRAGMA foreign_keys = 0;
-
-BEGIN TRANSACTION;
 DROP TABLE "Apprentices";
 
 ALTER TABLE "ef_temp_Apprentices" RENAME TO "Apprentices";
@@ -155,6 +126,27 @@ CREATE INDEX IF NOT EXISTS "IX_Sessions_Status" ON "Sessions" ("Status");
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_UpdatedAt" ON "Sessions" ("UpdatedAt");
 
-COMMIT;
+CREATE VIRTUAL TABLE IF NOT EXISTS Entries_fts USING fts5(
+    Id UNINDEXED,
+    SessionId UNINDEXED,
+    Role UNINDEXED,
+    Content
+);
 
-PRAGMA foreign_keys = 1;
+CREATE TRIGGER IF NOT EXISTS Entries_ai AFTER INSERT ON Entries BEGIN
+    INSERT INTO Entries_fts(Id, SessionId, Role, Content)
+    VALUES (new.Id, new.SessionId, new.Role, new.Content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS Entries_ad AFTER DELETE ON Entries BEGIN
+    DELETE FROM Entries_fts WHERE Id = old.Id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS Entries_au AFTER UPDATE ON Entries BEGIN
+    DELETE FROM Entries_fts WHERE Id = old.Id;
+    INSERT INTO Entries_fts(Id, SessionId, Role, Content)
+    VALUES (new.Id, new.SessionId, new.Role, new.Content);
+END;
+
+INSERT OR IGNORE INTO Entries_fts(Id, SessionId, Role, Content)
+SELECT Id, SessionId, Role, Content FROM Entries;

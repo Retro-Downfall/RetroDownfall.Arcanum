@@ -63,11 +63,11 @@ public sealed class SessionEventHub
     private sealed class PerSessionHub
     {
 
-        private readonly EventHub<Entry> _inner;
+        private readonly ScryingPool<Entry> _inner;
 
         public PerSessionHub(int capacity)
         {
-            _inner = new EventHub<Entry>(capacity);
+            _inner = new ScryingPool<Entry>(capacity);
         }
 
         public void Publish(Entry entry) => _inner.Publish(entry);

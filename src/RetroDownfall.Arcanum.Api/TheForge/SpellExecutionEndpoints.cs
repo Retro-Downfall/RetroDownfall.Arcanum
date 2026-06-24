@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -17,6 +18,7 @@ using RetroDownfall.Arcanum.Infrastructure.Workspace;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
+[ExcludeFromCodeCoverage] // Reason: spell execution HTTP streaming endpoints; covered via spell execution integration tests.
 internal static partial class SpellExecutionEndpoints
 {
 

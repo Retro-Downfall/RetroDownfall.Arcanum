@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -30,6 +31,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
+[ExcludeFromCodeCoverage] // Reason: intelligence hub coordinating external LLM providers, MCP tools, and Grimoire persistence; covered via WizardIntelligenceProvider scenario matrix and ApiHost integration tests.
 public sealed class WizardIntelligenceProvider(
     IChatClientFactory chatClientFactory,
     IOptionsSnapshot<ArcanumSettings> settings,
@@ -37,6 +39,7 @@ public sealed class WizardIntelligenceProvider(
     IGrimoireRepository grimoire,
     IMcpConnectionManager mcpConnectionManager,
     InferenceTokenizerResolver inferenceTokenizerResolver,
+    ManaPreflight manaPreflight,
     IWard ward,
     ICampaignRepository campaignRepository,
     ISanctumGuard sanctumGuard,
@@ -44,9 +47,6 @@ public sealed class WizardIntelligenceProvider(
 {
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
-
-    private const string PublicHubInferenceFailureMessage =
-        "Inference failed. See server logs for details.";
 
     private const string PublicListLocalModelsFailureMessage =
         "Could not list local Ollama models. Ensure Ollama is running and reachable. See server logs for details.";
@@ -62,6 +62,9 @@ public sealed class WizardIntelligenceProvider(
 
     private const string PublicModelResolutionFailureMessage =
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
+
+    private const string PublicInferenceTimeoutMessage =
+        "Inference timed out. Increase Arcanum:Intelligence:InferenceTimeoutSeconds or retry with a shorter prompt.";
 
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
@@ -99,16 +102,29 @@ public sealed class WizardIntelligenceProvider(
             return Result<PromptTurnResult>.Failure(attachedFilesError);
         }
 
+        Result bounds = PingRequestBoundsValidator.Validate(request, settings.Value);
+
+        if (bounds.IsFailure)
+        {
+            return Result<PromptTurnResult>.Failure(bounds.Error);
+        }
+
         if (!HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
             return Result<PromptTurnResult>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
         }
 
+        CancellationToken callerToken = cancellationToken;
+
+        using CancellationTokenSource inferenceTimeoutCts = CreateInferenceTimeoutSource(callerToken);
+
+        CancellationToken inferenceToken = inferenceTimeoutCts.Token;
+
         ChatClientLease lease;
 
         try
         {
-            lease = await chatClientFactory.ResolveClientAsync(request.Model, cancellationToken).ConfigureAwait(false);
+            lease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -129,7 +145,7 @@ public sealed class WizardIntelligenceProvider(
                     lease.OllamaApi!,
                     lease.Provider.Endpoint,
                     targetModel,
-                    cancellationToken,
+                    inferenceToken,
                     pullProgress: null).ConfigureAwait(false);
 
                 if (ensure.IsFailure)
@@ -143,7 +159,7 @@ public sealed class WizardIntelligenceProvider(
         if (!HasStatelessMessages(request) && request.SessionId is { } existingSessionId)
         {
             thread = await grimoire
-                .GetSessionAsync(existingSessionId, cancellationToken)
+                .GetSessionAsync(existingSessionId, inferenceToken)
                 .ConfigureAwait(false);
         }
 
@@ -151,19 +167,21 @@ public sealed class WizardIntelligenceProvider(
 
         Guid? grimoireSessionId = null;
 
+        bool assistantEntryFinalized = false;
+
         if (!HasStatelessMessages(request))
         {
             try
             {
                 (Guid sid, Guid aid) = await grimoire
-                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, cancellationToken)
+                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, inferenceToken)
                     .ConfigureAwait(false);
 
                 grimoireSessionId = sid;
 
                 assistantEntryId = aid;
 
-                await PublishLatestSavedEntriesAsync(sid, 2, cancellationToken).ConfigureAwait(false);
+                await PublishLatestSavedEntriesAsync(sid, 2, inferenceToken).ConfigureAwait(false);
             }
             catch (Exception beginEx)
             {
@@ -175,7 +193,7 @@ public sealed class WizardIntelligenceProvider(
             .ReadCodexAsync(
                 request.WorkingDirectory,
                 ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
-                cancellationToken)
+                inferenceToken)
             .ConfigureAwait(false);
 
         ResolvedSpell? resolvedSpell;
@@ -197,10 +215,16 @@ public sealed class WizardIntelligenceProvider(
                 request,
                 chatClient,
                 spellWorkspaceRoot,
-                cancellationToken).ConfigureAwait(false);
+                inferenceToken).ConfigureAwait(false);
 
             if (routedSpell.IsFailure)
             {
+                if (!assistantEntryFinalized)
+                {
+                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, inferenceToken)
+                        .ConfigureAwait(false);
+                }
+
                 return Result<PromptTurnResult>.Failure(routedSpell.Error);
             }
 
@@ -216,11 +240,12 @@ public sealed class WizardIntelligenceProvider(
             codexContent,
             activeSpell,
             request.AttachedFiles,
-            dependencySpells: resonants);
+            dependencySpells: resonants,
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes));
 
-        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, resolvedSpell, cancellationToken).ConfigureAwait(false);
+        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, resolvedSpell, inferenceToken).ConfigureAwait(false);
 
-        TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, cancellationToken).ConfigureAwait(false);
+        TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, inferenceToken).ConfigureAwait(false);
 
         bool inferenceUsesTools = true;
 
@@ -264,7 +289,7 @@ public sealed class WizardIntelligenceProvider(
                 while (true)
                 {
                     response = await chatClient
-                        .GetResponseAsync(chatMessages, chatOptions, cancellationToken)
+                        .GetResponseAsync(chatMessages, chatOptions, inferenceToken)
                         .ConfigureAwait(false);
 
                     accumulatedUsage = AccumulateUsage(accumulatedUsage, MapUsageDetails(response.Usage));
@@ -282,6 +307,12 @@ public sealed class WizardIntelligenceProvider(
 
                     if (toolRoundsExecuted > maxToolRounds)
                     {
+                        if (!assistantEntryFinalized)
+                        {
+                            await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, inferenceToken)
+                                .ConfigureAwait(false);
+                        }
+
                         return Result<PromptTurnResult>.Failure(new Error("Hub.ToolLoop", "Tool invocation limit reached."));
                     }
 
@@ -301,7 +332,7 @@ public sealed class WizardIntelligenceProvider(
                             grimoireSessionId?.ToString(),
                             turnContext,
                             argsSnapshot,
-                            cancellationToken)
+                            inferenceToken)
                             .ConfigureAwait(false);
 
                         string resultText = wardedExecution.ResultText;
@@ -321,7 +352,7 @@ public sealed class WizardIntelligenceProvider(
                             argsSnapshot,
                             resultText,
                             targetModel,
-                            cancellationToken)
+                            inferenceToken)
                             .ConfigureAwait(false);
                     }
                 }
@@ -333,12 +364,14 @@ public sealed class WizardIntelligenceProvider(
                     try
                     {
                         await grimoire
-                            .FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken)
+                            .FinalizeAssistantEntryAsync(finalizeId, finalText, inferenceToken)
                             .ConfigureAwait(false);
+
+                        assistantEntryFinalized = true;
 
                         if (grimoireSessionId is { } publishSessionId)
                         {
-                            await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
+                            await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, inferenceToken)
                                 .ConfigureAwait(false);
                         }
                     }
@@ -351,14 +384,42 @@ public sealed class WizardIntelligenceProvider(
                 await TryIncrementSessionTokensAsync(
                     grimoireSessionId,
                     accumulatedUsage,
-                    cancellationToken)
+                    inferenceToken)
                     .ConfigureAwait(false);
 
-                return Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, "stop"));
+                string finishReason = MapChatFinishReasonToOpenAi(response.FinishReason);
+
+                return Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason));
+            }
+            catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+            {
+
+                if (!assistantEntryFinalized)
+                {
+
+                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, CancellationToken.None)
+                        .ConfigureAwait(false);
+
+                }
+
+                logger.LogWarning("Inference wall-clock timeout exceeded for model {ModelName}.", targetModel);
+
+                return Result<PromptTurnResult>.Failure(new Error("Hub.Timeout", PublicInferenceTimeoutMessage));
+
             }
             catch (OperationCanceledException)
             {
+
+                if (!assistantEntryFinalized)
+                {
+
+                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, callerToken)
+                        .ConfigureAwait(false);
+
+                }
+
                 throw;
+
             }
             catch (Exception ex)
             {
@@ -380,10 +441,16 @@ public sealed class WizardIntelligenceProvider(
                     lease.IsOllama ? "Ollama" : "Hub",
                     targetModel);
 
+                if (!assistantEntryFinalized)
+                {
+                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, inferenceToken)
+                        .ConfigureAwait(false);
+                }
+
                 return Result<PromptTurnResult>.Failure(
                     new Error(
                         lease.IsOllama ? "Ollama.Error" : "Hub.Error",
-                        lease.IsOllama ? PublicInferenceFailureMessage : PublicHubInferenceFailureMessage));
+                        BuildInferenceFailureMessage(lease)));
             }
         }
         }
@@ -402,6 +469,15 @@ public sealed class WizardIntelligenceProvider(
             yield break;
         }
 
+        Result streamBounds = PingRequestBoundsValidator.Validate(request, settings.Value);
+
+        if (streamBounds.IsFailure)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamBounds.Error.Message);
+
+            yield break;
+        }
+
         if (!HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
             yield return new IntelligenceEvent(IntelligenceEventType.Error, "Prompt is required.");
@@ -409,13 +485,19 @@ public sealed class WizardIntelligenceProvider(
             yield break;
         }
 
+        CancellationToken callerToken = cancellationToken;
+
+        using CancellationTokenSource inferenceTimeoutCts = CreateInferenceTimeoutSource(callerToken);
+
+        CancellationToken inferenceToken = inferenceTimeoutCts.Token;
+
         InvalidOperationException? resolveFailure = null;
 
         ChatClientLease? leaseOrNull = null;
 
         try
         {
-            leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, cancellationToken).ConfigureAwait(false);
+            leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -433,6 +515,14 @@ public sealed class WizardIntelligenceProvider(
 
         ChatClientLease lease = leaseOrNull!;
 
+        Guid? assistantEntryId = null;
+
+        Guid? boundSessionId = null;
+
+        bool assistantEntryFinalized = false;
+
+        StringBuilder streamAccumulator = new(1024);
+
         try
         {
             string targetModel = lease.ResolvedModel;
@@ -449,7 +539,7 @@ public sealed class WizardIntelligenceProvider(
                     lease.OllamaApi!,
                     lease.Provider.Endpoint,
                     targetModel,
-                    cancellationToken).ConfigureAwait(false);
+                    inferenceToken).ConfigureAwait(false);
 
                 if (localCheck.IsFailure)
                 {
@@ -466,7 +556,7 @@ public sealed class WizardIntelligenceProvider(
 
                     int lastReportedPercent = -1;
 
-                    IAsyncEnumerator<PullModelResponse> pullEnumerator = EnumeratePullModelAsync(lease.OllamaApi!, targetModel, cancellationToken).GetAsyncEnumerator(cancellationToken);
+                    IAsyncEnumerator<PullModelResponse> pullEnumerator = EnumeratePullModelAsync(lease.OllamaApi!, targetModel, inferenceToken).GetAsyncEnumerator(inferenceToken);
 
                     bool pullMoveFailed = false;
 
@@ -539,7 +629,7 @@ public sealed class WizardIntelligenceProvider(
         if (!HasStatelessMessages(request) && request.SessionId is { } existingSessionId)
         {
             thread = await grimoire
-                .GetSessionAsync(existingSessionId, cancellationToken)
+                .GetSessionAsync(existingSessionId, inferenceToken)
                 .ConfigureAwait(false);
         }
 
@@ -549,7 +639,7 @@ public sealed class WizardIntelligenceProvider(
             .ReadCodexAsync(
                 request.WorkingDirectory,
                 ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
-                cancellationToken)
+                inferenceToken)
             .ConfigureAwait(false);
 
         ResolvedSpell? streamResolvedSpell;
@@ -571,7 +661,7 @@ public sealed class WizardIntelligenceProvider(
                 request,
                 chatClient,
                 streamSpellWorkspaceRoot,
-                cancellationToken).ConfigureAwait(false);
+                inferenceToken).ConfigureAwait(false);
 
             if (streamRoutedSpell.IsFailure)
             {
@@ -594,7 +684,8 @@ public sealed class WizardIntelligenceProvider(
             streamCodexContent,
             streamActiveSpell,
             request.AttachedFiles,
-            dependencySpells: streamResonants);
+            dependencySpells: streamResonants,
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes));
 
         PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -610,23 +701,19 @@ public sealed class WizardIntelligenceProvider(
 
         chatMessages = streamMessages;
 
-        Guid? assistantEntryId = null;
-
-        Guid? boundSessionId = null;
-
         if (!HasStatelessMessages(request))
         {
             try
             {
                 (Guid sessionId, Guid aid) = await grimoire
-                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, cancellationToken)
+                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, inferenceToken)
                     .ConfigureAwait(false);
 
                 assistantEntryId = aid;
 
                 boundSessionId = sessionId;
 
-                await PublishLatestSavedEntriesAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
+                await PublishLatestSavedEntriesAsync(sessionId, 2, inferenceToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -652,15 +739,15 @@ public sealed class WizardIntelligenceProvider(
             yield return new IntelligenceEvent(IntelligenceEventType.Status, IntelligenceStatusMessages.MemoryCompressionNotice);
         }
 
-        StringBuilder accumulator;
+        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamResolvedSpell, inferenceToken).ConfigureAwait(false);
 
-        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamResolvedSpell, cancellationToken).ConfigureAwait(false);
-
-        TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, cancellationToken).ConfigureAwait(false);
+        TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, inferenceToken).ConfigureAwait(false);
 
         bool streamUsesTools = true;
 
         string? inferenceError;
+
+        string? streamFinishReason = null;
 
         ChatCompletionUsage? streamAccumulatedUsage = null;
 
@@ -670,7 +757,7 @@ public sealed class WizardIntelligenceProvider(
         {
             bool streamOuterRestart = false;
 
-            accumulator = new StringBuilder(1024);
+            streamAccumulator.Clear();
 
             streamAccumulatedUsage = null;
 
@@ -687,8 +774,8 @@ public sealed class WizardIntelligenceProvider(
                 List<ChatResponseUpdate> roundUpdates = [];
 
                 IAsyncEnumerator<ChatResponseUpdate> streamEnumerator = chatClient
-                    .GetStreamingResponseAsync(chatMessages, streamChatOptions, cancellationToken)
-                    .GetAsyncEnumerator(cancellationToken);
+                    .GetStreamingResponseAsync(chatMessages, streamChatOptions, inferenceToken)
+                    .GetAsyncEnumerator(inferenceToken);
 
                 try
                 {
@@ -700,9 +787,21 @@ public sealed class WizardIntelligenceProvider(
                         {
                             hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
                         }
+                        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+                        {
+
+                            logger.LogWarning("Inference wall-clock timeout exceeded for model {ModelName}.", targetModel);
+
+                            inferenceError = PublicInferenceTimeoutMessage;
+
+                            break;
+
+                        }
                         catch (OperationCanceledException)
                         {
+
                             throw;
+
                         }
                         catch (Exception ex)
                         {
@@ -710,7 +809,7 @@ public sealed class WizardIntelligenceProvider(
 
                             logger.LogError(ex, "Streaming read failed for model {ModelName}.", targetModel);
 
-                            inferenceError = PublicInferenceFailureMessage;
+                            inferenceError = BuildInferenceFailureMessage(lease);
 
                             break;
                         }
@@ -731,7 +830,7 @@ public sealed class WizardIntelligenceProvider(
 
                         }
 
-                        _ = accumulator.Append(update.Text);
+                        _ = streamAccumulator.Append(update.Text);
 
                         yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
                     }
@@ -749,7 +848,7 @@ public sealed class WizardIntelligenceProvider(
 
                         && LooksLikeModelDoesNotSupportTools(moveMsg)
 
-                        && accumulator.Length == 0)
+                        && streamAccumulator.Length == 0)
                     {
                         logger.LogInformation(
                             streamingMoveNextFailure,
@@ -782,6 +881,8 @@ public sealed class WizardIntelligenceProvider(
 
                 if (toolCalls.Count == 0)
                 {
+                    streamFinishReason = MapChatFinishReasonToOpenAi(combinedRound.FinishReason);
+
                     break;
                 }
 
@@ -829,7 +930,7 @@ public sealed class WizardIntelligenceProvider(
                             boundSessionId?.ToString(),
                             streamTurnContext,
                             argsSnapshot,
-                            cancellationToken)
+                            inferenceToken)
                             .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
@@ -876,7 +977,7 @@ public sealed class WizardIntelligenceProvider(
                         argsSnapshot,
                         resultText,
                         targetModel,
-                        cancellationToken)
+                        inferenceToken)
                         .ConfigureAwait(false);
 
                     toolCallIndex++;
@@ -893,22 +994,34 @@ public sealed class WizardIntelligenceProvider(
 
         if (inferenceError is not null)
         {
+            if (!assistantEntryFinalized)
+            {
+                await ResolveInterruptedAssistantEntryAsync(
+                    assistantEntryId,
+                    streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                    inferenceToken).ConfigureAwait(false);
+
+                assistantEntryFinalized = true;
+            }
+
             yield return new IntelligenceEvent(IntelligenceEventType.Error, inferenceError);
 
             yield break;
         }
 
-        string finalText = accumulator.ToString();
+        string finalText = streamAccumulator.ToString();
 
         if (assistantEntryId is { } finalizeId)
         {
             try
             {
-                await grimoire.FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken).ConfigureAwait(false);
+                await grimoire.FinalizeAssistantEntryAsync(finalizeId, finalText, inferenceToken).ConfigureAwait(false);
+
+                assistantEntryFinalized = true;
 
                 if (boundSessionId is { } publishSessionId)
                 {
-                    await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
+                    await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, inferenceToken)
                         .ConfigureAwait(false);
                 }
             }
@@ -918,7 +1031,7 @@ public sealed class WizardIntelligenceProvider(
             }
         }
 
-        await TryIncrementSessionTokensAsync(boundSessionId, streamAccumulatedUsage, cancellationToken)
+        await TryIncrementSessionTokensAsync(boundSessionId, streamAccumulatedUsage, inferenceToken)
             .ConfigureAwait(false);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
@@ -927,10 +1040,28 @@ public sealed class WizardIntelligenceProvider(
             IntelligenceEventType.Result,
             "Complete",
             usageData,
-            streamAccumulatedUsage);
+            streamAccumulatedUsage,
+            FinishReason: streamFinishReason ?? "stop");
         }
         finally
         {
+            if (!assistantEntryFinalized && assistantEntryId is not null)
+            {
+                try
+                {
+                    await ResolveInterruptedAssistantEntryAsync(
+                        assistantEntryId,
+                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Grimoire could not resolve interrupted streamed assistant entry during cleanup.");
+                }
+            }
+
             lease.Dispose();
         }
     }
@@ -1158,14 +1289,24 @@ public sealed class WizardIntelligenceProvider(
             }
 
             ResolvedSpell resolvedOverride = await SpellDependencyResolver
-                .ResolveAsync(overrideSpell, spellWorkspaceRoot, maxSpellFileSizeBytes, cancellationToken, logger)
+                .ResolveAsync(
+                    overrideSpell,
+                    spellWorkspaceRoot,
+                    maxSpellFileSizeBytes,
+                    cancellationToken,
+                    logger,
+                    maxResonantDependencies: ArcanumSettingClamps.MaxResonantDependencies(settings.Value.Spells.MaxResonantDependencies))
                 .ConfigureAwait(false);
 
             return Result<ResolvedSpell?>.Success(resolvedOverride);
         }
 
         IReadOnlyList<SpellMetadata> spellMetadata = await SpellScanner
-            .ScanMetadataAsync(spellWorkspaceRoot, cancellationToken, maxSpellFileSizeBytes)
+            .ScanMetadataAsync(
+                spellWorkspaceRoot,
+                cancellationToken,
+                maxSpellFileSizeBytes,
+                ArcanumSettingClamps.MetadataScanCacheTtlSeconds(settings.Value.Spells.MetadataScanCacheTtlSeconds))
             .ConfigureAwait(false);
 
         SpellMetadata? matchedMetadata;
@@ -1195,17 +1336,38 @@ public sealed class WizardIntelligenceProvider(
 
             string semanticProbe = GetSemanticRouterUserProbe(request);
 
-            matchedMetadata = await SemanticRouter
-                .DetermineActiveSpellAsync(
-                    chatClient,
-                    semanticProbe,
-                    spellMetadata,
-                    spellPreflight,
-                    routerMaxTokens,
-                    routerTemperature,
-                    cancellationToken,
-                    logger)
-                .ConfigureAwait(false);
+            IChatClient routerClient = chatClient;
+
+            ChatClientLease? routerLease = null;
+
+            try
+            {
+                if (settings.Value.Intelligence.UseFastModelForSpellRouting
+                    && !string.IsNullOrWhiteSpace(settings.Value.FastModel))
+                {
+                    routerLease = await chatClientFactory
+                        .ResolveClientAsync(settings.Value.FastModel.Trim(), cancellationToken)
+                        .ConfigureAwait(false);
+
+                    routerClient = routerLease.ChatClient;
+                }
+
+                matchedMetadata = await SemanticRouter
+                    .DetermineActiveSpellAsync(
+                        routerClient,
+                        semanticProbe,
+                        spellMetadata,
+                        spellPreflight,
+                        routerMaxTokens,
+                        routerTemperature,
+                        cancellationToken,
+                        logger)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                routerLease?.Dispose();
+            }
         }
 
         if (matchedMetadata is null)
@@ -1223,7 +1385,14 @@ public sealed class WizardIntelligenceProvider(
         }
 
         ResolvedSpell resolved = await SpellDependencyResolver
-            .ResolveAsync(activeSpell, spellWorkspaceRoot, maxSpellFileSizeBytes, cancellationToken, logger)
+            .ResolveAsync(
+                activeSpell,
+                spellWorkspaceRoot,
+                maxSpellFileSizeBytes,
+                cancellationToken,
+                logger,
+                spellMetadata,
+                maxResonantDependencies: ArcanumSettingClamps.MaxResonantDependencies(settings.Value.Spells.MaxResonantDependencies))
             .ConfigureAwait(false);
 
         return Result<ResolvedSpell?>.Success(resolved);
@@ -1267,19 +1436,21 @@ public sealed class WizardIntelligenceProvider(
         int minMessagesForPreflight = ArcanumSettingClamps.CompressionPreflightMinMessages(
             settings.Value.Intelligence.CompressionPreflightMinMessages);
 
-        if (InferenceTokenCounter.ShouldSkipCompressionPreflight(chatMessages, minMessagesForPreflight))
+        if (manaPreflight.ShouldSkipCompressionPreflight(chatMessages, minMessagesForPreflight))
         {
 
             return (false, chatMessages);
 
         }
 
-        Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding);
+        string encodingName = settings.Value.Intelligence?.TokenizerEncoding ?? InferenceTokenizerResolver.DefaultEncodingName;
+
+        Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(encodingName);
 
         int perMessageOverhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
             settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
 
-        int totalTokens = InferenceTokenCounter.CountTokens(chatMessages, tokenizer, perMessageOverhead);
+        int totalTokens = manaPreflight.CountTokens(chatMessages, tokenizer, perMessageOverhead, encodingName);
 
         int thresholdPct = ArcanumSettingClamps.ContextWindowCompressionThreshold(
             settings.Value.Intelligence.ContextWindowCompressionThreshold);
@@ -1321,11 +1492,12 @@ public sealed class WizardIntelligenceProvider(
             activeSpell,
             request.AttachedFiles,
             thread.Summary,
-            dependencySpells);
+            dependencySpells,
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes));
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 
-        int afterTokens = InferenceTokenCounter.CountTokens(rebuilt, tokenizer, perMessageOverhead);
+        int afterTokens = manaPreflight.CountTokens(rebuilt, tokenizer, perMessageOverhead, encodingName);
 
         if (afterTokens > effectiveLimit)
         {
@@ -1858,7 +2030,9 @@ public sealed class WizardIntelligenceProvider(
         {
             int numCtx = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
 
-            options.AdditionalProperties!["num_ctx"] = numCtx;
+            options.AdditionalProperties ??= [];
+
+            options.AdditionalProperties["num_ctx"] = numCtx;
         }
 
         ApplyInferenceParameters(options, request);
@@ -2026,6 +2200,48 @@ public sealed class WizardIntelligenceProvider(
         return !string.IsNullOrEmpty(message)
 
             && message.Contains("does not support tools", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string MapChatFinishReasonToOpenAi(ChatFinishReason? finishReason)
+    {
+
+        if (finishReason is null)
+        {
+
+            return "stop";
+
+        }
+
+        if (finishReason == ChatFinishReason.Stop)
+        {
+
+            return "stop";
+
+        }
+
+        if (finishReason == ChatFinishReason.Length)
+        {
+
+            return "length";
+
+        }
+
+        if (finishReason == ChatFinishReason.ToolCalls)
+        {
+
+            return "tool_calls";
+
+        }
+
+        if (finishReason == ChatFinishReason.ContentFilter)
+        {
+
+            return "content_filter";
+
+        }
+
+        return finishReason.Value.Value;
+
     }
 
     private static List<FunctionCallContent> CollectFunctionCalls(ChatResponse response)
@@ -2710,6 +2926,44 @@ public sealed class WizardIntelligenceProvider(
         }
     }
 
+    private async Task ResolveInterruptedAssistantEntryAsync(
+        Guid? assistantEntryId,
+        string? streamedContent,
+        CancellationToken cancellationToken)
+    {
+        if (assistantEntryId is not { } entryId)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!string.IsNullOrEmpty(streamedContent))
+            {
+                await grimoire
+                    .FinalizeAssistantEntryAsync(entryId, streamedContent, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await grimoire
+                    .DiscardAssistantEntryAsync(entryId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Grimoire could not resolve interrupted assistant entry {AssistantEntryId}.",
+                entryId);
+        }
+    }
+
     private async Task TryAppendToolInteractionToGrimoireAsync(
         Guid? sessionId,
         string toolName,
@@ -2875,6 +3129,40 @@ public sealed class WizardIntelligenceProvider(
         error = Error.None;
 
         return true;
+
+    }
+
+    private static string BuildInferenceFailureMessage(ChatClientLease lease)
+    {
+
+        string endpoint = string.IsNullOrWhiteSpace(lease.Provider.Endpoint)
+            ? "(default endpoint)"
+            : lease.Provider.Endpoint.Trim();
+
+        if (lease.IsOllama)
+        {
+
+            return $"Ollama provider '{lease.Provider.Name}' at {endpoint} is unreachable. Ensure Ollama is running and the endpoint is correct.";
+
+        }
+
+        return $"Provider '{lease.Provider.Name}' at {endpoint} is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
+
+    }
+
+    private CancellationTokenSource CreateInferenceTimeoutSource(CancellationToken callerToken)
+    {
+
+        IntelligenceSettings intelligence = settings.Value.Intelligence ?? new IntelligenceSettings();
+
+        int seconds = ArcanumSettingClamps.InferenceTimeoutSeconds(intelligence.InferenceTimeoutSeconds);
+
+        CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
+
+        linked.CancelAfter(TimeSpan.FromSeconds(seconds));
+
+        return linked;
+
     }
 
 }

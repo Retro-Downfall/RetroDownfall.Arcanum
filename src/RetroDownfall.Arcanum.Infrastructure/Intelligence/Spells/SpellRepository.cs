@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -22,7 +23,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceLocks = new(StringComparer.Ordinal);
 
-    private readonly ICampaignRepository _campaignRepository;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     private readonly IMcpConnectionManager _mcpManager;
 
@@ -32,13 +33,13 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     public SpellRepository(
         ILogger<SpellRepository> logger,
-        ICampaignRepository campaignRepository,
+        IServiceScopeFactory scopeFactory,
         IMcpConnectionManager mcpManager,
         IOptionsMonitor<ArcanumSettings> settingsMonitor)
     {
         _logger = logger;
 
-        _campaignRepository = campaignRepository;
+        _scopeFactory = scopeFactory;
 
         _mcpManager = mcpManager;
 
@@ -54,11 +55,21 @@ internal sealed partial class SpellRepository : ISpellRepository
     {
         IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes()).ConfigureAwait(false);
 
+        HashSet<string> catalogNames = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ParsedSpell spell in spells)
+        {
+            if (!string.IsNullOrWhiteSpace(spell.Name))
+            {
+                _ = catalogNames.Add(spell.Name.Trim());
+            }
+        }
+
         var summaries = new SpellSummary[spells.Count];
 
         for (int i = 0; i < spells.Count; i++)
         {
-            summaries[i] = ToSummary(spells[i]);
+            summaries[i] = ToSummaryWithValidity(spells[i], catalogNames);
         }
 
         return summaries;
@@ -123,6 +134,19 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
         }
 
+        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
+
+        int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
+
+        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(spellSettings.MaxDeclaredTools);
+
+        string? skillBoundsError = SkillJsonBoundsValidator.ValidateCreate(request, maxDependencies, maxDeclaredTools);
+
+        if (skillBoundsError is not null)
+        {
+            return Result.Failure(new Error("Spell.InvalidSkillJson", skillBoundsError));
+        }
+
         if (string.IsNullOrWhiteSpace(request.SystemPrompt) && string.IsNullOrWhiteSpace(request.Template))
         {
             _logger.LogWarning(
@@ -132,7 +156,9 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string workspaceRoot = workingDirectory.Trim();
 
-        string spellDir = Path.Combine(workspaceRoot, "spells", trimmedName);
+        string spellsRoot = Path.Combine(workspaceRoot, "spells");
+
+        string spellDir = Path.Combine(spellsRoot, trimmedName);
 
         string spellFile = Path.Combine(spellDir, "SPELL.md");
 
@@ -156,18 +182,33 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         await writeLock.WaitAsync(ct).ConfigureAwait(false);
 
+        string? stagingDir = null;
+
         try
         {
-            Directory.CreateDirectory(spellDir);
+            Directory.CreateDirectory(spellsRoot);
 
-            await File.WriteAllTextAsync(spellFile, content, ct).ConfigureAwait(false);
+            stagingDir = Path.Combine(spellsRoot, $".staging-{Guid.NewGuid():N}");
+
+            Directory.CreateDirectory(stagingDir);
+
+            await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
 
             if (hasStructured)
             {
                 SkillMetadata metadata = SkillJsonIO.BuildMetadataFromCreate(trimmedName, request);
 
-                await SkillJsonIO.WriteAsync(spellDir, metadata, ct).ConfigureAwait(false);
+                await SkillJsonIO.WriteAsync(stagingDir, metadata, ct).ConfigureAwait(false);
             }
+
+            if (Directory.Exists(spellDir))
+            {
+                return Result.Failure(new Error("Spell.DuplicateName", "A workspace spell with that name already exists."));
+            }
+
+            Directory.Move(stagingDir, spellDir);
+
+            stagingDir = null;
 
             return Result.Success();
         }
@@ -179,6 +220,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         }
         finally
         {
+            TryDeleteStagingDirectory(stagingDir);
+
             writeLock.Release();
         }
     }
@@ -216,6 +259,19 @@ internal sealed partial class SpellRepository : ISpellRepository
         if (frontmatterError is not null)
         {
             return Result.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
+        }
+
+        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
+
+        int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
+
+        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(spellSettings.MaxDeclaredTools);
+
+        string? skillBoundsError = SkillJsonBoundsValidator.ValidateUpdate(request, maxDependencies, maxDeclaredTools);
+
+        if (skillBoundsError is not null)
+        {
+            return Result.Failure(new Error("Spell.InvalidSkillJson", skillBoundsError));
         }
 
         string content = SpellFileParser.FormatUpdate(workspaceSpell, request);
@@ -321,7 +377,12 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (campaigns.Count == 0 && query.CampaignId is null)
         {
-            ListPageResult<Campaign> page = await _campaignRepository
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            ICampaignRepository campaignRepository =
+                scope.ServiceProvider.GetRequiredService<ICampaignRepository>();
+
+            ListPageResult<Campaign> page = await campaignRepository
                 .ListAsync(typeFilter: null, limit: ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ct)
                 .ConfigureAwait(false);
 
@@ -476,52 +537,160 @@ internal sealed partial class SpellRepository : ISpellRepository
             Dependencies: request.Payload.Metadata?.Dependencies.ToArray(),
             DefaultParameters: request.Payload.Metadata?.DefaultParameters);
 
-        Result createResult = await CreateAsync(workspace, create, ct).ConfigureAwait(false);
+        Result<SpellSummary> createResult = await ImportCreateStagedAsync(workspace, create, request.Payload.Scripts, ct).ConfigureAwait(false);
 
         if (createResult.IsFailure)
         {
             return Result<SpellSummary>.Failure(createResult.Error);
         }
 
-        string spellDir = Path.Combine(workspace.Trim(), "spells", name);
+        return createResult;
+    }
 
-        foreach (SpellExportScriptDto script in request.Payload.Scripts)
+    private async Task<Result<SpellSummary>> ImportCreateStagedAsync(
+        string workspace,
+        CreateSpellRequest create,
+        IReadOnlyList<SpellExportScriptDto> scripts,
+        CancellationToken ct)
+    {
+        string trimmedName = create.Name.Trim();
+
+        string? nameError = ValidateName(trimmedName);
+
+        if (nameError is not null)
         {
-            string scriptsDir = Path.Combine(spellDir, "scripts");
-
-            Directory.CreateDirectory(scriptsDir);
-
-            string safeFileName = Path.GetFileName(script.FileName);
-
-            if (string.IsNullOrWhiteSpace(safeFileName)
-                || !string.Equals(safeFileName, script.FileName.Trim(), StringComparison.Ordinal))
-            {
-                return Result<SpellSummary>.Failure(new Error("Spell.InvalidScriptPath", "Script file names must be bare file names without path separators."));
-            }
-
-            string targetPath = Path.GetFullPath(Path.Combine(scriptsDir, safeFileName));
-
-            if (!targetPath.StartsWith(Path.GetFullPath(scriptsDir) + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-                && !string.Equals(targetPath, Path.GetFullPath(scriptsDir), StringComparison.Ordinal))
-            {
-                return Result<SpellSummary>.Failure(new Error("Spell.InvalidScriptPath", "Script path would escape the scripts directory."));
-            }
-
-            byte[] bytes = Convert.FromBase64String(script.Base64Content);
-
-            await File.WriteAllBytesAsync(targetPath, bytes, ct).ConfigureAwait(false);
+            return Result<SpellSummary>.Failure(new Error("Spell.InvalidName", nameError));
         }
 
-        SpellSummary[] list = await ListAsync(workspace, ct).ConfigureAwait(false);
+        string workspaceRoot = workspace.Trim();
 
-        SpellSummary? summary = list.FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
+        string spellsRoot = Path.Combine(workspaceRoot, "spells");
 
-        if (summary is null)
+        string spellDir = Path.Combine(spellsRoot, trimmedName);
+
+        bool hasStructured = SkillJsonIO.HasStructuredFields(create);
+
+        string content;
+
+        if (hasStructured
+            && string.IsNullOrWhiteSpace(create.Body)
+            && string.IsNullOrWhiteSpace(create.SystemPrompt)
+            && string.IsNullOrWhiteSpace(create.Template))
         {
-            return Result<SpellSummary>.Failure(new Error("Spell.ImportFailed", "Spell was created but could not be listed."));
+            content = SpellMarkdownGenerator.GenerateFromCreateRequest(trimmedName, create);
+        }
+        else
+        {
+            content = SpellFileParser.FormatCreate(trimmedName, create);
         }
 
-        return Result<SpellSummary>.Success(summary);
+        SemaphoreSlim writeLock = GetWorkspaceLock(workspaceRoot);
+
+        await writeLock.WaitAsync(ct).ConfigureAwait(false);
+
+        string? stagingDir = null;
+
+        try
+        {
+            Directory.CreateDirectory(spellsRoot);
+
+            stagingDir = Path.Combine(spellsRoot, $".staging-{Guid.NewGuid():N}");
+
+            Directory.CreateDirectory(stagingDir);
+
+            await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
+
+            if (hasStructured)
+            {
+                SkillMetadata metadata = SkillJsonIO.BuildMetadataFromCreate(trimmedName, create);
+
+                await SkillJsonIO.WriteAsync(stagingDir, metadata, ct).ConfigureAwait(false);
+            }
+
+            if (scripts.Count > 0)
+            {
+                string scriptsDir = Path.Combine(stagingDir, "scripts");
+
+                Directory.CreateDirectory(scriptsDir);
+
+                foreach (SpellExportScriptDto script in scripts)
+                {
+                    string safeFileName = Path.GetFileName(script.FileName);
+
+                    if (string.IsNullOrWhiteSpace(safeFileName)
+                        || !string.Equals(safeFileName, script.FileName.Trim(), StringComparison.Ordinal))
+                    {
+                        return Result<SpellSummary>.Failure(
+                            new Error("Spell.InvalidScriptPath", "Script file names must be bare file names without path separators."));
+                    }
+
+                    string targetPath = Path.GetFullPath(Path.Combine(scriptsDir, safeFileName));
+
+                    if (!targetPath.StartsWith(Path.GetFullPath(scriptsDir) + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                        && !string.Equals(targetPath, Path.GetFullPath(scriptsDir), StringComparison.Ordinal))
+                    {
+                        return Result<SpellSummary>.Failure(
+                            new Error("Spell.InvalidScriptPath", "Script path would escape the scripts directory."));
+                    }
+
+                    byte[] bytes = Convert.FromBase64String(script.Base64Content);
+
+                    await File.WriteAllBytesAsync(targetPath, bytes, ct).ConfigureAwait(false);
+                }
+            }
+
+            if (Directory.Exists(spellDir))
+            {
+                return Result<SpellSummary>.Failure(
+                    new Error("Spell.NameCollision", "A spell with that name already exists in the target workspace."));
+            }
+
+            Directory.Move(stagingDir, spellDir);
+
+            stagingDir = null;
+
+            SpellSummary[] list = await ListAsync(workspace, ct).ConfigureAwait(false);
+
+            SpellSummary? summary = list.FirstOrDefault(s => string.Equals(s.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+
+            if (summary is null)
+            {
+                return Result<SpellSummary>.Failure(new Error("Spell.ImportFailed", "Spell was created but could not be listed."));
+            }
+
+            return Result<SpellSummary>.Success(summary);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to import spell {SpellName} into {Workspace}", trimmedName, workspaceRoot);
+
+            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", ex.Message));
+        }
+        finally
+        {
+            TryDeleteStagingDirectory(stagingDir);
+
+            writeLock.Release();
+        }
+    }
+
+    private static void TryDeleteStagingDirectory(string? stagingDir)
+    {
+        if (string.IsNullOrWhiteSpace(stagingDir))
+        {
+            return;
+        }
+
+        try
+        {
+            if (Directory.Exists(stagingDir))
+            {
+                Directory.Delete(stagingDir, recursive: true);
+            }
+        }
+        catch (Exception)
+        {
+        }
     }
 
     private async Task<IReadOnlyList<string>> GetMcpToolNamesAsync(CancellationToken ct)
@@ -546,6 +715,32 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     private static SpellSummary ToSummary(ParsedSpell spell) =>
         MapToSummary(spell, IsBuiltinSpell(spell) ? SpellSource.Builtin : SpellSource.Workspace);
+
+    private static SpellSummary ToSummaryWithValidity(ParsedSpell spell, HashSet<string> catalogNames)
+    {
+        SpellSummary summary = ToSummary(spell);
+
+        string[]? dependencies = spell.SkillMetadata?.Dependencies?
+            .Where(static d => !string.IsNullOrWhiteSpace(d))
+            .Select(static d => d.Trim())
+            .ToArray();
+
+        if (dependencies is not { Length: > 0 })
+        {
+            return summary;
+        }
+
+        string[] unresolved = dependencies
+            .Where(dep => !catalogNames.Contains(dep))
+            .ToArray();
+
+        if (unresolved.Length == 0)
+        {
+            return summary with { IsValid = true };
+        }
+
+        return summary with { IsValid = false, UnresolvedDependencies = unresolved };
+    }
 
     internal static SpellSummary MapToSummary(ParsedSpell spell, SpellSource source)
     {

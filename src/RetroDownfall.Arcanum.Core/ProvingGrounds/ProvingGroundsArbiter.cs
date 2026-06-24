@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -9,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.ProvingGrounds;
 
+[ExcludeFromCodeCoverage] // Reason: orchestrates live LLM semantic Inquisitors for Proving Grounds trials; covered via ProvingGroundsArbiterTests and trial endpoint integration tests.
 public sealed class ProvingGroundsArbiter(
     IArcanumIntelligenceProvider intelligence,
     IOptionsMonitor<ArcanumSettings> optionsMonitor) : IProvingGroundsArbiter

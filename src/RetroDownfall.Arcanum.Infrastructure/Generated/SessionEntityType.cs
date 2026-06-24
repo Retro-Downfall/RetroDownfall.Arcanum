@@ -19,9 +19,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Session",
                 typeof(Session),
                 baseEntityType,
-                propertyCount: 9,
+                propertyCount: 10,
                 navigationCount: 1,
-                unnamedIndexCount: 5,
+                unnamedIndexCount: 7,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -87,6 +87,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 sentinel: 0L);
             totalTokensUsed.AddAnnotation("Relational:DefaultValue", 0L);
 
+            var unsummarizedEntryCount = runtimeEntityType.AddProperty(
+                "UnsummarizedEntryCount",
+                typeof(int),
+                propertyInfo: typeof(Session).GetProperty("UnsummarizedEntryCount", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Session).GetField("<UnsummarizedEntryCount>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                valueGenerated: ValueGenerated.OnAdd,
+                sentinel: 0);
+            unsummarizedEntryCount.AddAnnotation("Relational:DefaultValue", 0);
+
             var updatedAt = runtimeEntityType.AddProperty(
                 "UpdatedAt",
                 typeof(DateTimeOffset),
@@ -108,10 +117,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 new[] { status });
 
             var index2 = runtimeEntityType.AddIndex(
-                new[] { updatedAt });
+                new[] { unsummarizedEntryCount });
 
             var index3 = runtimeEntityType.AddIndex(
+                new[] { updatedAt });
+
+            var index4 = runtimeEntityType.AddIndex(
                 new[] { status, updatedAt });
+
+            var index5 = runtimeEntityType.AddIndex(
+                new[] { campaignId, status, updatedAt });
 
             return runtimeEntityType;
         }

@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 /// <summary>
 /// Local GGUF model cache under <see cref="Core.Storage.ArcanumPaths.ModelCacheDirectory"/>.
 /// </summary>
-public interface IGgufModelCache
+public interface IReliquary
 {
 
     bool IsCached(string cacheKey);

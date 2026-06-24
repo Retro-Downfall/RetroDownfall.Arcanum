@@ -4,6 +4,7 @@ using Microsoft.Win32;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Theme;
 
+[ExcludeFromCodeCoverage] // Reason: OS-specific theme detection (registry/defaults/gsettings); platform-bound.
 public sealed class ThemeDetector : IThemeDetector
 {
 

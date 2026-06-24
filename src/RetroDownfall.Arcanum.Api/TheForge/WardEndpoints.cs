@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -60,9 +61,20 @@ internal static class WardEndpoints
 
         apiGroup.MapPost(
             "/wards/{id}",
-            async (string id, ResolveWardRequest request, IWard ward, HttpContext ctx) =>
+            async (string id, ResolveWardRequest? request, IWard ward, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<WardResolutionDto>.FromResult(
+                            Result<WardResolutionDto>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 ResolveStatus status = ward.Resolve(id, request.Allow, request.Reason);
 

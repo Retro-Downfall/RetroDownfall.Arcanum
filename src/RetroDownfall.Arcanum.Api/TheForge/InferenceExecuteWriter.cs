@@ -79,45 +79,57 @@ internal static class InferenceExecuteWriter
 
         ArrayBufferWriter<byte> eventBuffer = new(256);
 
+        Utf8JsonWriter jsonWriter = new(eventBuffer);
+
         try
         {
             await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct).ConfigureAwait(false))
             {
+
                 eventBuffer.ResetWrittenCount();
 
-                await using (Utf8JsonWriter jsonWriter = new(eventBuffer))
-                {
-                    JsonSerializer.Serialize(jsonWriter, ev, ArcanumJsonContext.Default.IntelligenceEvent);
-                }
+                jsonWriter.Reset();
+
+                JsonSerializer.Serialize(jsonWriter, ev, ArcanumJsonContext.Default.IntelligenceEvent);
 
                 eventBuffer.Write(NewlineBytes);
 
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, ct).ConfigureAwait(false);
 
                 await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+
             }
+
         }
         catch (OperationCanceledException)
         {
+
         }
         catch (Exception)
         {
+
             IntelligenceEvent errorEvent = new(
                 IntelligenceEventType.Error,
                 "An internal error occurred during inference streaming.");
 
             eventBuffer.ResetWrittenCount();
 
-            await using (Utf8JsonWriter jsonWriter = new(eventBuffer))
-            {
-                JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
-            }
+            jsonWriter.Reset();
+
+            JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
 
             eventBuffer.Write(NewlineBytes);
 
             await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None).ConfigureAwait(false);
 
             await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            jsonWriter.Dispose();
+
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Theme;
@@ -5,6 +6,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Theme;
 /// <summary>
 /// macOS-only CoreFoundation access for <c>AppleInterfaceStyle</c>. Returns whether the system UI is set to Dark.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: macOS CoreFoundation interop, no portable test surface
 internal static partial class MacOsThemeInterop
 {
 

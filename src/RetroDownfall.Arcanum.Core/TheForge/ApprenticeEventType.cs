@@ -69,4 +69,7 @@ public enum ApprenticeEventType
     [JsonStringEnumMemberName("simulacrumCompleted")]
     SimulacrumCompleted,
 
+    [JsonStringEnumMemberName("eventsDropped")]
+    EventsDropped,
+
 }

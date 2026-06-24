@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,6 +17,7 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+[ExcludeFromCodeCoverage] // Reason: IHostedService + IApprenticeRuntime long-running orchestration
 internal sealed class ApprenticeService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
@@ -31,7 +33,7 @@ internal sealed class ApprenticeService(
 
     private readonly ConcurrentQueue<Guid> _pendingStarts = new();
 
-    private int _runningCount;
+    private readonly ApprenticeConcurrencyGate _concurrencyGate = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -103,16 +105,14 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(new Error("Apprentice.AlreadyRunning", "Apprentice is already running or not in a startable state."));
         }
 
-        int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
-
-        if (Volatile.Read(ref _runningCount) >= maxConcurrent)
+        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: true, out Result<string>? capacityFailure))
         {
-            _pendingStarts.Enqueue(apprenticeId);
 
-            return Result<string>.Failure(new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached; queued for next slot."));
+            return capacityFailure!;
+
         }
 
-        SpawnExecution(apprenticeId);
+        BeginExecutionTask(apprenticeId);
 
         return Result<string>.Success(apprenticeId.ToString());
     }
@@ -179,13 +179,11 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(new Error("Apprentice.NotPaused", "Apprentice is not paused."));
         }
 
-        ApprenticeSettings settings = GetApprenticeSettings();
-
-        int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
-
-        if (Volatile.Read(ref _runningCount) >= maxConcurrent)
+        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out Result<string>? capacityFailure))
         {
-            return Result<string>.Failure(new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached."));
+
+            return capacityFailure!;
+
         }
 
         apprentice.Status = ApprenticeStatus.Running.ToString();
@@ -200,7 +198,7 @@ internal sealed class ApprenticeService(
             FromStep = apprentice.CurrentStep,
         });
 
-        SpawnExecution(apprenticeId);
+        BeginExecutionTask(apprenticeId);
 
         return Result<string>.Success(apprenticeId.ToString());
     }
@@ -232,8 +230,6 @@ internal sealed class ApprenticeService(
             catch (ObjectDisposedException)
             {
             }
-
-            cts.Dispose();
         }
 
         apprentice.Status = ApprenticeStatus.Cancelled.ToString();
@@ -405,7 +401,14 @@ internal sealed class ApprenticeService(
 
         await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
 
-        SpawnExecution(apprenticeId);
+        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out Result<string>? capacityFailure))
+        {
+
+            return capacityFailure!;
+
+        }
+
+        BeginExecutionTask(apprenticeId);
 
         return Result<string>.Success(apprenticeId.ToString());
 
@@ -424,11 +427,52 @@ internal sealed class ApprenticeService(
 
             IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
 
+            IReadOnlyList<Apprentice> interruptedPlanning = await repo
+                .GetInterruptedPlanningAsync(stoppingToken)
+                .ConfigureAwait(false);
+
+            foreach (Apprentice apprentice in interruptedPlanning)
+            {
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                const string reason = "Interrupted during planning after host restart.";
+
+                apprentice.Status = ApprenticeStatus.Escalated.ToString();
+
+                apprentice.ErrorMessage = reason;
+
+                ApprenticeCheckpoint? existing = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+                apprentice.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+                {
+                    CurrentStep = apprentice.CurrentStep,
+                    ConversationSummary = existing?.ConversationSummary,
+                    CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
+                    Timestamp = DateTimeOffset.UtcNow,
+                    EscalationReason = reason,
+                    DmGuidance = existing?.DmGuidance,
+                    ParentApprenticeId = existing?.ParentApprenticeId,
+                });
+
+                await repo.UpdateAsync(apprentice, stoppingToken).ConfigureAwait(false);
+
+                logger.LogWarning(
+                    "Apprentice {ApprenticeId} was interrupted during planning; escalated for Divine Intervention.",
+                    apprentice.Id);
+
+                Publish(apprentice.Id, new ApprenticeEvent
+                {
+                    Type = ApprenticeEventType.ApprenticeEscalated,
+                    ApprenticeId = apprentice.Id,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Error = reason,
+                });
+            }
+
             IReadOnlyList<Apprentice> resumable = await repo.GetResumableAsync(stoppingToken).ConfigureAwait(false);
-
-            ApprenticeSettings settings = GetApprenticeSettings();
-
-            int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
 
             foreach (Apprentice apprentice in resumable)
             {
@@ -437,16 +481,16 @@ internal sealed class ApprenticeService(
                     break;
                 }
 
-                if (Volatile.Read(ref _runningCount) >= maxConcurrent)
+                if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out _))
                 {
-                    _pendingStarts.Enqueue(apprentice.Id);
 
                     continue;
+
                 }
 
                 logger.LogInformation("Resuming Apprentice {ApprenticeId} after host restart.", apprentice.Id);
 
-                SpawnExecution(apprentice.Id);
+                BeginExecutionTask(apprentice.Id);
             }
         }
         catch (Exception ex)
@@ -455,27 +499,94 @@ internal sealed class ApprenticeService(
         }
     }
 
-    private void SpawnExecution(Guid apprenticeId)
+    private bool TryAcquireExecutionSlot(Guid apprenticeId, bool queueOnCapacity, out Result<string>? failure)
     {
+
+        failure = null;
 
         if (!_activeTasks.TryAdd(apprenticeId, Task.CompletedTask))
         {
 
-            return;
+            failure = Result<string>.Failure(
+                new Error("Apprentice.AlreadyRunning", "Apprentice is already running or not in a startable state."));
+
+            return false;
 
         }
 
-        Interlocked.Increment(ref _runningCount);
+        ApprenticeSettings settings = GetApprenticeSettings();
+
+        int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
+
+        if (_concurrencyGate.TryAcquire(maxConcurrent))
+        {
+
+            return true;
+
+        }
+
+        _activeTasks.TryRemove(apprenticeId, out _);
+
+        if (queueOnCapacity)
+        {
+
+            int maxPending = ArcanumSettingClamps.MaxPendingStarts(settings.MaxPendingStarts);
+
+            if (_pendingStarts.Count < maxPending)
+            {
+
+                _pendingStarts.Enqueue(apprenticeId);
+
+                failure = Result<string>.Failure(
+                    new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached; queued for next slot."));
+
+            }
+            else
+            {
+
+                failure = Result<string>.Failure(
+                    new Error("Apprentice.PendingQueueFull", "Maximum concurrent Apprentices and pending start queue are full."));
+
+            }
+
+        }
+        else
+        {
+
+            failure = Result<string>.Failure(
+                new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached."));
+
+        }
+
+        return false;
+
+    }
+
+    private void BeginExecutionTask(Guid apprenticeId)
+    {
 
         Task task = Task.Run(() => RunApprenticeAsync(apprenticeId));
 
         _activeTasks[apprenticeId] = task;
 
         _ = task.ContinueWith(
-            _ => CleanupExecution(apprenticeId),
+            antecedent =>
+            {
+
+                if (antecedent.IsFaulted && antecedent.Exception is not null)
+                {
+
+                    logger.LogError(antecedent.Exception, "Apprentice run task faulted for {ApprenticeId}.", apprenticeId);
+
+                }
+
+                CleanupExecution(apprenticeId);
+
+            },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+
     }
 
     private void CleanupExecution(Guid apprenticeId)
@@ -487,7 +598,7 @@ internal sealed class ApprenticeService(
             cts.Dispose();
         }
 
-        Interlocked.Decrement(ref _runningCount);
+        _concurrencyGate.Release();
 
         TryDequeuePendingStart();
     }
@@ -498,10 +609,31 @@ internal sealed class ApprenticeService(
 
         int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
 
-        while (Volatile.Read(ref _runningCount) < maxConcurrent && _pendingStarts.TryDequeue(out Guid nextId))
+        while (_pendingStarts.TryDequeue(out Guid nextId))
         {
-            SpawnExecution(nextId);
+
+            if (_concurrencyGate.RunningCount >= maxConcurrent)
+            {
+
+                _pendingStarts.Enqueue(nextId);
+
+                break;
+
+            }
+
+            if (!TryAcquireExecutionSlot(nextId, queueOnCapacity: false, out _))
+            {
+
+                continue;
+
+            }
+
+            BeginExecutionTask(nextId);
+
+            break;
+
         }
+
     }
 
     private async Task RunApprenticeAsync(Guid apprenticeId)
@@ -599,7 +731,9 @@ internal sealed class ApprenticeService(
                     return;
                 }
 
-                plan = ApprenticePlanParser.ParsePlan(planResult.Value.Text);
+                plan = ApprenticePlanParser.ParsePlan(
+                    planResult.Value.Text,
+                    ArcanumSettingClamps.MaxPlanSteps(optionsMonitor.CurrentValue.Intelligence.MaxPlanSteps));
 
                 apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
 
@@ -647,9 +781,38 @@ internal sealed class ApprenticeService(
 
             int retryBackoffMaxSeconds = ArcanumSettingClamps.RetryBackoffMaxSeconds(settings.RetryBackoffMaxSeconds);
 
+            int maxRunSteps = ArcanumSettingClamps.MaxRunSteps(settings.MaxRunSteps);
+
+            int maxRunDurationMinutes = ArcanumSettingClamps.MaxRunDurationMinutes(settings.MaxRunDurationMinutes);
+
+            int maxReweavesPerRun = ArcanumSettingClamps.MaxReweavesPerRun(settings.MaxReweavesPerRun);
+
+            int stepsExecutedThisRun = 0;
+
+            int reweavesThisRun = 0;
+
             while (apprentice.CurrentStep < plan.Count)
             {
                 linkedCts.Token.ThrowIfCancellationRequested();
+
+                TimeSpan runElapsed = DateTimeOffset.UtcNow - runStarted;
+
+                if (ApprenticeExecutionPolicy.IsRunStepBudgetExceeded(stepsExecutedThisRun, maxRunSteps)
+                    || ApprenticeExecutionPolicy.IsRunDurationBudgetExceeded(runElapsed, maxRunDurationMinutes))
+                {
+
+                    await TerminateRunBudgetAsync(
+                        repo,
+                        apprentice,
+                        apprenticeId,
+                        apprentice.CurrentStep,
+                        "Per-run step or time budget was exceeded.",
+                        settings,
+                        linkedCts.Token).ConfigureAwait(false);
+
+                    return;
+
+                }
 
                 Apprentice? fresh = await repo.GetByIdAsync(apprenticeId, linkedCts.Token).ConfigureAwait(false);
 
@@ -687,7 +850,7 @@ internal sealed class ApprenticeService(
                 if (simulacrumGroupEnd - stepIndex > 1)
                 {
 
-                    bool advanced = await ExecuteSimulacrumGroupAsync(
+                    (bool advanced, reweavesThisRun) = await ExecuteSimulacrumGroupAsync(
                         repo,
                         intelligence,
                         apprentice,
@@ -700,7 +863,9 @@ internal sealed class ApprenticeService(
                         retryBackoffSeconds,
                         retryBackoffMaxSeconds,
                         apprenticeId,
-                        linkedCts).ConfigureAwait(false);
+                        linkedCts,
+                        reweavesThisRun,
+                        maxReweavesPerRun).ConfigureAwait(false);
 
                     if (!advanced)
                     {
@@ -708,6 +873,8 @@ internal sealed class ApprenticeService(
                         return;
 
                     }
+
+                    stepsExecutedThisRun += simulacrumGroupEnd - stepIndex;
 
                     continue;
 
@@ -938,13 +1105,15 @@ internal sealed class ApprenticeService(
                 if (settings.EnableShiftingFate)
                 {
 
-                    plan = await AttemptShiftingFateAsync(
+                    (plan, reweavesThisRun) = await AttemptShiftingFateAsync(
                         repo,
                         intelligence,
                         apprentice,
                         plan,
                         stepIndex,
                         apprenticeId,
+                        reweavesThisRun,
+                        maxReweavesPerRun,
                         linkedCts.Token).ConfigureAwait(false);
 
                 }
@@ -960,6 +1129,8 @@ internal sealed class ApprenticeService(
                     linkedCts.Token).ConfigureAwait(false);
 
                 plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+                stepsExecutedThisRun++;
 
             }
 
@@ -1167,17 +1338,64 @@ internal sealed class ApprenticeService(
 
     }
 
-    private async Task<List<PlanStep>> AttemptShiftingFateAsync(
+    private async Task TerminateRunBudgetAsync(
+        IApprenticeRepository repo,
+        Apprentice apprentice,
+        Guid apprenticeId,
+        int stepIndex,
+        string reason,
+        ApprenticeSettings settings,
+        CancellationToken cancellationToken)
+    {
+
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(reason);
+
+        if (settings.EnableDivineIntervention)
+        {
+
+            await EscalateAsync(
+                repo,
+                apprentice,
+                apprenticeId,
+                stepIndex,
+                sanitized,
+                alreadyAlerted: false,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        else
+        {
+
+            await FailApprenticeAsync(repo, apprentice, sanitized, apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        }
+
+    }
+
+    private async Task<(List<PlanStep> Plan, int ReweavesThisRun)> AttemptShiftingFateAsync(
         IApprenticeRepository repo,
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
         List<PlanStep> plan,
         int completedStepIndex,
         Guid apprenticeId,
+        int reweavesThisRun,
+        int maxReweavesPerRun,
         CancellationToken cancellationToken)
     {
         try
         {
+
+            if (ApprenticeExecutionPolicy.IsReweaveBudgetExceeded(reweavesThisRun, maxReweavesPerRun))
+            {
+
+                logger.LogInformation(
+                    "Shifting Fate re-weave budget reached for Apprentice {ApprenticeId}.",
+                    apprenticeId);
+
+                return (plan, reweavesThisRun);
+
+            }
 
             string weavePrompt = ApprenticePromptBuilder.BuildWeaveEvaluationPrompt(
                 apprentice,
@@ -1203,15 +1421,17 @@ internal sealed class ApprenticeService(
                     apprenticeId,
                     weaveResult.Error.Message);
 
-                return plan;
+                return (plan, reweavesThisRun);
 
             }
 
-            if (!ApprenticePlanParser.TryParseRevisedPlan(weaveResult.Value.Text, out List<PlanStep>? revisedTail)
+            int maxPlanSteps = ArcanumSettingClamps.MaxPlanSteps(optionsMonitor.CurrentValue.Intelligence.MaxPlanSteps);
+
+            if (!ApprenticePlanParser.TryParseRevisedPlan(weaveResult.Value.Text, out List<PlanStep>? revisedTail, maxPlanSteps)
                 || revisedTail is null)
             {
 
-                return plan;
+                return (plan, reweavesThisRun);
 
             }
 
@@ -1233,7 +1453,7 @@ internal sealed class ApprenticeService(
                 AtStep = completedStepIndex + 1,
             });
 
-            return merged;
+            return (merged, reweavesThisRun + 1);
 
         }
         catch (Exception ex)
@@ -1241,7 +1461,7 @@ internal sealed class ApprenticeService(
 
             logger.LogWarning(ex, "Shifting Fate evaluation threw for Apprentice {ApprenticeId}.", apprenticeId);
 
-            return plan;
+            return (plan, reweavesThisRun);
 
         }
 
@@ -1341,7 +1561,7 @@ internal sealed class ApprenticeService(
 
     }
 
-    private async Task<bool> ExecuteSimulacrumGroupAsync(
+    private async Task<(bool Advanced, int ReweavesThisRun)> ExecuteSimulacrumGroupAsync(
         IApprenticeRepository repo,
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
@@ -1354,7 +1574,9 @@ internal sealed class ApprenticeService(
         int retryBackoffSeconds,
         int retryBackoffMaxSeconds,
         Guid apprenticeId,
-        CancellationTokenSource linkedCts)
+        CancellationTokenSource linkedCts,
+        int reweavesThisRun,
+        int maxReweavesPerRun)
     {
         DateTimeOffset groupStarted = DateTimeOffset.UtcNow;
 
@@ -1471,7 +1693,7 @@ internal sealed class ApprenticeService(
         if (anyPaused)
         {
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1480,7 +1702,7 @@ internal sealed class ApprenticeService(
         if (fresh is null)
         {
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1489,7 +1711,7 @@ internal sealed class ApprenticeService(
             || ApprenticeExecutionPolicy.IsEscalatedStatus(fresh.Status))
         {
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1526,7 +1748,7 @@ internal sealed class ApprenticeService(
 
             }
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1542,7 +1764,7 @@ internal sealed class ApprenticeService(
                 escalated.AlreadyAlerted,
                 linkedCts.Token).ConfigureAwait(false);
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1618,18 +1840,20 @@ internal sealed class ApprenticeService(
         if (settings.EnableShiftingFate)
         {
 
-            await AttemptShiftingFateAsync(
+            (plan, reweavesThisRun) = await AttemptShiftingFateAsync(
                 repo,
                 intelligence,
                 apprentice,
                 plan,
                 groupEnd - 1,
                 apprenticeId,
+                reweavesThisRun,
+                maxReweavesPerRun,
                 linkedCts.Token).ConfigureAwait(false);
 
         }
 
-        return true;
+        return (true, reweavesThisRun);
 
     }
 

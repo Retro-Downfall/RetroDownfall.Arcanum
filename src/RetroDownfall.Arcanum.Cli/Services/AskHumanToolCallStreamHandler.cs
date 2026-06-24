@@ -66,8 +66,17 @@ internal static class AskHumanToolCallStreamHandler
 
             Console.Error.Flush();
 
-            string answer = AnsiConsole.Ask<string>(
-                $"\n{palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(args.Question)}");
+            string answer = CliLineReader.ReadLine(
+                $"\n{palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(args.Question)} ",
+                allowEmpty: false)
+                ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(answer))
+            {
+
+                return AskHumanResult.SubmitFailed;
+
+            }
 
             submitResult = await apiClient
                 .SubmitHumanResponseAsync(args.PromptId, answer, cancellationToken)

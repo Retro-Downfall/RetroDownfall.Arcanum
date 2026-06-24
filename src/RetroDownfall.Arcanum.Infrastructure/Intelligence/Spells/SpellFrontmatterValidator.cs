@@ -113,6 +113,76 @@ internal static class SpellFrontmatterValidator
         return ValidateArray(request.RequiredMcpServers, "requiredMcpServers");
     }
 
+    public static string? ValidateParsed(SpellParseResult parsed)
+    {
+
+        string? error = ValidateScalar(parsed.Description, "description");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        error = ValidateScalar(parsed.SystemPrompt, "systemPrompt");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        error = ValidateScalar(parsed.Template, "template");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        error = ValidateScalar(parsed.Model, "model");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        error = ValidateScalar(parsed.Provider, "provider");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        error = ValidateArray(parsed.Tags, "tags");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        error = ValidateArray(parsed.Tools, "tools");
+
+        if (error is not null)
+        {
+
+            return error;
+
+        }
+
+        return ValidateArray(parsed.RequiredMcpServers, "requiredMcpServers");
+
+    }
+
     private static string? ValidateScalar(string? value, string fieldName)
     {
         if (value is null)

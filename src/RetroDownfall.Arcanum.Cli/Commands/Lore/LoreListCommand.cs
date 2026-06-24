@@ -18,7 +18,7 @@ public sealed class LoreListCommand(ArcanumApiClient apiClient, IThemePalette th
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }

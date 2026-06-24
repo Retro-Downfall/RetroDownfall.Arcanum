@@ -14,4 +14,12 @@ public sealed record EventBusSettings
     /// </summary>
     public int ChannelCapacity { get; init; } = 256;
 
+    /// <summary>
+    /// SSE keep-alive comment interval in seconds for <c>/api/events/*</c>, session stream, and Chronicle.
+    /// <c>0</c> disables heartbeats.
+    /// </summary>
+    public int HeartbeatSeconds { get; init; } = 30;
+
+    public int MaxSseConnections { get; init; } = 20;
+
 }

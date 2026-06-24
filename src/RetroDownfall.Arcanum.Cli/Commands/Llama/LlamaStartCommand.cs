@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
@@ -14,12 +15,15 @@ public sealed class LlamaStartCommand(ArcanumApiClient apiClient, IThemePalette 
     {
 
         [CommandArgument(0, "<CACHE_KEY>")]
+        [Description("Cache key of the GGUF model to load (from llama pull or llama status).")]
         public string? CacheKey { get; init; }
 
         [CommandOption("--gpu-layers")]
+        [Description("Number of model layers to offload to GPU (llama-server -ngl).")]
         public int? GpuLayers { get; init; }
 
         [CommandOption("--port")]
+        [Description("Local TCP port for the spawned llama-server instance.")]
         public int? Port { get; init; }
 
     }
@@ -40,7 +44,7 @@ public sealed class LlamaStartCommand(ArcanumApiClient apiClient, IThemePalette 
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }

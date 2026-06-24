@@ -1,11 +1,13 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+[ExcludeFromCodeCoverage] // Reason: Windows Service interop, platform-bound
 public sealed class WindowsDaemonManager : IDaemonManager
 {
     internal const string ServiceName = "ArcanumDaemon";

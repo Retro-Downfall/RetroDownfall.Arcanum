@@ -19,7 +19,7 @@ public sealed class DaemonJobsCommand(ArcanumApiClient apiClient, IThemePalette 
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }
@@ -37,6 +37,12 @@ public sealed class DaemonJobsCommand(ArcanumApiClient apiClient, IThemePalette 
         table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Effective (min)"))));
 
         table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Status"))));
+
+        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Last run"))));
+
+        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Next due"))));
+
+        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("Last result"))));
 
         foreach (UnseenServantJobStatusDto job in jobs)
         {
@@ -57,12 +63,21 @@ public sealed class DaemonJobsCommand(ArcanumApiClient apiClient, IThemePalette 
                 ? themePalette.TextMarkup(Markup.Escape(statusText))
                 : themePalette.MutedMarkup(Markup.Escape(statusText));
 
+            string lastRunText = job.LastRunAt?.ToString("u") ?? "-";
+
+            string nextDueText = job.NextDueAt?.ToString("u") ?? "-";
+
+            string lastResultText = job.LastResult ?? "-";
+
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(job.Name))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(job.TargetSpell))),
                 new Markup(baseCell),
                 new Markup(effectiveCell),
-                new Markup(statusCell));
+                new Markup(statusCell),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(lastRunText))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(nextDueText))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(lastResultText))));
         }
 
         AnsiConsole.Write(table);

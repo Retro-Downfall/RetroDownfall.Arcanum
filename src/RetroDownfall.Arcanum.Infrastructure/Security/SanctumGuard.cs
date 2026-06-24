@@ -417,10 +417,6 @@ public sealed class SanctumGuard(
 
     private static bool IsHostAllowed(string host, IReadOnlyList<string> allowedDomains)
     {
-        if (allowedDomains.Count == 0)
-        {
-            return false;
-        }
 
         foreach (string domain in allowedDomains)
         {

@@ -22,6 +22,13 @@ public sealed record CliSettings
     /// </summary>
     public int DoctorHealthTimeoutSeconds { get; init; } = 2;
 
+    /// <summary>
+    /// Timeout (seconds) for non-streaming CLI API calls (<c>lore</c>, <c>daemon jobs</c>,
+    /// <c>llama status</c>, session queries, etc.). Default 60; clamp 1&#8211;600.
+    /// Streaming verbs (<c>ask</c>, <c>chat</c>, <c>llama pull</c>) use an unbounded client.
+    /// </summary>
+    public int ApiRequestTimeoutSeconds { get; init; } = 60;
+
 }
 
 

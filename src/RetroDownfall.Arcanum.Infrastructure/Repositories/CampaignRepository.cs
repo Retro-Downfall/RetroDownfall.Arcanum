@@ -148,12 +148,33 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        int deleted = await _db.Campaigns
-            .Where(c => c.Id == id)
-            .ExecuteDeleteAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        return deleted > 0;
+        try
+        {
+            _ = await _db.Sessions
+                .Where(s => s.CampaignId == id)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(x => x.CampaignId, (Guid?)null),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            int deleted = await _db.Campaigns
+                .Where(c => c.Id == id)
+                .ExecuteDeleteAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            return deleted > 0;
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+            throw;
+        }
     }
 
     public Task<int> CountAsync(CancellationToken cancellationToken = default) =>

@@ -1,20 +1,40 @@
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Caching;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-internal static class InferenceTokenCounter
+/// <summary>
+/// Pre-flight token counting for context compression with per-message memoization.
+/// </summary>
+public sealed class ManaPreflight
 {
 
-    internal static bool ShouldSkipCompressionPreflight(IReadOnlyList<MeAiChatMessage> messages, int minMessages) =>
+    private readonly BoundedLruCache<MessageTokenCacheKey, int> _messageTokenCache;
+
+    public ManaPreflight(IOptionsMonitor<ArcanumSettings> settings)
+    {
+
+        int capacity = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            settings.CurrentValue.Grimoire?.MaxMessagesPerConversationLoad ?? new GrimoireSettings().MaxMessagesPerConversationLoad);
+
+        _messageTokenCache = new BoundedLruCache<MessageTokenCacheKey, int>(capacity);
+
+    }
+
+    public bool ShouldSkipCompressionPreflight(IReadOnlyList<MeAiChatMessage> messages, int minMessages) =>
         messages.Count <= minMessages;
 
-    internal static int CountTokens(
+    public int CountTokens(
         IReadOnlyList<MeAiChatMessage> messages,
         Tokenizer tokenizer,
-        int perMessageOverheadTokens)
+        int perMessageOverheadTokens,
+        string encodingName)
     {
 
         int total = 0;
@@ -33,11 +53,37 @@ internal static class InferenceTokenCounter
 
             }
 
-            total += tokenizer.CountTokens(text);
+            MessageTokenCacheKey key = new(encodingName, ComputeContentHashHex(text));
+
+            if (_messageTokenCache.TryGetValue(key, out int cached))
+            {
+
+                total += cached;
+
+                continue;
+
+            }
+
+            int messageTokens = tokenizer.CountTokens(text);
+
+            _messageTokenCache.Set(key, messageTokens);
+
+            total += messageTokens;
 
         }
 
         return total;
+
+    }
+
+    private static string ComputeContentHashHex(string text)
+    {
+
+        Span<byte> hash = stackalloc byte[32];
+
+        _ = SHA256.TryHashData(Encoding.UTF8.GetBytes(text), hash, out _);
+
+        return Convert.ToHexString(hash[..16]);
 
     }
 
@@ -97,5 +143,7 @@ internal static class InferenceTokenCounter
         return sb.Length == 0 ? null : sb.ToString();
 
     }
+
+    private readonly record struct MessageTokenCacheKey(string EncodingName, string ContentHashHex);
 
 }

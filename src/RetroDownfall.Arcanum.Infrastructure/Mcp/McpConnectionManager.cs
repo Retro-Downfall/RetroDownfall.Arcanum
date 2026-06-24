@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Loads standard <c>mcp.json</c> from the user profile and from each workspace, spawns MCP servers, and exposes merged tools as <see cref="AITool"/>.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: spawns and manages external MCP server subprocesses; non-spawn paths are covered via InProcessMcpTransport tests.
 public sealed class McpConnectionManager(
     ILogger<McpConnectionManager> logger,
     IHumanPromptRegistry humanPromptRegistry,
@@ -65,26 +67,56 @@ public sealed class McpConnectionManager(
 
         await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (ManagedMcpServerEntry entry in _registry.Values)
+        ManagedMcpServerEntry[] globalAlwaysOn = _registry.Values
+            .Where(entry => entry.ScopeWorkingDirectory is null && entry.AlwaysOn)
+            .ToArray();
+
+        if (globalAlwaysOn.Length == 0)
         {
-            if (entry.ScopeWorkingDirectory is not null)
+            return;
+        }
+
+        Task<Result>[] startTasks = globalAlwaysOn
+            .Select(entry => StartAsync(entry.Name, null, cancellationToken))
+            .ToArray();
+
+        Result[] startResults = await Task.WhenAll(startTasks).ConfigureAwait(false);
+
+        List<string> bootstrapFailures = [];
+
+        for (int i = 0; i < globalAlwaysOn.Length; i++)
+        {
+
+            if (startResults[i].IsFailure)
             {
-                continue;
+
+                bootstrapFailures.Add($"{globalAlwaysOn[i].Name}: {startResults[i].Error.Message}");
+
             }
 
-            if (!entry.AlwaysOn)
-            {
-                continue;
-            }
+        }
 
-            await StartAsync(entry.Name, null, cancellationToken).ConfigureAwait(false);
+        if (bootstrapFailures.Count > 0)
+        {
+
+            logger.LogWarning(
+                "MCP bootstrap: {FailureCount} always-on server(s) failed to start: {Failures}",
+                bootstrapFailures.Count,
+                string.Join("; ", bootstrapFailures));
+
         }
     }
 
     /// <inheritdoc />
     public async Task StopAllAsync(CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
 
         foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
         {
@@ -764,8 +796,22 @@ public sealed class McpConnectionManager(
 
     private void RegisterFromConfig(McpConfig config, string? scopeWorkingDirectory)
     {
+        int maxServers = GetClampedMcpMaxServers();
+
         foreach (KeyValuePair<string, McpServerConfig> pair in config.McpServers!)
         {
+            if (_registry.Count >= maxServers)
+            {
+
+                logger.LogWarning(
+                    "MCP server registry at MaxServers cap ({MaxServers}); skipping remaining entries in {Scope}.",
+                    maxServers,
+                    scopeWorkingDirectory ?? "global");
+
+                break;
+
+            }
+
             string serverName = pair.Key;
 
             McpServerConfig cfg = pair.Value;
@@ -896,8 +942,6 @@ public sealed class McpConnectionManager(
 
                 if (localConfig?.McpServers is { Count: > 0 })
                 {
-                    RegisterFromConfig(localConfig, workspaceKey);
-
                     bool workspaceTrusted = await trustedMcpWorkspaces
                         .IsTrustedAsync(workspaceKey, cancellationToken)
                         .ConfigureAwait(false);
@@ -908,6 +952,8 @@ public sealed class McpConnectionManager(
                         return MergeInternalProfileAndLocal(internalTagged, workspaceLocalTagged);
 
                     }
+
+                    RegisterFromConfig(localConfig, workspaceKey);
 
                     foreach (ManagedMcpServerEntry entry in _registry.Values.Where(e => e.ScopeWorkingDirectory == workspaceKey))
                     {
@@ -1119,6 +1165,7 @@ public sealed class McpConnectionManager(
             McpProcessTransport transport = new(
                 command.Trim(),
                 arguments: string.Empty,
+                maxJsonRpcLineBytes: GetClampedMcpMaxJsonRpcLineBytes(),
                 argumentList: args,
                 environment: cfg.Env,
                 workingDirectory: cwdResult.Value,
@@ -1132,11 +1179,7 @@ public sealed class McpConnectionManager(
                 OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration),
             };
 
-            client = new McpClient(
-                transport,
-                GetClampedMcpRequestTimeout(),
-                GetClampedMcpMaxPaginationPages(),
-                GetClampedToolOutputCapBytes());
+            client = CreateMcpClient(transport);
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1645,18 +1688,75 @@ public sealed class McpConnectionManager(
 
     private int GetClampedExecuteCommandTimeoutSeconds()
     {
-        return Math.Clamp(settings.CurrentValue.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+        int executeSeconds = Math.Clamp(settings.CurrentValue.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+
+        int requestSeconds = ArcanumSettingClamps.McpRequestTimeoutSeconds(
+            settings.CurrentValue.Mcp.RequestTimeoutSeconds);
+
+        return Math.Min(executeSeconds, requestSeconds);
     }
 
     private TimeSpan GetClampedMcpRequestTimeout()
     {
         return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpRequestTimeoutSeconds(settings.CurrentValue.Intelligence.McpRequestTimeoutSeconds));
+            ArcanumSettingClamps.McpRequestTimeoutSeconds(settings.CurrentValue.Mcp.RequestTimeoutSeconds));
     }
 
     private int GetClampedMcpMaxPaginationPages()
     {
-        return ArcanumSettingClamps.McpMaxPaginationPages(settings.CurrentValue.Intelligence.McpMaxPaginationPages);
+        return ArcanumSettingClamps.McpMaxPaginationPages(settings.CurrentValue.Mcp.MaxPaginationPages);
+    }
+
+    private int GetClampedMcpMaxServers()
+    {
+
+        return ArcanumSettingClamps.McpMaxServers(settings.CurrentValue.Mcp.MaxServers);
+
+    }
+
+    private int GetClampedMcpMaxToolsPerServer()
+    {
+
+        return ArcanumSettingClamps.McpMaxToolsPerServer(settings.CurrentValue.Mcp.MaxToolsPerServer);
+
+    }
+
+    private int GetClampedMcpMaxToolsPerListPage()
+    {
+
+        return ArcanumSettingClamps.McpMaxToolsPerListPage(settings.CurrentValue.Mcp.MaxToolsPerListPage);
+
+    }
+
+    private int GetClampedMcpMaxToolsTotalBytes()
+    {
+
+        return ArcanumSettingClamps.McpMaxToolsTotalBytes(settings.CurrentValue.Mcp.MaxToolsTotalBytes);
+
+    }
+
+    private int GetClampedMcpMaxJsonRpcLineBytes()
+    {
+
+        return ArcanumSettingClamps.McpMaxJsonRpcLineBytes(settings.CurrentValue.Mcp.MaxJsonRpcLineBytes);
+
+    }
+
+    private McpClient CreateMcpClient(
+        IMcpTransport transport,
+        McpRequestCancellationBroker? requestCancellationBroker = null)
+    {
+
+        return new McpClient(
+            transport,
+            GetClampedMcpRequestTimeout(),
+            GetClampedMcpMaxPaginationPages(),
+            GetClampedToolOutputCapBytes(),
+            GetClampedMcpMaxToolsPerServer(),
+            GetClampedMcpMaxToolsPerListPage(),
+            GetClampedMcpMaxToolsTotalBytes(),
+            requestCancellationBroker);
+
     }
 
     private int GetClampedListDirectoryMaxPaths()
@@ -1697,6 +1797,7 @@ public sealed class McpConnectionManager(
             settings.CurrentValue.Intelligence,
             maxFileReadSizeBytes,
             settings.CurrentValue.Conclave.Enabled,
+            GetClampedMcpMaxJsonRpcLineBytes(),
             logger: null);
 
         Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);
@@ -1709,12 +1810,7 @@ public sealed class McpConnectionManager(
 
         try
         {
-            client = new McpClient(
-                transport,
-                GetClampedMcpRequestTimeout(),
-                GetClampedMcpMaxPaginationPages(),
-                GetClampedToolOutputCapBytes(),
-                requestCancellationBroker: transport.RequestCancellation);
+            client = CreateMcpClient(transport, requestCancellationBroker: transport.RequestCancellation);
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 

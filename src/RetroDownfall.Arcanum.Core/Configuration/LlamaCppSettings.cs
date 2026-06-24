@@ -77,4 +77,6 @@ public sealed record LlamaCppSettings
     /// </summary>
     public Dictionary<string, string>? ModelSha256Map { get; init; }
 
+    public bool RequireModelHash { get; init; } = true;
+
 }

@@ -1,18 +1,15 @@
-using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
-using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
-using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Spectre.Console;
@@ -20,6 +17,7 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
+[ExcludeFromCodeCoverage] // Reason: long-running Kestrel host entrypoint; config readers are covered via internal static unit tests.
 public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
@@ -31,18 +29,62 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 
         probeConfig.AddArcanumConfiguration();
 
-        if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(probeConfig)))
+        bool configuredListenAny = ArcanumEnvironment.IsHostAnyEnabled(
+            ReadConfiguredListenAny(probeConfig));
+
+        if (configuredListenAny)
         {
 
-            AnsiConsole.MarkupLine(
-                themePalette.ErrorMarkup(
-                    "Refusing to bind to all interfaces over plaintext HTTP. Enable TLS termination or bind loopback only."));
+            if (ListenAnySecurityPolicy.RequiresInteractiveConfirmation(ReadConfiguredListenAny(probeConfig)))
+            {
 
-            return 1;
+                if (!AnsiConsole.Console.Profile.Capabilities.Interactive)
+                {
+
+                    AnsiConsole.MarkupLine(
+                        themePalette.ErrorMarkup(
+                            Markup.Escape(
+                                "Refusing to bind to all interfaces: set ARCANUM_LISTEN_ANY_ACK=1 or run interactively to acknowledge the security risk.")));
+
+                    return 1;
+
+                }
+
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+
+                if (!AnsiConsole.Confirm("Bind Arcanum to all network interfaces over plaintext HTTP?", defaultValue: false))
+                {
+
+                    AnsiConsole.MarkupLine(
+                        themePalette.MutedMarkup(
+                            Markup.Escape("Aborted. Set Arcanum:Host:ListenAny to false or unset ARCANUM_HOST_ANY to use loopback only.")));
+
+                    return 1;
+
+                }
+
+                ListenAnySecurityPolicy.PersistAcknowledgement();
+
+            }
+            else
+            {
+
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+
+            }
 
         }
 
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        TaskScheduler.UnobservedTaskException += static (_, e) =>
+        {
+
+            Log.Error(e.Exception, "Unobserved task exception.");
+
+            e.SetObserved();
+
+        };
 
         builder.Host.UseWindowsService(options => options.ServiceName = "ArcanumDaemon");
 
@@ -76,53 +118,46 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 
         builder.Services.AddArcanumApiServices(builder.Configuration);
 
-        if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(cancellationToken).ConfigureAwait(false) is not null)
+        if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(cancellationToken).ConfigureAwait(false) is string newApiKey)
         {
-            AnsiConsole.MarkupLine(themePalette.HighlightMarkup(Markup.Escape("New Master API Key generated and secured.")));
+
+            AnsiConsole.WriteLine(newApiKey);
+
+            AnsiConsole.MarkupLine(
+                themePalette.HighlightMarkup(
+                    Markup.Escape("New Master API Key generated and secured. Save this key — it will not be shown again.")));
+
         }
 
         WebApplication app = builder.Build();
 
+        int configuredPort = ReadConfiguredHostPort(builder.Configuration);
+
+        int listenPort = ArcanumSettingClamps.HostPort(configuredPort);
+
+        bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(builder.Configuration));
+
+        string listenHost = listenAny ? "0.0.0.0" : "127.0.0.1";
+
+        Log.Information("{Timestamp:o} Arcanum API host configured for http://{ListenHost}:{Port}", DateTimeOffset.UtcNow, listenHost, listenPort);
+
+        app.UseArcanumExceptionHandler();
+
         app.UseArcanumCors();
 
         app.UseArcanumRateLimiter();
-
-        app.Use(async (context, next) =>
-        {
-            try
-            {
-                await next(context);
-            }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
-            {
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Unhandled exception on {Method} {Path}", context.Request.Method, context.Request.Path);
-
-                if (!context.Response.HasStarted)
-                {
-                    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-
-                    context.Response.ContentType = "application/json";
-
-                    string traceId = Activity.Current?.Id ?? context.TraceIdentifier;
-
-                    ApiResponse<string> body = new(null, false, new Error("Internal", "An internal error occurred."), traceId);
-
-                    await context.Response.WriteAsJsonAsync(
-                        body,
-                        ArcanumJsonContext.Default.ApiResponseString,
-                        cancellationToken: CancellationToken.None);
-                }
-            }
-        });
 
         app.MapArcanumEndpoints();
 
         CancellationTokenRegistration stopRegistration = cancellationToken.Register(
             static state => ((IHostApplicationLifetime)state!).StopApplication(),
             app.Lifetime);
+
+        Log.Information("{Timestamp:o} Arcanum listening on http://{ListenHost}:{Port}", DateTimeOffset.UtcNow, listenHost, listenPort);
+
+        AnsiConsole.MarkupLine(
+            themePalette.HighlightMarkup(
+                Markup.Escape($"Listening on http://{listenHost}:{listenPort}")));
 
         try
         {
@@ -138,7 +173,7 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
         return 0;
     }
 
-    private static int ReadConfiguredHostPort(IConfiguration configuration)
+    internal static int ReadConfiguredHostPort(IConfiguration configuration)
     {
         string? raw = configuration["Arcanum:Host:Port"];
 
@@ -152,7 +187,7 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
             : new HostSettings().Port;
     }
 
-    private static bool ReadConfiguredListenAny(IConfiguration configuration)
+    internal static bool ReadConfiguredListenAny(IConfiguration configuration)
     {
         string? configured = configuration["Arcanum:Host:ListenAny"];
 
@@ -164,7 +199,7 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
         return bool.TryParse(configured.Trim(), out bool parsed) && parsed;
     }
 
-    private static long ReadConfiguredMaxRequestBodyBytes(IConfiguration configuration)
+    internal static long ReadConfiguredMaxRequestBodyBytes(IConfiguration configuration)
     {
         string? raw = configuration["Arcanum:Host:MaxRequestBodyBytes"];
 

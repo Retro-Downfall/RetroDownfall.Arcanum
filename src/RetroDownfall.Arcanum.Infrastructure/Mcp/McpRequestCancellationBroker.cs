@@ -28,7 +28,7 @@ internal sealed class McpRequestCancellationBroker
 
         CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
 
-        BrokerEntry entry = new(linked);
+        BrokerEntry entry = new(linked, callerToken);
 
         if (!_byRequestId.TryAdd(requestId, entry))
         {
@@ -61,7 +61,7 @@ internal sealed class McpRequestCancellationBroker
     {
         if (_byRequestId.TryGetValue(requestId, out BrokerEntry? entry))
         {
-            return entry.LinkedSource.Token;
+            return entry.CallerToken;
         }
 
         return fallback;
@@ -78,7 +78,7 @@ internal sealed class McpRequestCancellationBroker
         }
     }
 
-    private sealed class BrokerEntry(CancellationTokenSource linkedSource) : IDisposable
+    private sealed class BrokerEntry(CancellationTokenSource linkedSource, CancellationToken callerToken) : IDisposable
     {
 
         private readonly object _gate = new();
@@ -86,6 +86,8 @@ internal sealed class McpRequestCancellationBroker
         private CancellationTokenRegistration _callerRegistration;
 
         private bool _disposed;
+
+        public CancellationToken CallerToken => callerToken;
 
         public CancellationTokenSource LinkedSource => linkedSource;
 

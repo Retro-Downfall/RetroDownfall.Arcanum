@@ -30,6 +30,8 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(CommLinkSettings))]
 [JsonSerializable(typeof(GrimoireSettings))]
 [JsonSerializable(typeof(EventBusSettings))]
+[JsonSerializable(typeof(ConfigurationValidationError))]
+[JsonSerializable(typeof(ConfigurationValidationError[]))]
 [JsonSerializable(typeof(LogSettings))]
 [JsonSerializable(typeof(LogLevel))]
 [JsonSerializable(typeof(WorkspaceSettings))]
@@ -40,6 +42,8 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(ApprenticeSettings))]
 [JsonSerializable(typeof(CodexSettings))]
 [JsonSerializable(typeof(ProvingGroundsSettings))]
+[JsonSerializable(typeof(McpSettings))]
+[JsonSerializable(typeof(PromptSettings))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(string[]))]
 

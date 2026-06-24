@@ -11,6 +11,8 @@ public sealed class WardGate : IWard
 
     private const string TimeoutReason = "The ward held until timeout — action was not allowed";
 
+    private const string CapacityReason = "Maximum active wards reached — action was not allowed";
+
     private readonly ConcurrentDictionary<string, WardEntry> _pending = new();
 
     private readonly ConcurrentDictionary<string, WardResolution> _resolved = new();
@@ -36,6 +38,16 @@ public sealed class WardGate : IWard
 
         var entryCts = new CancellationTokenSource();
 
+        int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
+            _settings.CurrentValue.Ward?.MaxActiveWards ?? new WardSettings().MaxActiveWards);
+
+        if (_pending.Count >= maxActiveWards)
+        {
+
+            return new WardResolution(false, CapacityReason, DateTimeOffset.UtcNow);
+
+        }
+
         var entry = new WardEntry(
             new TaskCompletionSource<WardResolution>(TaskCreationOptions.RunContinuationsAsynchronously),
             entryCts,
@@ -54,7 +66,7 @@ public sealed class WardGate : IWard
         {
             if (_pending.TryRemove(wardId, out WardEntry? removed))
             {
-                removed.Cts.Cancel();
+                TryCancelEntry(removed.Cts);
 
                 removed.Tcs.TrySetCanceled(cancellationToken);
             }
@@ -68,6 +80,8 @@ public sealed class WardGate : IWard
         }
         finally
         {
+            PruneResolvedTombstones();
+
             entryCts.Dispose();
         }
     }
@@ -78,7 +92,7 @@ public sealed class WardGate : IWard
 
         if (_pending.TryRemove(wardId, out WardEntry? entry))
         {
-            entry.Cts.Cancel();
+            TryCancelEntry(entry.Cts);
 
             DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
 
@@ -119,6 +133,23 @@ public sealed class WardGate : IWard
             .ToList();
     }
 
+
+    private static void TryCancelEntry(CancellationTokenSource cts)
+    {
+
+        try
+        {
+
+            cts.Cancel();
+
+        }
+        catch (ObjectDisposedException)
+        {
+
+        }
+
+    }
+
     private async Task RunTimeoutAsync(string wardId, WardEntry entry, TimeSpan timeout, CancellationToken cancellationToken)
     {
         try
@@ -143,6 +174,8 @@ public sealed class WardGate : IWard
         {
             _resolved[wardId] = resolution;
         }
+
+        PruneResolvedTombstones();
     }
 
     private void PruneResolvedTombstones()

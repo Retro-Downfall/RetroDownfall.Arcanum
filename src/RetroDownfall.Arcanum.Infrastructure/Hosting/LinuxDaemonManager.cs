@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+[ExcludeFromCodeCoverage] // Reason: systemd interop, Linux-only
 public sealed class LinuxDaemonManager : IDaemonManager
 {
     internal const string ServiceUnitFileName = "arcanum.service";

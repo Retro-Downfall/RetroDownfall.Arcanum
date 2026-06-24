@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
@@ -11,6 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
+[ExcludeFromCodeCoverage] // Reason: live HTTP provider connectivity probe endpoint; does not persist configuration.
 internal static class ProviderTestEndpoints
 {
 
@@ -77,7 +79,7 @@ internal static class ProviderTestEndpoints
             _ => $"{baseUrl}/models",
         };
 
-        using HttpClient client = new(new HttpClientHandler { AllowAutoRedirect = false }, disposeHandler: true)
+        using HttpClient client = new(OutboundUrlGuard.CreateProviderEgressHandler(), disposeHandler: true)
         {
             Timeout = ProbeTimeout,
         };

@@ -17,6 +17,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed class GrimoireRepository : IGrimoireRepository
 {
+    private const int MaxLegacyBackfillPerSweep = 200;
+
     private readonly ArcanumDbContext _db;
 
     private readonly ILogger<GrimoireRepository> _logger;
@@ -57,6 +59,10 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             try
             {
+                int entryCount = await GetEntryCountAsync(sid, cancellationToken).ConfigureAwait(false);
+
+                GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), prompt, string.Empty);
+
                 _db.Entries.Add(new Entry
                 {
                     Id = userEntryId,
@@ -77,14 +83,19 @@ public sealed class GrimoireRepository : IGrimoireRepository
                     CreatedAt = now,
                 });
 
-                await _db.Sessions
-                    .Where(s => s.Id == sid)
-                    .ExecuteUpdateAsync(
-                        s => s.SetProperty(x => x.UpdatedAt, now),
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                await SqliteBusyRetry.ExecuteAsync(
+                    () => _db.Sessions
+                        .Where(s => s.Id == sid)
+                        .ExecuteUpdateAsync(
+                            s => s.SetProperty(x => x.UpdatedAt, now),
+                            cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
 
-                await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await SqliteBusyRetry.ExecuteAsync(
+                    () => _db.SaveChangesAsync(cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+
+                await IncrementUnsummarizedEntryCountIfKnownAsync(sid, 2, cancellationToken).ConfigureAwait(false);
 
                 await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -99,6 +110,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
 
         Guid newSessionId = Guid.NewGuid();
+
+        GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 2, GetSessionSettings(), prompt, string.Empty);
+
         _db.Sessions.Add(new Session
         {
             Id = newSessionId,
@@ -125,7 +139,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
             ModelUsed = model,
             CreatedAt = now,
         });
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await SqliteBusyRetry.ExecuteAsync(
+            () => _db.SaveChangesAsync(cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+        await IncrementUnsummarizedEntryCountIfKnownAsync(newSessionId, 2, cancellationToken).ConfigureAwait(false);
+
         return (newSessionId, assistantEntryId);
     }
 
@@ -134,12 +153,13 @@ public sealed class GrimoireRepository : IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default)
     {
-        int updated = await _db.Entries
-            .Where(m => m.Id == assistantEntryId)
-            .ExecuteUpdateAsync(
-                s => s.SetProperty(m => m.Content, fullContent),
-                cancellationToken)
-            .ConfigureAwait(false);
+        int updated = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Entries
+                .Where(m => m.Id == assistantEntryId)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(m => m.Content, fullContent),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
         if (updated == 0)
         {
@@ -149,6 +169,66 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             throw new InvalidOperationException(
                 "Assistant entry could not be finalized; no matching row was updated in Grimoire.");
+        }
+    }
+
+    public async Task DiscardAssistantEntryAsync(
+        Guid assistantEntryId,
+        CancellationToken cancellationToken = default)
+    {
+        Entry? entry = await _db.Entries
+            .AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == assistantEntryId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (entry is null)
+        {
+            return;
+        }
+
+        if (entry.Role != MessageRole.Assistant)
+        {
+            _logger.LogWarning(
+                "DiscardAssistantEntryAsync skipped entry {AssistantEntryId} because it is not an assistant row.",
+                assistantEntryId);
+
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(entry.Content))
+        {
+            return;
+        }
+
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            Guid sessionId = entry.SessionId;
+
+            int deleted = await SqliteBusyRetry.ExecuteAsync(
+                () => _db.Entries
+                    .Where(m => m.Id == assistantEntryId && m.Role == MessageRole.Assistant && m.Content == string.Empty)
+                    .ExecuteDeleteAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            if (deleted == 0)
+            {
+                await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return;
+            }
+
+            await DecrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, cancellationToken).ConfigureAwait(false);
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+            throw;
         }
     }
 
@@ -166,7 +246,13 @@ public sealed class GrimoireRepository : IGrimoireRepository
         try
         {
             string callLine = $"[ToolCall: {toolName}({arguments})]";
+
             string resultLine = $"[ToolResult: {result}]";
+
+            int entryCount = await GetEntryCountAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+            GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), callLine, resultLine);
+
             _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
@@ -187,13 +273,20 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = modelUsed,
                 CreatedAt = now,
             });
-            await _db.Sessions
-                .Where(s => s.Id == sessionId)
-                .ExecuteUpdateAsync(
-                    s => s.SetProperty(x => x.UpdatedAt, now),
-                    cancellationToken)
-                .ConfigureAwait(false);
-            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.Sessions
+                    .Where(s => s.Id == sessionId)
+                    .ExecuteUpdateAsync(
+                        s => s.SetProperty(x => x.UpdatedAt, now),
+                        cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.SaveChangesAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            await IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
+
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -215,6 +308,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 2, GetSessionSettings(), userPrompt, assistantText);
+
             _db.Sessions.Add(new Session
             {
                 Id = sessionId,
@@ -241,7 +336,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 ModelUsed = modelUsed,
                 CreatedAt = now,
             });
-            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.SaveChangesAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            await IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
+
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -257,15 +357,17 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        _ = await _db.Entries
-            .Where(m => m.SessionId == sessionId)
-            .ExecuteDeleteAsync(cancellationToken)
-            .ConfigureAwait(false);
+        _ = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Entries
+                .Where(m => m.SessionId == sessionId)
+                .ExecuteDeleteAsync(cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
-        int removed = await _db.Sessions
-            .Where(c => c.Id == sessionId)
-            .ExecuteDeleteAsync(cancellationToken)
-            .ConfigureAwait(false);
+        int removed = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(c => c.Id == sessionId)
+                .ExecuteDeleteAsync(cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -289,20 +391,24 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<Entry> recentDescending = await _db.Entries
+        List<Entry> entries = await _db.Entries
             .AsNoTracking()
             .Where(m => m.SessionId == id)
-            .OrderByDescending(m => m.CreatedAt)
-            .Take(maxMessages)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        recentDescending.Reverse();
-
-        session.Entries = recentDescending;
+        session.Entries = SelectRecentEntries(entries, maxMessages);
 
         return session;
     }
+
+    public async Task<Session?> GetSessionHeaderAsync(
+        Guid id,
+        CancellationToken cancellationToken = default) =>
+        await _db.Sessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken)
+            .ConfigureAwait(false);
 
     public async Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(
         Guid sessionId,
@@ -320,18 +426,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<GrimoireEntryDto> recentDescending = await _db.Entries
+        List<Entry> entries = await _db.Entries
             .AsNoTracking()
             .Where(m => m.SessionId == sessionId)
-            .OrderByDescending(m => m.CreatedAt)
-            .Take(maxMessages)
-            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        recentDescending.Reverse();
-
-        return recentDescending;
+        return SelectRecentEntries(entries, maxMessages)
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .ToList();
     }
 
     public async Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(
@@ -350,18 +453,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         int clampedTake = Math.Max(1, takeLast);
 
-        List<GrimoireEntryDto> recentDescending = await _db.Entries
+        List<Entry> entries = await _db.Entries
             .AsNoTracking()
             .Where(m => m.SessionId == sessionId)
-            .OrderByDescending(m => m.CreatedAt)
-            .Take(clampedTake)
-            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        recentDescending.Reverse();
-
-        return recentDescending;
+        return SelectRecentEntries(entries, clampedTake)
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .ToList();
     }
 
     public async Task<GrimoireEntryDto?> GetEntryByIdAsync(
@@ -412,17 +512,20 @@ public sealed class GrimoireRepository : IGrimoireRepository
             existing.UpdatedAt = now;
         }
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await SqliteBusyRetry.ExecuteAsync(
+            () => _db.SaveChangesAsync(cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
         return new LoreDto(key, value, now);
     }
 
     public async Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default)
     {
-        return await _db.MageSettings
-            .Where(s => s.Key == key)
-            .ExecuteDeleteAsync(cancellationToken)
-            .ConfigureAwait(false) > 0;
+        return await SqliteBusyRetry.ExecuteAsync(
+            () => _db.MageSettings
+                .Where(s => s.Key == key)
+                .ExecuteDeleteAsync(cancellationToken),
+            cancellationToken).ConfigureAwait(false) > 0;
     }
 
     public async Task<ListPageResult<LoreDto>> ListLoreAsync(
@@ -508,9 +611,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
             cmd.CommandText =
                 """
                 SELECT c."Role", c."Content", c."CreatedAt"
-                FROM "Entries_fts" AS f
-                INNER JOIN "Entries" AS c ON c."Id" = f."Id"
-                WHERE f MATCH @query
+                FROM "Entries_fts"
+                INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
+                WHERE "Entries_fts" MATCH @query
                 ORDER BY rank
                 LIMIT @limit
                 """;
@@ -547,7 +650,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
                 string content = reader.GetString(1);
 
-                DateTimeOffset timestamp = reader.GetFieldValue<DateTimeOffset>(2);
+                DateTimeOffset timestamp = DateTimeOffset.Parse(
+                    reader.GetString(2),
+                    CultureInfo.InvariantCulture);
 
                 _ = sb.Append('[')
                     .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
@@ -572,62 +677,39 @@ public sealed class GrimoireRepository : IGrimoireRepository
         DateTime idleCutoff,
         CancellationToken cancellationToken = default)
     {
-        DbConnection connection = _db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
-        {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        await using DbCommand cmd = connection.CreateCommand();
-
-        cmd.CommandText =
-            """
-            SELECT agg."SessionId"
-            FROM (
-                SELECT e."SessionId",
-                       SUM(CASE
-                           WHEN e."CreatedAt" > COALESCE(s."LastSummarizedMessageAt", '0001-01-01 00:00:00')
-                           THEN 1
-                           ELSE 0
-                       END) AS unsummarized_count,
-                       MAX(e."CreatedAt") AS max_created
-                FROM "Entries" e
-                INNER JOIN "Sessions" s ON s."Id" = e."SessionId"
-                GROUP BY e."SessionId"
-            ) AS agg
-            WHERE agg.unsummarized_count > @threshold
-               OR (agg.unsummarized_count > 0 AND agg.max_created < @idleCutoff)
-            """;
-
-        DbParameter pThreshold = cmd.CreateParameter();
-
-        pThreshold.ParameterName = "@threshold";
-
-        pThreshold.Value = threshold;
-
-        cmd.Parameters.Add(pThreshold);
-
-        DbParameter pIdleCutoff = cmd.CreateParameter();
-
-        pIdleCutoff.ParameterName = "@idleCutoff";
-
-        pIdleCutoff.Value = new DateTimeOffset(idleCutoff, TimeSpan.Zero);
-
-        cmd.Parameters.Add(pIdleCutoff);
-
-        List<Guid> sessionIds = [];
-
-        await using DbDataReader reader = await cmd
-            .ExecuteReaderAsync(cancellationToken)
+        List<Guid> unknownIds = await _db.Sessions
+            .AsNoTracking()
+            .Where(s => s.UnsummarizedEntryCount == -1)
+            .OrderBy(s => s.UpdatedAt)
+            .Take(MaxLegacyBackfillPerSweep)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        foreach (Guid sessionId in unknownIds)
         {
-            sessionIds.Add(reader.GetGuid(0));
+            int count = await ComputeUnsummarizedEntryCountAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+            _ = await SqliteBusyRetry.ExecuteAsync(
+                () => _db.Sessions
+                    .Where(s => s.Id == sessionId)
+                    .ExecuteUpdateAsync(
+                        s => s.SetProperty(x => x.UnsummarizedEntryCount, count),
+                        cancellationToken),
+                cancellationToken).ConfigureAwait(false);
         }
 
-        return sessionIds;
+        DateTimeOffset idleCutoffOffset = new(idleCutoff, TimeSpan.Zero);
+
+        return await _db.Sessions
+            .AsNoTracking()
+            .Where(s =>
+                s.UnsummarizedEntryCount == -1
+                || s.UnsummarizedEntryCount > threshold
+                || (s.UnsummarizedEntryCount > 0 && s.UpdatedAt < idleCutoffOffset))
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
@@ -638,13 +720,18 @@ public sealed class GrimoireRepository : IGrimoireRepository
     {
         int take = Math.Max(1, batchSize);
 
-        return await _db.Entries
+        DateTimeOffset watermarkOffset = new(watermark, TimeSpan.Zero);
+
+        List<Entry> candidates = await _db.Entries
             .AsNoTracking()
-            .Where(m => m.SessionId == sessionId && m.CreatedAt > watermark)
-            .OrderBy(m => m.CreatedAt)
-            .Take(take)
+            .Where(m => m.SessionId == sessionId && m.CreatedAt > watermarkOffset)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        return candidates
+            .OrderBy(m => m.CreatedAt)
+            .Take(take)
+            .ToList();
     }
 
     public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
@@ -660,38 +747,56 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return;
         }
 
-        _ = await _db.Sessions
-            .Where(c => c.Id == sessionId)
-            .ExecuteUpdateAsync(
-                s => s.SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens),
-                cancellationToken)
-            .ConfigureAwait(false);
+        _ = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(c => c.Id == sessionId)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)
     {
-        _db.WorkspaceContexts.Add(context);
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
-        int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
-            _arcOptions.Value.Grimoire.WorkspaceContextRetentionCount);
-
-        List<Guid> idsToKeep = await _db.WorkspaceContexts
-            .AsNoTracking()
-            .Where(w => w.WorkspacePath == context.WorkspacePath)
-            .OrderByDescending(w => w.CreatedAt)
-            .Take(retain)
-            .Select(w => w.Id)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        if (idsToKeep.Count >= retain)
+        try
         {
-            _ = await _db.WorkspaceContexts
-                .Where(w => w.WorkspacePath == context.WorkspacePath && !idsToKeep.Contains(w.Id))
-                .ExecuteDeleteAsync(cancellationToken)
+            _db.WorkspaceContexts.Add(context);
+
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _db.SaveChangesAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
+                _arcOptions.Value.Grimoire.WorkspaceContextRetentionCount);
+
+            List<Guid> idsToKeep = await _db.WorkspaceContexts
+                .AsNoTracking()
+                .Where(w => w.WorkspacePath == context.WorkspacePath)
+                .OrderByDescending(w => w.CreatedAt)
+                .Take(retain)
+                .Select(w => w.Id)
+                .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            if (idsToKeep.Count >= retain)
+            {
+                _ = await SqliteBusyRetry.ExecuteAsync(
+                    () => _db.WorkspaceContexts
+                        .Where(w => w.WorkspacePath == context.WorkspacePath && !idsToKeep.Contains(w.Id))
+                        .ExecuteDeleteAsync(cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+            throw;
         }
     }
 
@@ -711,17 +816,20 @@ public sealed class GrimoireRepository : IGrimoireRepository
     {
         DateTime utcNow = DateTime.UtcNow;
 
-        _ = await _db.Sessions
-            .Where(c => c.Id == sessionId)
-            .ExecuteUpdateAsync(
-                s => s.SetProperty(
-                    c => c.LastSummarizedMessageAt,
-                    c => _db.Entries
-                        .Where(e => e.SessionId == c.Id)
-                        .Select(e => (DateTime?)e.CreatedAt.UtcDateTime)
-                        .Max() ?? utcNow),
-                cancellationToken)
-            .ConfigureAwait(false);
+        _ = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(c => c.Id == sessionId)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(
+                            c => c.LastSummarizedMessageAt,
+                            c => _db.Entries
+                                .Where(e => e.SessionId == c.Id)
+                                .Select(e => (DateTime?)e.CreatedAt.UtcDateTime)
+                                .Max() ?? utcNow)
+                        .SetProperty(c => c.UnsummarizedEntryCount, 0),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task UpdateSessionCampaignRollupAsync(
@@ -739,21 +847,117 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return;
         }
 
-        await _db.Sessions
-            .Where(c => c.Id == sessionId)
-            .ExecuteUpdateAsync(
-                s => s
-                    .SetProperty(c => c.Summary, summary)
-                    .SetProperty(c => c.LastSummarizedMessageAt, lastSummarizedMessageAt),
-                cancellationToken)
-            .ConfigureAwait(false);
+        DateTimeOffset watermark = new(lastSummarizedMessageAt, TimeSpan.Zero);
+
+        int remaining = await CountEntriesAfterAsync(sessionId, watermark, cancellationToken).ConfigureAwait(false);
+
+        await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(c => c.Id == sessionId)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(c => c.Summary, summary)
+                        .SetProperty(c => c.LastSummarizedMessageAt, lastSummarizedMessageAt)
+                        .SetProperty(c => c.UnsummarizedEntryCount, remaining),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
     }
+
+    private async Task IncrementUnsummarizedEntryCountIfKnownAsync(
+        Guid sessionId,
+        int delta,
+        CancellationToken cancellationToken)
+    {
+        if (delta <= 0)
+        {
+            return;
+        }
+
+        _ = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(s => s.Id == sessionId && s.UnsummarizedEntryCount >= 0)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(x => x.UnsummarizedEntryCount, x => x.UnsummarizedEntryCount + delta),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task DecrementUnsummarizedEntryCountIfKnownAsync(
+        Guid sessionId,
+        int delta,
+        CancellationToken cancellationToken)
+    {
+        if (delta <= 0)
+        {
+            return;
+        }
+
+        _ = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(s => s.Id == sessionId && s.UnsummarizedEntryCount > 0)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(x => x.UnsummarizedEntryCount, x => x.UnsummarizedEntryCount - delta),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> ComputeUnsummarizedEntryCountAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        DateTime? watermark = await _db.Sessions
+            .AsNoTracking()
+            .Where(s => s.Id == sessionId)
+            .Select(s => s.LastSummarizedMessageAt)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        DateTimeOffset cutoff = watermark is { } w
+            ? new DateTimeOffset(w, TimeSpan.Zero)
+            : DateTimeOffset.MinValue;
+
+        return await CountEntriesAfterAsync(sessionId, cutoff, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> CountEntriesAfterAsync(
+        Guid sessionId,
+        DateTimeOffset afterExclusive,
+        CancellationToken cancellationToken)
+    {
+
+        List<DateTimeOffset> createdAtValues = await _db.Entries
+            .AsNoTracking()
+            .Where(e => e.SessionId == sessionId)
+            .Select(e => e.CreatedAt)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return createdAtValues.Count(t => t > afterExclusive);
+
+    }
+
+    private SessionSettings GetSessionSettings() =>
+        _arcOptions.Value.Sessions ?? new SessionSettings();
+
+    private Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken cancellationToken) =>
+        _db.Entries.CountAsync(e => e.SessionId == sessionId, cancellationToken);
 
     private static string TruncateTitle(string prompt)
     {
         string trimmed = prompt.Trim();
         const int maxLen = 200;
         return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
+    }
+
+    private static List<Entry> SelectRecentEntries(IReadOnlyList<Entry> entries, int take)
+    {
+
+        return entries
+            .OrderByDescending(e => e.CreatedAt)
+            .Take(take)
+            .Reverse()
+            .ToList();
+
     }
 
 }

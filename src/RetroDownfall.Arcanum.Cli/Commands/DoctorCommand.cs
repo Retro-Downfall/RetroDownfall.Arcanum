@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,7 @@ using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
+[ExcludeFromCodeCoverage] // Reason: interactive diagnostics command with environment-specific probes; not unit-testable without full host.
 public sealed class DoctorCommand(
     IOptions<ArcanumSettings> options,
     IHttpClientFactory httpClientFactory,
@@ -36,6 +38,10 @@ public sealed class DoctorCommand(
         AnsiConsole.WriteLine();
 
         bool healthy = WritePathsPanel();
+
+        AnsiConsole.WriteLine();
+
+        healthy &= WriteArcanumConfigPanel();
 
         AnsiConsole.WriteLine();
 
@@ -114,6 +120,94 @@ public sealed class DoctorCommand(
         healthy &= AddPathRow(table, "API key store (Data Protection)", securityFile, File.Exists(securityFile), optional: false);
 
         WritePanel("Paths", table);
+
+        return healthy;
+
+    }
+
+    private bool WriteArcanumConfigPanel()
+    {
+
+        string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        Table table = new();
+
+        table.Border(TableBorder.None);
+
+        table.HideHeaders();
+
+        table.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        table.AddColumn(new TableColumn(string.Empty));
+
+        table.AddColumn(new TableColumn(string.Empty));
+
+        if (!File.Exists(configFile))
+        {
+
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
+                themePalette.MutedMarkup(Markup.Escape("arcanum.json:")),
+                themePalette.MutedMarkup(Markup.Escape($"{configFile} (not found, optional)")));
+
+            WritePanel("Configuration", table);
+
+            return true;
+
+        }
+
+        bool healthy = true;
+
+        try
+        {
+
+            ConfigurationBootstrapper.ValidateArcanumConfigurationFile(configFile);
+
+            table.AddRow(
+                themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
+                themePalette.HighlightLabelMarkup(
+                    Markup.Escape("arcanum.json:"),
+                    Markup.Escape(configFile)),
+                themePalette.MutedMarkup(Markup.Escape("valid JSON")));
+        }
+        catch (InvalidOperationException ex)
+        {
+
+            healthy = false;
+
+            table.AddRow(
+                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
+                themePalette.ErrorLabelMarkup(
+                    Markup.Escape("arcanum.json:"),
+                    Markup.Escape(configFile)),
+                themePalette.ErrorMarkup(Markup.Escape(ex.Message)));
+        }
+        catch (IOException ex)
+        {
+
+            healthy = false;
+
+            table.AddRow(
+                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
+                themePalette.ErrorLabelMarkup(
+                    Markup.Escape("arcanum.json:"),
+                    Markup.Escape(configFile)),
+                themePalette.ErrorMarkup(Markup.Escape("unreadable: " + ex.Message)));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+
+            healthy = false;
+
+            table.AddRow(
+                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
+                themePalette.ErrorLabelMarkup(
+                    Markup.Escape("arcanum.json:"),
+                    Markup.Escape(configFile)),
+                themePalette.ErrorMarkup(Markup.Escape("access denied: " + ex.Message)));
+        }
+
+        WritePanel("Configuration", table);
 
         return healthy;
 

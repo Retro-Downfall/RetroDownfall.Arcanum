@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -7,13 +6,20 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
-using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+TaskScheduler.UnobservedTaskException += static (_, e) =>
+{
+
+    Log.Error(e.Exception, "Unobserved task exception.");
+
+    e.SetObserved();
+
+};
 
 builder.Configuration.AddArcanumConfiguration();
 
@@ -44,47 +50,27 @@ builder.Logging.ClearProviders();
 
 builder.Services.AddArcanumApiServices(builder.Configuration);
 
-if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync().ConfigureAwait(false) is not null)
+if (!string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
 {
-    Log.Information("New Master API Key generated and secured. Retrieve it from the Grimoire security store.");
+
+    if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync().ConfigureAwait(false) is string newApiKey)
+    {
+
+        Console.WriteLine(newApiKey);
+
+        Log.Information("New Master API Key generated and secured. Save this key — it will not be shown again.");
+
+    }
+
 }
 
 WebApplication app = builder.Build();
 
+app.UseArcanumExceptionHandler();
+
 app.UseArcanumCors();
 
 app.UseArcanumRateLimiter();
-
-app.Use(async (context, next) =>
-{
-    try
-    {
-        await next(context);
-    }
-    catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
-    {
-    }
-    catch (Exception ex)
-    {
-        Log.Error(ex, "Unhandled exception on {Method} {Path}", context.Request.Method, context.Request.Path);
-
-        if (!context.Response.HasStarted)
-        {
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-
-            context.Response.ContentType = "application/json";
-
-            string traceId = Activity.Current?.Id ?? context.TraceIdentifier;
-
-            ApiResponse<string> body = new(null, false, new Error("Internal", "An internal error occurred."), traceId);
-
-            await context.Response.WriteAsJsonAsync(
-                body,
-                ArcanumJsonContext.Default.ApiResponseString,
-                cancellationToken: CancellationToken.None);
-        }
-    }
-});
 
 app.MapArcanumEndpoints();
 

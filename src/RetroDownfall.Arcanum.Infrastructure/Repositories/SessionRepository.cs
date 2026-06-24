@@ -21,6 +21,8 @@ public sealed class SessionRepository(
 
     private const int ExportEntryBatchSize = 500;
 
+    private const int FtsSessionIdLimit = 2048;
+
     public async Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -90,6 +92,14 @@ public sealed class SessionRepository(
         if (!string.IsNullOrWhiteSpace(request.Search))
         {
             string search = request.Search.Trim();
+
+            int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(
+                optionsMonitor.CurrentValue.Intelligence.ArchiveSearchMaxQueryLength);
+
+            if (search.Length > maxQueryLen)
+            {
+                search = search[..maxQueryLen];
+            }
 
             string titlePattern = SqlLikePatterns.Contains(search);
 
@@ -161,12 +171,9 @@ public sealed class SessionRepository(
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
 
-            foreach (Guid sessionId in entrySessionIds)
-            {
-
-                entryCounts[sessionId] = entryCounts.GetValueOrDefault(sessionId) + 1;
-
-            }
+            entryCounts = entrySessionIds
+                .GroupBy(id => id)
+                .ToDictionary(g => g.Key, g => g.Count());
 
         }
 
@@ -214,16 +221,9 @@ public sealed class SessionRepository(
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        Dictionary<string, int> entriesByModel = new(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string model in modelNames)
-        {
-
-            entriesByModel.TryGetValue(model, out int count);
-
-            entriesByModel[model] = count + 1;
-
-        }
+        Dictionary<string, int> entriesByModel = modelNames
+            .GroupBy(m => m, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
 
         return new SessionAnalytics(
             totalSessions,
@@ -283,6 +283,12 @@ public sealed class SessionRepository(
         {
             throw new InvalidOperationException("Cannot append entries to an archived session.");
         }
+
+        int entryCount = await db.Entries.CountAsync(e => e.SessionId == sessionId, ct).ConfigureAwait(false);
+
+        SessionSettings sessionSettings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
+
+        GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 1, sessionSettings, entry.Content);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -523,9 +529,10 @@ public sealed class SessionRepository(
         cmd.CommandText =
             """
             SELECT DISTINCT c."SessionId"
-            FROM "Entries_fts" AS f
-            INNER JOIN "Entries" AS c ON c."Id" = f."Id"
-            WHERE f MATCH @query
+            FROM "Entries_fts"
+            INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
+            WHERE "Entries_fts" MATCH @query
+            LIMIT @limit
             """;
 
         DbParameter pQuery = cmd.CreateParameter();
@@ -535,6 +542,14 @@ public sealed class SessionRepository(
         pQuery.Value = matchQuery;
 
         cmd.Parameters.Add(pQuery);
+
+        DbParameter pLimit = cmd.CreateParameter();
+
+        pLimit.ParameterName = "@limit";
+
+        pLimit.Value = FtsSessionIdLimit;
+
+        cmd.Parameters.Add(pLimit);
 
         HashSet<Guid> sessionIds = [];
 

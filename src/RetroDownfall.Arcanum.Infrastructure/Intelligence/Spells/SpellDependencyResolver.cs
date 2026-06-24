@@ -21,7 +21,9 @@ internal static class SpellDependencyResolver
         string? workspaceRoot,
         long maxFileSizeBytes,
         CancellationToken cancellationToken,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IReadOnlyList<SpellMetadata>? spellCatalog = null,
+        int maxResonantDependencies = int.MaxValue)
     {
         List<string> primaryDependencies = primary.SkillMetadata?.Dependencies ?? [];
 
@@ -30,13 +32,10 @@ internal static class SpellDependencyResolver
             return new ResolvedSpell(primary, [], new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase));
         }
 
-        // Intentional double-scan: ResolveRoutedSpellAsync may already have called ScanMetadataAsync for
-        // semantic routing, but this resolver scans again to build its name->path index. Re-scanning keeps
-        // the resolver self-contained (no scan state threaded through routing), the frontmatter-only walk
-        // is bounded/cheap, and the OverrideSpellPath forced-spell branch skips routing's scan entirely.
-        IReadOnlyList<SpellMetadata> catalog = await SpellScanner
-            .ScanMetadataAsync(workspaceRoot, cancellationToken, maxFileSizeBytes)
-            .ConfigureAwait(false);
+        IReadOnlyList<SpellMetadata> catalog = spellCatalog
+            ?? await SpellScanner
+                .ScanMetadataAsync(workspaceRoot, cancellationToken, maxFileSizeBytes)
+                .ConfigureAwait(false);
 
         Dictionary<string, string> nameToPath = new(StringComparer.OrdinalIgnoreCase);
 
@@ -90,6 +89,17 @@ internal static class SpellDependencyResolver
                     depName);
 
                 continue;
+            }
+
+            if (resonants.Count >= maxResonantDependencies)
+            {
+
+                logger?.LogWarning(
+                    "Arcane Resonance: reached MaxResonantDependencies ({Max}); remaining dependency spells will be skipped.",
+                    maxResonantDependencies);
+
+                continue;
+
             }
 
             ParsedSpell? loaded = await SpellScanner

@@ -24,4 +24,14 @@ public sealed record ConclaveSettings
     /// </summary>
     public bool Enabled { get; init; } = false;
 
+    /// <summary>
+    /// Maximum delegation depth from a Conclave root Apprentice (0 = root only, no children). Default <c>3</c>.
+    /// </summary>
+    public int MaxDelegationDepth { get; init; } = 3;
+
+    /// <summary>
+    /// Maximum total descendant Apprentices allowed under one Conclave root. Default <c>16</c>.
+    /// </summary>
+    public int MaxDescendantsPerRoot { get; init; } = 16;
+
 }

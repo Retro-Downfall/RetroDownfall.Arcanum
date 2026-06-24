@@ -7,28 +7,24 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Daemon;
 
-public sealed class DaemonInitiativeCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
+public sealed class DaemonInitiativeCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
+    : AsyncCommand<DaemonInitiativeCommand.Settings>
 {
 
-    [CommandArgument(0, "<JOB_NAME>")]
-    public required string JobName { get; init; }
-
-    [CommandArgument(1, "<MINUTES>")]
-    public required int Minutes { get; init; }
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
 
         Result<UnseenServantJobStatusDto> result = await apiClient
-            .AdjustDaemonJobInitiativeAsync(JobName, Minutes, cancellationToken)
+            .AdjustDaemonJobInitiativeAsync(settings.JobName, settings.Minutes, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
 
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
+
         }
 
         UnseenServantJobStatusDto dto = result.Value;
@@ -40,6 +36,18 @@ public sealed class DaemonInitiativeCommand(ArcanumApiClient apiClient, IThemePa
                     $"{dto.Name} — effective interval is now {dto.EffectiveIntervalMinutes} minute(s) (base {dto.BaseIntervalMinutes}).")));
 
         return 0;
+
+    }
+
+    public sealed class Settings : CommandSettings
+    {
+
+        [CommandArgument(0, "<JOB_NAME>")]
+        public required string JobName { get; init; }
+
+        [CommandArgument(1, "<MINUTES>")]
+        public required int Minutes { get; init; }
+
     }
 
 }

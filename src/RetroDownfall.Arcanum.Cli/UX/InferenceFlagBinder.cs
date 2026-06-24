@@ -32,17 +32,17 @@ public static class InferenceFlagBinder
 
         exitCode = 0;
 
-        float? temperature = ParseFloat(settings.Temperature, "--temperature", palette, ref exitCode);
+        float? temperature = ParseFloat(settings.Temperature, "--temperature", palette, ref exitCode, 0f, 2f);
 
-        float? topP = ParseFloat(settings.TopP, "--top-p", palette, ref exitCode);
+        float? topP = ParseFloat(settings.TopP, "--top-p", palette, ref exitCode, 0f, 1f);
 
-        int? maxOutput = ParseInt(settings.MaxTokens, "--max-tokens", palette, ref exitCode);
+        int? maxOutput = ParseInt(settings.MaxTokens, "--max-tokens", palette, ref exitCode, min: 1);
 
         long? seed = ParseLong(settings.Seed, "--seed", palette, ref exitCode);
 
-        float? presence = ParseFloat(settings.PresencePenalty, "--presence-penalty", palette, ref exitCode);
+        float? presence = ParseFloat(settings.PresencePenalty, "--presence-penalty", palette, ref exitCode, -2f, 2f);
 
-        float? frequency = ParseFloat(settings.FrequencyPenalty, "--frequency-penalty", palette, ref exitCode);
+        float? frequency = ParseFloat(settings.FrequencyPenalty, "--frequency-penalty", palette, ref exitCode, -2f, 2f);
 
         if (exitCode != 0)
         {
@@ -79,7 +79,13 @@ public static class InferenceFlagBinder
 
     }
 
-    private static float? ParseFloat(string? raw, string flag, IThemePalette palette, ref int exitCode)
+    private static float? ParseFloat(
+        string? raw,
+        string flag,
+        IThemePalette palette,
+        ref int exitCode,
+        float? min = null,
+        float? max = null)
     {
 
         if (string.IsNullOrWhiteSpace(raw))
@@ -89,7 +95,14 @@ public static class InferenceFlagBinder
 
         if (float.TryParse(raw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
         {
+
+            if (!TryValidateFloatRange(value, flag, palette, ref exitCode, min, max))
+            {
+                return null;
+            }
+
             return value;
+
         }
 
         AnsiConsole.MarkupLine(
@@ -103,7 +116,13 @@ public static class InferenceFlagBinder
 
     }
 
-    private static int? ParseInt(string? raw, string flag, IThemePalette palette, ref int exitCode)
+    private static int? ParseInt(
+        string? raw,
+        string flag,
+        IThemePalette palette,
+        ref int exitCode,
+        int? min = null,
+        int? max = null)
     {
 
         if (string.IsNullOrWhiteSpace(raw))
@@ -113,7 +132,37 @@ public static class InferenceFlagBinder
 
         if (int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
         {
+
+            if (min is not null && value < min.Value)
+            {
+
+                AnsiConsole.MarkupLine(
+                    palette.ErrorLabelMarkup(
+                        Markup.Escape(flag),
+                        Markup.Escape($"must be at least {min.Value} (got '{raw}').")));
+
+                exitCode = 1;
+
+                return null;
+
+            }
+
+            if (max is not null && value > max.Value)
+            {
+
+                AnsiConsole.MarkupLine(
+                    palette.ErrorLabelMarkup(
+                        Markup.Escape(flag),
+                        Markup.Escape($"must be at most {max.Value} (got '{raw}').")));
+
+                exitCode = 1;
+
+                return null;
+
+            }
+
             return value;
+
         }
 
         AnsiConsole.MarkupLine(
@@ -124,6 +173,47 @@ public static class InferenceFlagBinder
         exitCode = 1;
 
         return null;
+
+    }
+
+    private static bool TryValidateFloatRange(
+        float value,
+        string flag,
+        IThemePalette palette,
+        ref int exitCode,
+        float? min,
+        float? max)
+    {
+
+        if (min is not null && value < min.Value)
+        {
+
+            AnsiConsole.MarkupLine(
+                palette.ErrorLabelMarkup(
+                    Markup.Escape(flag),
+                    Markup.Escape($"must be at least {min.Value.ToString(CultureInfo.InvariantCulture)} (got '{value.ToString(CultureInfo.InvariantCulture)}').")));
+
+            exitCode = 1;
+
+            return false;
+
+        }
+
+        if (max is not null && value > max.Value)
+        {
+
+            AnsiConsole.MarkupLine(
+                palette.ErrorLabelMarkup(
+                    Markup.Escape(flag),
+                    Markup.Escape($"must be at most {max.Value.ToString(CultureInfo.InvariantCulture)} (got '{value.ToString(CultureInfo.InvariantCulture)}').")));
+
+            exitCode = 1;
+
+            return false;
+
+        }
+
+        return true;
 
     }
 

@@ -41,4 +41,10 @@
 
   </ItemGroup>
 
+  <ItemGroup>
+
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
+
+  </ItemGroup>
+
 </Project>

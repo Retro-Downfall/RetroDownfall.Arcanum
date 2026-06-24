@@ -26,6 +26,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
     private readonly McpJsonSerializerContext _json;
 
+    private readonly int _maxJsonRpcLineBytes;
+
     private readonly ILogger? _logger;
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -46,6 +48,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         ChannelWriter<string> toServer,
         ChannelReader<string> fromServer,
         McpRequestCancellationBroker requestCancellationBroker,
+        int maxJsonRpcLineBytes,
         McpJsonSerializerContext? jsonContext = null,
         ILogger? logger = null)
     {
@@ -55,11 +58,20 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         ArgumentNullException.ThrowIfNull(requestCancellationBroker);
 
+        if (maxJsonRpcLineBytes < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
+
+        }
+
         _toServer = toServer;
 
         _fromServer = fromServer;
 
         RequestCancellation = requestCancellationBroker;
+
+        _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
         _json = jsonContext ?? McpJsonSerializerContext.Default;
 
@@ -92,6 +104,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         IntelligenceSettings intelligenceSettings,
         long maxFileReadSizeBytes,
         bool conclaveEnabled,
+        int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -120,6 +133,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             clientToServer.Writer,
             serverToClient.Reader,
             requestCancellationBroker,
+            maxJsonRpcLineBytes,
             jsonContext,
             logger);
 
@@ -137,6 +151,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             maxFileReadSizeBytes,
             conclaveEnabled,
             requestCancellationBroker,
+            maxJsonRpcLineBytes,
             logger,
             jsonContext);
 
@@ -239,7 +254,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
                 try
                 {
-                    McpInboundEnvelope envelope = McpInboundJsonRpc.ParseInbound(line, _json);
+                    McpInboundEnvelope envelope = McpInboundJsonRpc.ParseInbound(line, _json, _maxJsonRpcLineBytes);
 
                     await _inbound.Writer.WriteAsync(envelope, cancellationToken).ConfigureAwait(false);
                 }

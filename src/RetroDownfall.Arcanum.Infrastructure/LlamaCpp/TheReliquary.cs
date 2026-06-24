@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -14,7 +15,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 
-public sealed class GgufModelCache : IGgufModelCache
+[ExcludeFromCodeCoverage] // Reason: downloads and caches GGUF model artifacts over HTTP; same family as excluded LlamaServerManager.
+public sealed class TheReliquary : IReliquary
 {
 
     public const string HttpClientName = "LlamaModelDownload";
@@ -25,23 +27,25 @@ public sealed class GgufModelCache : IGgufModelCache
 
     private const string TempDownloadSuffix = ".download.tmp";
 
+    private static readonly TimeSpan StaleTempDownloadMaxAge = TimeSpan.FromHours(24);
+
     private readonly IHttpClientFactory _httpClientFactory;
 
     private readonly IOptionsMonitor<ArcanumSettings> _optionsMonitor;
 
     private readonly IServiceProvider _serviceProvider;
 
-    private readonly ILogger<GgufModelCache> _logger;
+    private readonly ILogger<TheReliquary> _logger;
 
     private readonly SemaphoreSlim _evictLock = new(1, 1);
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _downloadLocks = new(StringComparer.OrdinalIgnoreCase);
 
-    public GgufModelCache(
+    public TheReliquary(
         IHttpClientFactory httpClientFactory,
         IOptionsMonitor<ArcanumSettings> optionsMonitor,
         IServiceProvider serviceProvider,
-        ILogger<GgufModelCache> logger)
+        ILogger<TheReliquary> logger)
     {
 
         _httpClientFactory = httpClientFactory;
@@ -89,8 +93,27 @@ public sealed class GgufModelCache : IGgufModelCache
 
         if (outbound.IsFailure)
         {
+
             return Result<string>.Failure(new Error(OutboundUrlGuard.BlockedErrorCode, outbound.Error.Message));
+
         }
+
+        LlamaCppSettings llamaSettings = _optionsMonitor.CurrentValue.LlamaCpp ?? new LlamaCppSettings();
+
+        string? resolvedSha256 = GgufModelHashPolicy.ResolveExpectedSha256(cacheKey, expectedSha256, llamaSettings);
+
+        if (GgufModelHashPolicy.ShouldRejectUnverified(resolvedSha256, llamaSettings.RequireModelHash))
+        {
+
+            return Result<string>.Failure(new Error(
+                GgufModelHashPolicy.UnverifiedDownloadCode,
+                GgufModelHashPolicy.UnverifiedDownloadMessage));
+
+        }
+
+        bool verifiedDownload = GgufModelHashPolicy.IsVerifiedDownload(resolvedSha256);
+
+        SweepStaleTempDownloads();
 
         await GetDownloadLock(cacheKey).WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -103,7 +126,7 @@ public sealed class GgufModelCache : IGgufModelCache
                 Result verifyResult = await VerifyCachedModelIntegrityAsync(
                     cacheKey,
                     existing,
-                    expectedSha256,
+                    resolvedSha256,
                     cancellationToken).ConfigureAwait(false);
 
                 if (verifyResult.IsFailure)
@@ -131,6 +154,13 @@ public sealed class GgufModelCache : IGgufModelCache
 
             Directory.CreateDirectory(entryDir);
 
+            if (!verifiedDownload)
+            {
+
+                ReportUnverifiedDownloadWarning(progress, cacheKey);
+
+            }
+
             string modelPath = Path.Combine(entryDir, ModelFileName);
 
             string tempPath = modelPath + TempDownloadSuffix;
@@ -143,8 +173,10 @@ public sealed class GgufModelCache : IGgufModelCache
                 cacheKey,
                 modelPath,
                 tempPath,
-                expectedSha256,
+                resolvedSha256,
+                verifiedDownload,
                 progress,
+                redirectHop: 0,
                 cancellationToken).ConfigureAwait(false);
 
             if (downloadResult.IsFailure)
@@ -176,14 +208,16 @@ public sealed class GgufModelCache : IGgufModelCache
         string cacheKey,
         string modelPath,
         string tempPath,
-        string? expectedSha256,
+        string? resolvedSha256,
+        bool verifiedDownload,
         IProgress<LlamaPullProgress>? progress,
+        int redirectHop,
         CancellationToken cancellationToken)
     {
 
         long resumeOffset = 0;
 
-        if (File.Exists(tempPath))
+        if (redirectHop == 0 && File.Exists(tempPath))
         {
             resumeOffset = new FileInfo(tempPath).Length;
         }
@@ -199,6 +233,55 @@ public sealed class GgufModelCache : IGgufModelCache
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
 
+        if (OutboundUrlGuard.IsRedirectStatusCode(response.StatusCode))
+        {
+
+            if (redirectHop >= OutboundUrlGuard.MaxUntrustedRedirectHops)
+            {
+                return Result<string>.Failure(new Error(
+                    "Llama.DownloadFailed",
+                    "Download exceeded the maximum redirect hop count."));
+            }
+
+            Result<string> nextUrl = OutboundUrlGuard.ResolveRedirectLocation(
+                new Uri(normalizedUrl),
+                response.Headers.Location?.ToString());
+
+            if (nextUrl.IsFailure)
+            {
+                return Result<string>.Failure(nextUrl.Error);
+            }
+
+            Result redirectValidation = await OutboundUrlGuard
+                .ValidateUntrustedUrlAsync(nextUrl.Value, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (redirectValidation.IsFailure)
+            {
+                return Result<string>.Failure(new Error(
+                    OutboundUrlGuard.BlockedErrorCode,
+                    redirectValidation.Error.Message));
+            }
+
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+
+            return await DownloadWithResumeAsync(
+                client,
+                nextUrl.Value,
+                cacheKey,
+                modelPath,
+                tempPath,
+                resolvedSha256,
+                verifiedDownload,
+                progress,
+                redirectHop + 1,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
         if (resumeOffset > 0 && response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
         {
             File.Delete(tempPath);
@@ -209,8 +292,10 @@ public sealed class GgufModelCache : IGgufModelCache
                 cacheKey,
                 modelPath,
                 tempPath,
-                expectedSha256,
+                resolvedSha256,
+                verifiedDownload,
                 progress,
+                redirectHop,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -260,7 +345,8 @@ public sealed class GgufModelCache : IGgufModelCache
             normalizedUrl,
             tempPath,
             modelPath,
-            expectedSha256,
+            resolvedSha256,
+            verifiedDownload,
             etag,
             contentLength,
             cancellationToken).ConfigureAwait(false);
@@ -278,6 +364,8 @@ public sealed class GgufModelCache : IGgufModelCache
     {
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        SweepStaleTempDownloads();
 
         string root = ArcanumPaths.ModelCacheDirectory;
 
@@ -440,6 +528,65 @@ public sealed class GgufModelCache : IGgufModelCache
         ArcanumSettingClamps.LlamaModelDownloadMaxBytes(
             _optionsMonitor.CurrentValue.LlamaCpp?.ModelDownloadMaxBytes ?? new LlamaCppSettings().ModelDownloadMaxBytes);
 
+    private void SweepStaleTempDownloads()
+    {
+
+        string root = ArcanumPaths.ModelCacheDirectory;
+
+        if (!Directory.Exists(root))
+        {
+
+            return;
+
+        }
+
+        DateTime cutoffUtc = DateTime.UtcNow - StaleTempDownloadMaxAge;
+
+        foreach (string dir in Directory.EnumerateDirectories(root))
+        {
+
+            string cacheKey = Path.GetFileName(dir);
+
+            string tempPath = Path.Combine(dir, ModelFileName + TempDownloadSuffix);
+
+            if (!File.Exists(tempPath))
+            {
+
+                continue;
+
+            }
+
+            if (_downloadLocks.TryGetValue(cacheKey, out SemaphoreSlim? downloadLock) && downloadLock.CurrentCount == 0)
+            {
+
+                continue;
+
+            }
+
+            try
+            {
+
+                if (File.GetLastWriteTimeUtc(tempPath) < cutoffUtc)
+                {
+
+                    TryDeleteTempDownload(tempPath);
+
+                    _logger.LogInformation("Removed stale temp download at {TempPath}.", tempPath);
+
+                }
+
+            }
+            catch (Exception ex)
+            {
+
+                _logger.LogDebug(ex, "Failed to inspect stale temp download at {TempPath}.", tempPath);
+
+            }
+
+        }
+
+    }
+
     private void TryDeleteTempDownload(string tempPath)
     {
 
@@ -462,7 +609,8 @@ public sealed class GgufModelCache : IGgufModelCache
         string sourceUrl,
         string tempPath,
         string modelPath,
-        string? expectedSha256,
+        string? resolvedSha256,
+        bool verifiedDownload,
         string? etag,
         long? contentLength,
         CancellationToken cancellationToken)
@@ -475,27 +623,37 @@ public sealed class GgufModelCache : IGgufModelCache
 
         string? computedHash = null;
 
-        if (!string.IsNullOrWhiteSpace(expectedSha256))
+        if (!string.IsNullOrWhiteSpace(resolvedSha256))
         {
+
             computedHash = await ComputeSha256HexAsync(tempPath, cancellationToken).ConfigureAwait(false);
 
-            if (!string.Equals(computedHash, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(computedHash, resolvedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
             {
+
                 try
                 {
+
                     File.Delete(tempPath);
+
                 }
                 catch (Exception ex)
                 {
+
                     _logger.LogWarning(ex, "Failed to delete temp download after SHA256 mismatch for {CacheKey}.", cacheKey);
+
                 }
 
                 return Result.Failure(new Error("Llama.Sha256Mismatch", "Downloaded file SHA256 does not match the expected hash."));
+
             }
+
         }
         else
         {
+
             computedHash = await ComputeSha256HexAsync(tempPath, cancellationToken).ConfigureAwait(false);
+
         }
 
         File.Move(tempPath, modelPath, overwrite: true);
@@ -506,12 +664,21 @@ public sealed class GgufModelCache : IGgufModelCache
 
         GgufModelManifest manifest = new()
         {
+
             SourceUrl = sourceUrl,
+
             Etag = etag,
+
             Sha256 = computedHash,
+
             DownloadedAt = now,
+
             LastAccessedAt = now,
+
             Size = size,
+
+            Verified = verifiedDownload,
+
         };
 
         string manifestPath = Path.Combine(GetEntryDirectory(cacheKey), ManifestFileName);
@@ -724,6 +891,34 @@ public sealed class GgufModelCache : IGgufModelCache
         byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
 
         return Convert.ToHexString(hash).ToLowerInvariant();
+
+    }
+
+    private void ReportUnverifiedDownloadWarning(IProgress<LlamaPullProgress>? progress, string cacheKey)
+    {
+
+        _logger.LogWarning(
+            "GGUF download for {CacheKey} proceeding without SHA-256 verification ({Setting}=false).",
+            cacheKey,
+            "Arcanum:LlamaCpp:RequireModelHash");
+
+        if (progress is null)
+        {
+
+            return;
+
+        }
+
+        progress.Report(new LlamaPullProgress
+        {
+
+            CacheKey = cacheKey,
+
+            Warning = GgufModelHashPolicy.UnverifiedDownloadWarning,
+
+            Completed = false,
+
+        });
 
     }
 

@@ -1,17 +1,22 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
+[ExcludeFromCodeCoverage] // Reason: apprentice SSE streaming HTTP endpoints; covered via ApprenticeEndpointTests integration smoke.
 internal static class ApprenticeEndpoints
 {
 
@@ -77,13 +82,24 @@ internal static class ApprenticeEndpoints
         apiGroup.MapPost(
             "/apprentices",
             async (
-                CreateApprenticeRequest request,
+                CreateApprenticeRequest? request,
                 IApprenticeRepository repo,
                 ICampaignRepository campaignRepo,
                 IOptionsSnapshot<ArcanumSettings> settings,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<ApprenticeDetailDto>.FromResult(
+                            Result<ApprenticeDetailDto>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 if (string.IsNullOrWhiteSpace(request.Name))
                 {
@@ -349,7 +365,7 @@ internal static class ApprenticeEndpoints
 
         apiGroup.MapGet(
             "/apprentices/{id:guid}/chronicle",
-            async (Guid id, IApprenticeRepository repo, IApprenticeRuntime runtime, HttpContext httpContext) =>
+            async (Guid id, IApprenticeRepository repo, IApprenticeRuntime runtime, SseConnectionGate sseGate, IOptionsMonitor<ArcanumSettings> settings, HttpContext httpContext) =>
             {
                 Apprentice? apprentice = await repo.GetByIdAsync(id, httpContext.RequestAborted).ConfigureAwait(false);
 
@@ -365,17 +381,31 @@ internal static class ApprenticeEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
+                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                {
 
-                httpContext.Response.Headers.CacheControl = "no-cache";
+                    return SseConnectionResults.TooManyConnections(httpContext);
 
-                httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+                }
+
+                using (sseLease)
+                {
+
+                SseStreamWriter.PrepareResponse(httpContext);
 
                 ChronicleSseStreamWriter sseWriter = new(httpContext);
 
                 // Subscribe before synthetic plan replay so chronicle events emitted during replay are not lost.
-                Channel<ApprenticeEvent> liveBuffer = Channel.CreateUnbounded<ApprenticeEvent>(
-                    new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+                int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
+                    settings.CurrentValue.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity);
+
+                Channel<ApprenticeEvent> liveBuffer = Channel.CreateBounded<ApprenticeEvent>(
+                    new BoundedChannelOptions(channelCapacity)
+                    {
+                        SingleReader = true,
+                        SingleWriter = true,
+                        FullMode = BoundedChannelFullMode.DropOldest,
+                    });
 
                 using CancellationTokenSource pumpCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted);
@@ -432,33 +462,34 @@ internal static class ApprenticeEndpoints
                         httpContext.RequestAborted).ConfigureAwait(false);
                 }
 
+                TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.EventBusHeartbeatSeconds(
+                        settings.CurrentValue.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds));
+
                 try
                 {
+
                     while (liveBuffer.Reader.TryRead(out ApprenticeEvent? buffered) && buffered is not null)
                     {
+
                         await sseWriter.WriteEventAsync(buffered, httpContext.RequestAborted)
                             .ConfigureAwait(false);
+
                     }
 
-                    await foreach (ApprenticeEvent ev in liveBuffer.Reader
-                        .ReadAllAsync(httpContext.RequestAborted)
-                        .ConfigureAwait(false))
-                    {
-                        await sseWriter.WriteEventAsync(ev, httpContext.RequestAborted)
-                            .ConfigureAwait(false);
-                    }
+                    await SseStreamWriter.StreamAsync(
+                        httpContext,
+                        liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
+                        (ev, ct) => sseWriter.WriteEventAsync(ev, ct),
+                        heartbeatInterval,
+                        httpContext.RequestAborted).ConfigureAwait(false);
+
                 }
                 catch (OperationCanceledException)
                 {
-                    try
-                    {
-                        await httpContext.Response.Body.WriteAsync(SseDone, CancellationToken.None).ConfigureAwait(false);
 
-                        await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                    }
+                    await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
                 }
                 finally
                 {
@@ -474,6 +505,9 @@ internal static class ApprenticeEndpoints
                 }
 
                 return Results.Empty;
+
+                }
+
             })
         .WithName("GetApprenticeChronicle");
 
@@ -567,6 +601,18 @@ internal static class ApprenticeEndpoints
     private static IResult MapCastResult(Error error, string traceId)
     {
         if (error.Code == "Apprentice.ConclaveDisabled")
+        {
+
+            return Results.Json(
+                ApiResponse<ApprenticeDetailDto>.FromResult(
+                    Result<ApprenticeDetailDto>.Failure(error),
+                    traceId),
+                ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                statusCode: StatusCodes.Status409Conflict);
+
+        }
+
+        if (error.Code is "Apprentice.ConclaveDepthExceeded" or "Apprentice.ConclaveBreadthExceeded")
         {
 
             return Results.Json(

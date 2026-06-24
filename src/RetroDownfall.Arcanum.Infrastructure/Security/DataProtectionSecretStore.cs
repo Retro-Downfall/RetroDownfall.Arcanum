@@ -2,14 +2,22 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
-public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtectionProvider) : ISecretStore, IDisposable
+public sealed class DataProtectionSecretStore(
+    IDataProtectionProvider dataProtectionProvider,
+    IApiKeyDigestCache apiKeyDigestCache) : ISecretStore, IDisposable
 {
     private const string ProtectorPurpose = "Arcanum.Core.ApiKey";
 
     private const string GrimoireProtectorPurpose = "Arcanum.Core.GrimoireEncryption";
+
+    private const string CorruptApiKeyRecoveryMessage =
+        "security.dat is present but could not be decrypted (corrupt or wrong Data Protection key ring). "
+        + "Stop the host, then follow DESIGN.md §16.3: remove both security.dat and the Grimoire .db under ~/.config/arcanum/, or restore from backup. "
+        + "Do not delete the Grimoire database alone if you need to keep session data.";
 
     private readonly IDataProtector _protector = dataProtectionProvider.CreateProtector(ProtectorPurpose);
 
@@ -22,13 +30,20 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
 
     private static string GrimoireStorePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "arcanum", "grimoire-key.dat");
+
     public void Dispose() => _fileLock.Dispose();
+
     public async Task<string?> GetApiKeyAsync()
     {
 
-        return await ReadProtectedAsync(StorePath, _protector).ConfigureAwait(false);
+        SecretStoreReadResult result = await GetApiKeyReadResultAsync().ConfigureAwait(false);
+
+        return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
 
     }
+
+    public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+        ReadProtectedResultAsync(StorePath, _protector, corruptMessage: CorruptApiKeyRecoveryMessage);
 
     public async Task SaveApiKeyAsync(string apiKey)
     {
@@ -40,6 +55,8 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
         {
 
             await WriteProtectedAsync(StorePath, apiKey, _protector).ConfigureAwait(false);
+
+            apiKeyDigestCache.Invalidate();
 
         }
         finally
@@ -54,7 +71,12 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
     public async Task<string?> GetGrimoireEncryptionSecretAsync()
     {
 
-        return await ReadProtectedAsync(GrimoireStorePath, _grimoireProtector).ConfigureAwait(false);
+        SecretStoreReadResult result = await ReadProtectedResultAsync(
+            GrimoireStorePath,
+            _grimoireProtector,
+            corruptMessage: "grimoire-key.dat is present but could not be decrypted.").ConfigureAwait(false);
+
+        return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
 
     }
 
@@ -80,7 +102,10 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
 
     }
 
-    private async Task<string?> ReadProtectedAsync(string path, IDataProtector protector)
+    private async Task<SecretStoreReadResult> ReadProtectedResultAsync(
+        string path,
+        IDataProtector protector,
+        string corruptMessage)
     {
 
         await _fileLock.WaitAsync().ConfigureAwait(false);
@@ -91,7 +116,7 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
             if (!File.Exists(path))
             {
 
-                return null;
+                return SecretStoreReadResult.Missing();
 
             }
 
@@ -100,7 +125,7 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
             if (cipher.Length == 0)
             {
 
-                return null;
+                return SecretStoreReadResult.Corrupted(corruptMessage);
 
             }
 
@@ -109,13 +134,17 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
 
                 byte[] plain = protector.Unprotect(cipher);
 
-                return Encoding.UTF8.GetString(plain);
+                string value = Encoding.UTF8.GetString(plain);
+
+                CryptographicOperations.ZeroMemory(plain);
+
+                return SecretStoreReadResult.Ok(value);
 
             }
             catch (CryptographicException)
             {
 
-                return null;
+                return SecretStoreReadResult.Corrupted(corruptMessage);
 
             }
 
@@ -135,32 +164,54 @@ public sealed class DataProtectionSecretStore(IDataProtectionProvider dataProtec
         string directory = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException("Invalid secret store path.");
 
-        Directory.CreateDirectory(directory);
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
 
         byte[] plain = Encoding.UTF8.GetBytes(plainText);
 
         byte[] cipher = protector.Protect(plain);
 
-        await File.WriteAllBytesAsync(path, cipher).ConfigureAwait(false);
+        CryptographicOperations.ZeroMemory(plain);
 
-        ApplyRestrictiveUnixFileMode(path);
-
-    }
-
-    private static void ApplyRestrictiveUnixFileMode(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        string tempPath = path + ".tmp." + Guid.NewGuid().ToString("N");
 
         try
         {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            await using (FileStream stream = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
+            {
+
+                await stream.WriteAsync(cipher).ConfigureAwait(false);
+
+                await stream.FlushAsync().ConfigureAwait(false);
+
+            }
+
+            File.Move(tempPath, path, overwrite: true);
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
         }
-        catch (Exception)
+        finally
         {
-            // Best effort — secrets remain protected by OS user account isolation.
+
+            if (File.Exists(tempPath))
+            {
+
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (IOException)
+                {
+                    // Best effort cleanup of temp file.
+                }
+
+            }
+
         }
+
     }
+
+    internal static bool GrimoireDatabaseExists() => File.Exists(ArcanumPaths.GrimoireDatabaseFile);
+
 }

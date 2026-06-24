@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -30,6 +31,7 @@ public readonly record struct McpInboundEnvelope(
 /// <summary>
 /// Spawns an MCP server subprocess and exchanges newline-delimited JSON-RPC 2.0 over redirected stdio.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: spawns real MCP subprocess over stdio
 internal sealed class McpProcessTransport : IMcpTransport
 {
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -47,6 +49,8 @@ internal sealed class McpProcessTransport : IMcpTransport
     private readonly string? _workingDirectory;
 
     private readonly McpJsonSerializerContext _json;
+
+    private readonly int _maxJsonRpcLineBytes;
 
     private readonly Channel<McpInboundEnvelope> _inbound;
 
@@ -82,6 +86,7 @@ internal sealed class McpProcessTransport : IMcpTransport
     public McpProcessTransport(
         string fileName,
         string arguments,
+        int maxJsonRpcLineBytes,
         McpJsonSerializerContext? jsonContext = null,
         int inboundChannelCapacity = 256,
         IReadOnlyList<string>? argumentList = null,
@@ -90,12 +95,28 @@ internal sealed class McpProcessTransport : IMcpTransport
         bool stripUserEnvironment = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+
+        if (maxJsonRpcLineBytes < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
+
+        }
+
         _fileName = fileName;
+
         _arguments = arguments;
+
+        _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
+
         _argumentList = argumentList;
+
         _environment = environment;
+
         _stripUserEnvironment = stripUserEnvironment;
+
         _workingDirectory = workingDirectory;
+
         _json = jsonContext ?? McpJsonSerializerContext.Default;
 
         BoundedChannelOptions channelOptions = new(inboundChannelCapacity)
@@ -369,6 +390,8 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         StreamReader stdout = process.StandardOutput;
 
+        McpStdioLineReader lineReader = new(stdout);
+
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -378,7 +401,7 @@ internal sealed class McpProcessTransport : IMcpTransport
                 try
                 {
 
-                    line = await McpSecurityLimits.ReadLineUtf8CappedAsync(stdout, cancellationToken).ConfigureAwait(false);
+                    line = await lineReader.ReadLineUtf8CappedAsync(_maxJsonRpcLineBytes, cancellationToken).ConfigureAwait(false);
 
                 }
                 catch (JsonException ex)
@@ -402,7 +425,7 @@ internal sealed class McpProcessTransport : IMcpTransport
 
                 try
                 {
-                    McpInboundEnvelope envelope = McpInboundJsonRpc.ParseInbound(line, _json);
+                    McpInboundEnvelope envelope = McpInboundJsonRpc.ParseInbound(line, _json, _maxJsonRpcLineBytes);
 
                     await _inbound.Writer.WriteAsync(envelope, cancellationToken).ConfigureAwait(false);
                 }
@@ -437,6 +460,8 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         StreamReader stderr = process.StandardError;
 
+        McpStdioLineReader lineReader = new(stderr);
+
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -446,14 +471,14 @@ internal sealed class McpProcessTransport : IMcpTransport
                 try
                 {
 
-                    line = await McpSecurityLimits.ReadLineUtf8CappedAsync(stderr, cancellationToken).ConfigureAwait(false);
+                    line = await lineReader.ReadLineUtf8CappedAsync(_maxJsonRpcLineBytes, cancellationToken).ConfigureAwait(false);
 
                 }
                 catch (JsonException)
                 {
 
                     OnStderrLine?.Invoke(
-                        $"[stderr line truncated: exceeded {McpSecurityLimits.MaxJsonRpcLineUtf8Bytes} UTF-8 bytes]");
+                        $"[stderr line truncated: exceeded {_maxJsonRpcLineBytes} UTF-8 bytes]");
 
                     continue;
 

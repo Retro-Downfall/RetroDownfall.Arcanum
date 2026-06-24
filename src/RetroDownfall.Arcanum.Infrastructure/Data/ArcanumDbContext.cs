@@ -18,6 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
     "AOT",
     "IL2026",
     Justification = "DbContext base ctor is marked RequiresUnreferencedCode; Arcanum uses a compiled EF model (UseModel), trim-safe entity registrations, and no dynamic LINQ—see https://aka.ms/efcore-docs-trimming.")]
+[ExcludeFromCodeCoverage] // Reason: EF Core model surface; repositories and migrations are tested separately.
 public sealed class ArcanumDbContext(
     DbContextOptions<ArcanumDbContext> options,
     ISecretStore secretStore,
@@ -70,11 +71,14 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Summary);
             entity.Property(e => e.LastSummarizedMessageAt);
             entity.Property(e => e.TotalTokensUsed).HasDefaultValue(0L);
+            entity.Property(e => e.UnsummarizedEntryCount).HasDefaultValue(0);
             entity.HasIndex(e => e.CreatedAt);
             entity.HasIndex(e => e.UpdatedAt);
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.CampaignId);
             entity.HasIndex(e => new { e.Status, e.UpdatedAt });
+            entity.HasIndex(e => new { e.CampaignId, e.Status, e.UpdatedAt });
+            entity.HasIndex(e => e.UnsummarizedEntryCount);
             entity.HasMany(e => e.Entries)
                 .WithOne(m => m.Session!)
                 .HasForeignKey(m => m.SessionId)
@@ -91,6 +95,7 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.ToolCallId).HasMaxLength(256);
             entity.Property(e => e.ToolName).HasMaxLength(256);
             entity.HasIndex(m => new { m.SessionId, m.CreatedAt });
+            entity.HasIndex(m => m.Role);
         });
 
         modelBuilder.Entity<MageSetting>(entity =>
@@ -161,6 +166,7 @@ public sealed class ArcanumDbContext(
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.CampaignId);
             entity.HasIndex(e => e.SessionId);
+            entity.HasIndex(e => e.UpdatedAt);
             entity.HasOne<Campaign>()
                 .WithMany()
                 .HasForeignKey(e => e.CampaignId)

@@ -23,6 +23,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// In-process MCP JSON-RPC server (Arcanum native tools). Uses the same newline-delimited framing as stdio MCP.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: in-process MCP JSON-RPC tool server; handler behavior covered via ArcanumInternalToolServerTests.
 internal sealed class ArcanumInternalToolServer
 {
 
@@ -94,6 +95,8 @@ internal sealed class ArcanumInternalToolServer
 
     private readonly McpRequestCancellationBroker _requestCancellationBroker;
 
+    private readonly int _maxJsonRpcLineBytes;
+
     private readonly string _executeCommandToolDescription;
 
     internal ArcanumInternalToolServer(
@@ -110,6 +113,7 @@ internal sealed class ArcanumInternalToolServer
         long maxFileReadSizeBytes,
         bool conclaveEnabled,
         McpRequestCancellationBroker requestCancellationBroker,
+        int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -130,6 +134,13 @@ internal sealed class ArcanumInternalToolServer
         if (listDirectoryMaxPaths < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(listDirectoryMaxPaths));
+        }
+
+        if (maxJsonRpcLineBytes < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
+
         }
 
         _fromClient = fromClient;
@@ -170,6 +181,8 @@ internal sealed class ArcanumInternalToolServer
         _conclaveEnabled = conclaveEnabled;
 
         _requestCancellationBroker = requestCancellationBroker;
+
+        _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
         _readFileChunkSchema = BuildReadFileChunkSchema();
 
@@ -244,12 +257,12 @@ internal sealed class ArcanumInternalToolServer
     private async Task HandleLineAsync(string line, CancellationToken cancellationToken)
     {
 
-        if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line))
+        if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line, _maxJsonRpcLineBytes))
         {
 
             _logger?.LogWarning(
                 "Arcanum internal MCP server rejected an inbound JSON-RPC line exceeding {MaxBytes} UTF-8 bytes.",
-                McpSecurityLimits.MaxJsonRpcLineUtf8Bytes);
+                _maxJsonRpcLineBytes);
 
             return;
 
@@ -1111,9 +1124,79 @@ internal sealed class ArcanumInternalToolServer
 
     private JsonRpcResponse BuildToolsCallResponse(JsonElement rpcId, McpToolsCallResultWire result)
     {
+        result = EnforceInProcessToolOutputCap(result);
+
         JsonElement element = JsonSerializer.SerializeToElement(result, _json.McpToolsCallResultWire);
 
         return new JsonRpcResponse { Id = rpcId, Result = element, Error = null };
+    }
+
+    private McpToolsCallResultWire EnforceInProcessToolOutputCap(McpToolsCallResultWire result)
+    {
+
+        if (result.IsError || result.Content is not { Length: > 0 })
+        {
+
+            return result;
+
+        }
+
+        long effectiveCap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+            _settings.ToolOutputCapBytes,
+            _maxJsonRpcLineBytes);
+
+        foreach (McpToolContentTextWire textItem in result.Content)
+        {
+
+            if (string.IsNullOrEmpty(textItem.Text))
+            {
+
+                continue;
+
+            }
+
+            long byteCount = Encoding.UTF8.GetByteCount(textItem.Text);
+
+            if (byteCount > effectiveCap)
+            {
+
+                return ToolError(
+                    "Tool output too large. Narrow the request range or parameters and retry.");
+
+            }
+
+        }
+
+        return result;
+
+    }
+
+    private McpToolsCallResultWire CapToolTextResult(string text, string toolName)
+    {
+
+        long effectiveCap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+            _settings.ToolOutputCapBytes,
+            _maxJsonRpcLineBytes);
+
+        long byteCount = Encoding.UTF8.GetByteCount(text);
+
+        if (byteCount > effectiveCap)
+        {
+
+            return ToolError(
+                $"{toolName}: output too large ({byteCount} UTF-8 bytes; limit {effectiveCap}). Narrow the range and retry.");
+
+        }
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = text },
+            ],
+            IsError = false,
+        };
+
     }
 
     private async Task<ResourceLimits> ResolveResourceLimitsAsync(CancellationToken cancellationToken)
@@ -1324,28 +1407,57 @@ internal sealed class ArcanumInternalToolServer
 
         List<string> selected = new(take);
 
+        if (!SandboxedFileIo.TryOpenForRead(_workspaceRoot!, absolutePath, out FileStream? stream, out McpToolsCallResultWire? openError))
+        {
+
+            return PrefixToolError("read_file_chunk", openError!);
+
+        }
+
         try
         {
-            IAsyncEnumerable<string> lines = File.ReadLinesAsync(absolutePath, cancellationToken)
-                .Skip(args.StartLine - 1)
-                .Take(take);
 
-            await foreach (string line in lines.ConfigureAwait(false))
+            await using (stream)
             {
-                selected.Add(line);
+
+                using StreamReader reader = new(stream);
+
+                int currentLine = 0;
+
+                while (currentLine < args.StartLine - 1)
+                {
+
+                    string? skipped = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (skipped is null)
+                    {
+
+                        break;
+
+                    }
+
+                    currentLine++;
+
+                }
+
+                while (selected.Count < take)
+                {
+
+                    string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (line is null)
+                    {
+
+                        break;
+
+                    }
+
+                    selected.Add(line);
+
+                }
+
             }
-        }
-        catch (FileNotFoundException ex)
-        {
-            _logger?.LogError(ex, "read_file_chunk: file not found.");
 
-            return ToolError("read_file_chunk: the specified file was not found.");
-        }
-        catch (DirectoryNotFoundException ex)
-        {
-            _logger?.LogError(ex, "read_file_chunk: directory not found.");
-
-            return ToolError("read_file_chunk: the specified directory was not found.");
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -1362,14 +1474,7 @@ internal sealed class ArcanumInternalToolServer
 
         string joined = string.Join("\n", selected);
 
-        return new McpToolsCallResultWire
-        {
-            Content =
-            [
-                new McpToolContentTextWire { Text = joined },
-            ],
-            IsError = false,
-        };
+        return CapToolTextResult(joined, "read_file_chunk");
     }
 
     private async Task<McpToolsCallResultWire> ExecuteReplaceTextBlockAsync(
@@ -1425,35 +1530,16 @@ internal sealed class ArcanumInternalToolServer
 
         ResourceLimits resourceLimits = await ResolveResourceLimitsAsync(cancellationToken).ConfigureAwait(false);
 
-        string content;
+        (string? content, McpToolsCallResultWire? readError) = await SandboxedFileIo.TryReadAllTextAsync(
+            _workspaceRoot!,
+            absolutePath,
+            cancellationToken).ConfigureAwait(false);
 
-        try
+        if (content is null)
         {
-            content = await File.ReadAllTextAsync(absolutePath, cancellationToken).ConfigureAwait(false);
-        }
-        catch (FileNotFoundException ex)
-        {
-            _logger?.LogError(ex, "replace_text_block: file not found.");
 
-            return ToolError("replace_text_block: the specified file was not found.");
-        }
-        catch (DirectoryNotFoundException ex)
-        {
-            _logger?.LogError(ex, "replace_text_block: directory not found.");
+            return PrefixToolError("replace_text_block", readError!);
 
-            return ToolError("replace_text_block: the specified directory was not found.");
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "replace_text_block: access denied reading.");
-
-            return ToolError("replace_text_block: access denied.");
-        }
-        catch (IOException ex)
-        {
-            _logger?.LogError(ex, "replace_text_block: I/O error reading.");
-
-            return ToolError("replace_text_block: an I/O error occurred. See server logs.");
         }
 
         if (!content.Contains(args.ExactSearchText, StringComparison.Ordinal))
@@ -1476,21 +1562,15 @@ internal sealed class ArcanumInternalToolServer
             return writeLimitError;
         }
 
-        try
-        {
-            await File.WriteAllTextAsync(absolutePath, updated, cancellationToken).ConfigureAwait(false);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "replace_text_block: access denied writing.");
+        (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
+            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, updated, cancellationToken)
+            .ConfigureAwait(false);
 
-            return ToolError("replace_text_block: access denied writing.");
-        }
-        catch (IOException ex)
+        if (!writeSuccess)
         {
-            _logger?.LogError(ex, "replace_text_block: I/O error writing.");
 
-            return ToolError("replace_text_block: an I/O error occurred writing. See server logs.");
+            return PrefixToolError("replace_text_block", writeError!);
+
         }
 
         string text = occurrences == 1
@@ -1558,43 +1638,15 @@ internal sealed class ArcanumInternalToolServer
             return writeLimitError;
         }
 
-        string? parentDir = Path.GetDirectoryName(absolutePath);
+        (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
+            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, args.Content, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (!string.IsNullOrEmpty(parentDir))
+        if (!writeSuccess)
         {
-            try
-            {
-                Directory.CreateDirectory(parentDir);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                _logger?.LogError(ex, "write_file: access denied creating directory.");
 
-                return ToolError("write_file: access denied creating directory.");
-            }
-            catch (IOException ex)
-            {
-                _logger?.LogError(ex, "write_file: I/O error creating directory.");
+            return PrefixToolError("write_file", writeError!);
 
-                return ToolError("write_file: an I/O error occurred creating directory. See server logs.");
-            }
-        }
-
-        try
-        {
-            await File.WriteAllTextAsync(absolutePath, args.Content, cancellationToken).ConfigureAwait(false);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "write_file: access denied writing.");
-
-            return ToolError("write_file: access denied.");
-        }
-        catch (IOException ex)
-        {
-            _logger?.LogError(ex, "write_file: I/O error writing.");
-
-            return ToolError("write_file: an I/O error occurred. See server logs.");
         }
 
         return new McpToolsCallResultWire
@@ -1607,7 +1659,7 @@ internal sealed class ArcanumInternalToolServer
         };
     }
 
-    private Task<McpToolsCallResultWire> ExecuteListDirectoryAsync(
+    private async Task<McpToolsCallResultWire> ExecuteListDirectoryAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
@@ -1615,7 +1667,7 @@ internal sealed class ArcanumInternalToolServer
 
         if (gate is not null)
         {
-            return Task.FromResult(gate);
+            return gate;
         }
 
         ListDirectoryParams? args;
@@ -1628,36 +1680,46 @@ internal sealed class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "list_directory argument deserialization failed.");
 
-            return Task.FromResult(ToolError("Invalid arguments for list_directory."));
+            return ToolError("Invalid arguments for list_directory.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return Task.FromResult(ToolError("list_directory requires 'relativePath'."));
+            return ToolError("list_directory requires 'relativePath'.");
         }
 
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
-            return Task.FromResult(resolveErr!);
+            return resolveErr!;
         }
 
         if (!TryRevalidateBeforeIo(absolutePath, out McpToolsCallResultWire? revalidateErr))
         {
-            return Task.FromResult(revalidateErr!);
+            return revalidateErr!;
         }
 
+        return await Task.Run(
+            () => ListDirectoryCore(args, absolutePath, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private McpToolsCallResultWire ListDirectoryCore(
+        ListDirectoryParams args,
+        string absolutePath,
+        CancellationToken cancellationToken)
+    {
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (File.Exists(absolutePath) && !Directory.Exists(absolutePath))
             {
-                return Task.FromResult(ToolError($"list_directory: path is not a directory: '{absolutePath}'."));
+                return ToolError($"list_directory: path is not a directory: '{absolutePath}'.");
             }
 
             if (!Directory.Exists(absolutePath))
             {
-                return Task.FromResult(ToolError($"list_directory: directory not found: '{absolutePath}'."));
+                return ToolError($"list_directory: directory not found: '{absolutePath}'.");
             }
 
             List<string> lines = new(_listDirectoryMaxPaths + 1);
@@ -1686,18 +1748,23 @@ internal sealed class ArcanumInternalToolServer
                     {
                         _logger?.LogError(ex, "list_directory: I/O error listing subdirectory.");
 
-                        return Task.FromResult(ToolError("list_directory: an I/O error occurred. See server logs."));
+                        return ToolError("list_directory: an I/O error occurred. See server logs.");
                     }
                     catch (UnauthorizedAccessException ex)
                     {
                         _logger?.LogError(ex, "list_directory: access denied listing subdirectory.");
 
-                        return Task.FromResult(ToolError("list_directory: access denied."));
+                        return ToolError("list_directory: access denied.");
                     }
 
                     foreach (string entry in entries)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+
+                        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
+                        {
+                            continue;
+                        }
 
                         string name = Path.GetFileName(entry);
 
@@ -1737,18 +1804,23 @@ internal sealed class ArcanumInternalToolServer
                 {
                     _logger?.LogError(ex, "list_directory: I/O error listing root.");
 
-                    return Task.FromResult(ToolError("list_directory: an I/O error occurred. See server logs."));
+                    return ToolError("list_directory: an I/O error occurred. See server logs.");
                 }
                 catch (UnauthorizedAccessException ex)
                 {
                     _logger?.LogError(ex, "list_directory: access denied listing root.");
 
-                    return Task.FromResult(ToolError("list_directory: access denied."));
+                    return ToolError("list_directory: access denied.");
                 }
 
                 foreach (string entry in entries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
+                    {
+                        continue;
+                    }
 
                     string name = Path.GetFileName(entry);
 
@@ -1775,15 +1847,14 @@ internal sealed class ArcanumInternalToolServer
 
             string joined = string.Join("\n", lines);
 
-            return Task.FromResult(
-                new McpToolsCallResultWire
-                {
-                    Content =
-                    [
-                        new McpToolContentTextWire { Text = joined },
-                    ],
-                    IsError = false,
-                });
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = joined },
+                ],
+                IsError = false,
+            };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1791,19 +1862,19 @@ internal sealed class ArcanumInternalToolServer
         }
         catch (OperationCanceledException)
         {
-            return Task.FromResult(ToolError("list_directory: operation was canceled."));
+            return ToolError("list_directory: operation was canceled.");
         }
         catch (IOException ex)
         {
             _logger?.LogError(ex, "list_directory: I/O error.");
 
-            return Task.FromResult(ToolError("list_directory: an I/O error occurred. See server logs."));
+            return ToolError("list_directory: an I/O error occurred. See server logs.");
         }
         catch (UnauthorizedAccessException ex)
         {
             _logger?.LogError(ex, "list_directory: access denied.");
 
-            return Task.FromResult(ToolError("list_directory: access denied."));
+            return ToolError("list_directory: access denied.");
         }
     }
 
@@ -2230,6 +2301,17 @@ internal sealed class ArcanumInternalToolServer
             {
             }
         }
+    }
+
+    private static McpToolsCallResultWire PrefixToolError(string toolName, McpToolsCallResultWire error)
+    {
+
+        string text = error.Content is { Length: > 0 } content && !string.IsNullOrEmpty(content[0].Text)
+            ? $"{toolName}: {content[0].Text}"
+            : $"{toolName}: operation failed.";
+
+        return ToolError(text);
+
     }
 
     private static McpToolsCallResultWire ToolError(string text)

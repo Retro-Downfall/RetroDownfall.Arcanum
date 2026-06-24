@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,6 +17,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Middleware;
+using RetroDownfall.Arcanum.Api.Health;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -120,31 +124,9 @@ public static class ApiBootstrapper
 
     private static string ResolveRateLimitPartitionKey(HttpContext context)
     {
-        // Partition by API key when present (one bucket per credential); otherwise by remote IP.
-        if (context.Request.Headers.TryGetValue(ArcanumApiHeaders.ApiKey, out Microsoft.Extensions.Primitives.StringValues apiKey)
-            && apiKey.Count > 0
-            && apiKey[0] is { Length: > 0 } apiKeyValue)
-        {
-            return "k:" + HashRateLimitPartitionKey(apiKeyValue);
-        }
-
-        if (context.Request.Headers.TryGetValue("Authorization", out Microsoft.Extensions.Primitives.StringValues auth)
-            && auth.Count > 0
-            && auth[0] is { Length: > 0 } authValue)
-        {
-            return "a:" + HashRateLimitPartitionKey(authValue);
-        }
-
         System.Net.IPAddress? ip = context.Connection.RemoteIpAddress;
 
         return "ip:" + (ip?.ToString() ?? "unknown");
-    }
-
-    private static string HashRateLimitPartitionKey(string credential)
-    {
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(credential));
-
-        return Convert.ToHexString(hash);
     }
 
     private static bool ReadConfiguredListenAny(IConfiguration configuration)
@@ -197,6 +179,15 @@ public static class ApiBootstrapper
 
     public static IServiceCollection AddArcanumApiServices(this IServiceCollection services, IConfiguration configuration)
     {
+
+        services.AddExceptionHandler<ArcanumExceptionHandler>();
+
+        services.AddProblemDetails();
+
+        services.AddSingleton<ArcanumHealthChecker>();
+
+        services.AddScoped<GrimoireStatsService>();
+
         services.AddSingleton<IHumanPromptRegistry, HumanPromptRegistry>();
 
         services.AddArcanumInfrastructure(configuration);
@@ -222,6 +213,8 @@ public static class ApiBootstrapper
                     {
 
                         origins = DefaultCorsAllowedOrigins;
+
+                        wildcard = false;
 
                     }
 
@@ -263,7 +256,9 @@ public static class ApiBootstrapper
 
         services.AddSingleton<InferenceTokenizerResolver>();
 
-        services.AddSingleton<IInferenceTokenCounter, TheForge.InferenceTokenCounter>();
+        services.AddSingleton<ManaPreflight>();
+
+        services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
 
         services.AddSingleton<PromptRenderer>();
 
@@ -276,6 +271,16 @@ public static class ApiBootstrapper
         services.AddSingleton<SpellWorkspaceResolver>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Activates centralized exception handling for all Arcanum API hosts.
+    /// </summary>
+    public static void UseArcanumExceptionHandler(this WebApplication app)
+    {
+
+        app.UseExceptionHandler();
+
     }
 
     /// <summary>
@@ -357,30 +362,61 @@ public static class ApiBootstrapper
             scalarGroup.MapScalarApiReference();
         }
 
-        apiGroup.MapGet("/health", (HttpContext httpContext) =>
+        apiGroup.MapGet("/health", async (ArcanumHealthChecker healthChecker, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
-            Result<string> healthResult = "Arcanum API is online";
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ApiResponse<string> response = ApiResponse<string>.FromResult(healthResult, traceId);
+            HealthReportDto report = await healthChecker
+                .BuildReportAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-            return Results.Ok(response);
+            Result<HealthReportDto> healthResult = Result<HealthReportDto>.Success(report);
+
+            ApiResponse<HealthReportDto> response = ApiResponse<HealthReportDto>.FromResult(healthResult, traceId);
+
+            int statusCode = report.Status == HealthStatus.Unhealthy
+                ? StatusCodes.Status503ServiceUnavailable
+                : StatusCodes.Status200OK;
+
+            return Results.Json(response, ArcanumJsonContext.Default.ApiResponseHealthReportDto, statusCode: statusCode);
+
         })
         .WithName("GetHealth");
 
-        apiGroup.MapGet("/meta", (IOptionsSnapshot<ArcanumSettings> settings, ILlamaServerManager llamaServerManager, HttpContext httpContext) =>
+        apiGroup.MapGet("/grimoire/stats", async (GrimoireStatsService statsService, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
+
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            Process process = Process.GetCurrentProcess();
+            GrimoireStatsDto stats = await statsService.GetStatsAsync(cancellationToken).ConfigureAwait(false);
+
+            Result<GrimoireStatsDto> statsResult = Result<GrimoireStatsDto>.Success(stats);
+
+            ApiResponse<GrimoireStatsDto> response = ApiResponse<GrimoireStatsDto>.FromResult(statsResult, traceId);
+
+            return Results.Ok(response);
+
+        })
+        .WithName("GetGrimoireStats");
+
+        apiGroup.MapGet("/meta", (IOptionsSnapshot<ArcanumSettings> settings, ILlamaServerManager llamaServerManager, HttpContext httpContext) =>
+        {
+
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            using Process process = Process.GetCurrentProcess();
+
+            DateTimeOffset startTime = new(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
 
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
                 OsDescription: RuntimeInformation.OSDescription,
                 RuntimeIdentifier: RuntimeInformation.RuntimeIdentifier,
                 ProcessId: Environment.ProcessId,
-                StartTime: new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                StartTime: startTime,
+                Uptime: DateTimeOffset.UtcNow - startTime,
+                NativeAot: !RuntimeFeature.IsDynamicCodeSupported,
                 GrimoireDirectory: ArcanumPaths.GrimoireDirectory,
                 ConfigPath: Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
                 Port: ArcanumSettingClamps.HostPort(settings.Value.Host.Port),
@@ -426,9 +462,22 @@ public static class ApiBootstrapper
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ArcanumSettings? request = await httpContext.Request
-                .ReadFromJsonAsync(ArcanumJsonContext.Default.ArcanumSettings, cancellationToken)
-                .ConfigureAwait(false);
+            ArcanumSettings? request;
+
+            IResult? jsonError;
+
+            (request, jsonError) = await ApiRequestJson.ReadAsync(
+                httpContext,
+                ArcanumJsonContext.Default.ArcanumSettings,
+                static ctx => ApiRequestJson.InvalidBodyResult(
+                    ctx,
+                    "Request body must be a valid ArcanumSettings JSON object."),
+                cancellationToken).ConfigureAwait(false);
+
+            if (jsonError is not null)
+            {
+                return jsonError;
+            }
 
             if (request is null)
             {
@@ -480,9 +529,22 @@ public static class ApiBootstrapper
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ArcanumSettings? request = await httpContext.Request
-                .ReadFromJsonAsync(ArcanumJsonContext.Default.ArcanumSettings, cancellationToken)
-                .ConfigureAwait(false);
+            ArcanumSettings? request;
+
+            IResult? jsonError;
+
+            (request, jsonError) = await ApiRequestJson.ReadAsync(
+                httpContext,
+                ArcanumJsonContext.Default.ArcanumSettings,
+                static ctx => ApiRequestJson.InvalidBodyResult(
+                    ctx,
+                    "Request body must be a valid ArcanumSettings JSON object."),
+                cancellationToken).ConfigureAwait(false);
+
+            if (jsonError is not null)
+            {
+                return jsonError;
+            }
 
             if (request is null)
             {
@@ -512,7 +574,7 @@ public static class ApiBootstrapper
         .WithName("ValidateConfiguration")
         ;
 
-        apiGroup.MapPost("/intelligence/ping", async (PingRequest? body, IArcanumIntelligenceProvider intelligence, ICampaignRepository campaignRepository, HttpContext httpContext, CancellationToken cancellationToken) =>
+        apiGroup.MapPost("/intelligence/ping", async (PingRequest? body, IArcanumIntelligenceProvider intelligence, ICampaignRepository campaignRepository, IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
             if (body is null
                 || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
@@ -523,6 +585,20 @@ public static class ApiBootstrapper
 
                 return Results.Json(
                     ApiResponse<PromptResponseDto>.FromResult(invalid, badTraceId),
+                    ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            Result pingBounds = PingRequestBoundsValidator.Validate(body, settings.Value);
+
+            if (pingBounds.IsFailure)
+            {
+                string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                return Results.Json(
+                    ApiResponse<PromptResponseDto>.FromResult(
+                        Result<PromptResponseDto>.Failure(pingBounds.Error),
+                        badTraceId),
                     ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
                     statusCode: StatusCodes.Status400BadRequest);
             }
@@ -567,14 +643,34 @@ public static class ApiBootstrapper
             "/intelligence/human-response",
             async (HttpContext httpContext, IHumanPromptRegistry registry, CancellationToken cancellationToken) =>
             {
-                SubmitHumanResponseRequest? body = await httpContext.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.SubmitHumanResponseRequest, cancellationToken)
-                    .ConfigureAwait(false);
+                SubmitHumanResponseRequest? body;
+
+                IResult? jsonError;
+
+                (body, jsonError) = await ApiRequestJson.ReadAsync(
+                    httpContext,
+                    ArcanumJsonContext.Default.SubmitHumanResponseRequest,
+                    static ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage),
+                    cancellationToken).ConfigureAwait(false);
 
                 string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-                if (body is null
-                    || string.IsNullOrWhiteSpace(body.PromptId)
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
+
+                if (body is null)
+                {
+
+                    Result<bool> invalid = Result<bool>.Failure(
+                        new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage));
+
+                    return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+
+                }
+
+                if (string.IsNullOrWhiteSpace(body.PromptId)
                     || string.IsNullOrWhiteSpace(body.Answer))
                 {
                     Result<bool> invalid = Result<bool>.Failure(
@@ -609,7 +705,33 @@ public static class ApiBootstrapper
 
             CancellationToken ct = streamCts.Token;
 
-            PingRequest? body = await httpContext.Request.ReadFromJsonAsync(ArcanumJsonContext.Default.PingRequest, ct).ConfigureAwait(false);
+            PingRequest? body;
+
+            try
+            {
+
+                body = await httpContext.Request
+                    .ReadFromJsonAsync(ArcanumJsonContext.Default.PingRequest, ct)
+                    .ConfigureAwait(false);
+
+            }
+            catch (JsonException)
+            {
+
+                string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+
+                await httpContext.Response.WriteAsJsonAsync(
+                    ApiResponse<string>.FromResult(
+                        Result<string>.Failure(new Error("Validation.InvalidBody", ApiRequestJson.MalformedJsonMessage)),
+                        badTraceId),
+                    ArcanumJsonContext.Default.ApiResponseString,
+                    cancellationToken: ct).ConfigureAwait(false);
+
+                return;
+
+            }
 
             if (body is null
                 || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
@@ -621,6 +743,24 @@ public static class ApiBootstrapper
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
 
                 await httpContext.Response.WriteAsJsonAsync(ApiResponse<string>.FromResult(invalid, badTraceId), ArcanumJsonContext.Default.ApiResponseString, cancellationToken: ct).ConfigureAwait(false);
+
+                return;
+            }
+
+            ArcanumSettings arcSettings = httpContext.RequestServices.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>().Value;
+
+            Result streamPingBounds = PingRequestBoundsValidator.Validate(body, arcSettings);
+
+            if (streamPingBounds.IsFailure)
+            {
+                string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+
+                await httpContext.Response.WriteAsJsonAsync(
+                    ApiResponse<string>.FromResult(Result<string>.Failure(streamPingBounds.Error), badTraceId),
+                    ArcanumJsonContext.Default.ApiResponseString,
+                    cancellationToken: ct).ConfigureAwait(false);
 
                 return;
             }
@@ -647,60 +787,9 @@ public static class ApiBootstrapper
 
             IArcanumIntelligenceProvider intelligence = httpContext.RequestServices.GetRequiredService<IArcanumIntelligenceProvider>();
 
-            httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
-
-            httpContext.Response.Headers.CacheControl = "no-cache";
-
-            httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
-
-            ArrayBufferWriter<byte> eventBuffer = new(256);
-
-            try
-            {
-                await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(resolvedRequest.Value, ct).ConfigureAwait(false))
-                {
-                    eventBuffer.ResetWrittenCount();
-
-                    await using (Utf8JsonWriter jsonWriter = new(eventBuffer))
-                    {
-                        JsonSerializer.Serialize(jsonWriter, ev, ArcanumJsonContext.Default.IntelligenceEvent);
-                    }
-
-                    eventBuffer.Write(NewlineBytes);
-
-                    await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, ct).ConfigureAwait(false);
-
-                    await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                ILogger streamLogger = httpContext.RequestServices
-                    .GetRequiredService<ILoggerFactory>()
-                    .CreateLogger(typeof(ApiBootstrapper));
-
-                streamLogger.LogError(ex, "Unhandled exception in ping-stream endpoint.");
-
-                IntelligenceEvent errorEvent = new(
-                    IntelligenceEventType.Error,
-                    "An internal error occurred during inference streaming.");
-
-                eventBuffer.ResetWrittenCount();
-
-                await using (Utf8JsonWriter jsonWriter = new(eventBuffer))
-                {
-                    JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
-                }
-
-                eventBuffer.Write(NewlineBytes);
-
-                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None).ConfigureAwait(false);
-
-                await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-            }
+            await InferenceExecuteWriter
+                .WriteStreamAsync(httpContext, intelligence, resolvedRequest.Value, ct)
+                .ConfigureAwait(false);
 
         })
         .WithName("PostIntelligencePingStream");
@@ -1002,14 +1091,37 @@ public static class ApiBootstrapper
             "/lore",
             async (HttpContext httpContext, IGrimoireRepository grimoire, CancellationToken cancellationToken) =>
             {
-                UpsertLoreRequest? body = await httpContext.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.UpsertLoreRequest, cancellationToken)
-                    .ConfigureAwait(false);
+                UpsertLoreRequest? body;
+
+                IResult? jsonError;
+
+                (body, jsonError) = await ApiRequestJson.ReadAsync(
+                    httpContext,
+                    ArcanumJsonContext.Default.UpsertLoreRequest,
+                    static ctx => ApiRequestJson.InvalidBodyResult<LoreDto>(
+                        ctx,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseLoreDto),
+                    cancellationToken).ConfigureAwait(false);
 
                 string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-                if (body is null
-                    || string.IsNullOrWhiteSpace(body.Key)
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
+
+                if (body is null)
+                {
+
+                    Result<LoreDto> invalid = Result<LoreDto>.Failure(
+                        new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage));
+
+                    return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
+
+                }
+
+                if (string.IsNullOrWhiteSpace(body.Key)
                     || string.IsNullOrWhiteSpace(body.Value))
                 {
                     Result<LoreDto> invalid = Result<LoreDto>.Failure(
@@ -1153,9 +1265,22 @@ public static class ApiBootstrapper
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                CreateSpellRequest? request = await ctx.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.CreateSpellRequest, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                CreateSpellRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.CreateSpellRequest,
+                    static httpContext => ApiRequestJson.InvalidBodyResult(
+                        httpContext,
+                        ApiRequestJson.MalformedJsonMessage),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
 
                 if (request is null)
                 {
@@ -1200,9 +1325,22 @@ public static class ApiBootstrapper
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                UpdateSpellRequest? request = await ctx.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.UpdateSpellRequest, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                UpdateSpellRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.UpdateSpellRequest,
+                    static httpContext => ApiRequestJson.InvalidBodyResult(
+                        httpContext,
+                        ApiRequestJson.MalformedJsonMessage),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
 
                 if (request is null)
                 {
@@ -1345,9 +1483,23 @@ public static class ApiBootstrapper
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                CreateWorkspaceRequest? request = await ctx.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.CreateWorkspaceRequest, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                CreateWorkspaceRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.CreateWorkspaceRequest,
+                    static httpContext => ApiRequestJson.InvalidBodyResult<WorkspaceInfo>(
+                        httpContext,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseWorkspaceInfo),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.Name))
                 {
@@ -1393,9 +1545,23 @@ public static class ApiBootstrapper
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                UpdateWorkspaceRequest? request = await ctx.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.UpdateWorkspaceRequest, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                UpdateWorkspaceRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.UpdateWorkspaceRequest,
+                    static httpContext => ApiRequestJson.InvalidBodyResult<WorkspaceInfo>(
+                        httpContext,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseWorkspaceInfo),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
 
                 if (request is null)
                 {
@@ -1606,213 +1772,212 @@ public static class ApiBootstrapper
 
         apiGroup.MapGet(
             "/events/daemon",
-            async (HttpContext httpContext, IEventBus eventBus, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, IEventBus eventBus, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
             {
+
+                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                {
+
+                    return SseConnectionResults.TooManyConnections(httpContext);
+
+                }
+
+                using (sseLease)
+                {
+
                 using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted,
                     cancellationToken);
 
                 CancellationToken ct = streamCts.Token;
 
-                httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
+                SseStreamWriter.PrepareResponse(httpContext);
 
-                httpContext.Response.Headers.CacheControl = "no-cache";
+                ArrayBufferWriter<byte> sseBuffer = new(512);
 
-                httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+                Utf8JsonWriter sseJsonWriter = new(sseBuffer, new JsonWriterOptions { Indented = false });
+
+                TimeSpan heartbeatInterval = ResolveSseHeartbeatInterval(settings.Value);
 
                 try
                 {
-                    await foreach (DaemonEvent ev in eventBus.Subscribe<DaemonEvent>(ct).ConfigureAwait(false))
-                    {
-                        await WriteDaemonSseJsonAsync(httpContext, ev, ct).ConfigureAwait(false);
-                    }
+
+                    await SseStreamWriter.StreamAsync(
+                        httpContext,
+                        eventBus.Subscribe<DaemonEvent>(ct),
+                        async (DaemonEvent ev, CancellationToken writeCt) =>
+                        {
+                            await WriteSseJsonAsync(httpContext, ev, ArcanumJsonContext.Default.DaemonEvent, sseBuffer, sseJsonWriter, writeCt).ConfigureAwait(false);
+                        },
+                        heartbeatInterval,
+                        ct).ConfigureAwait(false);
+
                 }
                 catch (OperationCanceledException)
                 {
-                    try
-                    {
-                        await httpContext.Response.Body.WriteAsync(SseDone, CancellationToken.None).ConfigureAwait(false);
 
-                        await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Client disconnected before terminal frame could be written.
-                    }
+                    await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
                 }
+                finally
+                {
+
+                    sseJsonWriter.Dispose();
+
+                }
+
+                return Results.Empty;
+
+                }
+
             })
         .WithName("GetDaemonEvents");
 
         apiGroup.MapGet(
             "/events/mcp",
-            async (HttpContext httpContext, IEventBus eventBus, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, IEventBus eventBus, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
             {
+
+                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                {
+
+                    return SseConnectionResults.TooManyConnections(httpContext);
+
+                }
+
+                using (sseLease)
+                {
+
                 using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted,
                     cancellationToken);
 
                 CancellationToken ct = streamCts.Token;
 
-                httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
+                SseStreamWriter.PrepareResponse(httpContext);
 
-                httpContext.Response.Headers.CacheControl = "no-cache";
+                ArrayBufferWriter<byte> sseBuffer = new(512);
 
-                httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+                Utf8JsonWriter sseJsonWriter = new(sseBuffer, new JsonWriterOptions { Indented = false });
+
+                TimeSpan heartbeatInterval = ResolveSseHeartbeatInterval(settings.Value);
 
                 try
                 {
-                    await foreach (McpServerEvent ev in eventBus.Subscribe<McpServerEvent>(ct).ConfigureAwait(false))
-                    {
-                        await WriteSseJsonAsync(httpContext, ev, ArcanumJsonContext.Default.McpServerEvent, ct).ConfigureAwait(false);
-                    }
+
+                    await SseStreamWriter.StreamAsync(
+                        httpContext,
+                        eventBus.Subscribe<McpServerEvent>(ct),
+                        async (McpServerEvent ev, CancellationToken writeCt) =>
+                        {
+                            await WriteSseJsonAsync(httpContext, ev, ArcanumJsonContext.Default.McpServerEvent, sseBuffer, sseJsonWriter, writeCt).ConfigureAwait(false);
+                        },
+                        heartbeatInterval,
+                        ct).ConfigureAwait(false);
+
                 }
                 catch (OperationCanceledException)
                 {
-                    try
-                    {
-                        await httpContext.Response.Body.WriteAsync(SseDone, CancellationToken.None).ConfigureAwait(false);
 
-                        await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Client disconnected before terminal frame could be written.
-                    }
+                    await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
                 }
+                finally
+                {
+
+                    sseJsonWriter.Dispose();
+
+                }
+
+                return Results.Empty;
+
+                }
+
             })
         .WithName("GetMcpEvents")
         ;
 
         apiGroup.MapGet(
             "/events/logs",
-            async (HttpContext httpContext, ILogQueryService query, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, ILogQueryService query, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
             {
+
+                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                {
+
+                    return SseConnectionResults.TooManyConnections(httpContext);
+
+                }
+
+                using (sseLease)
+                {
+
                 using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted,
                     cancellationToken);
 
                 CancellationToken ct = streamCts.Token;
 
-                httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
+                SseStreamWriter.PrepareResponse(httpContext);
 
-                httpContext.Response.Headers.CacheControl = "no-cache";
+                ArrayBufferWriter<byte> sseBuffer = new(512);
 
-                httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+                Utf8JsonWriter sseJsonWriter = new(sseBuffer, new JsonWriterOptions { Indented = false });
+
+                TimeSpan heartbeatInterval = ResolveSseHeartbeatInterval(settings.Value);
 
                 try
                 {
+
                     await httpContext.Response.Body.WriteAsync(SseLogsConnected, ct).ConfigureAwait(false);
 
                     await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
 
-                    await foreach (LogEntry entry in query.StreamAsync(null, ct).ConfigureAwait(false))
-                    {
-                        await WriteSseJsonAsync(
-                            httpContext,
-                            entry,
-                            ArcanumJsonContext.Default.LogEntry,
-                            ct).ConfigureAwait(false);
-                    }
+                    await SseStreamWriter.StreamAsync(
+                        httpContext,
+                        query.StreamAsync(null, ct),
+                        async (LogEntry entry, CancellationToken writeCt) =>
+                        {
+                            await WriteSseJsonAsync(
+                                httpContext,
+                                entry,
+                                ArcanumJsonContext.Default.LogEntry,
+                                sseBuffer,
+                                sseJsonWriter,
+                                writeCt).ConfigureAwait(false);
+                        },
+                        heartbeatInterval,
+                        ct).ConfigureAwait(false);
+
                 }
                 catch (OperationCanceledException)
                 {
-                    try
-                    {
-                        await httpContext.Response.Body.WriteAsync(SseDone, CancellationToken.None).ConfigureAwait(false);
 
-                        await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Client disconnected before terminal frame could be written.
-                    }
+                    await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
                 }
+                finally
+                {
+
+                    sseJsonWriter.Dispose();
+
+                }
+
+                return Results.Empty;
+
+                }
+
             })
         .WithName("StreamLogs")
         ;
 
+        RouteGroupBuilder unseenServant = apiGroup.MapGroup("/unseen-servant");
+
+        MapUnseenServantJobRoutes(unseenServant, routeNamePrefix: "UnseenServant");
+
         RouteGroupBuilder daemon = apiGroup.MapGroup("/daemon");
 
-        daemon.MapGet(
-            "/jobs",
-            (IOptionsMonitor<ArcanumSettings> settings, IUnseenServantPacer pacer, HttpContext httpContext) =>
-            {
-                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                UnseenServantJobStatusDto[] dtos = (settings.CurrentValue.Daemon?.Jobs ?? [])
-                    .Select(job => new UnseenServantJobStatusDto(
-                        job.Name,
-                        job.TargetSpell,
-                        job.IntervalMinutes,
-                        pacer.GetEffectiveInterval(job),
-                        job.Enabled))
-                    .ToArray();
-
-                Result<UnseenServantJobStatusDto[]> ok = Result<UnseenServantJobStatusDto[]>.Success(dtos);
-
-                return Results.Ok(ApiResponse<UnseenServantJobStatusDto[]>.FromResult(ok, traceId));
-            })
-        .WithName("GetDaemonJobs");
-
-        daemon.MapPost(
-            "/jobs/{name}/initiative",
-            async (
-                string name,
-                HttpContext httpContext,
-                IUnseenServantPacer pacer,
-                IOptionsMonitor<ArcanumSettings> settings,
-                CancellationToken cancellationToken) =>
-            {
-                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                AdjustInitiativeRequestDto? body = await httpContext.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.AdjustInitiativeRequestDto, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (body is null)
-                {
-                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
-                        new Error("Validation.InvalidBody", "Request body is required."));
-
-                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
-                }
-
-                string trimmedName = name.Trim();
-
-                if (trimmedName.Length == 0)
-                {
-                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
-                        new Error("Validation.InvalidJobName", "Job name must not be empty."));
-
-                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
-                }
-
-                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
-
-                UnseenServantJob? configured = (settings.CurrentValue.Daemon?.Jobs ?? []).FirstOrDefault(
-                    job => string.Equals(job.Name.Trim(), trimmedName, StringComparison.Ordinal));
-
-                UnseenServantJob jobForInterval = configured
-                    ?? new UnseenServantJob
-                    {
-                        Name = trimmedName,
-                        TargetSpell = string.Empty,
-                        IntervalMinutes = 60,
-                        Enabled = false,
-                    };
-
-                UnseenServantJobStatusDto dto = new(
-                    jobForInterval.Name,
-                    jobForInterval.TargetSpell,
-                    jobForInterval.IntervalMinutes,
-                    pacer.GetEffectiveInterval(jobForInterval),
-                    jobForInterval.Enabled);
-
-                Result<UnseenServantJobStatusDto> ok = Result<UnseenServantJobStatusDto>.Success(dto);
-
-                return Results.Ok(ApiResponse<UnseenServantJobStatusDto>.FromResult(ok, traceId));
-            })
-        .WithName("PostDaemonJobInitiative");
+        MapUnseenServantJobRoutes(daemon, routeNamePrefix: "Daemon");
 
         apiGroup.MapGet(
             "/daemons",
@@ -1933,9 +2098,22 @@ public static class ApiBootstrapper
             {
                 string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-                CommLinkMessageRequestDto? body = await httpContext.Request
-                    .ReadFromJsonAsync(ArcanumJsonContext.Default.CommLinkMessageRequestDto, cancellationToken)
-                    .ConfigureAwait(false);
+                CommLinkMessageRequestDto? body;
+
+                IResult? jsonError;
+
+                (body, jsonError) = await ApiRequestJson.ReadAsync(
+                    httpContext,
+                    ArcanumJsonContext.Default.CommLinkMessageRequestDto,
+                    static ctx => ApiRequestJson.InvalidBodyResult(
+                        ctx,
+                        ApiRequestJson.MalformedJsonMessage),
+                    cancellationToken).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
 
                 if (body is null)
                 {
@@ -1994,22 +2172,61 @@ public static class ApiBootstrapper
         HttpContext httpContext,
         T value,
         JsonTypeInfo<T> typeInfo,
+        ArrayBufferWriter<byte> buffer,
+        Utf8JsonWriter jsonWriter,
         CancellationToken cancellationToken)
     {
-        ArrayBufferWriter<byte> buffer = new(512);
+
+        buffer.Clear();
 
         buffer.Write(SseDataPrefix);
 
-        await using (Utf8JsonWriter jsonWriter = new(buffer, new JsonWriterOptions { Indented = false }))
-        {
-            JsonSerializer.Serialize(jsonWriter, value, typeInfo);
-        }
+        jsonWriter.Reset();
+
+        JsonSerializer.Serialize(jsonWriter, value, typeInfo);
 
         buffer.Write(SseLineBreak);
 
         await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
         await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task WriteSseJsonAsync<T>(
+        HttpContext httpContext,
+        T value,
+        JsonTypeInfo<T> typeInfo,
+        CancellationToken cancellationToken)
+    {
+
+        ArrayBufferWriter<byte> buffer = new(512);
+
+        Utf8JsonWriter jsonWriter = new(buffer);
+
+        try
+        {
+
+            await WriteSseJsonAsync(httpContext, value, typeInfo, buffer, jsonWriter, cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            jsonWriter.Dispose();
+
+        }
+
+    }
+
+    private static TimeSpan ResolveSseHeartbeatInterval(ArcanumSettings settings)
+    {
+
+        int seconds = ArcanumSettingClamps.EventBusHeartbeatSeconds(
+            settings.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds);
+
+        return TimeSpan.FromSeconds(seconds);
+
     }
 
     private static string GetInformationalVersion()
@@ -2029,4 +2246,116 @@ public static class ApiBootstrapper
         return version;
 
     }
+
+    private static UnseenServantJobStatusDto ToUnseenServantJobStatusDto(
+        UnseenServantJob job,
+        IUnseenServantPacer pacer,
+        IUnseenServantJobTracker tracker)
+    {
+
+        int effectiveInterval = pacer.GetEffectiveInterval(job);
+
+        return new UnseenServantJobStatusDto(
+            job.Name,
+            job.TargetSpell,
+            job.IntervalMinutes,
+            effectiveInterval,
+            job.Enabled,
+            tracker.GetLastRunAt(job),
+            tracker.GetNextDueAt(job, effectiveInterval),
+            tracker.GetLastResult(job));
+
+    }
+
+    private static void MapUnseenServantJobRoutes(RouteGroupBuilder group, string routeNamePrefix)
+    {
+
+        group.MapGet(
+            "/jobs",
+            (IOptionsMonitor<ArcanumSettings> settings, IUnseenServantPacer pacer, IUnseenServantJobTracker tracker, HttpContext httpContext) =>
+            {
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                UnseenServantJobStatusDto[] dtos = (settings.CurrentValue.Daemon?.Jobs ?? [])
+                    .Select(job => ToUnseenServantJobStatusDto(job, pacer, tracker))
+                    .ToArray();
+
+                Result<UnseenServantJobStatusDto[]> ok = Result<UnseenServantJobStatusDto[]>.Success(dtos);
+
+                return Results.Ok(ApiResponse<UnseenServantJobStatusDto[]>.FromResult(ok, traceId));
+            })
+        .WithName($"{routeNamePrefix}GetDaemonJobs");
+
+        group.MapPost(
+            "/jobs/{name}/initiative",
+            async (
+                string name,
+                HttpContext httpContext,
+                IUnseenServantPacer pacer,
+                IUnseenServantJobTracker tracker,
+                IOptionsMonitor<ArcanumSettings> settings,
+                CancellationToken cancellationToken) =>
+            {
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                AdjustInitiativeRequestDto? body;
+
+                IResult? jsonError;
+
+                (body, jsonError) = await ApiRequestJson.ReadAsync(
+                    httpContext,
+                    ArcanumJsonContext.Default.AdjustInitiativeRequestDto,
+                    static ctx => ApiRequestJson.InvalidBodyResult<UnseenServantJobStatusDto>(
+                        ctx,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto),
+                    cancellationToken).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
+
+                if (body is null)
+                {
+                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
+                        new Error("Validation.InvalidBody", "Request body is required."));
+
+                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
+                }
+
+                string trimmedName = name.Trim();
+
+                if (trimmedName.Length == 0)
+                {
+                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
+                        new Error("Validation.InvalidJobName", "Job name must not be empty."));
+
+                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
+                }
+
+                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
+
+                UnseenServantJob? configured = (settings.CurrentValue.Daemon?.Jobs ?? []).FirstOrDefault(
+                    job => string.Equals(job.Name.Trim(), trimmedName, StringComparison.Ordinal));
+
+                UnseenServantJob jobForInterval = configured
+                    ?? new UnseenServantJob
+                    {
+                        Name = trimmedName,
+                        TargetSpell = string.Empty,
+                        IntervalMinutes = 60,
+                        Enabled = false,
+                    };
+
+                UnseenServantJobStatusDto dto = ToUnseenServantJobStatusDto(jobForInterval, pacer, tracker);
+
+                Result<UnseenServantJobStatusDto> ok = Result<UnseenServantJobStatusDto>.Success(dto);
+
+                return Results.Ok(ApiResponse<UnseenServantJobStatusDto>.FromResult(ok, traceId));
+            })
+        .WithName($"{routeNamePrefix}PostDaemonJobInitiative");
+
+    }
+
 }

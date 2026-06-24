@@ -18,4 +18,6 @@ public sealed record GgufModelManifest
 
     public long Size { get; init; }
 
+    public bool Verified { get; init; }
+
 }

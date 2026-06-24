@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -7,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
+[ExcludeFromCodeCoverage] // Reason: HTTP SSE streaming glue; exercised via apprentice chronicle integration routes.
 internal static class ChronicleSseWriter
 {
 
@@ -205,6 +207,7 @@ internal static class ChronicleSseWriter
         ApprenticeEventType.PlanRevised => "planRevised",
         ApprenticeEventType.ApprenticeEscalated => "apprenticeEscalated",
         ApprenticeEventType.ApprenticeIntervened => "apprenticeIntervened",
+        ApprenticeEventType.EventsDropped => "eventsDropped",
         _ => type.ToString(),
     };
 

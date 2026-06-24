@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -31,7 +32,11 @@ public sealed class ConfigurationSecretProtector(IDataProtectionProvider dataPro
 
         }
 
-        byte[] protectedBytes = _protector.Protect(Encoding.UTF8.GetBytes(plaintext));
+        byte[] plainBytes = Encoding.UTF8.GetBytes(plaintext);
+
+        byte[] protectedBytes = _protector.Protect(plainBytes);
+
+        CryptographicOperations.ZeroMemory(plainBytes);
 
         return Prefix + Convert.ToBase64String(protectedBytes);
 
@@ -60,7 +65,11 @@ public sealed class ConfigurationSecretProtector(IDataProtectionProvider dataPro
 
         byte[] plain = _protector.Unprotect(protectedBytes);
 
-        return Encoding.UTF8.GetString(plain);
+        string restored = Encoding.UTF8.GetString(plain);
+
+        CryptographicOperations.ZeroMemory(plain);
+
+        return restored;
 
     }
 

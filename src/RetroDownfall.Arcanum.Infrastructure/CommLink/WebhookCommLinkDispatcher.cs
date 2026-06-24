@@ -107,6 +107,8 @@ internal sealed class WebhookCommLinkDispatcher(
                 .PostAsync(endpoint, content, cancellationToken)
                 .ConfigureAwait(false);
 
+            await HttpResponseBodyDrainer.DrainAsync(response.Content, cancellationToken).ConfigureAwait(false);
+
             if (!response.IsSuccessStatusCode)
             {
 

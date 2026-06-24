@@ -1,7 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 /// <summary>
 /// Assistant message body in a non-streaming response. <see cref="ToolCalls"/> is populated when
 /// the model requested tools during the turn (Arcanum surfaces calls executed server-side as well

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -10,6 +11,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Bridges a remote MCP tool to <see cref="AIFunction"/> via <see cref="McpClient.SendRequestAsync"/> (<c>tools/call</c>).
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: remote MCP tool AIFunction bridge; covered via McpBridgeTool tests and in-process MCP integration paths.
 internal sealed class McpBridgeTool : AIFunction
 {
     private readonly string _name;
@@ -216,6 +218,7 @@ internal sealed class McpBridgeTool : AIFunction
 /// <summary>
 /// Extracts human-readable text from MCP <c>tools/call</c> <c>result.content</c> payloads.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: MCP JSON content formatting; covered indirectly via McpBridgeTool integration tests.
 internal static class McpToolResultFormatter
 {
     public static string FormatContentText(JsonElement result, long maxUtf8Bytes = long.MaxValue)

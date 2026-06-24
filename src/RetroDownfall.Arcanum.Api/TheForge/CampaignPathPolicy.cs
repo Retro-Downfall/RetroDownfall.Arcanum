@@ -1,9 +1,11 @@
+using System.Diagnostics.CodeAnalysis;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
+[ExcludeFromCodeCoverage] // Reason: thin Campaign DTO mapping; CampaignRepository and endpoint tests cover wire shape.
 internal static class CampaignPathPolicy
 {
 

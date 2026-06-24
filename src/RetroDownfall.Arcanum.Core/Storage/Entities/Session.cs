@@ -21,6 +21,11 @@ public sealed class Session
 
     public long TotalTokensUsed { get; set; }
 
+    /// <summary>
+    /// Count of entries after <see cref="LastSummarizedMessageAt"/>. <c>-1</c> means unknown (legacy row pending lazy backfill).
+    /// </summary>
+    public int UnsummarizedEntryCount { get; set; }
+
     public ICollection<Entry> Entries { get; set; } = new List<Entry>();
 
 }

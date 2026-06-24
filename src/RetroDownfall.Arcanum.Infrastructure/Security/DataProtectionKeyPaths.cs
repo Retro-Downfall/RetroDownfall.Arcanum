@@ -12,23 +12,7 @@ internal static class DataProtectionKeyPaths
 
         DirectoryInfo directory = Directory.CreateDirectory(path);
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            try
-            {
-
-                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
-            }
-            catch (Exception)
-            {
-
-                // Best effort — keys remain protected by OS user account isolation.
-
-            }
-
-        }
+        SecureFilePermissions.ApplyOwnerOnlyDirectory(directory.FullName);
 
         return directory;
 

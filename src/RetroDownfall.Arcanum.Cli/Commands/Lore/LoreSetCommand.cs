@@ -7,29 +7,40 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 
-public sealed class LoreSetCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
+public sealed class LoreSetCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand<LoreSetCommand.Settings>
 {
-    [CommandArgument(0, "<KEY>")]
-    public required string Key { get; init; }
 
-    [CommandArgument(1, "<VALUE>")]
-    public required string Value { get; init; }
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+
         Result<LoreDto> result =
-            await apiClient.UpsertLoreAsync(Key, Value, cancellationToken).ConfigureAwait(false);
+            await apiClient.UpsertLoreAsync(settings.Key, settings.Value, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
+
         }
 
         AnsiConsole.MarkupLine(
-            themePalette.HighlightMarkup(Markup.Escape($"Successfully scribed lore for '{Key}'.")));
+            themePalette.HighlightMarkup(Markup.Escape($"Successfully scribed lore for '{settings.Key}'.")));
 
         return 0;
+
     }
+
+    public sealed class Settings : CommandSettings
+    {
+
+        [CommandArgument(0, "<KEY>")]
+        public required string Key { get; init; }
+
+        [CommandArgument(1, "<VALUE>")]
+        public required string Value { get; init; }
+
+    }
+
 }

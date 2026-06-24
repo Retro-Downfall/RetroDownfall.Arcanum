@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -99,6 +101,17 @@ public sealed class ApprenticeRepository : IApprenticeRepository
     {
         apprentice.UpdatedAt = DateTimeOffset.UtcNow;
 
+        EntityEntry? tracked = _db.ChangeTracker
+            .Entries()
+            .FirstOrDefault(e => e.Entity is Apprentice a && a.Id == apprentice.Id);
+
+        if (tracked is not null)
+        {
+
+            tracked.State = EntityState.Detached;
+
+        }
+
         _db.Apprentices.Update(apprentice);
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -120,9 +133,36 @@ public sealed class ApprenticeRepository : IApprenticeRepository
     {
         string running = ApprenticeStatus.Running.ToString();
 
+        string planning = ApprenticeStatus.Planning.ToString();
+
+        string emptyPlan = SerializePlan([]);
+
+        List<Apprentice> candidates = await _db.Apprentices
+            .AsNoTracking()
+            .Where(a => a.Status == running || a.Status == planning)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return candidates
+            .Where(a =>
+                string.Equals(a.Status, running, StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(a.Plan)
+                || string.Equals(a.Plan, emptyPlan, StringComparison.Ordinal))
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
+    {
+        string planning = ApprenticeStatus.Planning.ToString();
+
+        string emptyPlan = SerializePlan([]);
+
         return await _db.Apprentices
             .AsNoTracking()
-            .Where(a => a.Status == running)
+            .Where(a =>
+                a.Status == planning
+                && a.Plan != emptyPlan
+                && a.Plan != string.Empty)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -138,7 +178,7 @@ public sealed class ApprenticeRepository : IApprenticeRepository
     }
 
     public static string SerializePlan(IReadOnlyList<PlanStep> plan) =>
-        JsonSerializer.Serialize(plan, TheForgeJsonContext.Default.ListPlanStep);
+        JsonSerializer.Serialize(plan.ToList(), TheForgeJsonContext.Default.ListPlanStep);
 
     public static ApprenticeCheckpoint? DeserializeCheckpoint(string? json)
     {

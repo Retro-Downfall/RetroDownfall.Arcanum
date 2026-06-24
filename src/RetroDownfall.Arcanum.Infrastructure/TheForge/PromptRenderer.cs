@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -9,11 +11,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.TheForge;
 public sealed partial class PromptRenderer
 {
 
-    private readonly IInferenceTokenCounter _tokenCounter;
+    private readonly IManaMeter _manaMeter;
 
-    public PromptRenderer(IInferenceTokenCounter tokenCounter)
+    private readonly IOptionsMonitor<ArcanumSettings> _settings;
+
+    public PromptRenderer(IManaMeter manaMeter, IOptionsMonitor<ArcanumSettings> settings)
     {
-        _tokenCounter = tokenCounter;
+
+        _manaMeter = manaMeter;
+
+        _settings = settings;
+
     }
 
     public Result<PromptRenderResultDto> Render(
@@ -24,7 +32,9 @@ public sealed partial class PromptRenderer
 
         Result<Dictionary<string, string>> validated = ValidateParameters(
             prompt.ParameterSchema,
-            parameters);
+            parameters,
+            requireAllRequired: false,
+            maxParameterValueChars: ResolveMaxParameterValueChars());
 
         if (validated.IsFailure)
         {
@@ -33,7 +43,7 @@ public sealed partial class PromptRenderer
 
         string rendered = Substitute(prompt.Template, validated.Value!);
 
-        int tokenCount = _tokenCounter.CountTokens(rendered);
+        int tokenCount = _manaMeter.CountTokens(rendered);
 
         return Result<PromptRenderResultDto>.Success(new PromptRenderResultDto(rendered, tokenCount));
     }
@@ -58,15 +68,20 @@ public sealed partial class PromptRenderer
         Result<Dictionary<string, string>> validated = ValidateParameters(
             prompt.ParameterSchema,
             defaults,
-            requireAllRequired: true);
+            requireAllRequired: true,
+            maxParameterValueChars: ResolveMaxParameterValueChars());
 
         return validated;
     }
 
+    private int ResolveMaxParameterValueChars() =>
+        ArcanumSettingClamps.MaxParameterValueChars(_settings.CurrentValue.Prompts.MaxParameterValueChars);
+
     private static Result<Dictionary<string, string>> ValidateParameters(
         string? parameterSchemaJson,
         Dictionary<string, string> parameters,
-        bool requireAllRequired = false)
+        bool requireAllRequired = false,
+        int maxParameterValueChars = int.MaxValue)
     {
         if (string.IsNullOrWhiteSpace(parameterSchemaJson))
         {
@@ -112,6 +127,16 @@ public sealed partial class PromptRenderer
                 {
                     return Result<Dictionary<string, string>>.Failure(
                         new Error("Prompt.UnknownParameter", $"Parameter '{key}' is not declared in the parameter schema."));
+                }
+
+                string value = parameters[key];
+
+                if (value.Length > maxParameterValueChars)
+                {
+                    return Result<Dictionary<string, string>>.Failure(
+                        new Error(
+                            "Prompt.ParameterValueTooLong",
+                            $"Parameter '{key}' exceeds the maximum length ({maxParameterValueChars} characters)."));
                 }
             }
 

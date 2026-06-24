@@ -1,12 +1,16 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Compact;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 
+[ExcludeFromCodeCoverage] // Reason: Serilog host wiring glue
 public static class LoggingBootstrapper
 {
     /// <summary>
@@ -20,7 +24,7 @@ public static class LoggingBootstrapper
             "arcanum",
             "logs");
 
-        Directory.CreateDirectory(logDirectory);
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(logDirectory);
 
         string logFilePath = Path.Combine(logDirectory, "arcanum-api-.json");
 
@@ -48,7 +52,7 @@ public static class LoggingBootstrapper
                     logFilePath,
                     rollingInterval: RollingInterval.Day,
                     retainedFileCountLimit: retained,
-                    shared: true);
+                    hooks: new SecureSerilogFileHooks());
             });
 
         return services;

@@ -153,6 +153,21 @@ internal static class CampaignEndpoints
 
                 DateTimeOffset now = DateTimeOffset.UtcNow;
 
+                try
+                {
+                    Directory.CreateDirectory(Path.Combine(normalizedPath, ".arcanum"));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<CampaignDto>.FromResult(
+                            Result<CampaignDto>.Failure(
+                                new Error(
+                                    "Campaign.DirectoryCreateFailed",
+                                    "Could not create the campaign .arcanum directory at the requested path.")),
+                            traceId));
+                }
+
                 Campaign campaign = new()
                 {
                     Id = Guid.NewGuid(),
@@ -177,8 +192,6 @@ internal static class CampaignEndpoints
                             Result<CampaignDto>.Failure(new Error("Campaign.MaxReached", "The maximum number of campaigns has been reached.")),
                             traceId));
                 }
-
-                Directory.CreateDirectory(Path.Combine(normalizedPath, ".arcanum"));
 
                 CampaignDto dto = CampaignPathPolicy.ToDto(campaign);
 

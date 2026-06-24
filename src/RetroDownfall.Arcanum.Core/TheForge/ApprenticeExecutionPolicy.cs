@@ -24,7 +24,21 @@ public static class ApprenticeExecutionPolicy
 
     public const string PetitionDungeonMasterToolName = "petition_dungeon_master";
 
-    public static TimeSpan ComputeBackoff(int attemptNumber, int baseSeconds, int maxSeconds)
+    public static TimeSpan ComputeBackoff(int attemptNumber, int baseSeconds, int maxSeconds) =>
+        ComputeBackoff(attemptNumber, baseSeconds, maxSeconds, Random.Shared);
+
+    public static TimeSpan ComputeBackoff(int attemptNumber, int baseSeconds, int maxSeconds, Random jitterSource)
+    {
+
+        ArgumentNullException.ThrowIfNull(jitterSource);
+
+        int ceilingSeconds = ComputeBackoffCeilingSeconds(attemptNumber, baseSeconds, maxSeconds);
+
+        return ApplyFullJitter(ceilingSeconds, jitterSource);
+
+    }
+
+    internal static int ComputeBackoffCeilingSeconds(int attemptNumber, int baseSeconds, int maxSeconds)
     {
 
         int clampedBase = Math.Max(1, baseSeconds);
@@ -37,7 +51,23 @@ public static class ApprenticeExecutionPolicy
 
         int seconds = (int)Math.Min(scaled, clampedMax);
 
-        return TimeSpan.FromSeconds(Math.Max(1, seconds));
+        return Math.Max(1, seconds);
+
+    }
+
+    private static TimeSpan ApplyFullJitter(int ceilingSeconds, Random jitterSource)
+    {
+
+        if (ceilingSeconds <= 1)
+        {
+
+            return TimeSpan.FromSeconds(1);
+
+        }
+
+        int jitteredSeconds = jitterSource.Next(1, ceilingSeconds + 1);
+
+        return TimeSpan.FromSeconds(jitteredSeconds);
 
     }
 
@@ -90,9 +120,17 @@ public static class ApprenticeExecutionPolicy
     }
 
     public static bool IsReweavableStatus(string status) =>
-        string.Equals(status, ApprenticeStatus.Running.ToString(), StringComparison.Ordinal)
-        || string.Equals(status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
+        string.Equals(status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
         || string.Equals(status, ApprenticeStatus.Escalated.ToString(), StringComparison.Ordinal);
+
+    public static bool IsRunStepBudgetExceeded(int stepsExecutedThisRun, int maxRunSteps) =>
+        stepsExecutedThisRun >= maxRunSteps;
+
+    public static bool IsRunDurationBudgetExceeded(TimeSpan elapsed, int maxRunDurationMinutes) =>
+        elapsed >= TimeSpan.FromMinutes(Math.Max(1, maxRunDurationMinutes));
+
+    public static bool IsReweaveBudgetExceeded(int reweavesThisRun, int maxReweavesPerRun) =>
+        maxReweavesPerRun >= 0 && reweavesThisRun >= maxReweavesPerRun;
 
     public static bool IsEscalatedStatus(string status) =>
         string.Equals(status, ApprenticeStatus.Escalated.ToString(), StringComparison.Ordinal);

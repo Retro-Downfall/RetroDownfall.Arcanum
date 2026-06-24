@@ -6,24 +6,35 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Lore;
 
-public sealed class LoreDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
+public sealed class LoreDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand<LoreDeleteCommand.Settings>
 {
-    [CommandArgument(0, "<KEY>")]
-    public required string Key { get; init; }
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        Result<bool> result = await apiClient.DeleteLoreAsync(Key, cancellationToken).ConfigureAwait(false);
+
+        Result<bool> result = await apiClient.DeleteLoreAsync(settings.Key, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
+
         }
 
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Deleted lore for '{Key}'.")));
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Deleted lore for '{settings.Key}'.")));
 
         return 0;
+
     }
+
+    public sealed class Settings : CommandSettings
+    {
+
+        [CommandArgument(0, "<KEY>")]
+        public required string Key { get; init; }
+
+    }
+
 }

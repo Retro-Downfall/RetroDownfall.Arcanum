@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
@@ -15,9 +16,20 @@ internal static class ProvingGroundsEndpoints
     {
         apiGroup.MapPost(
             "/proving-grounds/trials/run",
-            async (Trial trial, ProvingGroundsRunner runner, HttpContext ctx) =>
+            async (Trial? trial, ProvingGroundsRunner runner, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (trial is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<TrialResult>.FromResult(
+                            Result<TrialResult>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 Result<TrialResult> result = await runner
                     .RunAsync(trial, ctx.RequestAborted)

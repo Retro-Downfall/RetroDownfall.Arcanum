@@ -18,6 +18,10 @@ public interface IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default);
 
+    Task DiscardAssistantEntryAsync(
+        Guid assistantEntryId,
+        CancellationToken cancellationToken = default);
+
     Task AppendToolInteractionAsync(
         Guid sessionId,
         string toolName,
@@ -35,6 +39,10 @@ public interface IGrimoireRepository
     Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
     Task<Session?> GetSessionAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
+    Task<Session?> GetSessionHeaderAsync(
         Guid id,
         CancellationToken cancellationToken = default);
 

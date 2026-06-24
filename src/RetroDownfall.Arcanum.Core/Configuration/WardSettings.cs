@@ -16,6 +16,8 @@ public sealed record WardSettings
 
     public int TimeoutSeconds { get; init; } = 120;
 
+    public int MaxActiveWards { get; init; } = 50;
+
     public bool AutoDenyInUnattendedMode { get; init; } = true;
 
 }

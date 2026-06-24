@@ -1,7 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 /// <summary>
 /// Per-chunk delta inside a streaming <c>choices[].delta</c>. All fields are optional because
 /// most chunks carry only one (typically <c>content</c>); the first chunk often includes

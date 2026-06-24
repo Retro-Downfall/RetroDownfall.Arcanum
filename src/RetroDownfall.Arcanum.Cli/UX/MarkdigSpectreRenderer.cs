@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using Markdig;
 using Markdig.Syntax;
@@ -7,6 +8,7 @@ using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.UX;
 
+[ExcludeFromCodeCoverage] // Reason: Spectre.Console markdown rendering adapter; covered via MarkdigSpectreRendererTests asserting renderables without console IO.
 public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 {
 

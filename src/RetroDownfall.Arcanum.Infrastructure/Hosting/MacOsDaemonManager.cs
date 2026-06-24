@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Xml;
@@ -7,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+[ExcludeFromCodeCoverage] // Reason: launchd interop, macOS-only
 public sealed class MacOsDaemonManager : IDaemonManager
 {
     internal const string LaunchdLabel = "com.retrodownfall.arcanum";

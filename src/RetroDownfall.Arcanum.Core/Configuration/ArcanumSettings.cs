@@ -51,6 +51,10 @@ public sealed record ArcanumSettings
 
     public ProvingGroundsSettings ProvingGrounds { get; init; } = new();
 
+    public McpSettings Mcp { get; init; } = new();
+
+    public PromptSettings Prompts { get; init; } = new();
+
 }
 
 

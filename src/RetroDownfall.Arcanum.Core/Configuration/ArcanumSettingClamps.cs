@@ -78,6 +78,8 @@ public static class ArcanumSettingClamps
 
     public static int ExecuteCommandTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
+    public static int InferenceTimeoutSeconds(int value) => Math.Clamp(value, 5, 3600);
+
     public static int SemanticRouterPreflightTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int ContextWindowCompressionThreshold(int value) => Math.Clamp(value, 50, 100);
@@ -85,6 +87,23 @@ public static class ArcanumSettingClamps
     public static int ApiKeyCacheTtlSeconds(int value) => Math.Clamp(value, 1, 3_600);
 
     public static long ToolOutputCapBytes(long value) => Math.Clamp(value, 64L * 1024L, 64L * 1024L * 1024L);
+
+    public const int JsonRpcEnvelopeUtf8MarginBytes = 8_192;
+
+    public const int JsonRpcMaxEscapingFactor = 2;
+
+    public static long EffectiveInProcessToolOutputCapBytes(long toolOutputCapBytes, int maxJsonRpcLineBytes)
+    {
+
+        long configuredCap = ToolOutputCapBytes(toolOutputCapBytes);
+
+        long lineBudget = Math.Max(0L, maxJsonRpcLineBytes - JsonRpcEnvelopeUtf8MarginBytes);
+
+        long escapedBudget = lineBudget / JsonRpcMaxEscapingFactor;
+
+        return Math.Min(configuredCap, escapedBudget);
+
+    }
 
     public static int DaemonMaxConcurrentJobs(int value) => Math.Clamp(value, 1, 1_024);
 
@@ -116,7 +135,13 @@ public static class ArcanumSettingClamps
 
     public static int DoctorHealthTimeoutSeconds(int value) => Math.Clamp(value, 1, 60);
 
+    public static int ApiRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
+
     public static int EventBusChannelCapacity(int value) => Math.Clamp(value, 64, 65_536);
+
+    public static int EventBusHeartbeatSeconds(int value) => Math.Clamp(value, 0, 300);
+
+    public static int MetadataScanCacheTtlSeconds(int value) => Math.Clamp(value, 0, 300);
 
     public static int LogRingBufferCapacity(int value) => Math.Clamp(value, 1000, 100_000);
 
@@ -162,6 +187,18 @@ public static class ArcanumSettingClamps
 
     public static int MaxSimulacra(int value) => Math.Clamp(value, 1, 10);
 
+    public static int MaxRunSteps(int value) => Math.Clamp(value, 1, 500);
+
+    public static int MaxRunDurationMinutes(int value) => Math.Clamp(value, 5, 10_080);
+
+    public static int MaxReweavesPerRun(int value) => Math.Clamp(value, 0, 100);
+
+    public static int MaxPendingStarts(int value) => Math.Clamp(value, 1, 1_000);
+
+    public static int MaxDelegationDepth(int value) => Math.Clamp(value, 0, 20);
+
+    public static int MaxDescendantsPerRoot(int value) => Math.Clamp(value, 1, 200);
+
     public static int MaxStepRetries(int value) => Math.Clamp(value, 0, 10);
 
     public static int RetryBackoffSeconds(int value) => Math.Clamp(value, 1, 300);
@@ -183,6 +220,42 @@ public static class ArcanumSettingClamps
     public static int SemanticJudgeMaxTokens(int value) => Math.Clamp(value, 1, 256);
 
     public static int SemanticJudgeTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
+
+    public static int MaxActiveWards(int value) => Math.Clamp(value, 1, 500);
+
+    public static int MaxSseConnections(int value) => Math.Clamp(value, 1, 100);
+
+    public static int MaxEntriesPerSession(int value) => Math.Clamp(value, 100, 1_000_000);
+
+    public static int MaxEntryContentBytes(int value) => Math.Clamp(value, 1024, 16_777_216);
+
+    public static int McpMaxServers(int value) => Math.Clamp(value, 1, 500);
+
+    public static int McpMaxToolsPerServer(int value) => Math.Clamp(value, 1, 2048);
+
+    public static int McpMaxToolsPerListPage(int value) => Math.Clamp(value, 1, 256);
+
+    public static int McpMaxToolsTotalBytes(int value) => Math.Clamp(value, 65_536, 16_777_216);
+
+    public static int McpMaxJsonRpcLineBytes(int value) => Math.Clamp(value, 65_536, 8_388_608);
+
+    public static int MaxOpenApiMessages(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int MaxStatelessMessages(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int MaxPingPromptChars(int value) => Math.Clamp(value, 1, 262_144);
+
+    public static int MaxPlanSteps(int value) => Math.Clamp(value, 1, 200);
+
+    public static int MaxDependencies(int value) => Math.Clamp(value, 0, 100);
+
+    public static int MaxDeclaredTools(int value) => Math.Clamp(value, 0, 256);
+
+    public static int MaxResonantDependencies(int value) => Math.Clamp(value, 0, 50);
+
+    public static int MaxResonantBytes(int value) => Math.Clamp(value, 4096, 1_048_576);
+
+    public static int MaxParameterValueChars(int value) => Math.Clamp(value, 256, 65_536);
 
 }
 

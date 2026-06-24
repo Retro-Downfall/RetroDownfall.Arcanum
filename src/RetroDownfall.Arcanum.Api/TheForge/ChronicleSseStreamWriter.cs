@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -10,6 +11,7 @@ namespace RetroDownfall.Arcanum.Api.TheForge;
 /// <summary>
 /// Reuses one buffer per apprentice chronicle SSE connection.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: HTTP SSE streaming glue; exercised via apprentice chronicle integration routes.
 internal sealed class ChronicleSseStreamWriter(HttpContext httpContext)
 {
 

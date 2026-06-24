@@ -4,6 +4,7 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
+[ExcludeFromCodeCoverage] // Reason: Spectre.Console.Cli ITypeRegistrar bridge; wiring exercised via CliApplicationFactory tests.
 internal sealed class CliTypeRegistrar(IServiceCollection services) : ITypeRegistrar
 {
     public ITypeResolver Build() => new CliTypeResolver(services.BuildServiceProvider());

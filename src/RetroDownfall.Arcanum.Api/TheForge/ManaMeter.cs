@@ -5,14 +5,14 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
-public sealed class InferenceTokenCounter : IInferenceTokenCounter
+public sealed class ManaMeter : IManaMeter
 {
 
     private readonly InferenceTokenizerResolver _resolver;
 
     private readonly IOptionsMonitor<ArcanumSettings> _settings;
 
-    public InferenceTokenCounter(
+    public ManaMeter(
         InferenceTokenizerResolver resolver,
         IOptionsMonitor<ArcanumSettings> settings)
     {

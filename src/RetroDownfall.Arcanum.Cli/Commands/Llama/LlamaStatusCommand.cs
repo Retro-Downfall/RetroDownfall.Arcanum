@@ -17,7 +17,7 @@ public sealed class LlamaStatusCommand(ArcanumApiClient apiClient, IThemePalette
 
         if (serversResult.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(serversResult.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(serversResult.Error));
 
             return 1;
         }
@@ -26,7 +26,7 @@ public sealed class LlamaStatusCommand(ArcanumApiClient apiClient, IThemePalette
 
         if (modelsResult.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(modelsResult.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(modelsResult.Error));
 
             return 1;
         }
@@ -96,7 +96,7 @@ public sealed class LlamaStatusCommand(ArcanumApiClient apiClient, IThemePalette
 
     }
 
-    private static string FormatBytes(long bytes)
+    internal static string FormatBytes(long bytes)
     {
 
         if (bytes < 1024)

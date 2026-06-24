@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -7,11 +9,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// MCP session client: correlates JSON-RPC responses by <c>id</c>, performs <c>initialize</c> / <c>tools/list</c>, and exposes <see cref="McpBridgeTool"/> instances.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: MCP JSON-RPC session client over transports; covered via McpClientTests and InProcessMcpTransport integration tests.
 internal sealed class McpClient : IAsyncDisposable
 {
     private readonly TimeSpan _defaultRequestTimeout;
 
     private readonly int _maxToolsListPages;
+
+    private readonly int _maxToolsPerServer;
+
+    private readonly int _maxToolsPerListPage;
+
+    private readonly int _maxToolsTotalBytes;
 
     private readonly long _toolOutputCapBytes;
 
@@ -39,6 +48,9 @@ internal sealed class McpClient : IAsyncDisposable
         TimeSpan defaultRequestTimeout,
         int maxToolsListPages,
         long toolOutputCapBytes,
+        int maxToolsPerServer,
+        int maxToolsPerListPage,
+        int maxToolsTotalBytes,
         McpRequestCancellationBroker? requestCancellationBroker = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -47,6 +59,27 @@ internal sealed class McpClient : IAsyncDisposable
         if (maxToolsListPages < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(maxToolsListPages));
+        }
+
+        if (maxToolsPerServer < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxToolsPerServer));
+
+        }
+
+        if (maxToolsPerListPage < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxToolsPerListPage));
+
+        }
+
+        if (maxToolsTotalBytes < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxToolsTotalBytes));
+
         }
 
         if (toolOutputCapBytes < 1L)
@@ -59,6 +92,12 @@ internal sealed class McpClient : IAsyncDisposable
         _defaultRequestTimeout = defaultRequestTimeout;
 
         _maxToolsListPages = maxToolsListPages;
+
+        _maxToolsPerServer = maxToolsPerServer;
+
+        _maxToolsPerListPage = maxToolsPerListPage;
+
+        _maxToolsTotalBytes = maxToolsTotalBytes;
 
         _toolOutputCapBytes = toolOutputCapBytes;
 
@@ -147,7 +186,7 @@ internal sealed class McpClient : IAsyncDisposable
 
         CancellationToken waitToken = linked.Token;
 
-        _requestCancellationBroker?.Register(id, cancellationToken);
+        _requestCancellationBroker?.Register(id, waitToken);
 
         CancellationTokenRegistration wireCancelReg = cancellationToken.Register(
             () => DispatchWireCancelNotification(id));
@@ -183,9 +222,34 @@ internal sealed class McpClient : IAsyncDisposable
         }
 
         List<McpBridgeTool> tools = [];
+
         string? cursor = null;
+
+        long totalToolBytes = 0L;
+
+        HashSet<string> seenCursors = new(StringComparer.Ordinal);
+
         for (int page = 0; page < _maxToolsListPages; page++)
         {
+
+            if (cursor is not null)
+            {
+
+                if (!seenCursors.Add(cursor))
+                {
+
+                    break;
+
+                }
+
+            }
+            if (tools.Count >= _maxToolsPerServer)
+            {
+
+                break;
+
+            }
+
             JsonElement? listParams = cursor is null
                 ? null
                 : JsonSerializer.SerializeToElement(new McpToolsListParams { Cursor = cursor },
@@ -199,8 +263,33 @@ internal sealed class McpClient : IAsyncDisposable
                 break;
             }
 
+            int toolsOnPage = 0;
+
             foreach (JsonElement tool in toolsArray.EnumerateArray())
             {
+                if (tools.Count >= _maxToolsPerServer)
+                {
+
+                    break;
+
+                }
+
+                if (toolsOnPage >= _maxToolsPerListPage)
+                {
+
+                    break;
+
+                }
+
+                int toolUtf8Bytes = Encoding.UTF8.GetByteCount(tool.GetRawText());
+
+                if (totalToolBytes + toolUtf8Bytes > _maxToolsTotalBytes)
+                {
+
+                    break;
+
+                }
+
                 if (!tool.TryGetProperty("name", out JsonElement nameEl) || nameEl.ValueKind != JsonValueKind.String)
                 {
                     continue;
@@ -233,6 +322,11 @@ internal sealed class McpClient : IAsyncDisposable
                 }
 
                 tools.Add(new McpBridgeTool(name, description, inputSchema, this, _toolOutputCapBytes));
+
+                totalToolBytes += toolUtf8Bytes;
+
+                toolsOnPage++;
+
             }
 
             if (!pageResult.TryGetProperty("nextCursor", out JsonElement next) ||

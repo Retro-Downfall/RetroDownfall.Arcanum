@@ -1,9 +1,13 @@
+using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.UX;
 
 public static class IThemePaletteMarkupExtensions
 {
+
+    public static string FormatError(Error error) =>
+        string.IsNullOrEmpty(error.Code) ? error.Message : $"[{error.Code}] {error.Message}";
 
     public static Style TextStyle(this IThemePalette palette) => new(foreground: palette.Text);
 
@@ -27,6 +31,9 @@ public static class IThemePaletteMarkupExtensions
     public static string ErrorMarkup(this IThemePalette palette, string escapedContent) =>
         $"[{palette.Error.ToMarkup()}]{escapedContent}[/]";
 
+    public static string ErrorMarkup(this IThemePalette palette, Error error) =>
+        palette.ErrorMarkup(Markup.Escape(FormatError(error)));
+
     public static string MutedMarkup(this IThemePalette palette, string escapedContent) =>
         $"[dim {palette.Muted.ToMarkup()}]{escapedContent}[/]";
 
@@ -35,6 +42,9 @@ public static class IThemePaletteMarkupExtensions
 
     public static string ErrorLabelMarkup(this IThemePalette palette, string escapedLabel, string escapedBody) =>
         $"[{palette.Error.ToMarkup()}]{escapedLabel}[/] {palette.TextMarkup(escapedBody)}";
+
+    public static string ErrorLabelMarkup(this IThemePalette palette, string escapedLabel, Error error) =>
+        palette.ErrorLabelMarkup(escapedLabel, Markup.Escape(FormatError(error)));
 
     public static string HighlightLabelMarkup(this IThemePalette palette, string escapedLabel, string escapedBody) =>
         $"[{palette.Highlight.ToMarkup()}]{escapedLabel}[/] {palette.TextMarkup(escapedBody)}";

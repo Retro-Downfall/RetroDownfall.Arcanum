@@ -18,7 +18,7 @@ internal sealed class InMemoryEventBus(IOptionsMonitor<ArcanumSettings> optionsM
     public void Publish<T>(T @event) where T : notnull
     {
 
-        EventHub<T> hub = GetOrCreateHub<T>();
+        ScryingPool<T> hub = GetOrCreateHub<T>();
 
         hub.Publish(@event);
     }
@@ -27,7 +27,7 @@ internal sealed class InMemoryEventBus(IOptionsMonitor<ArcanumSettings> optionsM
         [EnumeratorCancellation] CancellationToken cancellationToken) where T : notnull
     {
 
-        EventHub<T> hub = GetOrCreateHub<T>();
+        ScryingPool<T> hub = GetOrCreateHub<T>();
 
         ChannelReader<T> reader = hub.Subscribe(out Guid id);
 
@@ -48,13 +48,13 @@ internal sealed class InMemoryEventBus(IOptionsMonitor<ArcanumSettings> optionsM
         }
     }
 
-    private EventHub<T> GetOrCreateHub<T>() where T : notnull
+    private ScryingPool<T> GetOrCreateHub<T>() where T : notnull
     {
 
         int capacity = ArcanumSettingClamps.EventBusChannelCapacity(
             optionsMonitor.CurrentValue.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity);
 
-        return (EventHub<T>)_hubs.GetOrAdd(typeof(T), _ => new EventHub<T>(capacity));
+        return (ScryingPool<T>)_hubs.GetOrAdd(typeof(T), _ => new ScryingPool<T>(capacity));
     }
 
 }

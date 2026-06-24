@@ -1,11 +1,13 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -14,6 +16,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.LlamaCpp;
 
+[ExcludeFromCodeCoverage] // Reason: llama model pull/status HTTP endpoints backed by excluded TheReliquary/LlamaServerManager.
 internal static class LlamaEndpoints
 {
 
@@ -41,14 +44,25 @@ internal static class LlamaEndpoints
 
     private static async Task<IResult> HandlePullModelAsync(
         HttpContext httpContext,
-        IGgufModelCache modelCache,
+        IReliquary modelCache,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
 
-        PullModelRequestDto? body = await httpContext.Request
-            .ReadFromJsonAsync(ArcanumJsonContext.Default.PullModelRequestDto, cancellationToken)
-            .ConfigureAwait(false);
+        PullModelRequestDto? body;
+
+        IResult? jsonError;
+
+        (body, jsonError) = await ApiRequestJson.ReadAsync(
+            httpContext,
+            ArcanumJsonContext.Default.PullModelRequestDto,
+            static ctx => ValidationError(ctx, ApiRequestJson.MalformedJsonMessage),
+            cancellationToken).ConfigureAwait(false);
+
+        if (jsonError is not null)
+        {
+            return jsonError;
+        }
 
         if (body is null || string.IsNullOrWhiteSpace(body.SourceUrl))
         {
@@ -152,7 +166,7 @@ internal static class LlamaEndpoints
     }
 
     private static async Task<IResult> HandleListModels(
-        IGgufModelCache modelCache,
+        IReliquary modelCache,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
@@ -187,7 +201,7 @@ internal static class LlamaEndpoints
     private static async Task<IResult> HandleStartServerAsync(
         string cacheKey,
         HttpContext httpContext,
-        IGgufModelCache modelCache,
+        IReliquary modelCache,
         ILlamaServerManager manager,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -195,9 +209,20 @@ internal static class LlamaEndpoints
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        StartLlamaServerRequestDto? body = await httpContext.Request
-            .ReadFromJsonAsync(ArcanumJsonContext.Default.StartLlamaServerRequestDto, cancellationToken)
-            .ConfigureAwait(false);
+        StartLlamaServerRequestDto? body;
+
+        IResult? jsonError;
+
+        (body, jsonError) = await ApiRequestJson.ReadAsync(
+            httpContext,
+            ArcanumJsonContext.Default.StartLlamaServerRequestDto,
+            static ctx => ValidationError(ctx, ApiRequestJson.MalformedJsonMessage),
+            cancellationToken).ConfigureAwait(false);
+
+        if (jsonError is not null)
+        {
+            return jsonError;
+        }
 
         if (string.IsNullOrWhiteSpace(cacheKey))
         {

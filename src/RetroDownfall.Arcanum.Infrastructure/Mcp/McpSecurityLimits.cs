@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Text;
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -12,8 +13,6 @@ internal static class McpSecurityLimits
 {
 
     public const int MaxMcpConfigBytes = 256 * 1024;
-
-    public const int MaxJsonRpcLineUtf8Bytes = 4 * 1024 * 1024;
 
     public const int MaxJsonDepth = 64;
 
@@ -30,10 +29,10 @@ internal static class McpSecurityLimits
         MaxDepth = MaxJsonDepth,
     };
 
-    public static bool ExceedsMaxLineUtf8Bytes(string line)
+    public static bool ExceedsMaxLineUtf8Bytes(string line, int maxJsonRpcLineBytes)
     {
 
-        return Encoding.UTF8.GetByteCount(line) > MaxJsonRpcLineUtf8Bytes;
+        return Encoding.UTF8.GetByteCount(line) > maxJsonRpcLineBytes;
 
     }
 
@@ -116,74 +115,6 @@ internal static class McpSecurityLimits
         }
 
         return text.Length;
-
-    }
-
-    public static async Task<string?> ReadLineUtf8CappedAsync(
-        StreamReader reader,
-        CancellationToken cancellationToken = default)
-    {
-
-        ArgumentNullException.ThrowIfNull(reader);
-
-        StringBuilder builder = new();
-
-        long utf8Bytes = 0L;
-
-        char[] singleChar = new char[1];
-
-        while (true)
-        {
-
-            int read = await reader.ReadAsync(singleChar.AsMemory(), cancellationToken).ConfigureAwait(false);
-
-            if (read <= 0)
-            {
-
-                if (builder.Length == 0)
-                {
-
-                    return null;
-
-                }
-
-                return builder.ToString();
-
-            }
-
-            char c = singleChar[0];
-
-            if (c == '\n')
-            {
-
-                return builder.ToString();
-
-            }
-
-            if (c == '\r')
-            {
-
-                continue;
-
-            }
-
-            int charUtf8Bytes = Encoding.UTF8.GetByteCount(singleChar, 0, 1);
-
-            if (utf8Bytes + charUtf8Bytes > MaxJsonRpcLineUtf8Bytes)
-            {
-
-                await DiscardUntilNewlineAsync(reader, cancellationToken).ConfigureAwait(false);
-
-                throw new JsonException(
-                    $"JSON-RPC line exceeds the maximum size of {MaxJsonRpcLineUtf8Bytes} UTF-8 bytes.");
-
-            }
-
-            builder.Append(c);
-
-            utf8Bytes += charUtf8Bytes;
-
-        }
 
     }
 
@@ -361,24 +292,132 @@ internal static class McpSecurityLimits
 
     }
 
-    private static async Task DiscardUntilNewlineAsync(StreamReader reader, CancellationToken cancellationToken)
+}
+
+/// <summary>
+/// Buffered, UTF-8-capped newline reader for MCP stdio that preserves unconsumed chunk data between lines.
+/// </summary>
+internal sealed class McpStdioLineReader
+{
+
+    private readonly StreamReader _reader;
+
+    private char[] _buffer = new char[4096];
+
+    private int _bufferLength;
+
+    private int _bufferIndex;
+
+    public McpStdioLineReader(StreamReader reader)
     {
 
-        char[] singleChar = new char[1];
+        ArgumentNullException.ThrowIfNull(reader);
+
+        _reader = reader;
+
+    }
+
+    public async Task<string?> ReadLineUtf8CappedAsync(
+        int maxJsonRpcLineBytes,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (maxJsonRpcLineBytes < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
+
+        }
+
+        StringBuilder builder = new();
+
+        long utf8Bytes = 0L;
 
         while (true)
         {
 
-            int read = await reader.ReadAsync(singleChar.AsMemory(), cancellationToken).ConfigureAwait(false);
-
-            if (read <= 0)
+            if (_bufferIndex >= _bufferLength)
             {
 
-                return;
+                _bufferLength = await _reader.ReadAsync(_buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+                _bufferIndex = 0;
+
+                if (_bufferLength <= 0)
+                {
+
+                    if (builder.Length == 0)
+                    {
+
+                        return null;
+
+                    }
+
+                    return builder.ToString();
+
+                }
 
             }
 
-            if (singleChar[0] == '\n')
+            char c = _buffer[_bufferIndex++];
+
+            if (c == '\n')
+            {
+
+                return builder.ToString();
+
+            }
+
+            if (c == '\r')
+            {
+
+                continue;
+
+            }
+
+            int charUtf8Bytes = Encoding.UTF8.GetByteCount(new ReadOnlySpan<char>(ref c));
+
+            if (utf8Bytes + charUtf8Bytes > maxJsonRpcLineBytes)
+            {
+
+                await DiscardUntilNewlineAsync(cancellationToken).ConfigureAwait(false);
+
+                throw new JsonException(
+                    $"JSON-RPC line exceeds the maximum size of {maxJsonRpcLineBytes} UTF-8 bytes.");
+
+            }
+
+            builder.Append(c);
+
+            utf8Bytes += charUtf8Bytes;
+
+        }
+
+    }
+
+    private async Task DiscardUntilNewlineAsync(CancellationToken cancellationToken)
+    {
+
+        while (true)
+        {
+
+            if (_bufferIndex >= _bufferLength)
+            {
+
+                _bufferLength = await _reader.ReadAsync(_buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+                _bufferIndex = 0;
+
+                if (_bufferLength <= 0)
+                {
+
+                    return;
+
+                }
+
+            }
+
+            if (_buffer[_bufferIndex++] == '\n')
             {
 
                 return;

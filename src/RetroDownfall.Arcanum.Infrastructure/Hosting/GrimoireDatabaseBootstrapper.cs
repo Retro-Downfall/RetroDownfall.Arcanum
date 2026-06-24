@@ -25,7 +25,7 @@ public static class GrimoireDatabaseBootstrapper
     {
         Batteries_V2.Init();
 
-        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
 
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
@@ -86,6 +86,13 @@ public static class GrimoireDatabaseBootstrapper
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(migrationConnection, cancellationToken).ConfigureAwait(false);
 
         await migrationConnection.CloseAsync().ConfigureAwait(false);
+
+        if (File.Exists(dbPath))
+        {
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(dbPath);
+
+        }
 
         await using (AsyncServiceScope scope = scopeFactory.CreateAsyncScope())
         {

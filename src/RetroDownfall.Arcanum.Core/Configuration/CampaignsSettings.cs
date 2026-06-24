@@ -8,7 +8,9 @@ public sealed record CampaignsSettings
 
     /// <summary>
     /// Optional list of absolute directory roots that campaign registration may use.
-    /// When empty (default), any existing directory the process can access is permitted.
+    /// An empty array denies all access by default (secure-by-default via
+    /// <see cref="WorkspaceRootPolicy"/>). When non-empty, resolved paths must fall under
+    /// one of these roots.
     /// </summary>
     public string[] AllowedRoots { get; init; } = [];
 

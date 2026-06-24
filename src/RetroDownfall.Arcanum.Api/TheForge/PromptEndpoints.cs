@@ -348,7 +348,7 @@ internal static class PromptEndpoints
                 IOptionsSnapshot<ArcanumSettings> settings,
                 PromptRenderer renderer,
                 IMcpConnectionManager mcpManager,
-                IInferenceTokenCounter tokenCounter,
+                IManaMeter manaMeter,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -475,7 +475,7 @@ internal static class PromptEndpoints
 
                 string assembled = SystemPromptBuilder.Build(ping, codexContent, activeSpell);
 
-                int tokenCount = tokenCounter.CountTokens(assembled);
+                int tokenCount = manaMeter.CountTokens(assembled);
 
                 IReadOnlyList<Microsoft.Extensions.AI.AITool> tools =
                     await mcpManager.GetAvailableToolsAsync(workingDirectory, ctx.RequestAborted).ConfigureAwait(false);

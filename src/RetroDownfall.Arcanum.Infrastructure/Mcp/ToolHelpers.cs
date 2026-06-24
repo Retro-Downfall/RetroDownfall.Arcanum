@@ -5,6 +5,26 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal static class ToolHelpers
 {
 
+    /// <summary>
+    /// Test seam for Windows ordinal-ignore path comparison branches on non-Windows hosts.
+    /// </summary>
+    internal static bool UseOrdinalIgnoreCasePathComparisonForTests { get; set; }
+
+    /// <summary>
+    /// Test seam for relative-path escape validation branches.
+    /// </summary>
+    internal static Func<string, string, string>? GetRelativePathForTests { get; set; }
+
+    /// <summary>
+    /// Test seam for symlink resolution failure and target branches.
+    /// </summary>
+    internal static Func<string, (bool Success, string? Target)>? TryResolveFinalSymlinkTargetForTests { get; set; }
+
+    private static StringComparison PathComparison =>
+        UseOrdinalIgnoreCasePathComparisonForTests || OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
     internal static bool TryNormalizeWorkspace(
         string workingDirectory,
         [NotNullWhen(true)] out string? normalized,
@@ -48,9 +68,7 @@ internal static class ToolHelpers
 
         string prefix = root + sep;
 
-        StringComparison cmp = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        StringComparison cmp = PathComparison;
 
         return candidateFull.Equals(root, cmp) || candidateFull.StartsWith(prefix, cmp);
     }
@@ -90,6 +108,9 @@ internal static class ToolHelpers
         return IsPathUnderWorkspaceWithSymlinkCheck(workspaceRootFull, absolutePath, out _);
     }
 
+    internal static bool TryResolveFinalSymlinkTargetForCoverageTest(string path, out string? resolvedTarget)
+        => TryResolveFinalSymlinkTarget(path, out resolvedTarget);
+
     private static bool TryValidatePathComponentsUnderRoot(
         string workspaceRootFull,
         string candidateFull,
@@ -103,9 +124,7 @@ internal static class ToolHelpers
 
         string candidate = Path.GetFullPath(candidateFull);
 
-        StringComparison rootCmp = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        StringComparison rootCmp = PathComparison;
 
         if (!IsPathUnderWorkspace(root, candidate))
         {
@@ -123,7 +142,9 @@ internal static class ToolHelpers
 
         try
         {
-            relative = Path.GetRelativePath(root, candidate);
+            relative = GetRelativePathForTests is not null
+                ? GetRelativePathForTests(root, candidate)
+                : Path.GetRelativePath(root, candidate);
         }
         catch (Exception)
         {
@@ -172,7 +193,14 @@ internal static class ToolHelpers
                 return false;
             }
 
-            resolvedFinalPath = finalTarget ?? candidate;
+            if (finalTarget is not null)
+            {
+                resolvedFinalPath = finalTarget;
+            }
+            else
+            {
+                resolvedFinalPath = candidate;
+            }
 
             return IsPathUnderWorkspace(root, resolvedFinalPath);
         }
@@ -190,6 +218,20 @@ internal static class ToolHelpers
     {
         resolvedTarget = null;
 
+        if (TryResolveFinalSymlinkTargetForTests is not null)
+        {
+            (bool success, string? target) = TryResolveFinalSymlinkTargetForTests(path);
+
+            if (!success)
+            {
+                return false;
+            }
+
+            resolvedTarget = target;
+
+            return true;
+        }
+
         try
         {
             if (File.Exists(path))
@@ -206,19 +248,21 @@ internal static class ToolHelpers
                 return true;
             }
 
-            if (Directory.Exists(path))
+            if (!Directory.Exists(path))
             {
-                FileSystemInfo? linkTarget = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
-
-                if (linkTarget is null)
-                {
-                    return true;
-                }
-
-                resolvedTarget = Path.GetFullPath(linkTarget.FullName);
-
                 return true;
             }
+
+            FileSystemInfo? directoryLinkTarget = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+
+            if (directoryLinkTarget is null)
+            {
+                return true;
+            }
+
+            resolvedTarget = Path.GetFullPath(directoryLinkTarget.FullName);
+
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
         {

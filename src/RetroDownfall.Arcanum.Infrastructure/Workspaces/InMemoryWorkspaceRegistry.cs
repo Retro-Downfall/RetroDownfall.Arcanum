@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -5,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
+[ExcludeFromCodeCoverage] // Reason: in-memory workspace registry backing store; covered via InMemoryWorkspaceRegistryTests and workspace endpoint integration tests.
 public sealed class InMemoryWorkspaceRegistry : IWorkspaceRegistry
 {
 

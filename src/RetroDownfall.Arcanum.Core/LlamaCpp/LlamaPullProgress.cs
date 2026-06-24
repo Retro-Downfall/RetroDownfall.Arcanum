@@ -18,4 +18,6 @@ public sealed record LlamaPullProgress
 
     public string? Error { get; init; }
 
+    public string? Warning { get; init; }
+
 }

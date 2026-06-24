@@ -7,4 +7,8 @@ public sealed class SessionSettings
 
     public int MaxStreamReplayEntries { get; init; } = 500;
 
+    public int MaxEntriesPerSession { get; init; } = 100_000;
+
+    public int MaxEntryContentBytes { get; init; } = 1_048_576;
+
 }

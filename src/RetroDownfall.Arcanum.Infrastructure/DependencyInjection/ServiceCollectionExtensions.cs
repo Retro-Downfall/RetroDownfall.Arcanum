@@ -113,6 +113,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IDaemonRunner, DaemonRunner>();
 
+        services.AddSingleton<UnseenServantJobTracker>();
+
+        services.AddSingleton<IUnseenServantJobTracker>(static sp => sp.GetRequiredService<UnseenServantJobTracker>());
+
         List<UnseenServantJob> jobs = configuration.GetSection("Arcanum:Daemon:Jobs").Get<List<UnseenServantJob>>() ?? [];
 
         foreach (UnseenServantJob job in jobs)
@@ -160,6 +164,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ConfigurationSecretProtector>();
 
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
         services.AddSingleton<IWard, WardGate>();
         services.AddSingleton<SanctumBreachStore>();
@@ -167,6 +173,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
+
+        services.AddHostedService<ArcanumSettingsClampStartupLogger>();
+
+        services.AddHostedService<ArcanumSecurityStartupChecks>();
 
         services.AddDbContextPool<ArcanumDbContext>(_ => { }, poolSize: 32);
 
@@ -179,7 +189,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());
-        services.AddHostedService<CampaignLoggerBackgroundService>();
+        services.AddHostedService<Loremaster>();
         services.AddSingleton<ChronicleHub>();
         services.AddSingleton<ApprenticeService>();
         services.AddSingleton<IApprenticeRuntime>(static sp => sp.GetRequiredService<ApprenticeService>());
@@ -188,6 +198,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
         services.AddSingleton<InMemoryEventBus>();
         services.AddSingleton<IEventBus>(static sp => sp.GetRequiredService<InMemoryEventBus>());
+        services.AddSingleton<SseConnectionGate>();
 
         services.AddHttpClient(
             WebhookCommLinkDispatcher.HttpClientName,
@@ -200,10 +211,7 @@ public static class ServiceCollectionExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
-            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
-            {
-                AllowAutoRedirect = false,
-            });
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
 
         services.AddSingleton<WebhookCommLinkDispatcher>();
 
@@ -240,7 +248,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISpellRepository, SpellRepository>();
 
         services.AddHttpClient(
-            GgufModelCache.HttpClientName,
+            TheReliquary.HttpClientName,
             (sp, client) =>
             {
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
@@ -250,12 +258,9 @@ public static class ServiceCollectionExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
-            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
-            {
-                AllowAutoRedirect = false,
-            });
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
 
-        services.AddSingleton<IGgufModelCache, GgufModelCache>();
+        services.AddSingleton<IReliquary, TheReliquary>();
 
         services.AddSingleton<LlamaServerManager>();
 

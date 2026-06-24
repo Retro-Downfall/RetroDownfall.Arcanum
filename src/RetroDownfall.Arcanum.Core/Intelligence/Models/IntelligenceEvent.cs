@@ -26,7 +26,10 @@ public sealed record IntelligenceEvent(
     string? WardReason = null,
     [property: JsonPropertyName("timestamp")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DateTimeOffset? Timestamp = null);
+    DateTimeOffset? Timestamp = null,
+    [property: JsonPropertyName("finishReason")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? FinishReason = null);
 
 /// <summary>
 /// Structured payload for <see cref="IntelligenceEventType.ToolCall"/> and

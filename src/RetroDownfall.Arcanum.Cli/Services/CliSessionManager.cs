@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
@@ -55,7 +56,7 @@ public sealed class CliSessionManager(IThemePalette palette)
     {
         try
         {
-            Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
 
             string finalPath = SessionFilePath;
 
@@ -65,9 +66,13 @@ public sealed class CliSessionManager(IThemePalette palette)
 
             File.WriteAllText(tempPath, id.ToString("D"));
 
+            SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
+
             try
             {
                 File.Move(tempPath, finalPath, overwrite: true);
+
+                SecureFilePermissions.ApplyOwnerOnlyFile(finalPath);
             }
             catch
             {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
@@ -6,6 +7,7 @@ using Serilog.Core;
 using Serilog.Events;
 namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 
+[ExcludeFromCodeCoverage] // Reason: Serilog sink adapter plumbing
 public sealed class SerilogLogRingBufferSink(
     ILogRingBuffer buffer,
     IOptionsMonitor<ArcanumSettings> settings) : ILogEventSink

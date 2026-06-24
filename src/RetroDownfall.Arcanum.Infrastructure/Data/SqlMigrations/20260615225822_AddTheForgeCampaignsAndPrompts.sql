@@ -1,5 +1,4 @@
-﻿BEGIN TRANSACTION;
-CREATE TABLE "Campaigns" (
+﻿CREATE TABLE "Campaigns" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Campaigns" PRIMARY KEY,
     "Name" TEXT NOT NULL,
     "NameLower" TEXT NOT NULL,
@@ -41,9 +40,3 @@ CREATE INDEX "IX_Prompts_CampaignId_Name" ON "Prompts" ("CampaignId", "Name");
 
 CREATE UNIQUE INDEX IX_Prompts_Name_Version_Global ON Prompts(Name, Version) WHERE CampaignId IS NULL;
 CREATE UNIQUE INDEX IX_Prompts_Name_Version_Campaign ON Prompts(Name, Version, CampaignId) WHERE CampaignId IS NOT NULL;
-
-INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260615225822_AddTheForgeCampaignsAndPrompts', '10.0.8');
-
-COMMIT;
-

@@ -11,13 +11,12 @@ using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
-public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptionsMonitor<ArcanumSettings> arcOptions) : IEndpointFilter
+public sealed class ApiKeyEndpointFilter(
+    ISecretStore secretStore,
+    IApiKeyDigestCache digestCache,
+    IOptionsMonitor<ArcanumSettings> arcOptions) : IEndpointFilter
 {
     private const int Sha256Bytes = 32;
-
-    private byte[]? _cachedExpectedDigest;
-
-    private long _cachedExpectedDigestExpiresAtTicks;
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
@@ -45,9 +44,11 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptionsMonit
 
         int headerByteCount = Encoding.UTF8.GetByteCount(headerValue);
 
+        byte[]? rentedHeaderUtf8 = null;
+
         Span<byte> headerUtf8 = headerByteCount <= 256
             ? stackalloc byte[headerByteCount]
-            : new byte[headerByteCount];
+            : (rentedHeaderUtf8 = new byte[headerByteCount]);
 
         Encoding.UTF8.GetBytes(headerValue, headerUtf8);
 
@@ -55,13 +56,23 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptionsMonit
 
         if (!SHA256.TryHashData(headerUtf8, headerDigest, out int written) || written != Sha256Bytes)
         {
+
+            ZeroHeaderUtf8(headerUtf8, rentedHeaderUtf8);
+
             return Unauthorized(context.HttpContext);
+
         }
 
         if (!CryptographicOperations.FixedTimeEquals(expectedDigest, headerDigest))
         {
+
+            ZeroHeaderUtf8(headerUtf8, rentedHeaderUtf8);
+
             return Unauthorized(context.HttpContext);
+
         }
+
+        ZeroHeaderUtf8(headerUtf8, rentedHeaderUtf8);
 
         return await next(context).ConfigureAwait(false);
     }
@@ -113,22 +124,21 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptionsMonit
 
     private async Task<byte[]?> GetExpectedDigestAsync()
     {
-        long now = Environment.TickCount64;
 
-        byte[]? cached = Volatile.Read(ref _cachedExpectedDigest);
-
-        long expiresAt = Volatile.Read(ref _cachedExpectedDigestExpiresAtTicks);
-
-        if (cached is not null && now < expiresAt)
+        if (digestCache.TryGetDigest(out byte[]? cached))
         {
+
             return cached;
+
         }
 
         string? expected = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 
         if (expected is null)
         {
+
             return null;
+
         }
 
         byte[] expectedUtf8 = Encoding.UTF8.GetBytes(expected);
@@ -140,18 +150,33 @@ public sealed class ApiKeyEndpointFilter(ISecretStore secretStore, IOptionsMonit
         int ttlSeconds = ArcanumSettingClamps.ApiKeyCacheTtlSeconds(
             arcOptions.CurrentValue.Security.ApiKeyCacheTtlSeconds);
 
-        Volatile.Write(ref _cachedExpectedDigestExpiresAtTicks, now + (ttlSeconds * 1000L));
-
-        Volatile.Write(ref _cachedExpectedDigest, digest);
+        digestCache.StoreDigest(digest, ttlSeconds);
 
         return digest;
+
+    }
+
+    private static void ZeroHeaderUtf8(Span<byte> headerUtf8, byte[]? rentedHeaderUtf8)
+    {
+
+        if (rentedHeaderUtf8 is not null)
+        {
+
+            CryptographicOperations.ZeroMemory(rentedHeaderUtf8);
+
+            return;
+
+        }
+
+        CryptographicOperations.ZeroMemory(headerUtf8);
+
     }
 
     private static IResult Unauthorized(HttpContext httpContext)
     {
         string? traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        ApiResponse<string> body = new(null, false, new Error("Unauthorized", "Invalid or missing API key."), traceId);
+        ApiResponse<string> body = new(null, false, new Error("Auth.Unauthorized", "Invalid or missing API key."), traceId);
 
         return Results.Json(body, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status401Unauthorized);
     }

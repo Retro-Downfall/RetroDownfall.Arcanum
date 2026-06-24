@@ -1,8 +1,10 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 /// <summary>
 /// OpenAI-compatible chat completion request body.
 /// Field names follow OpenAI's snake_case (set explicitly via <see cref="JsonPropertyNameAttribute"/>

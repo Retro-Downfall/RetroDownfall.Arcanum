@@ -9,8 +9,8 @@ public sealed record SpellSettings
     /// <summary>
     /// Optional list of absolute directory roots that spell CRUD routes may use when
     /// <c>?workspace=</c> is supplied or when a default workspace is resolved.
-    /// When empty (default), any existing directory the process can access is permitted
-    /// (caller still needs the API key). When non-empty, resolved workspace paths must
+    /// An empty array denies all access by default (secure-by-default via
+    /// <see cref="WorkspaceRootPolicy"/>). When non-empty, resolved workspace paths must
     /// fall under one of these roots.
     /// </summary>
     public string[] AllowedWorkspaceRoots { get; init; } = [];
@@ -20,5 +20,19 @@ public sealed record SpellSettings
     /// further capped by <see cref="WorkspaceSettings.MaxFileReadSizeBytes"/>.
     /// </summary>
     public long MaxFileSizeBytes { get; init; } = 262_144L;
+
+    /// <summary>
+    /// TTL in seconds for the in-process spell-metadata scan cache used by routing and Arcane Resonance.
+    /// <c>0</c> disables caching.
+    /// </summary>
+    public int MetadataScanCacheTtlSeconds { get; init; } = 5;
+
+    public int MaxDependencies { get; init; } = 20;
+
+    public int MaxDeclaredTools { get; init; } = 50;
+
+    public int MaxResonantDependencies { get; init; } = 10;
+
+    public int MaxResonantBytes { get; init; } = 131_072;
 
 }

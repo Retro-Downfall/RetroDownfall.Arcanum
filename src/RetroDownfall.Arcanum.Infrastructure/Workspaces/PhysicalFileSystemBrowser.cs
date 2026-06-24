@@ -169,6 +169,8 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
 
         string resolvedPath = resolvedResult.Value;
 
+        string workspaceRoot = Path.GetFullPath(workspace.Path);
+
         if (Directory.Exists(resolvedPath))
         {
             return new Error("Workspace.FileNotFound", "The file or directory was not found.");
@@ -177,6 +179,11 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
         if (!File.Exists(resolvedPath))
         {
             return new Error("Workspace.FileNotFound", "The file or directory was not found.");
+        }
+
+        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
+        {
+            return new Error("Workspace.SymbolicLinkEscape", "The path resolves outside the workspace via a symbolic link.");
         }
 
         long maxBytes = GetMaxFileReadSizeBytes();
@@ -192,8 +199,6 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
             }
 
             string content = await File.ReadAllTextAsync(resolvedPath, ct).ConfigureAwait(false);
-
-            string workspaceRoot = Path.GetFullPath(workspace.Path);
 
             string entryRelativePath = Path.GetRelativePath(workspaceRoot, resolvedPath);
 
@@ -246,6 +251,12 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
         {
             return Task.FromResult<Result<FileEntry>>(
                 new Error("Workspace.FileNotFound", "The file or directory was not found."));
+        }
+
+        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
+        {
+            return Task.FromResult<Result<FileEntry>>(
+                new Error("Workspace.SymbolicLinkEscape", "The path resolves outside the workspace via a symbolic link."));
         }
 
         try

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -47,11 +48,22 @@ internal static class SanctumEndpoints
             "/campaigns/{campaignId:guid}/sanctum",
             async (
                 Guid campaignId,
-                SanctumConfig request,
+                SanctumConfig? request,
                 ICampaignRepository repo,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<SanctumConfig>.FromResult(
+                            Result<SanctumConfig>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 Campaign? campaign = await repo.GetByIdAsync(campaignId, ctx.RequestAborted).ConfigureAwait(false);
 

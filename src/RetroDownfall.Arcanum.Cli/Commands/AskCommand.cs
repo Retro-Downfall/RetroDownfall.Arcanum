@@ -203,6 +203,20 @@ public sealed class AskCommand(
 
         if (finalText is null)
         {
+
+            string accumulated = accumulatedText.ToString();
+
+            if (!string.IsNullOrEmpty(accumulated))
+            {
+
+                finalText = accumulated;
+
+            }
+
+        }
+
+        if (finalText is null)
+        {
             stderrConsole.MarkupLine(
                 palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("Stream ended without a result.")));
 
@@ -221,7 +235,7 @@ public sealed class AskCommand(
         return 0;
     }
 
-    private static string BuildPrompt(Settings settings, CommandContext context)
+    internal static string BuildPrompt(Settings settings, CommandContext context)
     {
         List<string> parts = new(settings.PromptWords.Length + 8);
 

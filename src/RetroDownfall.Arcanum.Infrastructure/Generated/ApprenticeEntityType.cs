@@ -22,7 +22,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 baseEntityType,
                 propertyCount: 13,
                 foreignKeyCount: 2,
-                unnamedIndexCount: 3,
+                unnamedIndexCount: 4,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -128,6 +128,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
 
             var index1 = runtimeEntityType.AddIndex(
                 new[] { status });
+
+            var index2 = runtimeEntityType.AddIndex(
+                new[] { updatedAt });
 
             return runtimeEntityType;
         }

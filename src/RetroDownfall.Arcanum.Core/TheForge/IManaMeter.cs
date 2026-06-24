@@ -1,6 +1,6 @@
 namespace RetroDownfall.Arcanum.Core.TheForge;
 
-public interface IInferenceTokenCounter
+public interface IManaMeter
 {
 
     int CountTokens(string text);

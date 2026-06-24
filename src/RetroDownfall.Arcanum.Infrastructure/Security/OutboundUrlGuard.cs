@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -102,6 +103,118 @@ public static class OutboundUrlGuard
 
     }
 
+    /// <summary>
+    /// Resolves a hostname and returns every address that passes the outbound guard (for DNS-rebind IP pinning).
+    /// </summary>
+    public static async Task<Result<IReadOnlyList<IPAddress>>> ResolveValidatedAddressesAsync(
+        string host,
+        bool allowPrivateAndLoopback,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return Result<IReadOnlyList<IPAddress>>.Failure(new Error(BlockedErrorCode, "URL must include a host."));
+        }
+
+        Result literalHost = ValidateLiteralHost(host, allowPrivateAndLoopback);
+
+        if (literalHost.IsFailure)
+        {
+            return Result<IReadOnlyList<IPAddress>>.Failure(literalHost.Error);
+        }
+
+        IPAddress[] addresses;
+
+        try
+        {
+
+            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (SocketException)
+        {
+
+            return Result<IReadOnlyList<IPAddress>>.Failure(
+                new Error(BlockedErrorCode, $"Could not resolve host '{host}'."));
+
+        }
+
+        if (addresses.Length == 0)
+        {
+
+            return Result<IReadOnlyList<IPAddress>>.Failure(
+                new Error(BlockedErrorCode, $"Could not resolve host '{host}'."));
+
+        }
+
+        List<IPAddress> validated = new(addresses.Length);
+
+        foreach (IPAddress address in addresses)
+        {
+
+            if (IsBlockedAddress(address, allowPrivateAndLoopback))
+            {
+                return Result<IReadOnlyList<IPAddress>>.Failure(new Error(BlockedErrorCode, BlockedMessage));
+            }
+
+            validated.Add(address);
+
+        }
+
+        return Result<IReadOnlyList<IPAddress>>.Success(validated);
+
+    }
+
+    public const int MaxUntrustedRedirectHops = 8;
+
+    /// <summary>
+    /// Creates a <see cref="SocketsHttpHandler"/> for untrusted egress with DNS-rebind IP pinning.
+    /// </summary>
+    public static SocketsHttpHandler CreateUntrustedEgressHandler() =>
+        CreateEgressHandler(allowPrivateAndLoopback: false);
+
+    /// <summary>
+    /// Creates a <see cref="SocketsHttpHandler"/> for provider inference and connectivity probes.
+    /// Loopback and RFC1918 are allowed; link-local remains blocked; DNS is pinned at connect time.
+    /// </summary>
+    public static SocketsHttpHandler CreateProviderEgressHandler() =>
+        CreateEgressHandler(allowPrivateAndLoopback: true);
+
+    public static bool IsRedirectStatusCode(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.Moved
+            or HttpStatusCode.Redirect
+            or HttpStatusCode.SeeOther
+            or HttpStatusCode.TemporaryRedirect
+            or HttpStatusCode.PermanentRedirect;
+
+    public static Result<string> ResolveRedirectLocation(Uri requestUri, string? locationHeader)
+    {
+
+        if (string.IsNullOrWhiteSpace(locationHeader))
+        {
+            return Result<string>.Failure(
+                new Error(BlockedErrorCode, "Redirect response is missing a Location header."));
+        }
+
+        string trimmed = locationHeader.Trim();
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri? absolute)
+            && (absolute.Scheme == Uri.UriSchemeHttp || absolute.Scheme == Uri.UriSchemeHttps))
+        {
+            return Result<string>.Success(absolute.AbsoluteUri);
+        }
+
+        if (Uri.TryCreate(requestUri, trimmed, out Uri? relative))
+        {
+            return Result<string>.Success(relative.AbsoluteUri);
+        }
+
+        return Result<string>.Failure(
+            new Error(BlockedErrorCode, "Redirect Location is not a valid absolute http or https URI."));
+
+    }
+
     public static async Task<Result> ValidateUrlAsync(
         string? url,
         bool allowPrivateAndLoopback,
@@ -128,45 +241,87 @@ public static class OutboundUrlGuard
             return Result.Failure(new Error(BlockedErrorCode, "URL must include a host."));
         }
 
-        Result literalHost = ValidateLiteralHost(uri.Host, allowPrivateAndLoopback);
+        Result<IReadOnlyList<IPAddress>> resolved = await ResolveValidatedAddressesAsync(
+            uri.Host,
+            allowPrivateAndLoopback,
+            cancellationToken).ConfigureAwait(false);
 
-        if (literalHost.IsFailure)
+        if (resolved.IsFailure)
         {
-            return literalHost;
+            return Result.Failure(resolved.Error);
         }
 
-        IPAddress[] addresses;
+        return Result.Success();
 
-        try
+    }
+
+    private static SocketsHttpHandler CreateEgressHandler(bool allowPrivateAndLoopback) =>
+        new()
         {
 
-            addresses = await Dns.GetHostAddressesAsync(uri.Host, cancellationToken).ConfigureAwait(false);
+            AllowAutoRedirect = false,
 
-        }
-        catch (SocketException)
+            ConnectCallback = (context, cancellationToken) =>
+                EgressConnectCallbackAsync(context, allowPrivateAndLoopback, cancellationToken),
+
+        };
+
+    private static async ValueTask<Stream> EgressConnectCallbackAsync(
+        SocketsHttpConnectionContext context,
+        bool allowPrivateAndLoopback,
+        CancellationToken cancellationToken)
+    {
+
+        string host = context.DnsEndPoint.Host;
+
+        int port = context.DnsEndPoint.Port;
+
+        Result<IReadOnlyList<IPAddress>> resolved = await ResolveValidatedAddressesAsync(
+            host,
+            allowPrivateAndLoopback,
+            cancellationToken).ConfigureAwait(false);
+
+        if (resolved.IsFailure)
         {
-
-            return Result.Failure(new Error(BlockedErrorCode, $"Could not resolve host '{uri.Host}'."));
+            throw new HttpRequestException(resolved.Error.Message);
         }
 
-        if (addresses.Length == 0)
-        {
+        List<Exception>? connectErrors = null;
 
-            return Result.Failure(new Error(BlockedErrorCode, $"Could not resolve host '{uri.Host}'."));
-
-        }
-
-        foreach (IPAddress address in addresses)
+        foreach (IPAddress address in resolved.Value)
         {
 
             if (IsBlockedAddress(address, allowPrivateAndLoopback))
             {
-                return Result.Failure(new Error(BlockedErrorCode, BlockedMessage));
+                throw new HttpRequestException(BlockedMessage);
+            }
+
+            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+
+            try
+            {
+
+                await socket.ConnectAsync(new IPEndPoint(address, port), cancellationToken).ConfigureAwait(false);
+
+                return new NetworkStream(socket, ownsSocket: true);
+
+            }
+            catch (Exception ex) when (ex is SocketException or TimeoutException)
+            {
+
+                connectErrors ??= [];
+
+                connectErrors.Add(ex);
+
+                socket.Dispose();
+
             }
 
         }
 
-        return Result.Success();
+        throw new HttpRequestException(
+            $"Could not connect to '{host}' on port {port}.",
+            connectErrors is null ? null : new AggregateException(connectErrors));
 
     }
 
@@ -222,6 +377,11 @@ public static class OutboundUrlGuard
                 return true;
             }
 
+            if (IsCarrierGradeNatIPv4(bytes))
+            {
+                return true;
+            }
+
             if (allowPrivateAndLoopback)
             {
                 return false;
@@ -243,6 +403,11 @@ public static class OutboundUrlGuard
 
         if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
+
+            if (address.Equals(IPAddress.IPv6Any))
+            {
+                return true;
+            }
 
             if (address.IsIPv6LinkLocal)
             {
@@ -297,5 +462,8 @@ public static class OutboundUrlGuard
         return bytes[0] == 192 && bytes[1] == 168;
 
     }
+
+    private static bool IsCarrierGradeNatIPv4(byte[] bytes) =>
+        bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127;
 
 }

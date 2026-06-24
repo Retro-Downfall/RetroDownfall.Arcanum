@@ -38,6 +38,26 @@ internal sealed class ConclaveArchmage(
                 new Error("Apprentice.InvalidWorkspace", "A workspace is required to cast a sending."));
         }
 
+        ConclaveSettings conclave = settings.CurrentValue.Conclave ?? new ConclaveSettings();
+
+        int maxDepth = ArcanumSettingClamps.MaxDelegationDepth(conclave.MaxDelegationDepth);
+
+        int maxDescendants = ArcanumSettingClamps.MaxDescendantsPerRoot(conclave.MaxDescendantsPerRoot);
+
+        Result lineage = await ConclaveLineage.ValidateCastLimitsAsync(
+            repository,
+            request.ParentApprenticeId,
+            maxDepth,
+            maxDescendants,
+            cancellationToken).ConfigureAwait(false);
+
+        if (lineage.IsFailure)
+        {
+
+            return Result<Apprentice>.Failure(lineage.Error);
+
+        }
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         string name = string.IsNullOrWhiteSpace(request.Name)

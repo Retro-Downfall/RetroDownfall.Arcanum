@@ -1,9 +1,11 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Api.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 /// <summary>
 /// Polymorphic wrapper for an OpenAI message <c>content</c> field. The wire shape is either a
 /// plain JSON string (simple text) or an array of <see cref="OpenAiContentPart"/> (multimodal).

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
@@ -8,6 +9,7 @@ using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
+[ExcludeFromCodeCoverage] // Reason: EF design-time factory, not runtime logic
 public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<ArcanumDbContext>
 {
     public ArcanumDbContext CreateDbContext(string[] args)
@@ -34,6 +36,9 @@ public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<Arcanu
     {
         public static readonly DesignTimeSecretStore Instance = new();
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Missing());
 
         public Task SaveApiKeyAsync(string apiKey) => Task.CompletedTask;
 

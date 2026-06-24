@@ -5,6 +5,8 @@ public interface ISecretStore
 
     Task<string?> GetApiKeyAsync();
 
+    Task<SecretStoreReadResult> GetApiKeyReadResultAsync();
+
     Task SaveApiKeyAsync(string apiKey);
 
     Task<string?> GetGrimoireEncryptionSecretAsync();

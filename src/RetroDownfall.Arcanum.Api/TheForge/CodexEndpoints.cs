@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -213,12 +214,14 @@ internal static class CodexEndpoints
     {
         long maxBytes = ArcanumSettingClamps.CodexMaxSizeBytes(settings.Value.Codex.MaxSizeBytes);
 
-        if (content.Length > maxBytes)
+        int contentByteCount = Encoding.UTF8.GetByteCount(content);
+
+        if (contentByteCount > maxBytes)
         {
             return Results.BadRequest(
                 ApiResponse<CodexContentDto>.FromResult(
                     Result<CodexContentDto>.Failure(
-                        new Error("Codex.ContentTooLarge", $"CODEX content exceeds the configured maximum of {maxBytes} bytes.")),
+                        new Error("Codex.ContentTooLarge", $"CODEX content exceeds the configured maximum of {maxBytes} bytes (UTF-8).")),
                     traceId));
         }
 

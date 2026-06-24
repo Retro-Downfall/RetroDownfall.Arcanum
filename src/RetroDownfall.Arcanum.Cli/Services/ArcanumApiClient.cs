@@ -17,6 +17,38 @@ namespace RetroDownfall.Arcanum.Cli.Services;
 
 public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecretStore secretStore)
 {
+
+    public const string StreamingHttpClientName = "ArcanumApi";
+
+    public const string RequestHttpClientName = "ArcanumApiRequest";
+
+    private const string StreamDisconnectMessage =
+        "The connection to the Arcanum API was lost before the stream completed.";
+
+    private const string StreamTimeoutMessage =
+        "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.";
+
+    private const string StreamUnreachableMessage =
+        "API is unreachable. Is 'arcanum serve' running in a background terminal?";
+
+    private static string? TryMapStreamReadFailure(Exception exception, CancellationToken cancellationToken)
+    {
+
+        if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
+        {
+            throw exception;
+        }
+
+        return exception switch
+        {
+            OperationCanceledException => StreamTimeoutMessage,
+            IOException => StreamDisconnectMessage,
+            HttpRequestException => StreamUnreachableMessage,
+            _ => null,
+        };
+
+    }
+
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
     {
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
@@ -28,7 +60,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PingRequest);
 
@@ -109,7 +141,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         SubmitHumanResponseRequest body = new(promptId, answer);
 
@@ -208,7 +240,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.OptionalWorkspaceRequest);
 
@@ -289,7 +321,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.OptionalWorkspaceRequest);
 
@@ -375,7 +407,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string encoded = Uri.EscapeDataString(directory);
 
@@ -460,7 +492,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string query = limit is int l
             ? $"api/sessions?limit={l}"
@@ -548,7 +580,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         using HttpRequestMessage httpRequest = new(HttpMethod.Get, "api/sessions/analytics");
 
@@ -628,7 +660,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         using HttpRequestMessage httpRequest = new(HttpMethod.Post, $"api/sessions/{sessionId:D}/rest");
 
@@ -715,7 +747,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         using HttpRequestMessage httpRequest = new(HttpMethod.Get, $"api/sessions/{id:D}");
 
@@ -810,7 +842,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string query = $"api/sessions/{sessionId:D}/entries";
 
@@ -920,7 +952,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         using HttpRequestMessage httpRequest = new(HttpMethod.Delete, $"api/sessions/{id:D}");
 
@@ -995,7 +1027,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string formatValue = format == SessionExportFormat.Markdown ? "markdown" : "json";
 
@@ -1092,7 +1124,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             yield break;
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PingRequest);
 
@@ -1161,49 +1193,100 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 yield break;
             }
 
-            await using Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            Stream? responseStream = null;
 
-            using StreamReader lineReader = new(responseStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            string? openStreamError = null;
 
-            while (true)
+            try
             {
-                string? line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                openStreamError = TryMapStreamReadFailure(ex, cancellationToken);
 
-                if (line is null)
+                if (openStreamError is null)
                 {
-                    break;
+                    throw;
                 }
+            }
 
-                if (string.IsNullOrWhiteSpace(line))
+            if (openStreamError is not null)
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Error, openStreamError);
+
+                yield break;
+            }
+
+            await using (responseStream!)
+            {
+                Stream openedStream = responseStream;
+
+                using StreamReader lineReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+
+                while (true)
                 {
-                    continue;
-                }
+                    string? line = null;
 
-                IntelligenceEvent? item;
-                bool malformed = false;
+                    string? readError = null;
 
-                try
-                {
-                    item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent);
-                }
-                catch (JsonException)
-                {
-                    item = null;
-                    malformed = true;
-                }
+                    try
+                    {
+                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        readError = TryMapStreamReadFailure(ex, cancellationToken);
 
-                if (malformed)
-                {
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.Status,
-                        "Malformed data received from server. Skipping frame.");
+                        if (readError is null)
+                        {
+                            throw;
+                        }
+                    }
 
-                    continue;
-                }
+                    if (readError is not null)
+                    {
+                        yield return new IntelligenceEvent(IntelligenceEventType.Error, readError);
 
-                if (item is not null)
-                {
-                    yield return item;
+                        yield break;
+                    }
+
+                    if (line is null)
+                    {
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    IntelligenceEvent? item;
+                    bool malformed = false;
+
+                    try
+                    {
+                        item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent);
+                    }
+                    catch (JsonException)
+                    {
+                        item = null;
+                        malformed = true;
+                    }
+
+                    if (malformed)
+                    {
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Status,
+                            "Malformed data received from server. Skipping frame.");
+
+                        continue;
+                    }
+
+                    if (item is not null)
+                    {
+                        yield return item;
+                    }
                 }
             }
         }
@@ -1220,7 +1303,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         List<LoreDto> all = [];
 
@@ -1228,8 +1311,24 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         bool hasMore;
 
+        int pageIterations = 0;
+
+        const int maxPageIterations = 10_000;
+
         do
         {
+            pageIterations++;
+
+            if (pageIterations > maxPageIterations)
+            {
+
+                return Result<List<LoreDto>>.Failure(new Error(
+                    "Api.PaginationLoop",
+                    "Lore list pagination exceeded the safety limit. The server may be returning a malformed page."));
+
+            }
+
+            int offsetBeforePage = offset;
             using HttpRequestMessage httpRequest = new(
                 HttpMethod.Get,
                 $"api/lore?limit=1000&offset={offset}");
@@ -1267,11 +1366,31 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
                     ListPageResult<LoreDto> page = envelope.Data ?? new ListPageResult<LoreDto>([], false);
 
+                    if (page.HasMore && page.Items.Length == 0)
+                    {
+
+                        return Result<List<LoreDto>>.Failure(new Error(
+                            "Api.PaginationLoop",
+                            "Lore list reported more pages but returned no items."));
+
+                    }
+
                     all.AddRange(page.Items);
 
                     hasMore = page.HasMore;
 
-                    offset = page.NextOffset ?? offset + page.Items.Length;
+                    int nextOffset = page.NextOffset ?? offset + page.Items.Length;
+
+                    if (hasMore && nextOffset <= offsetBeforePage && page.Items.Length == 0)
+                    {
+
+                        return Result<List<LoreDto>>.Failure(new Error(
+                            "Api.PaginationLoop",
+                            "Lore list pagination offset did not advance."));
+
+                    }
+
+                    offset = nextOffset;
                 }
                 else
                 {
@@ -1318,7 +1437,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string encoded = Uri.EscapeDataString(key);
 
@@ -1414,7 +1533,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         UpsertLoreRequest body = new(key, value);
 
@@ -1504,7 +1623,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string encoded = Uri.EscapeDataString(key);
 
@@ -1597,9 +1716,9 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Get, "api/daemon/jobs");
+        using HttpRequestMessage httpRequest = new(HttpMethod.Get, "api/unseen-servant/jobs");
 
         _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
 
@@ -1676,7 +1795,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string encoded = Uri.EscapeDataString(jobName);
 
@@ -1688,7 +1807,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
 
-        using HttpRequestMessage httpRequest = new(HttpMethod.Post, $"api/daemon/jobs/{encoded}/initiative");
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, $"api/unseen-servant/jobs/{encoded}/initiative");
 
         httpRequest.Content = content;
 
@@ -1773,7 +1892,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.CommLinkMessageRequestDto);
 
@@ -1875,7 +1994,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             yield break;
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PullModelRequestDto);
 
@@ -1936,45 +2055,96 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 yield break;
             }
 
-            await using Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            Stream? responseStream = null;
 
-            using StreamReader lineReader = new(responseStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            string? openStreamError = null;
 
-            while (true)
+            try
             {
-                string? line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                openStreamError = TryMapStreamReadFailure(ex, cancellationToken);
 
-                if (line is null)
+                if (openStreamError is null)
                 {
-                    break;
+                    throw;
                 }
+            }
 
-                if (string.IsNullOrWhiteSpace(line))
-                {
-                    continue;
-                }
+            if (openStreamError is not null)
+            {
+                yield return new LlamaPullProgress { Completed = true, Error = openStreamError };
 
-                LlamaPullProgress? item;
-                bool malformed = false;
+                yield break;
+            }
 
-                try
-                {
-                    item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.LlamaPullProgress);
-                }
-                catch (JsonException)
-                {
-                    item = null;
-                    malformed = true;
-                }
+            await using (responseStream!)
+            {
+                Stream openedStream = responseStream;
 
-                if (malformed)
-                {
-                    continue;
-                }
+                using StreamReader lineReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
 
-                if (item is not null)
+                while (true)
                 {
-                    yield return item;
+                    string? line = null;
+
+                    string? readError = null;
+
+                    try
+                    {
+                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        readError = TryMapStreamReadFailure(ex, cancellationToken);
+
+                        if (readError is null)
+                        {
+                            throw;
+                        }
+                    }
+
+                    if (readError is not null)
+                    {
+                        yield return new LlamaPullProgress { Completed = true, Error = readError };
+
+                        yield break;
+                    }
+
+                    if (line is null)
+                    {
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    LlamaPullProgress? item;
+                    bool malformed = false;
+
+                    try
+                    {
+                        item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.LlamaPullProgress);
+                    }
+                    catch (JsonException)
+                    {
+                        item = null;
+                        malformed = true;
+                    }
+
+                    if (malformed)
+                    {
+                        continue;
+                    }
+
+                    if (item is not null)
+                    {
+                        yield return item;
+                    }
                 }
             }
         }
@@ -2011,7 +2181,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         var body = new StartLlamaServerRequestDto { GpuLayers = gpuLayers, Port = port };
 
@@ -2082,7 +2252,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         string path = string.IsNullOrWhiteSpace(cacheKey)
             ? "api/llama/servers/stop"
@@ -2145,7 +2315,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
 
         using HttpRequestMessage request = new(HttpMethod.Get, path);
 

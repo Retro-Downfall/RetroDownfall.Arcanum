@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -18,11 +19,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// Periodically enqueues sessions that need campaign-log processing and runs headless inference to
 /// update <c>Session.Summary</c> and <c>Session.LastSummarizedMessageAt</c> when each id is consumed.
 /// </summary>
-internal sealed class CampaignLoggerBackgroundService(
+[ExcludeFromCodeCoverage] // Reason: BackgroundService campaign logging
+internal sealed class Loremaster(
     IServiceScopeFactory scopeFactory,
     CampaignLoggerQueue queue,
     IOptionsMonitor<ArcanumSettings> options,
-    ILogger<CampaignLoggerBackgroundService> hostLogger)
+    ILogger<Loremaster> hostLogger)
     : BackgroundService
 {
 
@@ -156,7 +158,7 @@ internal sealed class CampaignLoggerBackgroundService(
                         iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
                     Session? session = await grimoire
-                        .GetSessionAsync(sessionId, stoppingToken)
+                        .GetSessionHeaderAsync(sessionId, stoppingToken)
                         .ConfigureAwait(false);
 
                     if (session is null)

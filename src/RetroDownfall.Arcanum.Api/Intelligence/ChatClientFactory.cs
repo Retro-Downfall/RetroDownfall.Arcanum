@@ -38,7 +38,16 @@ public sealed class ChatClientFactory(
 
     private const int MaxCachedEndpointClients = 32;
 
-    private readonly ConcurrentDictionary<string, HttpClient> _endpointHttpClients = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, EndpointHttpClientEntry> _endpointHttpClients = new(StringComparer.Ordinal);
+
+    private sealed class EndpointHttpClientEntry
+    {
+
+        public required HttpClient Client { get; init; }
+
+        public int RefCount;
+
+    }
 
     public async Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
     {
@@ -67,7 +76,7 @@ public sealed class ChatClientFactory(
     private ChatClientLease CreateOllamaLease(ProviderSettings provider, string resolvedModel)
     {
 
-        HttpClient http = GetOrCreateEndpointHttpClient(provider.Endpoint);
+        (HttpClient http, string cacheKey) = AcquireEndpointHttpClient(provider.Endpoint);
 
         // OllamaSharp 5.4.25 owns an internal source-generated context
         // (OllamaSharp.Models.JsonSourceGenerationContext, not public) that it consults when this
@@ -75,7 +84,15 @@ public sealed class ChatClientFactory(
         // context here without an upstream change that exposes the type.
         var ollama = new OllamaApiClient(http, resolvedModel, jsonSerializerContext: null);
 
-        return new ChatClientLease(ollama, ollama, provider, resolvedModel, isOllama: true, ownedHttpClient: null);
+        return new ChatClientLease(
+            ollama,
+            ollama,
+            provider,
+            resolvedModel,
+            isOllama: true,
+            ownedHttpClient: null,
+            endpointCacheKey: cacheKey,
+            endpointCacheOwner: this);
 
     }
 
@@ -138,7 +155,7 @@ public sealed class ChatClientFactory(
 
             string endpoint = ensure.Value.Endpoint;
 
-            HttpClient http = GetOrCreateEndpointHttpClient(endpoint);
+            (HttpClient http, string endpointCacheKey) = AcquireEndpointHttpClient(endpoint);
 
             var credential = new ApiKeyCredential(KeylessOpenAiPlaceholder);
 
@@ -162,7 +179,9 @@ public sealed class ChatClientFactory(
                 resolvedModel,
                 isOllama: false,
                 ownedHttpClient: null,
-                concurrencySlot: slot);
+                concurrencySlot: slot,
+                endpointCacheKey: endpointCacheKey,
+                endpointCacheOwner: this);
 
         }
         catch
@@ -175,32 +194,46 @@ public sealed class ChatClientFactory(
         }
     }
 
-    private HttpClient GetOrCreateEndpointHttpClient(string endpoint)
+    private (HttpClient Client, string CacheKey) AcquireEndpointHttpClient(string endpoint)
     {
 
         string key = NormalizeEndpointKey(endpoint);
 
-        if (_endpointHttpClients.TryGetValue(key, out HttpClient? existing))
+        EndpointHttpClientEntry entry = _endpointHttpClients.GetOrAdd(
+            key,
+            static cacheKey => new EndpointHttpClientEntry
+            {
+                Client = CreateEndpointHttpClient(cacheKey),
+                RefCount = 0,
+            });
+
+        Interlocked.Increment(ref entry.RefCount);
+
+        EvictExcessEndpointClients();
+
+        return (entry.Client, key);
+
+    }
+
+    internal void ReleaseEndpointHttpClient(string cacheKey)
+    {
+
+        if (!_endpointHttpClients.TryGetValue(cacheKey, out EndpointHttpClientEntry? entry))
         {
 
-            return existing;
+            return;
 
         }
 
-        HttpClient created = CreateEndpointHttpClient(key);
-
-        if (_endpointHttpClients.TryAdd(key, created))
+        if (Interlocked.Decrement(ref entry.RefCount) == 0
+            && _endpointHttpClients.Count > MaxCachedEndpointClients
+            && _endpointHttpClients.TryRemove(cacheKey, out EndpointHttpClientEntry? removed)
+            && Volatile.Read(ref removed.RefCount) == 0)
         {
 
-            EvictExcessEndpointClients();
-
-            return created;
+            removed.Client.Dispose();
 
         }
-
-        created.Dispose();
-
-        return _endpointHttpClients[key];
 
     }
 
@@ -210,19 +243,42 @@ public sealed class ChatClientFactory(
         while (_endpointHttpClients.Count > MaxCachedEndpointClients)
         {
 
-            string? victimKey = _endpointHttpClients.Keys.FirstOrDefault();
+            KeyValuePair<string, EndpointHttpClientEntry>? victim = null;
 
-            if (victimKey is null)
+            foreach (KeyValuePair<string, EndpointHttpClientEntry> pair in _endpointHttpClients)
+            {
+
+                if (Volatile.Read(ref pair.Value.RefCount) == 0)
+                {
+
+                    victim = pair;
+
+                    break;
+
+                }
+
+            }
+
+            if (victim is null)
             {
 
                 break;
 
             }
 
-            if (_endpointHttpClients.TryRemove(victimKey, out HttpClient? victim))
+            if (_endpointHttpClients.TryRemove(victim.Value.Key, out EndpointHttpClientEntry? removed)
+                && Volatile.Read(ref removed.RefCount) == 0)
             {
 
-                victim.Dispose();
+                removed.Client.Dispose();
+
+            }
+            else if (removed is not null)
+            {
+
+                _endpointHttpClients.TryAdd(victim.Value.Key, removed);
+
+                break;
 
             }
 
@@ -233,14 +289,9 @@ public sealed class ChatClientFactory(
     private static HttpClient CreateEndpointHttpClient(string endpointKey)
     {
 
-        var handler = new SocketsHttpHandler
-        {
+        var handler = OutboundUrlGuard.CreateProviderEgressHandler();
 
-            PooledConnectionLifetime = PooledConnectionLifetime,
-
-            AllowAutoRedirect = false,
-
-        };
+        handler.PooledConnectionLifetime = PooledConnectionLifetime;
 
         return new HttpClient(handler, disposeHandler: true)
         {
@@ -299,6 +350,10 @@ public sealed class ChatClientLease : IDisposable
 
     private readonly IDisposable? _concurrencySlot;
 
+    private readonly string? _endpointCacheKey;
+
+    private readonly ChatClientFactory? _endpointCacheOwner;
+
     private bool _disposed;
 
     public ChatClientLease(
@@ -308,7 +363,9 @@ public sealed class ChatClientLease : IDisposable
         string resolvedModel,
         bool isOllama,
         HttpClient? ownedHttpClient,
-        IDisposable? concurrencySlot = null)
+        IDisposable? concurrencySlot = null,
+        string? endpointCacheKey = null,
+        ChatClientFactory? endpointCacheOwner = null)
     {
 
         ChatClient = chatClient;
@@ -326,6 +383,10 @@ public sealed class ChatClientLease : IDisposable
         _ownedHttpClient = ownedHttpClient;
 
         _concurrencySlot = concurrencySlot;
+
+        _endpointCacheKey = endpointCacheKey;
+
+        _endpointCacheOwner = endpointCacheOwner;
 
     }
 
@@ -365,6 +426,13 @@ public sealed class ChatClientLease : IDisposable
         }
 
         _concurrencySlot?.Dispose();
+
+        if (_endpointCacheKey is not null && _endpointCacheOwner is not null)
+        {
+
+            _endpointCacheOwner.ReleaseEndpointHttpClient(_endpointCacheKey);
+
+        }
 
     }
 

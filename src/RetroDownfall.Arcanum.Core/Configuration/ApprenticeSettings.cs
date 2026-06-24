@@ -23,4 +23,12 @@ public sealed record ApprenticeSettings
 
     public int MaxSimulacra { get; init; } = 3;
 
+    public int MaxRunSteps { get; init; } = 100;
+
+    public int MaxRunDurationMinutes { get; init; } = 480;
+
+    public int MaxReweavesPerRun { get; init; } = 10;
+
+    public int MaxPendingStarts { get; init; } = 100;
+
 }

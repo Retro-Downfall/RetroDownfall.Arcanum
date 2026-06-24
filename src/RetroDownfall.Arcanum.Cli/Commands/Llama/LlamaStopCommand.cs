@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -13,6 +14,7 @@ public sealed class LlamaStopCommand(ArcanumApiClient apiClient, IThemePalette t
     {
 
         [CommandArgument(0, "[CACHE_KEY]")]
+        [Description("Cache key of a running llama-server; omit to stop all instances.")]
         public string? CacheKey { get; init; }
 
     }
@@ -24,7 +26,7 @@ public sealed class LlamaStopCommand(ArcanumApiClient apiClient, IThemePalette t
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(result.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
 
             return 1;
         }

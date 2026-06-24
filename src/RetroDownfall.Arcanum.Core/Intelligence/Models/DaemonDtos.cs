@@ -5,6 +5,9 @@ public sealed record UnseenServantJobStatusDto(
     string TargetSpell,
     int BaseIntervalMinutes,
     int EffectiveIntervalMinutes,
-    bool IsEnabled);
+    bool IsEnabled,
+    DateTimeOffset? LastRunAt = null,
+    DateTimeOffset? NextDueAt = null,
+    string? LastResult = null);
 
 public sealed record AdjustInitiativeRequestDto(int IntervalMinutes);

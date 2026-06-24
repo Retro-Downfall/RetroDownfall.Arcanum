@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -14,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible HTTP streaming endpoints; covered via OpenAiV1EndpointTests integration smoke.
 internal static class OpenAiV1Endpoints
 {
 
@@ -138,6 +140,18 @@ internal static class OpenAiV1Endpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
+        Result messageCountBounds = PingRequestBoundsValidator.ValidateOpenApiMessageCount(body.Messages.Count, settings.Value);
+
+        if (messageCountBounds.IsFailure)
+        {
+            return JsonError(
+                messageCountBounds.Error.Message,
+                "invalid_request_error",
+                code: "invalid_value",
+                param: "messages",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
         for (int i = 0; i < body.Messages.Count; i++)
         {
             OpenAiChatMessage m = body.Messages[i];
@@ -195,6 +209,18 @@ internal static class OpenAiV1Endpoints
         }
 
         PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body);
+
+        Result pingBounds = PingRequestBoundsValidator.Validate(ping, settings.Value);
+
+        if (pingBounds.IsFailure)
+        {
+            return JsonError(
+                pingBounds.Error.Message,
+                "invalid_request_error",
+                code: "invalid_value",
+                param: null,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
 
         if (!ProviderResolver.TryResolveProviderForModel(settings.Value, body.Model, out _, out string resolvedModel)
             || string.IsNullOrWhiteSpace(resolvedModel))
@@ -269,14 +295,12 @@ internal static class OpenAiV1Endpoints
 
         PromptTurnResult turn = result.Value;
 
-        OpenAiToolCall[]? toolCalls = MapToolCalls(turn.ToolCalls);
-
-        string finishReason = ResolveFinishReason(turn.FinishReason, toolCalls);
+        string finishReason = ResolveFinishReason(turn.FinishReason);
 
         OpenAiChatAssistantMessage message = new(
             Role: "assistant",
             Content: turn.Text,
-            ToolCalls: toolCalls,
+            ToolCalls: null,
             Refusal: null);
 
         OpenAiChatResponse response = new(
@@ -327,6 +351,8 @@ internal static class OpenAiV1Endpoints
 
         ChatCompletionUsage? sseUsage = null;
 
+        string? sseFinishReason = null;
+
         bool aborted = false;
 
         bool streamErrored = false;
@@ -343,12 +369,14 @@ internal static class OpenAiV1Endpoints
                         await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
                         break;
 
-                    case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCall:
-                        await WriteToolCallChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, toolCall, ct).ConfigureAwait(false);
+                    case IntelligenceEventType.ToolCall:
                         break;
 
                     case IntelligenceEventType.Result:
                         sseUsage = ev.Usage;
+
+                        sseFinishReason = ev.FinishReason;
+
                         break;
 
                     case IntelligenceEventType.Error:
@@ -411,15 +439,17 @@ internal static class OpenAiV1Endpoints
 
         try
         {
+            string terminalFinishReason = ResolveFinishReason(sseFinishReason);
+
             if (includeUsage)
             {
-                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: "stop", ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: terminalFinishReason, ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
 
                 await WriteUsageOnlyChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, sseUsage, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
             }
             else
             {
-                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: "stop", ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: terminalFinishReason, ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
             }
 
             await httpContext.Response.Body.WriteAsync(SseDone, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
@@ -485,43 +515,6 @@ internal static class OpenAiV1Endpoints
                 new OpenAiChatStreamChoice(
                     Index: 0,
                     Delta: new OpenAiDelta(Content: content),
-                    FinishReason: null,
-                    Logprobs: null),
-            ],
-            Usage: null,
-            SystemFingerprint: systemFingerprint);
-
-        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
-    }
-
-    private static async Task WriteToolCallChunkAsync(
-        HttpContext httpContext,
-        ArrayBufferWriter<byte> sseBuffer,
-        string completionId,
-        long created,
-        string echoModel,
-        string systemFingerprint,
-        IntelligenceToolCallEvent toolCall,
-        CancellationToken ct)
-    {
-        OpenAiStreamToolCall streamToolCall = new(
-            Index: toolCall.Index,
-            Id: toolCall.CallId,
-            Type: "function",
-            Function: new OpenAiFunctionCall(
-                Name: toolCall.Name,
-                Arguments: toolCall.ArgumentsJson));
-
-        OpenAiChatChunk chunk = new(
-            Id: completionId,
-            ObjectKind: "chat.completion.chunk",
-            Created: created,
-            Model: echoModel,
-            Choices:
-            [
-                new OpenAiChatStreamChoice(
-                    Index: 0,
-                    Delta: new OpenAiDelta(ToolCalls: [streamToolCall]),
                     FinishReason: null,
                     Logprobs: null),
             ],
@@ -689,36 +682,14 @@ internal static class OpenAiV1Endpoints
 
     }
 
-    private static OpenAiToolCall[]? MapToolCalls(List<PromptToolCall>? promptToolCalls)
-    {
-        if (promptToolCalls is not { Count: > 0 })
-        {
-            return null;
-        }
-
-        OpenAiToolCall[] dest = new OpenAiToolCall[promptToolCalls.Count];
-
-        for (int i = 0; i < promptToolCalls.Count; i++)
-        {
-            PromptToolCall p = promptToolCalls[i];
-
-            dest[i] = new OpenAiToolCall(
-                Id: p.CallId,
-                Type: "function",
-                Function: new OpenAiFunctionCall(p.Name, p.ArgumentsJson));
-        }
-
-        return dest;
-    }
-
-    private static string ResolveFinishReason(string? hubFinishReason, OpenAiToolCall[]? toolCalls)
+    private static string ResolveFinishReason(string? hubFinishReason)
     {
         if (!string.IsNullOrWhiteSpace(hubFinishReason))
         {
             return hubFinishReason!;
         }
 
-        return toolCalls is { Length: > 0 } ? "tool_calls" : "stop";
+        return "stop";
     }
 
     private static string ResolveSystemFingerprint(ArcanumSettings settings)
@@ -765,6 +736,11 @@ internal static class OpenAiV1Endpoints
             "Validation.InvalidPrompt" => "missing_required_parameter",
             "Validation.AttachedFiles" => "invalid_value",
             "Hub.ToolLoop" => "server_error",
+            "Hub.Timeout" => "server_error",
+            "Ollama.Pull" => "model_not_found",
+            "Ollama.ListModels" => "server_error",
+            "Ollama.Error" => "inference_failed",
+            "Hub.Error" => "inference_failed",
             _ => "inference_failed",
         };
 
@@ -776,18 +752,40 @@ internal static class OpenAiV1Endpoints
             "Validation.InvalidPrompt" => "Prompt is required.",
             "Validation.AttachedFiles" => "Attached file validation failed.",
             "Hub.ToolLoop" => "Tool invocation limit reached.",
+            "Hub.Timeout" => "Inference timed out.",
+            "Ollama.Pull" => "The requested model could not be downloaded from Ollama.",
+            "Ollama.ListModels" => "Could not reach Ollama to list local models.",
             _ => "Inference failed. See server logs for details.",
         };
 
     private static int ResolveOpenAiInferenceFailureStatusCode(string internalCode) =>
         internalCode switch
         {
-            "Hub.Model" =>
+            "Hub.Model" or "Ollama.Pull" =>
                 StatusCodes.Status404NotFound,
             "Validation.InvalidPrompt" or "Validation.AttachedFiles" =>
                 StatusCodes.Status400BadRequest,
             _ => StatusCodes.Status500InternalServerError,
         };
+
+    internal static IResult CreateUnhandledInferenceErrorResult() =>
+        JsonError(
+            "Inference failed. See server logs for details.",
+            "api_error",
+            code: "inference_failed",
+            param: null,
+            statusCode: StatusCodes.Status500InternalServerError);
+
+    internal static IResult CreateInvalidJsonErrorResult() =>
+        JsonError(
+            "Request body could not be parsed as a chat completion request.",
+            "invalid_request_error",
+            code: "invalid_json",
+            param: null,
+            statusCode: StatusCodes.Status400BadRequest);
+
+    internal static string ResolveFinishReasonForTests(string? hubFinishReason) =>
+        ResolveFinishReason(hubFinishReason);
 
     internal static string MapPublicOpenAiErrorCodeForTests(string internalCode) =>
         MapPublicOpenAiErrorCode(internalCode);

@@ -1,12 +1,15 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
+[ExcludeFromCodeCoverage] // Reason: executes external spell scripts via AIFunction; covered via ArcanumSpellScriptToolMultiRootTests and spell integration paths.
 public sealed class ArcanumSpellScriptTool : AIFunction
 {
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -136,10 +139,9 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         (string scriptsRootFull, string candidate) = matches[0];
 
-        if (TryResolveFinalSymlinkTarget(candidate) is { } finalTarget
-            && !IsPathUnderRoot(scriptsRootFull, finalTarget))
+        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
         {
-            return "run_spell_script: resolved path is a symlink that leaves the spell scripts directory; request rejected.";
+            return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
         }
 
         _ = TryGetStringArgument(arguments, "arguments", out string? extraArgs);
@@ -165,10 +167,9 @@ public sealed class ArcanumSpellScriptTool : AIFunction
                 return $"run_spell_script: script not found: '{scriptName}'.";
             }
 
-            if (TryResolveFinalSymlinkTarget(candidate) is { } preStartTarget
-                && !IsPathUnderRoot(scriptsRootFull, preStartTarget))
+            if (!ToolHelpers.RevalidatePathBeforeIo(scriptsRootFull, candidate))
             {
-                return "run_spell_script: resolved path is a symlink that leaves the spell scripts directory; request rejected.";
+                return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
             }
 
             if (!process.Start())
@@ -314,8 +315,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
                 continue;
             }
 
-            if (TryResolveFinalSymlinkTarget(candidate) is { } symlinkTarget
-                && !IsPathUnderRoot(scriptsRootFull, symlinkTarget))
+            if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
             {
                 continue;
             }
@@ -583,25 +583,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             : StringComparison.Ordinal;
 
         return candidateFullPath.Equals(normalizedRoot, cmp) || candidateFullPath.StartsWith(prefix, cmp);
-    }
-
-    private static string? TryResolveFinalSymlinkTarget(string path)
-    {
-        try
-        {
-            FileSystemInfo? linkTarget = File.ResolveLinkTarget(path, returnFinalTarget: true);
-
-            if (linkTarget is null)
-            {
-                return null;
-            }
-
-            return Path.GetFullPath(linkTarget.FullName);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
-        {
-            return null;
-        }
     }
 
     private static void TryKillProcessEntireTree(Process process)

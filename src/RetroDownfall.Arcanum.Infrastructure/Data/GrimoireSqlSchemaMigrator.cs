@@ -7,6 +7,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
 /// Applies embedded Grimoire SQL migration scripts without EF <c>MigrateAsync</c> (AOT-safe).
+/// Each script and its <c>__EFMigrationsHistory</c> row run inside one SQLite transaction.
 /// </summary>
 internal static class GrimoireSqlSchemaMigrator
 {
@@ -46,11 +47,39 @@ internal static class GrimoireSqlSchemaMigrator
 
             string script = LoadEmbeddedScript(migrationId);
 
-            ExecuteScript(connection, script, cancellationToken);
-
-            await RecordMigrationAsync(connection, migrationId, cancellationToken).ConfigureAwait(false);
+            await ApplyMigrationInTransactionAsync(connection, migrationId, script, cancellationToken).ConfigureAwait(false);
 
             applied.Add(migrationId);
+
+        }
+
+    }
+
+    private static async Task ApplyMigrationInTransactionAsync(
+        SqliteConnection connection,
+        string migrationId,
+        string script,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+
+            ExecuteScript(connection, script, cancellationToken);
+
+            await RecordMigrationAsync(connection, migrationId, transaction, cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch
+        {
+
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+            throw;
 
         }
 
@@ -59,10 +88,13 @@ internal static class GrimoireSqlSchemaMigrator
     private static async Task RecordMigrationAsync(
         SqliteConnection connection,
         string migrationId,
+        SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
 
         await using SqliteCommand cmd = connection.CreateCommand();
+
+        cmd.Transaction = transaction;
 
         cmd.CommandText = """
             INSERT OR IGNORE INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
@@ -169,25 +201,85 @@ internal static class GrimoireSqlSchemaMigrator
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        int rc = raw.sqlite3_exec(db, script);
-
-        if (rc == raw.SQLITE_OK)
+        if (TrySqliteExec(db, script, out string? error))
         {
 
             return;
 
         }
 
-        utf8z err = raw.sqlite3_errmsg(db);
-
-        string message = err.utf8_to_string();
-
-        if (string.IsNullOrEmpty(message))
+        if (error.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
         {
-            message = $"sqlite3_exec failed with code {rc}";
+
+            string withoutAddColumn = StripAddColumnStatements(script);
+
+            if (TrySqliteExec(db, withoutAddColumn, out error))
+            {
+
+                return;
+
+            }
+
         }
 
-        throw new InvalidOperationException(message);
+        throw new InvalidOperationException(error);
+
+    }
+
+    private static bool TrySqliteExec(sqlite3 db, string script, out string error)
+    {
+
+        int rc = raw.sqlite3_exec(db, script);
+
+        if (rc == raw.SQLITE_OK)
+        {
+
+            error = string.Empty;
+
+            return true;
+
+        }
+
+        utf8z err = raw.sqlite3_errmsg(db);
+
+        error = err.utf8_to_string();
+
+        if (string.IsNullOrEmpty(error))
+        {
+
+            error = $"sqlite3_exec failed with code {rc}";
+
+        }
+
+        return false;
+
+    }
+
+    private static string StripAddColumnStatements(string script)
+    {
+
+        string[] lines = script.Split('\n');
+
+        List<string> kept = new(lines.Length);
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+
+            string line = lines[i];
+
+            if (line.TrimStart().StartsWith("ALTER TABLE", StringComparison.OrdinalIgnoreCase)
+                && line.Contains(" ADD", StringComparison.OrdinalIgnoreCase))
+            {
+
+                continue;
+
+            }
+
+            kept.Add(line);
+
+        }
+
+        return string.Join('\n', kept);
 
     }
 

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -12,18 +13,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// Proactive minute-based scheduler that runs configured Unseen Servant jobs as headless <see cref="PingRequest"/> calls.
 /// </summary>
+[ExcludeFromCodeCoverage] // Reason: IHostedService daemon scheduler
 internal sealed class UnseenServantService(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IUnseenServantPacer pacer,
+    IUnseenServantJobTracker jobTracker,
     IDaemonRunner daemonRunner,
     ILogger<UnseenServantService> logger) : BackgroundService
 {
     /// <summary>
     /// Phase 1: last completion timestamps are process-local only. After a host restart, every enabled job
-    /// has no entry here and is treated as due once startup jitter elapses (no persisted watermark).
+    /// has no entry in the tracker and is treated as due once startup jitter elapses (no persisted watermark).
     /// </summary>
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunUtc = new(StringComparer.Ordinal);
-
     private readonly ConcurrentDictionary<string, DateTimeOffset> _firstDispatchAfterUtc = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, byte> _runningJobs = new(StringComparer.Ordinal);
@@ -88,14 +89,14 @@ internal sealed class UnseenServantService(
                 continue;
             }
 
-            string key = JobTrackingKey(job);
+            string key = UnseenServantJobTracker.JobTrackingKey(job);
 
             if (!_runningJobs.TryAdd(key, 0))
             {
                 continue;
             }
 
-            if (!_lastRunUtc.ContainsKey(key))
+            if (jobTracker.GetLastRunAt(job) is null)
             {
                 DateTimeOffset firstAfter = _firstDispatchAfterUtc.GetOrAdd(
                     key,
@@ -118,7 +119,7 @@ internal sealed class UnseenServantService(
 
             TimeSpan interval = TimeSpan.FromMinutes(intervalMinutes);
 
-            if (_lastRunUtc.TryGetValue(key, out DateTimeOffset last)
+            if (jobTracker.GetLastRunAt(job) is DateTimeOffset last
                 && now - last < interval)
             {
                 _ = _runningJobs.TryRemove(key, out _);
@@ -136,6 +137,12 @@ internal sealed class UnseenServantService(
                     try
                     {
                         await RunJobAsync(job, key, stoppingToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+
+                        logger.LogError(ex, "Unseen Servant job {JobName} failed.", job.Name);
+
                     }
                     finally
                     {
@@ -202,9 +209,6 @@ internal sealed class UnseenServantService(
         }
     }
 
-    private static string JobTrackingKey(UnseenServantJob job) =>
-        $"{job.Name}\0{job.TargetSpell}";
-
     private async Task RunJobAsync(UnseenServantJob job, string key, CancellationToken stoppingToken)
     {
         try
@@ -217,11 +221,14 @@ internal sealed class UnseenServantService(
 
             if (result.IsSuccess)
             {
-                _lastRunUtc[key] = DateTimeOffset.UtcNow;
+                jobTracker.RecordCompletion(job, success: true, resultSummary: "Success");
             }
             else if (result.Error.Code != "Daemon.Cancelled")
             {
-                _lastRunUtc[key] = DateTimeOffset.UtcNow;
+                jobTracker.RecordCompletion(
+                    job,
+                    success: false,
+                    resultSummary: $"[{result.Error.Code}] {result.Error.Message}");
 
                 logger.LogWarning(
                     "Unseen Servant job {JobName} failed: {Code} {Message}",

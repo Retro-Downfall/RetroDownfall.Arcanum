@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
@@ -13,12 +14,15 @@ public sealed class LlamaPullCommand(ArcanumApiClient apiClient, IThemePalette t
     {
 
         [CommandArgument(0, "<URL>")]
+        [Description("Absolute http or https URL of the GGUF file to download.")]
         public string? Url { get; init; }
 
         [CommandOption("--cache-key")]
+        [Description("Optional cache directory name; defaults to a hash of the source URL.")]
         public string? CacheKey { get; init; }
 
         [CommandOption("--sha256")]
+        [Description("Expected SHA-256 hex digest of the downloaded file (verified after download).")]
         public string? Sha256 { get; init; }
 
     }
@@ -41,6 +45,8 @@ public sealed class LlamaPullCommand(ArcanumApiClient apiClient, IThemePalette t
         };
 
         bool failed = false;
+
+        bool completed = false;
 
         await AnsiConsole.Progress()
             .AutoClear(false)
@@ -75,6 +81,8 @@ public sealed class LlamaPullCommand(ArcanumApiClient apiClient, IThemePalette t
 
                     if (frame.Completed)
                     {
+                        completed = true;
+
                         task.Value = task.MaxValue;
 
                         task.StopTask();
@@ -86,7 +94,22 @@ public sealed class LlamaPullCommand(ArcanumApiClient apiClient, IThemePalette t
                 }
             }).ConfigureAwait(false);
 
-        return failed ? 1 : 0;
+        if (failed)
+        {
+            return 1;
+        }
+
+        if (!completed)
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(Markup.Escape("Model download stream ended without a completion frame.")));
+
+            return 1;
+
+        }
+
+        return 0;
 
     }
 

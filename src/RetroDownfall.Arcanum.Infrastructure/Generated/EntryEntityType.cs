@@ -24,7 +24,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyCount: 9,
                 navigationCount: 1,
                 foreignKeyCount: 1,
-                unnamedIndexCount: 1,
+                unnamedIndexCount: 2,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -99,6 +99,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
             runtimeEntityType.SetPrimaryKey(key);
 
             var index = runtimeEntityType.AddIndex(
+                new[] { role });
+
+            var index0 = runtimeEntityType.AddIndex(
                 new[] { sessionId, createdAt });
 
             return runtimeEntityType;

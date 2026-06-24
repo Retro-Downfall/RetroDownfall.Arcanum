@@ -1,8 +1,10 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 public sealed record OpenAiChatChunk(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("object")] string ObjectKind,

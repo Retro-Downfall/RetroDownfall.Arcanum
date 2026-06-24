@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net.Http;
 using System.Text;
@@ -22,6 +23,7 @@ using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
+[ExcludeFromCodeCoverage] // Reason: interactive multi-turn REPL; sliced helpers are covered via internal static unit tests.
 public sealed class ChatCommand(
     IEyeOfTheWorld eye,
     ArcanumApiClient apiClient,
@@ -117,7 +119,7 @@ public sealed class ChatCommand(
 
             try
             {
-                raw = AnsiConsole.Prompt(new TextPrompt<string>(promptMarkup).AllowEmpty());
+                raw = CliLineReader.ReadLine(promptMarkup, allowEmpty: true);
             }
             catch (InvalidOperationException)
             {
@@ -128,6 +130,15 @@ public sealed class ChatCommand(
             finally
             {
                 Console.CancelKeyPress -= OnReplCancelKeyPress;
+            }
+
+            if (raw is null)
+            {
+
+                AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Turn cancelled at prompt.")));
+
+                continue;
+
             }
 
             string prompt = raw.Trim();
@@ -465,7 +476,7 @@ public sealed class ChatCommand(
             }
             else
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(reloadResult.Error.Message)));
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(reloadResult.Error));
             }
 
             return (true, false);
@@ -480,7 +491,7 @@ public sealed class ChatCommand(
 
             if (arsenalResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(arsenalResult.Error.Message)));
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(arsenalResult.Error));
 
                 return (true, false);
             }
@@ -497,7 +508,7 @@ public sealed class ChatCommand(
 
             if (historyResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(historyResult.Error.Message)));
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(historyResult.Error));
 
                 return (true, false);
             }
@@ -600,7 +611,7 @@ public sealed class ChatCommand(
 
             if (archiveResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(archiveResult.Error.Message)));
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(archiveResult.Error));
 
                 return (true, false);
             }
@@ -637,7 +648,7 @@ public sealed class ChatCommand(
 
             if (restResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(restResult.Error.Message)));
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(restResult.Error));
 
                 return (true, false);
             }
@@ -697,7 +708,7 @@ public sealed class ChatCommand(
 
             if (listResult.IsFailure)
             {
-                return (false, default, themePalette.ErrorMarkup(Markup.Escape(listResult.Error.Message)));
+                return (false, default, themePalette.ErrorMarkup(listResult.Error));
             }
 
             List<SessionSummaryDto> matches = listResult.Value.Summaries
@@ -728,7 +739,7 @@ public sealed class ChatCommand(
                 Markup.Escape("Invalid id. Provide a full Guid or the first 8 hex characters (no dashes).")));
     }
 
-    private static bool IsEightCharHexDigitPrefix(string t)
+    internal static bool IsEightCharHexDigitPrefix(string t)
     {
         if (t.Length != 8)
         {
@@ -1228,7 +1239,7 @@ public sealed class ChatCommand(
 
         if (logResult.IsFailure)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(logResult.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(logResult.Error));
 
             return;
         }
@@ -1501,14 +1512,11 @@ public sealed class ChatCommand(
 
         if (streamWithMarkdownRewrite && full.Length > 0)
         {
-            if (linesPrinted > 0)
-            {
-                AnsiConsole.Cursor.Move(CursorDirection.Up, linesPrinted);
-            }
 
-            Console.Write("\r\u001b[0J");
+            AnsiConsole.WriteLine();
 
             AnsiConsole.Write(markdig.Render(body));
+
         }
         else if (!streamWithMarkdownRewrite)
         {
@@ -1527,7 +1535,7 @@ public sealed class ChatCommand(
         return true;
     }
 
-    private static void AdvanceLineCounter(string chunk, int width, ref int linesPrinted, ref int currentLineLen)
+    internal static void AdvanceLineCounter(string chunk, int width, ref int linesPrinted, ref int currentLineLen)
     {
         foreach (char c in chunk)
         {
@@ -1570,7 +1578,7 @@ public sealed class ChatCommand(
 
     }
 
-    private static ChatCompletionUsage AccumulateSessionMana(ChatCompletionUsage? running, ChatCompletionUsage round)
+    internal static ChatCompletionUsage AccumulateSessionMana(ChatCompletionUsage? running, ChatCompletionUsage round)
     {
         int p = (running?.PromptTokens ?? 0) + round.PromptTokens;
 
@@ -1616,7 +1624,7 @@ public sealed class ChatCommand(
 
             if (detailResult.IsFailure)
             {
-                lifetimeError = detailResult.Error.Message;
+                lifetimeError = IThemePaletteMarkupExtensions.FormatError(detailResult.Error);
             }
             else
             {

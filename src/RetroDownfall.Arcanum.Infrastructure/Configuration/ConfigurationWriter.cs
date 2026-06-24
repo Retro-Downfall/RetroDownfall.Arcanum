@@ -38,7 +38,7 @@ internal sealed class ConfigurationWriter
 
             string path = Path.Combine(directory, "arcanum.json");
 
-            Directory.CreateDirectory(directory);
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
 
             tempPath = Path.Combine(directory, $".arcanum.{Guid.NewGuid():N}.tmp");
 
@@ -64,6 +64,8 @@ internal sealed class ConfigurationWriter
             }
 
             File.Move(tempPath, path, overwrite: true);
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(path);
 
             tempPath = null;
 

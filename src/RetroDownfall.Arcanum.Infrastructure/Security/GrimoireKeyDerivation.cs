@@ -39,7 +39,13 @@ public static class GrimoireKeyDerivation
 
         byte[] okm = HKDF.DeriveKey(HashAlgorithmName.SHA256, ikm, outputLength: 32, Salt, info);
 
-        return Convert.ToBase64String(okm);
+        CryptographicOperations.ZeroMemory(ikm);
+
+        string passphrase = Convert.ToBase64String(okm);
+
+        CryptographicOperations.ZeroMemory(okm);
+
+        return passphrase;
 
     }
 }

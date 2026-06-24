@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -5,7 +6,9 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -23,13 +26,28 @@ internal static class SessionEndpoints
 
     private static readonly byte[] SseLiveSentinel = "data: {\"type\":\"live\"}\n\n"u8.ToArray();
 
+    private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
+
+    private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
+
     public static RouteGroupBuilder MapSessionEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapPost(
             "/sessions",
-            async (CreateSessionRequest request, ISessionRepository repo, HttpContext ctx) =>
+            async (CreateSessionRequest? request, ISessionRepository repo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<SessionDetailDto>.FromResult(
+                            Result<SessionDetailDto>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 Session session = await repo
                     .CreateAsync(request.CampaignId, request.Title, ctx.RequestAborted)
@@ -166,9 +184,20 @@ internal static class SessionEndpoints
 
         apiGroup.MapPost(
             "/sessions/{id:guid}/entries",
-            async (Guid id, AppendEntryRequest request, ISessionRepository repo, SessionEventHub eventHub, HttpContext ctx) =>
+            async (Guid id, AppendEntryRequest? request, ISessionRepository repo, SessionEventHub eventHub, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<EntryDto>.FromResult(
+                            Result<EntryDto>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 if (string.IsNullOrWhiteSpace(request.Content))
                 {
@@ -213,14 +242,39 @@ internal static class SessionEndpoints
                             Result<EntryDto>.Failure(new Error("Session.Archived", ex.Message)),
                             traceId));
                 }
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("Session.TooManyEntries:", StringComparison.Ordinal))
+                {
+                    return Results.BadRequest(
+                        ApiResponse<EntryDto>.FromResult(
+                            Result<EntryDto>.Failure(new Error("Session.TooManyEntries", ex.Message)),
+                            traceId));
+                }
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("Session.EntryTooLarge:", StringComparison.Ordinal))
+                {
+                    return Results.BadRequest(
+                        ApiResponse<EntryDto>.FromResult(
+                            Result<EntryDto>.Failure(new Error("Session.EntryTooLarge", ex.Message)),
+                            traceId));
+                }
             })
         .WithName("AppendSessionEntry");
 
         apiGroup.MapPatch(
             "/sessions/{id:guid}",
-            async (Guid id, UpdateSessionRequest request, ISessionRepository repo, HttpContext ctx) =>
+            async (Guid id, UpdateSessionRequest? request, ISessionRepository repo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null)
+                {
+
+                    return Results.BadRequest(
+                        ApiResponse<SessionDetailDto>.FromResult(
+                            Result<SessionDetailDto>.Failure(
+                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+
+                }
 
                 Session? session = await dbSession(repo, id, ctx.RequestAborted).ConfigureAwait(false);
 
@@ -351,6 +405,7 @@ internal static class SessionEndpoints
                 Guid? since,
                 ISessionRepository repo,
                 SessionEventHub eventHub,
+                SseConnectionGate sseGate,
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext httpContext) =>
             {
@@ -368,14 +423,28 @@ internal static class SessionEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
+                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                {
 
-                httpContext.Response.Headers.CacheControl = "no-cache";
+                    return SseConnectionResults.TooManyConnections(httpContext);
 
-                httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+                }
 
-                Channel<Entry> liveBuffer = Channel.CreateUnbounded<Entry>(
-                    new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+                using (sseLease)
+                {
+
+                SseStreamWriter.PrepareResponse(httpContext);
+
+                int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
+                    options.CurrentValue.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity);
+
+                Channel<Entry> liveBuffer = Channel.CreateBounded<Entry>(
+                    new BoundedChannelOptions(channelCapacity)
+                    {
+                        SingleReader = true,
+                        SingleWriter = true,
+                        FullMode = BoundedChannelFullMode.DropOldest,
+                    });
 
                 using CancellationTokenSource pumpCts = CancellationTokenSource.CreateLinkedTokenSource(
                     httpContext.RequestAborted);
@@ -444,32 +513,38 @@ internal static class SessionEndpoints
 
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
 
+                TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.EventBusHeartbeatSeconds(
+                        options.CurrentValue.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds));
+
                 try
                 {
+
                     while (liveBuffer.Reader.TryRead(out Entry? buffered) && buffered is not null)
                     {
+
                         if (!replayIds.Contains(buffered.Id))
                         {
+
                             await WriteEntrySseAsync(httpContext, buffered, httpContext.RequestAborted).ConfigureAwait(false);
+
                         }
+
                     }
 
-                    await foreach (Entry live in liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted).ConfigureAwait(false))
-                    {
-                        await WriteEntrySseAsync(httpContext, live, httpContext.RequestAborted).ConfigureAwait(false);
-                    }
+                    await SseStreamWriter.StreamAsync(
+                        httpContext,
+                        liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
+                        (entry, ct) => WriteEntrySseAsync(httpContext, entry, ct),
+                        heartbeatInterval,
+                        httpContext.RequestAborted).ConfigureAwait(false);
+
                 }
                 catch (OperationCanceledException)
                 {
-                    try
-                    {
-                        await httpContext.Response.Body.WriteAsync(SseDone, CancellationToken.None).ConfigureAwait(false);
 
-                        await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                    }
+                    await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
+
                 }
                 finally
                 {
@@ -485,6 +560,9 @@ internal static class SessionEndpoints
                 }
 
                 return Results.Empty;
+
+                }
+
             })
         .WithName("StreamSession");
 
@@ -538,17 +616,36 @@ internal static class SessionEndpoints
 
     private static async Task WriteEntrySseAsync(HttpContext httpContext, Entry entry, CancellationToken cancellationToken)
     {
+
         EntryDto dto = SessionMapping.ToEntryDto(entry);
 
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(dto, ArcanumJsonContext.Default.EntryDto);
+        ArrayBufferWriter<byte> buffer = new(SseDataPrefix.Length + 512 + SseLineBreak.Length);
 
-        await httpContext.Response.Body.WriteAsync("data: "u8.ToArray(), cancellationToken).ConfigureAwait(false);
+        buffer.Write(SseDataPrefix);
 
-        await httpContext.Response.Body.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+        Utf8JsonWriter jsonWriter = new(buffer);
 
-        await httpContext.Response.Body.WriteAsync("\n\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
+        try
+        {
 
-        await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+            JsonSerializer.Serialize(jsonWriter, dto, ArcanumJsonContext.Default.EntryDto);
+
+            jsonWriter.Flush();
+
+            buffer.Write(SseLineBreak);
+
+            await httpContext.Response.Body.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+
+            await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            jsonWriter.Dispose();
+
+        }
+
     }
 
 }

@@ -16,8 +16,7 @@ public sealed class UninstallCommand(IDaemonManager daemonManager, IThemePalette
 
         if (result.IsFailure)
         {
-            AnsiConsole.MarkupLine(
-                themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(result.Error.Message)));
+            AnsiConsole.MarkupLine(themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), result.Error));
 
             return 1;
         }

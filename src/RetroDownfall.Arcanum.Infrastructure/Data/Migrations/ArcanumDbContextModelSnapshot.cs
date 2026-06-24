@@ -17,6 +17,155 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.8");
 
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Entry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ModelUsed")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Role")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ToolArguments")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ToolCallId")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ToolName")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Role");
+
+                    b.HasIndex("SessionId", "CreatedAt");
+
+                    b.ToTable("Entries", (string)null);
+                });
+
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.MageSetting", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("MageSettings", (string)null);
+                });
+
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Session", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("CampaignId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("LastSummarizedMessageAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("active");
+
+                    b.Property<string>("Summary")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("TotalTokensUsed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0L);
+
+                    b.Property<int>("UnsummarizedEntryCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CampaignId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("UnsummarizedEntryCount");
+
+                    b.HasIndex("UpdatedAt");
+
+                    b.HasIndex("Status", "UpdatedAt");
+
+                    b.HasIndex("CampaignId", "Status", "UpdatedAt");
+
+                    b.ToTable("Sessions", (string)null);
+                });
+
+            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.WorkspaceContext", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SerializedSnapshot")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("WorkspacePath")
+                        .IsRequired()
+                        .HasMaxLength(4096)
+                        .HasColumnType("TEXT")
+                        .HasColumnName("RootPath");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("WorkspacePath", "CreatedAt");
+
+                    b.ToTable("WorkspaceContexts", (string)null);
+                });
+
             modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Apprentice", b =>
                 {
                     b.Property<Guid>("Id")
@@ -74,6 +223,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.HasIndex("SessionId");
 
                     b.HasIndex("Status");
+
+                    b.HasIndex("UpdatedAt");
 
                     b.ToTable("Apprentices", (string)null);
                 });
@@ -204,140 +355,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Entry", b =>
                 {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT");
+                    b.HasOne("RetroDownfall.Arcanum.Core.Storage.Entities.Session", "Session")
+                        .WithMany("Entries")
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
-                    b.Property<string>("Content")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ModelUsed")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("Role")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<Guid>("SessionId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ToolArguments")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ToolCallId")
-                        .HasMaxLength(256)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ToolName")
-                        .HasMaxLength(256)
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SessionId", "CreatedAt");
-
-                    b.ToTable("Entries", (string)null);
-                });
-
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.MageSetting", b =>
-                {
-                    b.Property<string>("Key")
-                        .HasMaxLength(256)
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Value")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Key");
-
-                    b.ToTable("MageSettings", (string)null);
-                });
-
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Session", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT");
-
-                    b.Property<Guid?>("CampaignId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime?>("LastSummarizedMessageAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(32)
-                        .HasColumnType("TEXT")
-                        .HasDefaultValue("active");
-
-                    b.Property<string>("Summary")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Title")
-                        .HasMaxLength(512)
-                        .HasColumnType("TEXT");
-
-                    b.Property<long>("TotalTokensUsed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(0L);
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CampaignId");
-
-                    b.HasIndex("CreatedAt");
-
-                    b.HasIndex("Status");
-
-                    b.HasIndex("UpdatedAt");
-
-                    b.HasIndex("Status", "UpdatedAt");
-
-                    b.ToTable("Sessions", (string)null);
-                });
-
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.WorkspaceContext", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SerializedSnapshot")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("WorkspacePath")
-                        .IsRequired()
-                        .HasMaxLength(4096)
-                        .HasColumnType("TEXT")
-                        .HasColumnName("RootPath");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("WorkspacePath", "CreatedAt");
-
-                    b.ToTable("WorkspaceContexts", (string)null);
+                    b.Navigation("Session");
                 });
 
             modelBuilder.Entity("RetroDownfall.Arcanum.Core.TheForge.Apprentice", b =>
@@ -361,17 +385,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade);
 
                     b.Navigation("Campaign");
-                });
-
-            modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Entry", b =>
-                {
-                    b.HasOne("RetroDownfall.Arcanum.Core.Storage.Entities.Session", "Session")
-                        .WithMany("Entries")
-                        .HasForeignKey("SessionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Session");
                 });
 
             modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Session", b =>

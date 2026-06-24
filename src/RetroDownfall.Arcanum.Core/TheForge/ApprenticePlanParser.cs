@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Core.TheForge;
 public static class ApprenticePlanParser
 {
 
-    public static List<PlanStep> ParsePlan(string responseText)
+    public static List<PlanStep> ParsePlan(string responseText, int maxSteps = int.MaxValue)
     {
 
         string trimmed = StripMarkdownFences(responseText.Trim());
@@ -17,6 +17,14 @@ public static class ApprenticePlanParser
         {
 
             throw new InvalidOperationException("Plan generation returned an empty or invalid JSON array.");
+
+        }
+
+        if (steps.Count > maxSteps)
+        {
+
+            throw new InvalidOperationException(
+                $"Plan generation returned {steps.Count} steps; the maximum allowed is {maxSteps}.");
 
         }
 
@@ -39,7 +47,7 @@ public static class ApprenticePlanParser
 
     }
 
-    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps)
+    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps, int maxSteps = int.MaxValue)
     {
 
         steps = null;
@@ -66,6 +74,13 @@ public static class ApprenticePlanParser
             List<PlanStep>? parsed = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
 
             if (parsed is null || parsed.Count == 0)
+            {
+
+                return false;
+
+            }
+
+            if (parsed.Count > maxSteps)
             {
 
                 return false;

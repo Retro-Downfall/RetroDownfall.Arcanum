@@ -1,7 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
+[ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 /// <summary>
 /// Terminal SSE payload when inference fails mid-stream: standard <c>chat.completion.chunk</c>
 /// framing plus an OpenAI-shaped <c>error</c> object (not <c>delta.content</c>).

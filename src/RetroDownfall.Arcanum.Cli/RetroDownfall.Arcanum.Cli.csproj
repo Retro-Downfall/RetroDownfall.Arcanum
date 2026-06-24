@@ -10,6 +10,10 @@
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
+
     <EFOptimizeContext>false</EFOptimizeContext>
 
   </PropertyGroup>
@@ -49,6 +53,12 @@
     <ProjectReference Include="..\RetroDownfall.Arcanum.Api\RetroDownfall.Arcanum.Api.csproj" />
 
     <ProjectReference Include="..\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
 
   </ItemGroup>
 

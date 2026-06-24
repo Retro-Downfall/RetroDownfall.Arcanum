@@ -11,4 +11,6 @@ public sealed record SpellSummary(
     JsonDocument? InputSchema = null,
     JsonDocument? OutputSchema = null,
     string[]? DeclaredTools = null,
-    string[]? Dependencies = null);
+    string[]? Dependencies = null,
+    bool? IsValid = null,
+    string[]? UnresolvedDependencies = null);

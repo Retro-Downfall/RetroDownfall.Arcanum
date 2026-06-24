@@ -22,4 +22,6 @@ public interface IApprenticeRepository
 
     Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default);
+
 }

@@ -5,17 +5,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// Fan-out hub for a single event type: one bounded channel per subscriber.
 /// </summary>
-internal sealed class EventHub<T> where T : notnull
+internal sealed class ScryingPool<T> where T : notnull
 {
+
+    private readonly int _capacity;
 
     private readonly BoundedChannelOptions _options;
 
-    private readonly Dictionary<Guid, ChannelWriter<T>> _writers = new();
+    private readonly Dictionary<Guid, Channel<T>> _channels = new();
 
     private readonly Lock _lock = new();
 
-    public EventHub(int capacity)
+    public ScryingPool(int capacity)
     {
+
+        _capacity = capacity;
 
         _options = new BoundedChannelOptions(capacity)
         {
@@ -37,7 +41,7 @@ internal sealed class EventHub<T> where T : notnull
         lock (_lock)
         {
 
-            _writers[subscriptionId] = channel.Writer;
+            _channels[subscriptionId] = channel;
         }
 
         return channel.Reader;
@@ -52,7 +56,7 @@ internal sealed class EventHub<T> where T : notnull
             lock (_lock)
             {
 
-                return _writers.Count;
+                return _channels.Count;
             }
         }
     }
@@ -66,30 +70,46 @@ internal sealed class EventHub<T> where T : notnull
         lock (_lock)
         {
 
-            if (_writers.Remove(subscriptionId, out ChannelWriter<T>? writer))
+            if (_channels.Remove(subscriptionId, out Channel<T>? channel))
             {
 
-                writer.Complete();
+                channel.Writer.Complete();
 
-                return _writers.Count == 0;
+                return _channels.Count == 0;
             }
 
             return false;
         }
     }
 
-    public void Publish(T @event)
+    /// <summary>
+    /// Publishes an event to every subscriber. Returns how many subscriber channels dropped an event due to backpressure.
+    /// </summary>
+    public int Publish(T @event)
     {
+
+        int subscriberDrops = 0;
 
         lock (_lock)
         {
 
-            foreach (ChannelWriter<T> writer in _writers.Values)
+            foreach (Channel<T> channel in _channels.Values)
             {
 
-                _ = writer.TryWrite(@event);
+                if (channel.Reader.Count >= _capacity)
+                {
+
+                    subscriberDrops++;
+
+                }
+
+                _ = channel.Writer.TryWrite(@event);
+
             }
         }
+
+        return subscriberDrops;
+
     }
 
 }

@@ -11,14 +11,14 @@ internal static class McpInboundJsonRpc
     /// <summary>
     /// Parses one line of JSON using only source-generated <see cref="McpJsonSerializerContext"/> metadata.
     /// </summary>
-    public static McpInboundEnvelope ParseInbound(string line, McpJsonSerializerContext json)
+    public static McpInboundEnvelope ParseInbound(string line, McpJsonSerializerContext json, int maxJsonRpcLineBytes)
     {
 
-        if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line))
+        if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(line, maxJsonRpcLineBytes))
         {
 
             throw new JsonException(
-                $"JSON-RPC line exceeds the maximum size of {McpSecurityLimits.MaxJsonRpcLineUtf8Bytes} UTF-8 bytes.");
+                $"JSON-RPC line exceeds the maximum size of {maxJsonRpcLineBytes} UTF-8 bytes.");
 
         }
 

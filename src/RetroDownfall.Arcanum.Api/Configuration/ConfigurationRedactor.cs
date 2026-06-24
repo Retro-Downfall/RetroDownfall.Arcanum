@@ -34,19 +34,26 @@ internal static class ConfigurationRedactor
 
         ProviderSettings[] currentProviders = current.Providers ?? [];
 
-        Dictionary<string, string?> currentKeys = currentProviders
-            .ToDictionary(static p => p.Name, static p => p.ApiKey, StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, ProviderSettings> currentByName = currentProviders
+            .ToDictionary(static p => p.Name, static p => p, StringComparer.OrdinalIgnoreCase);
 
         ProviderSettings[] mergedProviders = requestProviders
-            .Select(p => p with
-            {
-                ApiKey = p.ApiKey == "***" && currentKeys.TryGetValue(p.Name, out string? key)
-                    ? key
-                    : p.ApiKey,
-            })
+            .Select(p => currentByName.TryGetValue(p.Name, out ProviderSettings? currentProvider)
+                ? p with
+                {
+                    ApiKey = RestoreMask(p.ApiKey, currentProvider.ApiKey),
+                    Endpoint = RestoreMaskRequired(p.Endpoint, currentProvider.Endpoint),
+                    LlamaCpp = MergeLlamaCpp(p.LlamaCpp, currentProvider.LlamaCpp),
+                }
+                : p)
             .ToArray();
 
-        return Clone(request) with { Providers = mergedProviders };
+        CommLinkSettings mergedCommLink = request.CommLink with
+        {
+            WebhookUrl = RestoreMask(request.CommLink.WebhookUrl, current.CommLink.WebhookUrl),
+        };
+
+        return Clone(request) with { Providers = mergedProviders, CommLink = mergedCommLink };
     }
 
     private static ArcanumSettings Clone(ArcanumSettings source)
@@ -68,6 +75,12 @@ internal static class ConfigurationRedactor
     private static string MaskRequired(string value) =>
         string.IsNullOrEmpty(value) ? value : "***";
 
+    private static string? RestoreMask(string? incoming, string? current) =>
+        incoming == "***" ? current : incoming;
+
+    private static string RestoreMaskRequired(string incoming, string current) =>
+        incoming == "***" ? current : incoming;
+
     private static ProviderLlamaCppSettings? MaskLlamaCpp(ProviderLlamaCppSettings? llamaCpp)
     {
         if (llamaCpp?.ModelMap is not { Count: > 0 } modelMap)
@@ -79,6 +92,29 @@ internal static class ConfigurationRedactor
             .ToDictionary(static pair => pair.Key, static _ => "***", StringComparer.OrdinalIgnoreCase);
 
         return llamaCpp with { ModelMap = redactedMap };
+    }
+
+    private static ProviderLlamaCppSettings? MergeLlamaCpp(
+        ProviderLlamaCppSettings? incoming,
+        ProviderLlamaCppSettings? current)
+    {
+        if (incoming?.ModelMap is not { Count: > 0 } requestMap)
+        {
+            return incoming;
+        }
+
+        Dictionary<string, string> currentMap = current?.ModelMap
+            ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        Dictionary<string, string> mergedMap = requestMap
+            .ToDictionary(
+                static pair => pair.Key,
+                pair => pair.Value == "***" && currentMap.TryGetValue(pair.Key, out string? url)
+                    ? url
+                    : pair.Value,
+                StringComparer.OrdinalIgnoreCase);
+
+        return incoming with { ModelMap = mergedMap };
     }
 
 }
