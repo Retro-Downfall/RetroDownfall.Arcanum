@@ -7,9 +7,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 internal sealed class UnseenServantJobTracker : IUnseenServantJobTracker
 {
 
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunUtc = new(StringComparer.Ordinal);
-
-    private readonly ConcurrentDictionary<string, string> _lastResult = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, JobRecord> _records = new(StringComparer.Ordinal);
 
     /// <inheritdoc />
     public void RecordCompletion(UnseenServantJob job, bool success, string? resultSummary)
@@ -17,15 +15,13 @@ internal sealed class UnseenServantJobTracker : IUnseenServantJobTracker
 
         string key = JobTrackingKey(job);
 
-        _lastRunUtc[key] = DateTimeOffset.UtcNow;
-
-        _lastResult[key] = resultSummary ?? (success ? "Success" : "Failed");
+        _records[key] = new JobRecord(DateTimeOffset.UtcNow, resultSummary ?? (success ? "Success" : "Failed"));
 
     }
 
     /// <inheritdoc />
     public DateTimeOffset? GetLastRunAt(UnseenServantJob job) =>
-        _lastRunUtc.TryGetValue(JobTrackingKey(job), out DateTimeOffset last) ? last : null;
+        _records.TryGetValue(JobTrackingKey(job), out JobRecord record) ? record.LastRunUtc : null;
 
     /// <inheritdoc />
     public DateTimeOffset? GetNextDueAt(UnseenServantJob job, int effectiveIntervalMinutes)
@@ -53,9 +49,11 @@ internal sealed class UnseenServantJobTracker : IUnseenServantJobTracker
 
     /// <inheritdoc />
     public string? GetLastResult(UnseenServantJob job) =>
-        _lastResult.TryGetValue(JobTrackingKey(job), out string? result) ? result : null;
+        _records.TryGetValue(JobTrackingKey(job), out JobRecord record) ? record.LastResult : null;
 
     internal static string JobTrackingKey(UnseenServantJob job) =>
         $"{job.Name}\0{job.TargetSpell}";
+
+    private readonly record struct JobRecord(DateTimeOffset LastRunUtc, string LastResult);
 
 }

@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Infrastructure.Workspace;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 

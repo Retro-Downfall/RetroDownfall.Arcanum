@@ -16,12 +16,24 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     private string? _backupConfigPath;
 
+    private string? _originalHome;
+
+    private string? _originalUserProfile;
+
     public async Task InitializeAsync()
     {
 
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
+
+        _originalHome = global::System.Environment.GetEnvironmentVariable("HOME");
+
+        _originalUserProfile = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
+
+        global::System.Environment.SetEnvironmentVariable("HOME", _workspace.Root);
+
+        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _workspace.Root);
 
         string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
@@ -55,6 +67,10 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
             File.Delete(configPath);
 
         }
+
+        global::System.Environment.SetEnvironmentVariable("HOME", _originalHome);
+
+        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
 
         await _workspace.DisposeAsync();
 

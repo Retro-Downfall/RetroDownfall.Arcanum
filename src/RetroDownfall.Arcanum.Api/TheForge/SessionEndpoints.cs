@@ -276,7 +276,7 @@ internal static class SessionEndpoints
 
                 }
 
-                Session? session = await dbSession(repo, id, ctx.RequestAborted).ConfigureAwait(false);
+                Session? session = await GetSessionForUpdateAsync(repo, id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (session is null)
                 {
@@ -591,27 +591,11 @@ internal static class SessionEndpoints
         }
     }
 
-    private static async Task<Session?> dbSession(ISessionRepository repo, Guid id, CancellationToken ct)
+    private static async Task<Session?> GetSessionForUpdateAsync(ISessionRepository repo, Guid id, CancellationToken ct)
     {
         Session? session = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
 
-        if (session is null)
-        {
-            return null;
-        }
-
-        return new Session
-        {
-            Id = session.Id,
-            CampaignId = session.CampaignId,
-            Title = session.Title,
-            Status = session.Status,
-            CreatedAt = session.CreatedAt,
-            UpdatedAt = session.UpdatedAt,
-            Summary = session.Summary,
-            LastSummarizedMessageAt = session.LastSummarizedMessageAt,
-            TotalTokensUsed = session.TotalTokensUsed,
-        };
+        return session?.Clone();
     }
 
     private static async Task WriteEntrySseAsync(HttpContext httpContext, Entry entry, CancellationToken cancellationToken)

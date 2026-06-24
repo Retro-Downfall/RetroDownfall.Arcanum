@@ -39,7 +39,11 @@ public sealed class KeyShowCommand(ISecretStore secretStore, IThemePalette theme
 
         }
 
-        AnsiConsole.WriteLine(result.Value!);
+        Console.Error.WriteLine(result.Value!);
+
+        AnsiConsole.MarkupLine(
+            themePalette.MutedMarkup(
+                Markup.Escape("(Key written to stderr so it is not captured by stdout piping.)")));
 
         return 0;
 

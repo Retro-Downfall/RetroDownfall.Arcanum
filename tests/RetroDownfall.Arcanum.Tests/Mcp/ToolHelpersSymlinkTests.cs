@@ -47,7 +47,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     {
         Skip.If(OperatingSystem.IsWindows());
 
-        ToolHelpers.UseOrdinalIgnoreCasePathComparisonForTests = true;
+        ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
 
         try
         {
@@ -61,7 +61,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         }
         finally
         {
-            ToolHelpers.UseOrdinalIgnoreCasePathComparisonForTests = false;
+            ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
         }
     }
 
@@ -70,7 +70,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     {
         Skip.If(OperatingSystem.IsWindows());
 
-        ToolHelpers.UseOrdinalIgnoreCasePathComparisonForTests = true;
+        ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
 
         try
         {
@@ -94,7 +94,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         }
         finally
         {
-            ToolHelpers.UseOrdinalIgnoreCasePathComparisonForTests = false;
+            ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
         }
     }
 
@@ -368,7 +368,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.GetRelativePathForTests = (_, _) => "../outside";
+            ToolHelpers.SetRelativePathResolverForTests((_, _) => "../outside");
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
 
@@ -378,7 +378,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.GetRelativePathForTests = null;
+            ToolHelpers.SetRelativePathResolverForTests(null);
 
         }
 
@@ -397,7 +397,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.GetRelativePathForTests = (_, _) => "/absolute/outside";
+            ToolHelpers.SetRelativePathResolverForTests((_, _) => "/absolute/outside");
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
 
@@ -407,7 +407,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.GetRelativePathForTests = null;
+            ToolHelpers.SetRelativePathResolverForTests(null);
 
         }
 
@@ -447,7 +447,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     public void TryResolveFinalSymlinkTargetForCoverageTest_NonExistentPath_ReturnsTrue()
     {
 
-        ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+        ToolHelpers.SetSymlinkResolverForTests(null);
 
         string missing = Path.Combine(_root, "ghost-path");
 
@@ -474,12 +474,12 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = _ =>
+            ToolHelpers.SetSymlinkResolverForTests(_ =>
             {
                 calls++;
 
                 return calls == 1 ? (true, null) : (false, null);
-            };
+            });
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out _);
 
@@ -491,7 +491,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+            ToolHelpers.SetSymlinkResolverForTests(null);
 
         }
 
@@ -514,16 +514,16 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = _ => (true, null);
+            ToolHelpers.SetSymlinkResolverForTests(_ => (true, null));
 
             Assert.True(ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nullTarget));
 
             Assert.Equal(Path.GetFullPath(file), nullTarget);
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = path =>
+            ToolHelpers.SetSymlinkResolverForTests(path =>
                 string.Equals(path, file, StringComparison.Ordinal)
                     ? (true, redirected)
-                    : (true, null);
+                    : (true, null));
 
             Assert.True(ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nonNullTarget));
 
@@ -533,7 +533,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+            ToolHelpers.SetSymlinkResolverForTests(null);
 
         }
 
@@ -547,7 +547,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
             return;
         }
 
-        ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+        ToolHelpers.SetSymlinkResolverForTests(null);
 
         string inner = Path.Combine(_root, "native-inner");
 
@@ -582,10 +582,10 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = path =>
+            ToolHelpers.SetSymlinkResolverForTests(path =>
                 string.Equals(path, file, StringComparison.Ordinal)
                     ? (true, redirected)
-                    : (true, null);
+                    : (true, null));
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
 
@@ -597,7 +597,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+            ToolHelpers.SetSymlinkResolverForTests(null);
 
         }
 
@@ -616,7 +616,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = _ => (true, null);
+            ToolHelpers.SetSymlinkResolverForTests(_ => (true, null));
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
 
@@ -628,7 +628,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+            ToolHelpers.SetSymlinkResolverForTests(null);
 
         }
 
@@ -647,7 +647,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = _ => (false, null);
+            ToolHelpers.SetSymlinkResolverForTests(_ => (false, null));
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
 
@@ -657,7 +657,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+            ToolHelpers.SetSymlinkResolverForTests(null);
 
         }
 
@@ -680,10 +680,10 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = path =>
+            ToolHelpers.SetSymlinkResolverForTests(path =>
                 string.Equals(path, nested, StringComparison.Ordinal)
                     ? (true, redirected)
-                    : (true, null);
+                    : (true, null));
 
             bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out string? resolved);
 
@@ -695,7 +695,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+            ToolHelpers.SetSymlinkResolverForTests(null);
 
         }
 
@@ -760,11 +760,11 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     public void Dispose()
     {
 
-        ToolHelpers.UseOrdinalIgnoreCasePathComparisonForTests = false;
+        ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
 
-        ToolHelpers.GetRelativePathForTests = null;
+        ToolHelpers.SetRelativePathResolverForTests(null);
 
-        ToolHelpers.TryResolveFinalSymlinkTargetForTests = null;
+        ToolHelpers.SetSymlinkResolverForTests(null);
 
         foreach (string path in _cleanup)
         {

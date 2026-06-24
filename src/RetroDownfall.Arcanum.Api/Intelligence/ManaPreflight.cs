@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
@@ -79,11 +80,28 @@ public sealed class ManaPreflight
     private static string ComputeContentHashHex(string text)
     {
 
-        Span<byte> hash = stackalloc byte[32];
+        int byteCount = Encoding.UTF8.GetByteCount(text);
 
-        _ = SHA256.TryHashData(Encoding.UTF8.GetBytes(text), hash, out _);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(byteCount);
 
-        return Convert.ToHexString(hash[..16]);
+        try
+        {
+
+            _ = Encoding.UTF8.GetBytes(text, rented);
+
+            Span<byte> hash = stackalloc byte[32];
+
+            _ = SHA256.TryHashData(rented.AsSpan(0, byteCount), hash, out _);
+
+            return Convert.ToHexString(hash[..16]);
+
+        }
+        finally
+        {
+
+            ArrayPool<byte>.Shared.Return(rented);
+
+        }
 
     }
 

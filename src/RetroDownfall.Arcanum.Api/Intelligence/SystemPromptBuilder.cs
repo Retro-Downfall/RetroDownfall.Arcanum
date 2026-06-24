@@ -2,7 +2,7 @@ using System.Text;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Infrastructure.Workspace;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 

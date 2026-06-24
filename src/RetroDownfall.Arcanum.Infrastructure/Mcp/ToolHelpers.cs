@@ -6,22 +6,60 @@ internal static class ToolHelpers
 {
 
     /// <summary>
-    /// Test seam for Windows ordinal-ignore path comparison branches on non-Windows hosts.
+    /// Test-only seam for Windows ordinal-ignore path comparison branches on non-Windows hosts.
+    /// Production code should leave this at the default (<see langword="false"/>).
+    /// Set via <see cref="SetUseOrdinalIgnoreCasePathComparisonForTests(bool)"/>.
     /// </summary>
-    internal static bool UseOrdinalIgnoreCasePathComparisonForTests { get; set; }
+    private static bool _useOrdinalIgnoreCasePathComparisonForTests;
 
     /// <summary>
-    /// Test seam for relative-path escape validation branches.
+    /// Test-only seam for relative-path escape validation branches.
+    /// Set via <see cref="SetRelativePathResolverForTests"/>.
     /// </summary>
-    internal static Func<string, string, string>? GetRelativePathForTests { get; set; }
+    private static Func<string, string, string>? _getRelativePathForTests;
 
     /// <summary>
-    /// Test seam for symlink resolution failure and target branches.
+    /// Test-only seam for symlink resolution failure and target branches.
+    /// Set via <see cref="SetSymlinkResolverForTests"/>.
     /// </summary>
-    internal static Func<string, (bool Success, string? Target)>? TryResolveFinalSymlinkTargetForTests { get; set; }
+    private static Func<string, (bool Success, string? Target)>? _tryResolveFinalSymlinkTargetForTests;
+
+    /// <summary>
+    /// Enables or disables Windows-style ordinal-ignore-case path comparison for tests.
+    /// </summary>
+    internal static void SetUseOrdinalIgnoreCasePathComparisonForTests(bool value)
+    {
+        _useOrdinalIgnoreCasePathComparisonForTests = value;
+    }
+
+    /// <summary>
+    /// Supplies a test-only relative-path resolver. Pass <see langword="null"/> to restore the default.
+    /// </summary>
+    internal static void SetRelativePathResolverForTests(Func<string, string, string>? resolver)
+    {
+        _getRelativePathForTests = resolver;
+    }
+
+    /// <summary>
+    /// Supplies a test-only symlink resolver. Pass <see langword="null"/> to restore the default.
+    /// </summary>
+    internal static void SetSymlinkResolverForTests(Func<string, (bool Success, string? Target)>? resolver)
+    {
+        _tryResolveFinalSymlinkTargetForTests = resolver;
+    }
+
+    /// <summary>
+    /// Restores all test seams to production defaults. Call from test teardown to avoid cross-test leakage.
+    /// </summary>
+    internal static void ResetTestSeams()
+    {
+        _useOrdinalIgnoreCasePathComparisonForTests = false;
+        _getRelativePathForTests = null;
+        _tryResolveFinalSymlinkTargetForTests = null;
+    }
 
     private static StringComparison PathComparison =>
-        UseOrdinalIgnoreCasePathComparisonForTests || OperatingSystem.IsWindows()
+        _useOrdinalIgnoreCasePathComparisonForTests || OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
@@ -142,8 +180,8 @@ internal static class ToolHelpers
 
         try
         {
-            relative = GetRelativePathForTests is not null
-                ? GetRelativePathForTests(root, candidate)
+            relative = _getRelativePathForTests is not null
+                ? _getRelativePathForTests(root, candidate)
                 : Path.GetRelativePath(root, candidate);
         }
         catch (Exception)
@@ -218,9 +256,9 @@ internal static class ToolHelpers
     {
         resolvedTarget = null;
 
-        if (TryResolveFinalSymlinkTargetForTests is not null)
+        if (_tryResolveFinalSymlinkTargetForTests is not null)
         {
-            (bool success, string? target) = TryResolveFinalSymlinkTargetForTests(path);
+            (bool success, string? target) = _tryResolveFinalSymlinkTargetForTests(path);
 
             if (!success)
             {
@@ -268,8 +306,6 @@ internal static class ToolHelpers
         {
             return false;
         }
-
-        return true;
     }
 
 }

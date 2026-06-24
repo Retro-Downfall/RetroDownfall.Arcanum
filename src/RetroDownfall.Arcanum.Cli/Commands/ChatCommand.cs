@@ -388,6 +388,14 @@ public sealed class ChatCommand(
         {
             if (string.IsNullOrWhiteSpace(tail))
             {
+                if (!cliEnvironment.IsInteractive)
+                {
+                    AnsiConsole.MarkupLine(
+                        themePalette.ErrorMarkup(Markup.Escape("Interactive model selection is not available when stdout is redirected. Provide a model name (e.g., /model llama3).")));
+
+                    return (true, false);
+                }
+
                 ProviderSettings[] providers = arcanumSettings.Value.Providers ?? [];
 
                 var selection = new SelectionPrompt<string>().Title("Select the active model:");
@@ -682,6 +690,14 @@ public sealed class ChatCommand(
 
         if (verb.Equals("/attach", StringComparison.OrdinalIgnoreCase))
         {
+            if (!cliEnvironment.IsInteractive)
+            {
+                AnsiConsole.MarkupLine(
+                    themePalette.ErrorMarkup(Markup.Escape("Interactive file attachment is not available when stdout is redirected.")));
+
+                return (true, false);
+            }
+
             RunAttachBrowser(stagedFiles, Environment.CurrentDirectory, MaxAttachFileSizeBytes);
 
             return (true, false);
@@ -942,6 +958,14 @@ public sealed class ChatCommand(
 
     private void RunAttachBrowser(HashSet<string> stagedFiles, string initialDirectory, long maxAttachFileSizeBytes)
     {
+        if (!cliEnvironment.IsInteractive)
+        {
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(Markup.Escape("Interactive file attachment is not available when stdout is redirected. Pass file paths directly on the command line.")));
+
+            return;
+        }
+
         string currentBrowseDir = Path.GetFullPath(initialDirectory);
 
         while (true)
@@ -1515,6 +1539,8 @@ public sealed class ChatCommand(
 
             AnsiConsole.WriteLine();
 
+            EraseStreamedLines(linesPrinted);
+
             AnsiConsole.Write(markdig.Render(body));
 
         }
@@ -1563,6 +1589,26 @@ public sealed class ChatCommand(
                 }
             }
         }
+    }
+
+    private static void EraseStreamedLines(int linesPrinted)
+    {
+
+        if (linesPrinted <= 0)
+        {
+
+            return;
+
+        }
+
+        // Move the cursor up one line and clear it, repeating for each streamed line.
+
+        string eraseSequence =
+            $"\u001b[1A\u001b[2K" +
+            string.Join(string.Empty, Enumerable.Repeat("\u001b[1A\u001b[2K", linesPrinted - 1));
+
+        AnsiConsole.Write(eraseSequence);
+
     }
 
     private sealed class SessionMut

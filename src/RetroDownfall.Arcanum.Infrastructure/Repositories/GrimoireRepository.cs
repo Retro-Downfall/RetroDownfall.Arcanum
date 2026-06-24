@@ -1,4 +1,3 @@
-using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Text;
@@ -604,14 +603,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         try
         {
-            DbConnection connection = _db.Database.GetDbConnection();
-
-            if (connection.State != ConnectionState.Open)
-            {
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            await using DbCommand cmd = connection.CreateCommand();
+            await using DbCommand cmd = _db.Database.GetDbConnection().CreateCommand();
 
             cmd.CommandText =
                 """

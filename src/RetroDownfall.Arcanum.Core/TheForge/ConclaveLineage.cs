@@ -34,7 +34,11 @@ public static class ConclaveLineage
 
         Guid rootId = await FindRootAsync(repository, parentId, cancellationToken).ConfigureAwait(false);
 
-        int descendants = await CountDescendantsOfRootAsync(repository, rootId, cancellationToken).ConfigureAwait(false);
+        int descendants = await CountDescendantsOfRootAsync(
+            repository,
+            rootId,
+            maxDescendantsPerRoot,
+            cancellationToken).ConfigureAwait(false);
 
         if (descendants >= maxDescendantsPerRoot)
         {
@@ -156,6 +160,7 @@ public static class ConclaveLineage
     public static async Task<int> CountDescendantsOfRootAsync(
         IApprenticeRepository repository,
         Guid rootApprenticeId,
+        int maxDescendants = int.MaxValue,
         CancellationToken cancellationToken = default)
     {
 
@@ -179,6 +184,13 @@ public static class ConclaveLineage
             {
 
                 count++;
+
+                if (count >= maxDescendants)
+                {
+
+                    break;
+
+                }
 
             }
 

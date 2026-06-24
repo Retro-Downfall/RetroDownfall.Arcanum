@@ -66,10 +66,23 @@ internal static class AskHumanToolCallStreamHandler
 
             Console.Error.Flush();
 
-            string answer = CliLineReader.ReadLine(
-                $"\n{palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(args.Question)} ",
-                allowEmpty: false)
-                ?? string.Empty;
+            string answer;
+
+            try
+            {
+
+                answer = CliLineReader.ReadLine(
+                    $"\n{palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(args.Question)} ",
+                    allowEmpty: false)
+                    ?? string.Empty;
+
+            }
+            catch (InvalidOperationException)
+            {
+
+                return AskHumanResult.SubmitFailed;
+
+            }
 
             if (string.IsNullOrWhiteSpace(answer))
             {
@@ -101,22 +114,23 @@ internal static class AskHumanToolCallStreamHandler
             return null;
         }
 
-        int brace = data.IndexOf('{');
+        ReadOnlySpan<char> trimmed = data.AsSpan().Trim();
 
-        if (brace < 0)
+        if (trimmed.Length < 2
+            || trimmed[0] != '{'
+            || trimmed[^1] != '}')
         {
             return null;
         }
 
-        string json = data.Substring(brace);
-
         try
         {
-            return JsonSerializer.Deserialize(json, McpJsonSerializerContext.Default.AskHumanParams);
+            return JsonSerializer.Deserialize(trimmed.ToString(), McpJsonSerializerContext.Default.AskHumanParams);
         }
         catch (JsonException)
         {
             return null;
         }
     }
+
 }

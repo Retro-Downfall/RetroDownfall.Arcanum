@@ -3,7 +3,16 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record DaemonSettings
 {
 
-    public List<UnseenServantJob> Jobs { get; init; } = [];
+    private readonly List<UnseenServantJob> _jobs = [];
+
+    public IReadOnlyList<UnseenServantJob> Jobs
+    {
+
+        get => _jobs;
+
+        init => _jobs = new List<UnseenServantJob>(value);
+
+    }
 
     /// <summary>
     /// Caps the number of Unseen Servant jobs that can run concurrently. Use to throttle

@@ -1,6 +1,6 @@
 using System.Text;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Infrastructure.Workspace;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 

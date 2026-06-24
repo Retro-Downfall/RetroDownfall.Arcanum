@@ -454,4 +454,177 @@ public sealed class ConfigurationValidatorTests
 
     }
 
+    [Fact]
+    public void Validate_RelativeAllowedRoot_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Providers =
+            [
+
+                new ProviderSettings
+                {
+
+                    Name = "ollama",
+
+                    Type = AiProviderKind.Ollama,
+
+                    Models = ["llama3"],
+
+                },
+
+            ],
+
+            Campaigns = new CampaignsSettings
+            {
+
+                AllowedRoots = ["relative/path"],
+
+            },
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "campaigns.allowedRoots");
+
+    }
+
+    [Fact]
+    public void Validate_MissingAllowedRootDirectory_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Providers =
+            [
+
+                new ProviderSettings
+                {
+
+                    Name = "ollama",
+
+                    Type = AiProviderKind.Ollama,
+
+                    Models = ["llama3"],
+
+                },
+
+            ],
+
+            Spells = new SpellSettings
+            {
+
+                AllowedWorkspaceRoots = [Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid())],
+
+            },
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "spells.allowedWorkspaceRoots");
+
+    }
+
+    [Fact]
+    public void Validate_ValidAllowedRootDirectory_ReturnsSuccess()
+    {
+
+        string tempDir = Path.Combine(Path.GetTempPath(), "arcanum-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+
+            ArcanumSettings settings = new()
+            {
+
+                Providers =
+                [
+
+                    new ProviderSettings
+                    {
+
+                        Name = "ollama",
+
+                        Type = AiProviderKind.Ollama,
+
+                        Models = ["llama3"],
+
+                    },
+
+                ],
+
+                Perception = new PerceptionSettings
+                {
+
+                    AllowedWorkspaceRoots = [tempDir],
+
+                },
+
+            };
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsSuccess);
+
+        }
+        finally
+        {
+
+            Directory.Delete(tempDir, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void Validate_MissingHostWorkspace_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Providers =
+            [
+
+                new ProviderSettings
+                {
+
+                    Name = "ollama",
+
+                    Type = AiProviderKind.Ollama,
+
+                    Models = ["llama3"],
+
+                },
+
+            ],
+
+            Host = new HostSettings
+            {
+
+                Workspace = Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid()),
+
+            },
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.workspace");
+
+    }
+
 }

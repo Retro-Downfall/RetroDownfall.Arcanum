@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reflection;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
@@ -5,10 +6,12 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using Spectre.Console.Rendering;
@@ -21,7 +24,7 @@ public sealed class DoctorCommand(
     IHttpClientFactory httpClientFactory,
     ISecretStore secretStore,
     IThemePalette themePalette,
-    ICliEnvironment cliEnvironment) : AsyncCommand
+    ICliEnvironment cliEnvironment) : AsyncCommand<DoctorCommand.Settings>
 {
 
     private const string OkGlyph = "\u2713";
@@ -30,8 +33,19 @@ public sealed class DoctorCommand(
 
     private const string FailGlyph = "\u2717";
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+
+        if (settings.FixPermissions)
+        {
+
+            SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths();
+
+            AnsiConsole.MarkupLine(themePalette.HighlightMarkup("Applied owner-only permissions to sensitive Arcanum paths."));
+
+            return 0;
+
+        }
 
         WriteVersionPanel();
 
@@ -56,6 +70,17 @@ public sealed class DoctorCommand(
         healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
 
         return healthy ? 0 : 1;
+
+    }
+
+    public sealed class Settings : CommandSettings
+    {
+
+        [CommandOption("--fix-permissions")]
+
+        [Description("Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store.")]
+
+        public bool FixPermissions { get; init; }
 
     }
 
@@ -377,7 +402,7 @@ public sealed class DoctorCommand(
 
         string targetUrl = $"http://localhost:{port}/api/health";
 
-        HttpClient client = httpClientFactory.CreateClient("ArcanumApi");
+        HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
 

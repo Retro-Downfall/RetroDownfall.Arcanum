@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
+namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 [ExcludeFromCodeCoverage] // Reason: spell path validation wrapper; SpellWorkspaceResolver and repository tests cover policy outcomes.
 internal static partial class SpellPathPolicy

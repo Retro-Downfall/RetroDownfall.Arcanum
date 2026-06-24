@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
+namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 internal static class CodexReader
 {

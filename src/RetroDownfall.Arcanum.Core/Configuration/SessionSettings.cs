@@ -1,6 +1,6 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-public sealed class SessionSettings
+public sealed record SessionSettings
 {
 
     public int? DefaultQueryLimit { get; init; } = 100;

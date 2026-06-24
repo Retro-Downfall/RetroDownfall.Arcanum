@@ -14,7 +14,7 @@ internal static class InferenceErrorMapper
                 StatusCodes.Status503ServiceUnavailable,
             "Hub.Timeout" =>
                 StatusCodes.Status503ServiceUnavailable,
-            "Hub.Model" =>
+            "Hub.Model" or "Ollama.Pull" or "Ollama.ListModels" =>
                 StatusCodes.Status404NotFound,
             "Spell.NotFound" or "Prompt.NotFound" =>
                 StatusCodes.Status404NotFound,

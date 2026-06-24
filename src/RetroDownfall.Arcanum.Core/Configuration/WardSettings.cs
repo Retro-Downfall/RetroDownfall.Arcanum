@@ -5,7 +5,7 @@ public sealed record WardSettings
 
     public bool Enabled { get; init; } = true;
 
-    public List<string> ForbiddenArts { get; init; } = new()
+    private readonly List<string> _forbiddenArts = new()
     {
         "execute_command",
         "write_file",
@@ -13,6 +13,15 @@ public sealed record WardSettings
         "delete_lore",
         "run_spell_script",
     };
+
+    public IReadOnlyList<string> ForbiddenArts
+    {
+
+        get => _forbiddenArts;
+
+        init => _forbiddenArts = new List<string>(value);
+
+    }
 
     public int TimeoutSeconds { get; init; } = 120;
 

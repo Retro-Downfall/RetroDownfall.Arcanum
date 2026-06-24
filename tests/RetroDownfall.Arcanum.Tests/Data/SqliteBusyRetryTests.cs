@@ -1,0 +1,138 @@
+using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+namespace RetroDownfall.Arcanum.Tests.Data;
+
+public sealed class SqliteBusyRetryTests
+{
+
+    [Fact]
+    public async Task ExecuteAsync_SucceedsFirstTime_ReturnsValue()
+    {
+
+        int result = await SqliteBusyRetry.ExecuteAsync(() => Task.FromResult(42));
+
+        Assert.Equal(42, result);
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RetriesOnBusyThenSucceeds_ReturnsValue()
+    {
+
+        int attempts = 0;
+
+        int result = await SqliteBusyRetry.ExecuteAsync(() =>
+        {
+
+            attempts++;
+
+            if (attempts < 3)
+            {
+
+                throw new SqliteException("busy", 5);
+
+            }
+
+            return Task.FromResult(42);
+
+        });
+
+        Assert.Equal(42, result);
+
+        Assert.Equal(3, attempts);
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExhaustsRetriesOnBusy_ThrowsSqliteException()
+    {
+
+        int attempts = 0;
+
+        SqliteException thrown = await Assert.ThrowsAsync<SqliteException>(() => SqliteBusyRetry.ExecuteAsync(() =>
+        {
+
+            attempts++;
+
+            throw new SqliteException("busy", 5);
+
+        }));
+
+        Assert.True(attempts > 1);
+
+        Assert.Equal(5, thrown.SqliteErrorCode);
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NonBusyException_DoesNotRetry()
+    {
+
+        int attempts = 0;
+
+        SqliteException thrown = await Assert.ThrowsAsync<SqliteException>(() => SqliteBusyRetry.ExecuteAsync(() =>
+        {
+
+            attempts++;
+
+            throw new SqliteException("constraint", 19);
+
+        }));
+
+        Assert.Equal(1, attempts);
+
+        Assert.Equal(19, thrown.SqliteErrorCode);
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CancellationRequested_StopsRetrying()
+    {
+
+        using CancellationTokenSource cts = new();
+
+        cts.Cancel();
+
+        int attempts = 0;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SqliteBusyRetry.ExecuteAsync(() =>
+        {
+
+            attempts++;
+
+            throw new SqliteException("busy", 5);
+
+        }, cts.Token));
+
+        Assert.Equal(1, attempts);
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_VoidOverload_RetriesOnBusyThenSucceeds()
+    {
+
+        int attempts = 0;
+
+        await SqliteBusyRetry.ExecuteAsync(() =>
+        {
+
+            attempts++;
+
+            if (attempts < 2)
+            {
+
+                throw new SqliteException("busy", 5);
+
+            }
+
+            return Task.CompletedTask;
+
+        });
+
+        Assert.Equal(2, attempts);
+
+    }
+
+}

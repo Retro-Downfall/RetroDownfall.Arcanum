@@ -40,6 +40,8 @@ public sealed class ChatClientFactory(
 
     private readonly ConcurrentDictionary<string, EndpointHttpClientEntry> _endpointHttpClients = new(StringComparer.Ordinal);
 
+    private readonly object _endpointLock = new();
+
     private sealed class EndpointHttpClientEntry
     {
 
@@ -199,39 +201,49 @@ public sealed class ChatClientFactory(
 
         string key = NormalizeEndpointKey(endpoint);
 
-        EndpointHttpClientEntry entry = _endpointHttpClients.GetOrAdd(
-            key,
-            static cacheKey => new EndpointHttpClientEntry
-            {
-                Client = CreateEndpointHttpClient(cacheKey),
-                RefCount = 0,
-            });
+        lock (_endpointLock)
+        {
 
-        Interlocked.Increment(ref entry.RefCount);
+            EndpointHttpClientEntry entry = _endpointHttpClients.GetOrAdd(
+                key,
+                static cacheKey => new EndpointHttpClientEntry
+                {
+                    Client = CreateEndpointHttpClient(cacheKey),
+                    RefCount = 0,
+                });
 
-        EvictExcessEndpointClients();
+            Interlocked.Increment(ref entry.RefCount);
 
-        return (entry.Client, key);
+            EvictExcessEndpointClients();
+
+            return (entry.Client, key);
+
+        }
 
     }
 
     internal void ReleaseEndpointHttpClient(string cacheKey)
     {
 
-        if (!_endpointHttpClients.TryGetValue(cacheKey, out EndpointHttpClientEntry? entry))
+        lock (_endpointLock)
         {
 
-            return;
+            if (!_endpointHttpClients.TryGetValue(cacheKey, out EndpointHttpClientEntry? entry))
+            {
 
-        }
+                return;
 
-        if (Interlocked.Decrement(ref entry.RefCount) == 0
-            && _endpointHttpClients.Count > MaxCachedEndpointClients
-            && _endpointHttpClients.TryRemove(cacheKey, out EndpointHttpClientEntry? removed)
-            && Volatile.Read(ref removed.RefCount) == 0)
-        {
+            }
 
-            removed.Client.Dispose();
+            if (Interlocked.Decrement(ref entry.RefCount) == 0
+                && _endpointHttpClients.Count > MaxCachedEndpointClients
+                && _endpointHttpClients.TryRemove(cacheKey, out EndpointHttpClientEntry? removed)
+                && Volatile.Read(ref removed.RefCount) == 0)
+            {
+
+                removed.Client.Dispose();
+
+            }
 
         }
 

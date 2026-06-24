@@ -162,20 +162,6 @@ public sealed class WardGateTests
             timeout: TimeSpan.FromSeconds(30),
             cts.Token);
 
-        for (int attempt = 0; attempt < 50; attempt++)
-        {
-
-            if (gate.GetActiveWards().Any(static w => w.WardId == "ward-cancel"))
-            {
-
-                break;
-
-            }
-
-            await Task.Delay(10);
-
-        }
-
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wardTask);

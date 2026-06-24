@@ -45,7 +45,7 @@ internal sealed class BoundedLruCache<TKey, TValue> where TKey : notnull
         lock (_lock)
         {
 
-            if (!_nodes.ContainsKey(key))
+            if (!_nodes.TryGetValue(key, out LinkedListNode<CacheEntry>? currentNode))
             {
 
                 value = default!;
@@ -54,11 +54,11 @@ internal sealed class BoundedLruCache<TKey, TValue> where TKey : notnull
 
             }
 
-            _order.Remove(node);
+            _order.Remove(currentNode);
 
-            _order.AddFirst(node);
+            _order.AddFirst(currentNode);
 
-            value = node.Value.Value;
+            value = currentNode.Value.Value;
 
             return true;
 

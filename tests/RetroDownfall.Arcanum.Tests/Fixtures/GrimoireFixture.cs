@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -23,6 +24,8 @@ public sealed class GrimoireFixture : IDisposable
 
     private readonly string _templatePath;
 
+    private readonly string _templateSidecarPath;
+
     private readonly string _passphrase;
 
     private readonly ConcurrentBag<string> _copyPaths = new();
@@ -38,7 +41,11 @@ public sealed class GrimoireFixture : IDisposable
 
             Directory.CreateDirectory(Path.GetDirectoryName(probePath)!);
 
-            _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromApiKey(TestApiKey);
+            // Use a deterministic salt for the shared template so that a template created by
+            // a previous test process is still openable by a new process. The KDF sidecar tests
+            // exercise random salt generation separately.
+            _saltStatic = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+            _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromApiKey(TestApiKey, _saltStatic);
 
             using SqliteConnection probe = new(new SqliteConnectionStringBuilder
             {
@@ -73,7 +80,9 @@ public sealed class GrimoireFixture : IDisposable
 
     }
 
-    private static readonly string _passphraseStatic;
+    private static readonly string _passphraseStatic = null!;
+
+    private static readonly byte[] _saltStatic = null!;
 
     public GrimoireFixture()
     {
@@ -86,17 +95,27 @@ public sealed class GrimoireFixture : IDisposable
 
         _templatePath = Path.Combine(dir, "template-remediation-v1.db");
 
+        _templateSidecarPath = _templatePath + ".kdf";
+
         if (!SqlCipherAvailable)
         {
             return;
         }
 
-        if (File.Exists(_templatePath))
+        lock (BuildLock)
         {
-            return;
-        }
 
-        BuildTemplateAsync(CancellationToken.None).GetAwaiter().GetResult();
+            if (File.Exists(_templatePath)
+                && File.Exists(_templateSidecarPath)
+                && CanOpenTemplateAsync(_templatePath, _passphrase, CancellationToken.None).GetAwaiter().GetResult())
+            {
+                return;
+            }
+
+            DeleteTemplateFiles();
+            BuildTemplateAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+        }
 
     }
 
@@ -104,12 +123,18 @@ public sealed class GrimoireFixture : IDisposable
 
     private static readonly object CopyLock = new();
 
+    private static readonly object BuildLock = new();
+
     public string CopyDatabase()
     {
 
         string copyPath = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"grimoire-{Guid.NewGuid():N}.db");
 
+        string copySidecarPath = copyPath + ".kdf";
+
         _copyPaths.Add(copyPath);
+
+        _copyPaths.Add(copySidecarPath);
 
         lock (CopyLock)
         {
@@ -123,6 +148,8 @@ public sealed class GrimoireFixture : IDisposable
                 {
 
                     File.Copy(_templatePath, copyPath, overwrite: true);
+
+                    File.Copy(_templateSidecarPath, copySidecarPath, overwrite: true);
 
                     return copyPath;
 
@@ -139,6 +166,8 @@ public sealed class GrimoireFixture : IDisposable
         }
 
         File.Copy(_templatePath, copyPath, overwrite: true);
+
+        File.Copy(_templateSidecarPath, copySidecarPath, overwrite: true);
 
         return copyPath;
 
@@ -172,10 +201,7 @@ public sealed class GrimoireFixture : IDisposable
     private async Task BuildTemplateAsync(CancellationToken cancellationToken)
     {
 
-        if (File.Exists(_templatePath))
-        {
-            File.Delete(_templatePath);
-        }
+        DeleteTemplateFiles();
 
         await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
         {
@@ -194,6 +220,76 @@ public sealed class GrimoireFixture : IDisposable
         _ = await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         await connection.CloseAsync().ConfigureAwait(false);
+
+        GrimoireKdfSidecar sidecar = new()
+        {
+            Version = GrimoireKeyDerivation.KdfVersion2,
+            SaltBase64 = Convert.ToBase64String(_saltStatic),
+        };
+
+        GrimoireKdfSidecarFile.Write(_templatePath, sidecar);
+
+    }
+
+    private void DeleteTemplateFiles()
+    {
+
+        string[] suffixes = ["", "-wal", "-shm", ".kdf"];
+
+        foreach (string suffix in suffixes)
+        {
+
+            try
+            {
+
+                string path = _templatePath + suffix;
+
+                if (File.Exists(path))
+                {
+
+                    File.Delete(path);
+
+                }
+
+            }
+            catch
+            {
+
+                // Best-effort cleanup of stale template files.
+
+            }
+
+        }
+
+    }
+
+    private static async Task<bool> CanOpenTemplateAsync(string templatePath, string passphrase, CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await using SqliteConnection probe = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = templatePath,
+                Password = passphrase,
+            }.ToString());
+
+            await probe.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            await using SqliteCommand cmd = probe.CreateCommand();
+            cmd.CommandText = "SELECT 1;";
+            _ = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+            return true;
+
+        }
+        catch
+        {
+
+            return false;
+
+        }
 
     }
 

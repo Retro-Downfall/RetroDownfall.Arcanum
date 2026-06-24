@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -200,7 +201,8 @@ internal static class OpenAiV1Endpoints
         }
 
         if (body.ToolChoice is { } toolChoice
-            && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
+            && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined
+            && !IsDefaultToolChoice(toolChoice))
         {
             return JsonError(
                 "Client-supplied `tool_choice` is not supported. Arcanum uses its own server-side MCP toolset.",
@@ -423,7 +425,7 @@ internal static class OpenAiV1Endpoints
                     echoModel,
                     systemFingerprint,
                     rawMessage: null,
-                    CancellationToken.None)
+                    httpContext.RequestAborted)
                     .ConfigureAwait(false);
             }
             catch (Exception writeEx)
@@ -620,6 +622,18 @@ internal static class OpenAiV1Endpoints
 
     }
 
+    private static readonly string[] AllowedStreamErrorMessages =
+    [
+        "Inference failed. See server logs for details.",
+        "Tool invocation limit reached.",
+        "Inference timed out.",
+        "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
+        "Prompt is required.",
+        "Attached file validation failed.",
+        "The requested model could not be downloaded from Ollama.",
+        "Could not reach Ollama to list local models.",
+    ];
+
     private static string SanitizeStreamErrorMessage(string? rawMessage)
     {
         if (string.IsNullOrWhiteSpace(rawMessage))
@@ -627,16 +641,12 @@ internal static class OpenAiV1Endpoints
             return "Inference failed. See server logs for details.";
         }
 
-        if (rawMessage.Contains("Tool invocation limit", StringComparison.OrdinalIgnoreCase))
+        foreach (string allowed in AllowedStreamErrorMessages)
         {
-            return "Tool invocation limit reached.";
-        }
-
-        if (rawMessage.Length <= 200
-            && !rawMessage.Contains('\n')
-            && !rawMessage.Contains("Exception", StringComparison.Ordinal))
-        {
-            return rawMessage;
+            if (string.Equals(rawMessage, allowed, StringComparison.Ordinal))
+            {
+                return allowed;
+            }
         }
 
         return "Inference failed. See server logs for details.";
@@ -649,7 +659,12 @@ internal static class OpenAiV1Endpoints
             return "inference_failed";
         }
 
-        if (rawMessage.Contains("Tool invocation limit", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(rawMessage, "Tool invocation limit reached.", StringComparison.Ordinal))
+        {
+            return "server_error";
+        }
+
+        if (string.Equals(rawMessage, "Inference timed out.", StringComparison.Ordinal))
         {
             return "server_error";
         }
@@ -760,15 +775,26 @@ internal static class OpenAiV1Endpoints
             _ => "Inference failed. See server logs for details.",
         };
 
-    private static int ResolveOpenAiInferenceFailureStatusCode(string internalCode) =>
-        internalCode switch
+    private static bool IsDefaultToolChoice(JsonElement toolChoice)
+    {
+
+        if (toolChoice.ValueKind == JsonValueKind.String)
         {
-            "Hub.Model" or "Ollama.Pull" =>
-                StatusCodes.Status404NotFound,
-            "Validation.InvalidPrompt" or "Validation.AttachedFiles" =>
-                StatusCodes.Status400BadRequest,
-            _ => StatusCodes.Status500InternalServerError,
-        };
+
+            ReadOnlySpan<char> text = toolChoice.GetString() ?? ReadOnlySpan<char>.Empty;
+
+            return text.Equals("auto", StringComparison.Ordinal)
+                || text.Equals("none", StringComparison.Ordinal)
+                || text.Equals("required", StringComparison.Ordinal);
+
+        }
+
+        return false;
+
+    }
+
+    private static int ResolveOpenAiInferenceFailureStatusCode(string internalCode) =>
+        InferenceErrorMapper.ResolveStatusCode(internalCode);
 
     internal static IResult CreateUnhandledInferenceErrorResult() =>
         JsonError(

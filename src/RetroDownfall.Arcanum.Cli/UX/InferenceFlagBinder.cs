@@ -272,7 +272,7 @@ public static class InferenceFlagBinder
 
         foreach (string item in raw)
         {
-            if (string.IsNullOrEmpty(item))
+            if (string.IsNullOrWhiteSpace(item))
             {
                 continue;
             }

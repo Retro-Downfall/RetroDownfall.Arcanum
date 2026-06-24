@@ -74,7 +74,7 @@ public sealed class CliSessionManager(IThemePalette palette)
 
                 SecureFilePermissions.ApplyOwnerOnlyFile(finalPath);
             }
-            catch
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // Best-effort cleanup of the temp file if Move fails.
                 try

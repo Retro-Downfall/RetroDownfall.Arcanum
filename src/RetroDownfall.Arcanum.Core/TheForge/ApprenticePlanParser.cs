@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Core.TheForge;
 public static class ApprenticePlanParser
 {
 
-    public static List<PlanStep> ParsePlan(string responseText, int maxSteps = int.MaxValue)
+    public static List<PlanStep> ParsePlan(string responseText, int maxSteps = 200)
     {
 
         string trimmed = StripMarkdownFences(responseText.Trim());
@@ -47,7 +47,7 @@ public static class ApprenticePlanParser
 
     }
 
-    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps, int maxSteps = int.MaxValue)
+    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps, int maxSteps = 200)
     {
 
         steps = null;

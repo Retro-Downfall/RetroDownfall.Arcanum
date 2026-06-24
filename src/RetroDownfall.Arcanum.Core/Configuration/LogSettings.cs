@@ -2,7 +2,7 @@ using RetroDownfall.Arcanum.Core.Logging;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-public sealed class LogSettings
+public sealed record LogSettings
 {
 
     public int RingBufferCapacity { get; init; } = 10_000;

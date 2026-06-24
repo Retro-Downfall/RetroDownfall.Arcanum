@@ -244,7 +244,13 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         }
 
-        File.Copy(_grimoireFixture.CopyDatabase(), databasePath, overwrite: true);
+        string templateDatabasePath = _grimoireFixture.CopyDatabase();
+
+        string templateSidecarPath = templateDatabasePath + ".kdf";
+
+        File.Copy(templateDatabasePath, databasePath, overwrite: true);
+
+        File.Copy(templateSidecarPath, databasePath + ".kdf", overwrite: true);
 
     }
 

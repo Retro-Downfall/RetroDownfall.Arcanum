@@ -16,15 +16,42 @@ public sealed record SanctumConfig
 
     public bool EnforcePathBoundary { get; init; } = true;
 
-    public List<string> AllowedPaths { get; init; } = new();
+    private readonly List<string> _allowedPaths = [];
+
+    public IReadOnlyList<string> AllowedPaths
+    {
+
+        get => _allowedPaths;
+
+        init => _allowedPaths = new List<string>(value);
+
+    }
 
     public NetworkPolicy NetworkPolicy { get; init; } = NetworkPolicy.AllowAll;
 
-    public List<string> AllowedDomains { get; init; } = new();
+    private readonly List<string> _allowedDomains = [];
+
+    public IReadOnlyList<string> AllowedDomains
+    {
+
+        get => _allowedDomains;
+
+        init => _allowedDomains = new List<string>(value);
+
+    }
 
     public ResourceLimits ResourceLimits { get; init; } = new();
 
-    public List<string> DisabledTools { get; init; } = new();
+    private readonly List<string> _disabledTools = [];
+
+    public IReadOnlyList<string> DisabledTools
+    {
+
+        get => _disabledTools;
+
+        init => _disabledTools = new List<string>(value);
+
+    }
 
 }
 

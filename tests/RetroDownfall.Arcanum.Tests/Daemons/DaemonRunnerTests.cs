@@ -78,7 +78,7 @@ public sealed class DaemonRunnerTests
 
         Task<Result<DaemonExecutionSummary>> first = runner.RunAsync("job-c", force: false, CancellationToken.None);
 
-        await Task.Delay(25);
+        await job.StartedTask;
 
         Result<DaemonExecutionSummary> second = await runner.RunAsync("job-c", force: false, CancellationToken.None);
 
@@ -120,6 +120,8 @@ public sealed class DaemonRunnerTests
     private sealed class FakeDaemonJob(string id, string name, bool canRunOnDemand) : IDaemonJob
     {
 
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public string Id { get; } = id;
 
         public string Name { get; } = name;
@@ -132,8 +134,12 @@ public sealed class DaemonRunnerTests
 
         public TimeSpan RunDelay { get; init; } = TimeSpan.Zero;
 
+        public Task StartedTask => _started.Task;
+
         public async Task RunAsync(CancellationToken ct)
         {
+
+            _started.TrySetResult();
 
             if (RunDelay > TimeSpan.Zero)
             {

@@ -14,10 +14,15 @@ SECURITY_BRANCH_TARGET = 100.0
 
 SECURITY_TYPES = {
     "ApiKeyEndpointFilter",
+    "ApiKeyDigestCache",
+    "DataProtectionSecretStore",
     "GrimoireKeyDerivation",
+    "McpSecurityLimits",
+    "SandboxedFileIo",
+    "SanctumGuard",
     "ToolHelpers",
     "OutboundUrlGuard",
-    "SanctumGuard",
+    "WardGate",
 }
 
 
@@ -27,12 +32,14 @@ def pct(covered: float, total: float) -> float:
     return (covered / total) * 100.0
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+
+    if len(args) != 1:
         print("usage: coverage_threshold.py <coverage.cobertura.xml>", file=sys.stderr)
         return 2
 
-    root = ET.parse(sys.argv[1]).getroot()
+    root = ET.parse(args[0]).getroot()
 
     line_rate = float(root.attrib.get("line-rate", "0")) * 100.0
 

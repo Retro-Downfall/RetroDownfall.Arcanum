@@ -12,6 +12,15 @@ using Serilog;
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
+if (!string.Equals(builder.Environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase)
+    && !string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
+{
+
+    Console.Error.WriteLine(
+        $"Arcanum DevHost is intended for Development or Testing environments. Current environment: {builder.Environment.EnvironmentName}.");
+
+}
+
 TaskScheduler.UnobservedTaskException += static (_, e) =>
 {
 
@@ -74,11 +83,13 @@ app.UseArcanumRateLimiter();
 
 app.MapArcanumEndpoints();
 
-Console.WriteLine($"Arcanum DevHost listening on http://localhost:{listenPort}");
+Console.Error.WriteLine($"Arcanum DevHost listening on http://localhost:{listenPort}");
 
 try
 {
     await app.RunAsync().ConfigureAwait(false);
+
+    return 0;
 }
 finally
 {

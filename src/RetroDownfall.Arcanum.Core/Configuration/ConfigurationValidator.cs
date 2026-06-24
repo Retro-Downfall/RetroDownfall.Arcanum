@@ -107,6 +107,14 @@ public sealed class ConfigurationValidator
 
         }
 
+        ValidatePathAllowlist(settings.Campaigns.AllowedRoots, "campaigns.allowedRoots", errors);
+
+        ValidatePathAllowlist(settings.Spells.AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
+
+        ValidatePathAllowlist(settings.Perception.AllowedWorkspaceRoots, "perception.allowedWorkspaceRoots", errors);
+
+        ValidateHostWorkspace(settings.Host.Workspace, "host.workspace", errors);
+
         if (errors.Count > 0)
         {
 
@@ -144,6 +152,70 @@ public sealed class ConfigurationValidator
         }
 
         return false;
+
+    }
+
+    private static void ValidatePathAllowlist(
+        string[] roots,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+
+        foreach (string root in roots)
+        {
+
+            if (string.IsNullOrWhiteSpace(root))
+            {
+
+                errors.Add(new ConfigurationValidationError(pointer, $"Path allowlist entry must not be empty."));
+
+                continue;
+
+            }
+
+            if (!Path.IsPathRooted(root))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Path allowlist entry '{root}' must be an absolute path."));
+
+            }
+            else if (!Directory.Exists(root))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Path allowlist entry '{root}' does not exist or is not a directory."));
+
+            }
+
+        }
+
+    }
+
+    private static void ValidateHostWorkspace(
+        string? workspace,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+
+        if (string.IsNullOrWhiteSpace(workspace))
+        {
+
+            return;
+        }
+
+        string rooted = Path.IsPathRooted(workspace) ? workspace : Path.GetFullPath(workspace);
+
+        if (!Directory.Exists(rooted))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                $"Host workspace '{workspace}' does not exist or is not a directory."));
+
+        }
 
     }
 

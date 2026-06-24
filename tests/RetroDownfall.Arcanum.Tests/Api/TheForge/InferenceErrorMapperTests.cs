@@ -13,6 +13,8 @@ public sealed class InferenceErrorMapperTests
     [InlineData("Hub.ToolLoop", StatusCodes.Status503ServiceUnavailable)]
     [InlineData("Hub.Timeout", StatusCodes.Status503ServiceUnavailable)]
     [InlineData("Hub.Model", StatusCodes.Status404NotFound)]
+    [InlineData("Ollama.Pull", StatusCodes.Status404NotFound)]
+    [InlineData("Ollama.ListModels", StatusCodes.Status404NotFound)]
     [InlineData("Spell.NotFound", StatusCodes.Status404NotFound)]
     [InlineData("Prompt.NotFound", StatusCodes.Status404NotFound)]
     [InlineData("Spell.PathNotAllowed", StatusCodes.Status403Forbidden)]

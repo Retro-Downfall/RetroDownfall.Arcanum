@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
+namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 public sealed record SpellMetadata(
     string Name,

@@ -31,9 +31,11 @@ public sealed class LoreListCommand(ArcanumApiClient apiClient, IThemePalette th
 
         foreach (LoreDto row in result.Value)
         {
-            string snippet = row.Value.Length <= SnippetMaxLength
-                ? row.Value
-                : string.Concat(row.Value.AsSpan(0, SnippetMaxLength), "...");
+            string? value = row.Value;
+
+            string snippet = string.IsNullOrEmpty(value) || value.Length <= SnippetMaxLength
+                ? value ?? string.Empty
+                : string.Concat(value.AsSpan(0, SnippetMaxLength), "...");
 
             table.AddRow(
                 Markup.Escape(row.Key),

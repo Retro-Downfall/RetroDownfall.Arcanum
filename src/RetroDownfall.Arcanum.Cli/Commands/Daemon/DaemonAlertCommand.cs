@@ -15,6 +15,17 @@ public sealed class DaemonAlertCommand(ArcanumApiClient apiClient, IThemePalette
     protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
 
+        if (string.IsNullOrWhiteSpace(settings.Message))
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape("A non-empty message is required.")));
+
+            return 1;
+
+        }
+
         if (!Enum.TryParse(settings.Severity.Trim(), ignoreCase: true, out CommLinkSeverity severity))
         {
 

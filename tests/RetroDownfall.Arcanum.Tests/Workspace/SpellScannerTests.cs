@@ -1,7 +1,7 @@
-using RetroDownfall.Arcanum.Infrastructure.Workspace;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
-namespace RetroDownfall.Arcanum.Tests.Workspace;
+namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
 public sealed class SpellScannerTests : IAsyncLifetime
 {

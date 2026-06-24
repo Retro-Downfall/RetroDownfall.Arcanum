@@ -5,6 +5,13 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// <summary>
 /// Shared path containment checks for workspace-scoped API routes.
 /// </summary>
+/// <remarks>
+/// Path comparison is ordinal on Linux and case-insensitive on Windows. On macOS the default
+/// file system is case-insensitive (APFS/HFS+) but this helper does not canonicalize casing,
+/// so a configured root and a request that differ only in case may be rejected on macOS even
+/// though they resolve to the same directory. Operators should configure roots using the
+/// canonical casing they intend callers to use.
+/// </remarks>
 public static class WorkspaceRootPolicy
 {
 

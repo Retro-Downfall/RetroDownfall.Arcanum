@@ -63,9 +63,7 @@ internal sealed class UnseenServantService(
 
     private void DispatchDueJobs(CancellationToken stoppingToken)
     {
-        List<UnseenServantJob>? jobList = optionsMonitor.CurrentValue.Daemon?.Jobs;
-
-        IReadOnlyList<UnseenServantJob> jobs = jobList ?? [];
+        IReadOnlyList<UnseenServantJob> jobs = optionsMonitor.CurrentValue.Daemon?.Jobs ?? [];
 
         int maxConcurrent = ArcanumSettingClamps.DaemonMaxConcurrentJobs(
             optionsMonitor.CurrentValue.Daemon?.MaxConcurrentJobs ?? new DaemonSettings().MaxConcurrentJobs);

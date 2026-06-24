@@ -7,7 +7,16 @@ public sealed record ApprenticeCheckpoint
 
     public string? ConversationSummary { get; init; }
 
-    public List<string> CompletedToolCallIds { get; init; } = new();
+    private readonly List<string> _completedToolCallIds = [];
+
+    public IReadOnlyList<string> CompletedToolCallIds
+    {
+
+        get => _completedToolCallIds;
+
+        init => _completedToolCallIds = new List<string>(value);
+
+    }
 
     public DateTimeOffset Timestamp { get; init; }
 

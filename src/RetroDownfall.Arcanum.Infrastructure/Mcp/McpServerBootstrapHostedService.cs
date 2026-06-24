@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -12,7 +13,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 [ExcludeFromCodeCoverage] // Reason: IHostedService MCP server bootstrap
 public sealed class McpServerBootstrapHostedService(
     IMcpConnectionManager manager,
-    IOptionsMonitor<ArcanumSettings> options) : IHostedService
+    IOptionsMonitor<ArcanumSettings> options,
+    IHostApplicationLifetime lifetime,
+    ILogger<McpServerBootstrapHostedService> logger) : IHostedService
 {
 
     /// <inheritdoc />
@@ -27,11 +30,11 @@ public sealed class McpServerBootstrapHostedService(
                 {
                     try
                     {
-                        await manager.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                        await manager.InitializeAsync(lifetime.ApplicationStopping).ConfigureAwait(false);
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
-                        // Background bootstrap failures surface on first MCP tool use; host startup must not block.
+                        logger.LogError(ex, "Background MCP server bootstrap failed. Tools will be unavailable until the host is restarted.");
                     }
                 },
                 CancellationToken.None);

@@ -72,6 +72,85 @@ public static class SecureFilePermissions
     }
 
     /// <summary>
+    /// Applies owner-only permissions to all sensitive Arcanum paths.
+    /// </summary>
+    public static void ApplyOwnerOnlyToSensitivePaths()
+    {
+
+        EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
+
+        string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        if (File.Exists(configFile))
+        {
+
+            ApplyOwnerOnlyFile(configFile);
+
+        }
+
+        string databaseFile = ArcanumPaths.GrimoireDatabaseFile;
+
+        if (File.Exists(databaseFile))
+        {
+
+            ApplyOwnerOnlyFile(databaseFile);
+
+        }
+
+        string sessionFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
+
+        if (File.Exists(sessionFile))
+        {
+
+            ApplyOwnerOnlyFile(sessionFile);
+
+        }
+
+        string securityFile = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "arcanum",
+            "security.dat");
+
+        if (File.Exists(securityFile))
+        {
+
+            ApplyOwnerOnlyFile(securityFile);
+
+        }
+
+        string logDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "arcanum",
+            "logs");
+
+        if (Directory.Exists(logDirectory))
+        {
+
+            EnsureOwnerOnlyDirectoryExists(logDirectory);
+
+            try
+            {
+
+                foreach (string logFile in Directory.EnumerateFiles(logDirectory))
+                {
+
+                    ApplyOwnerOnlyFile(logFile);
+
+                }
+
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+
+                // Best effort — individual files may be locked by the running host.
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
     /// Warns (does not fail startup) when sensitive paths are readable by group or other principals.
     /// </summary>
     public static void RunStartupPermissionSelfCheck(ILogger logger)

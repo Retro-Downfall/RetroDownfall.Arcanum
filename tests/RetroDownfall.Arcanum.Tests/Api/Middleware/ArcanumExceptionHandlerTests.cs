@@ -1,3 +1,5 @@
+using System.IO.Pipelines;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,6 +28,124 @@ public sealed class ArcanumExceptionHandlerTests
         Assert.False(handled);
     }
 
+    [Fact]
+    public async Task TryHandleAsync_JsonException_V1Path_ReturnsOpenAiInvalidJson()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/v1/chat/completions";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new JsonException("bad json"),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(400, httpContext.Response.StatusCode);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_JsonException_ResponseStarted_ReturnsFalse()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext(responseStarted: true);
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new JsonException("bad json"),
+            CancellationToken.None);
+
+        Assert.False(handled);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_JsonException_NonV1Path_ReturnsInvalidBody()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new JsonException("bad json"),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(400, httpContext.Response.StatusCode);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_NonJsonException_V1Path_ReturnsOpenAiUnhandledError()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/v1/models";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new InvalidOperationException("boom"),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_NonJsonException_NonV1Path_ReturnsInternalError()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.Request.Path = "/api/spells/execute";
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new InvalidOperationException("boom"),
+            CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.Equal(500, httpContext.Response.StatusCode);
+
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_RequestAbortedOperationCanceled_ReturnsFalse()
+    {
+        ArcanumExceptionHandler handler = new(NullLogger<ArcanumExceptionHandler>.Instance);
+
+        using CancellationTokenSource cts = new();
+
+        cts.Cancel();
+
+        DefaultHttpContext httpContext = CreateHttpContext();
+
+        httpContext.RequestAborted = cts.Token;
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new OperationCanceledException(),
+            CancellationToken.None);
+
+        Assert.False(handled);
+
+    }
+
     private static DefaultHttpContext CreateHttpContext(bool responseStarted = false)
     {
         ServiceCollection services = new();
@@ -36,11 +156,15 @@ public sealed class ArcanumExceptionHandlerTests
 
         ServiceProvider provider = services.BuildServiceProvider();
 
+        MemoryStream body = new();
+
         TestResponseFeature responseFeature = new()
         {
             HasStarted = responseStarted,
-            Body = new MemoryStream(),
+            Body = body,
         };
+
+        TestResponseBodyFeature bodyFeature = new(body, responseFeature);
 
         TestRequestFeature requestFeature = new();
 
@@ -49,6 +173,8 @@ public sealed class ArcanumExceptionHandlerTests
         features.Set<IHttpRequestFeature>(requestFeature);
 
         features.Set<IHttpResponseFeature>(responseFeature);
+
+        features.Set<IHttpResponseBodyFeature>(bodyFeature);
 
         DefaultHttpContext httpContext = new(features);
 
@@ -99,6 +225,44 @@ public sealed class ArcanumExceptionHandlerTests
 
         public void OnCompleted(Func<object, Task> callback, object state)
         {
+        }
+
+    }
+
+    private sealed class TestResponseBodyFeature : IHttpResponseBodyFeature
+    {
+
+        private readonly Stream _stream;
+
+        private readonly IHttpResponseFeature _responseFeature;
+
+        public TestResponseBodyFeature(Stream stream, IHttpResponseFeature responseFeature)
+        {
+
+            _stream = stream;
+
+            _responseFeature = responseFeature;
+
+        }
+
+        public Stream Stream => _stream;
+
+        public PipeWriter Writer { get; } = PipeWriter.Create(new MemoryStream());
+
+        public Task CompleteAsync() => Task.CompletedTask;
+
+        public void DisableBuffering()
+        {
+        }
+
+        public Task SendFileAsync(string path, long offset, long? count, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+
+            return Task.CompletedTask;
+
         }
 
     }

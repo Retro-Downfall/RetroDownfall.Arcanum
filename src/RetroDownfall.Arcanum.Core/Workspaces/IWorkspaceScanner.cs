@@ -1,4 +1,4 @@
-namespace RetroDownfall.Arcanum.Core.Workspace;
+namespace RetroDownfall.Arcanum.Core.Workspaces;
 
 public interface IWorkspaceScanner
 {

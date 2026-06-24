@@ -50,7 +50,7 @@ internal static class InferenceExecuteWriter
             return;
         }
 
-        httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        httpContext.Response.StatusCode = InferenceErrorMapper.ResolveStatusCode(turn.Error.Code);
 
         await JsonSerializer.SerializeAsync(
             httpContext.Response.Body,

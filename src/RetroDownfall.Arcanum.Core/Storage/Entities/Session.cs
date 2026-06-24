@@ -28,4 +28,24 @@ public sealed class Session
 
     public ICollection<Entry> Entries { get; set; } = new List<Entry>();
 
+    public Session Clone()
+    {
+
+        return new Session
+        {
+            Id = Id,
+            CampaignId = CampaignId,
+            Title = Title,
+            Status = Status,
+            CreatedAt = CreatedAt,
+            UpdatedAt = UpdatedAt,
+            Summary = Summary,
+            LastSummarizedMessageAt = LastSummarizedMessageAt,
+            TotalTokensUsed = TotalTokensUsed,
+            UnsummarizedEntryCount = UnsummarizedEntryCount,
+            Entries = new List<Entry>(),
+        };
+
+    }
+
 }

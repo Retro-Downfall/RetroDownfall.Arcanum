@@ -13,14 +13,17 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     private const int McpFileHashCacheCapacity = 64;
 
-    private readonly SemaphoreSlim _fileLock = new(1, 1);
+    private static readonly SemaphoreSlim _storeLock = new(1, 1);
 
     private readonly BoundedLruCache<string, McpFileHashCacheEntry> _mcpFileHashCache = new(McpFileHashCacheCapacity);
 
     private static string StorePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "trusted-mcp-workspaces.json");
 
-    public void Dispose() => _fileLock.Dispose();
+    public void Dispose()
+    {
+        // The store lock is static and shared across instances; do not dispose it.
+    }
 
     public async Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default)
     {
@@ -67,7 +70,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
         string hash = await ComputeFileSha256HexAsync(mcpPath, cancellationToken).ConfigureAwait(false);
 
-        await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _storeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -82,7 +85,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         finally
         {
 
-            _fileLock.Release();
+            _storeLock.Release();
 
         }
 
@@ -98,7 +101,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
     private async Task<TrustedMcpWorkspaceDocument> LoadAsync(CancellationToken cancellationToken)
     {
 
-        await _fileLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _storeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -109,7 +112,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         finally
         {
 
-            _fileLock.Release();
+            _storeLock.Release();
 
         }
 

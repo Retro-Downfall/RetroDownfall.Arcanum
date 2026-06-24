@@ -58,7 +58,7 @@ Inference flows through one hub behind a single `IChatClient` abstraction. See [
 
 Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](DESIGN.md#11-local-api-security).
 
-- Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase HKDF-derived from the key).
+- Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`).
 - Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over plaintext HTTP.
 - In-process file/dir tools enforce **path containment + symlink resolution** and **handle-based revalidation** (pre-open path identity vs opened fd dev/ino) for read/write tools; MCP `RequestTimeoutSeconds` must be ≥ `ExecuteCommandTimeoutSeconds`; workspace `mcp.json` servers are registered only after operator trust; `execute_command` uses `ArgumentList` (no shell); outbound URLs pass an SSRF guard with **DNS-rebind IP pinning** on untrusted egress (`LlamaModelDownload`, `CommLinkWebhook`); errors return **sanitized public envelopes** (detail stays in logs).
@@ -209,6 +209,7 @@ Breaking or client-visible HTTP contract fixes (document here when no `CHANGELOG
 |--------|--------|-------|
 | `/api` **404** responses | Bare **404** with empty body on some routes | **`ApiResponse<T>`** envelope with `isSuccess: false`, `error`, and `traceId` |
 | OpenAI **`model_not_found`** | **400** `invalid_request_error` | **404** `invalid_request_error` with `code: "model_not_found"` |
+| OpenAI **`tool_loop` / `timeout` failures** | **500** `inference_failed` | **503** `server_error` (mirrors native `/api` spell/prompt execute status-code mapping) |
 | OpenAI **`tool_calls` on `/v1`** | Observability-only `tool_calls` on completions | **`tool_calls` omitted** — server-executed MCP tools stay on native `/api` routes; see [DESIGN.md §8.8.1](DESIGN.md#881-server-executed-tools-vs-v1) |
 | OpenAI **`finish_reason`** | Hard-coded `"stop"` | Mapped from provider (`length`, `content_filter`, …) |
 | **Config key rename** | `Arcanum:Bureau:Enabled` (reserved no-op) | `Arcanum:Conclave:Enabled` (gates Cast Sending). Operator configs that set `Arcanum:Bureau` no longer bind and should be renamed. |
@@ -311,7 +312,7 @@ For F5 debugging without Spectre, run the DevHost:
 dotnet run --project src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj
 ```
 
-> **Key rotation is destructive.** The Grimoire passphrase is HKDF-derived from the API key, so a rotated key cannot decrypt the existing store. To rotate: stop the host, remove **both** `security.dat` and the Grimoire `.db` under `~/.config/arcanum/`, then restart. To retrieve the key later (same machine), run **`arcanum key show`**. See [DESIGN.md §16.3](DESIGN.md#163-security-and-identity).
+> **Key rotation.** New Grimoire databases use a dedicated encryption secret, so rotating the master API key only invalidates API authentication; the Grimoire `.db` and `.kdf` files can stay in place. Legacy databases encrypted directly from the API key remain destructive to rotate. To retrieve the key later (same machine), run **`arcanum key show`**. See [DESIGN.md §16.3](DESIGN.md#163-security-and-identity).
 
 ---
 

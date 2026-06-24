@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -47,6 +48,146 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             _ => null,
         };
 
+    }
+
+    private static readonly Error MissingApiKeyError = new(
+        "Security.MissingApiKey",
+        "No API key found. Run 'arcanum serve' once to generate and store a key.");
+
+    private static readonly Error RequestTimeoutError = new(
+        "Connection.Timeout",
+        "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.");
+
+    private static readonly Error RequestUnreachableError = new(
+        "Connection",
+        "API is unreachable. Is 'arcanum serve' running in a background terminal?");
+
+    private static readonly Error InvalidResponseError = new(
+        "Api.InvalidResponse",
+        "Empty or invalid response from API.");
+
+    private static readonly Error ApiRequestFailedError = new(
+        "Api.Error",
+        "Request failed.");
+
+    private async Task<string?> TryGetApiKeyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<Result<T>> SendRequestAsync<T>(
+        HttpMethod method,
+        string relativePath,
+        byte[]? body,
+        MediaTypeHeaderValue? contentType,
+        JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
+        Func<ApiResponse<T>, Result<T>> mapSuccess,
+        CancellationToken cancellationToken)
+    {
+        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            return Result<T>.Failure(MissingApiKeyError);
+        }
+
+        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
+
+        using HttpRequestMessage request = new(method, relativePath);
+
+        if (body is not null)
+        {
+            ByteArrayContent content = new(body);
+
+            if (contentType is not null)
+            {
+                content.Headers.ContentType = contentType;
+            }
+
+            request.Content = content;
+        }
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        try
+        {
+            using HttpResponseMessage response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            ApiResponse<T>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, responseTypeInfo);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (envelope is null)
+                {
+                    return Result<T>.Failure(InvalidResponseError);
+                }
+
+                if (!envelope.IsSuccess)
+                {
+                    Error err = envelope.Error ?? ApiRequestFailedError;
+
+                    return Result<T>.Failure(err);
+                }
+
+                return mapSuccess(envelope);
+            }
+
+            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<T>.Failure(envelope.Error.Value);
+            }
+
+            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+            return Result<T>.Failure(new Error("Api.HttpError", fallback));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return Result<T>.Failure(RequestTimeoutError);
+        }
+        catch (HttpRequestException)
+        {
+            return Result<T>.Failure(RequestUnreachableError);
+        }
+    }
+
+    private async Task<Result<T>> SendRequestAsync<T>(
+        HttpMethod method,
+        string relativePath,
+        byte[]? body,
+        MediaTypeHeaderValue? contentType,
+        JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
+        CancellationToken cancellationToken)
+    {
+        return await SendRequestAsync(
+            method,
+            relativePath,
+            body,
+            contentType,
+            responseTypeInfo,
+            static envelope => Result<T>.Success(envelope.Data!),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
@@ -1366,29 +1507,11 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
                     ListPageResult<LoreDto> page = envelope.Data ?? new ListPageResult<LoreDto>([], false);
 
-                    if (page.HasMore && page.Items.Length == 0)
-                    {
-
-                        return Result<List<LoreDto>>.Failure(new Error(
-                            "Api.PaginationLoop",
-                            "Lore list reported more pages but returned no items."));
-
-                    }
-
                     all.AddRange(page.Items);
 
                     hasMore = page.HasMore;
 
                     int nextOffset = page.NextOffset ?? offset + page.Items.Length;
-
-                    if (hasMore && nextOffset <= offsetBeforePage && page.Items.Length == 0)
-                    {
-
-                        return Result<List<LoreDto>>.Failure(new Error(
-                            "Api.PaginationLoop",
-                            "Lore list pagination offset did not advance."));
-
-                    }
 
                     offset = nextOffset;
                 }
@@ -1880,104 +2003,18 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         CommLinkMessageRequestDto body,
         CancellationToken cancellationToken = default)
     {
-
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-
-            return Result<bool>.Failure(new Error(
-                "Security.MissingApiKey",
-                "No API key found. Run 'arcanum serve' once to generate and store a key."));
-
-        }
-
-        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
-
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.CommLinkMessageRequestDto);
 
-        using ByteArrayContent content = new(json);
-
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
-
-        using HttpRequestMessage httpRequest = new(HttpMethod.Post, "api/commlink/send");
-
-        httpRequest.Content = content;
-
-        _ = httpRequest.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
-        try
-        {
-
-            using HttpResponseMessage response = await client
-                .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-
-            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-
-            ApiResponse<bool>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
-
-            if (response.IsSuccessStatusCode)
-            {
-
-                if (envelope is null)
-                {
-
-                    return Result<bool>.Failure(
-                        new Error("Api.InvalidResponse", "Empty or invalid response from API."));
-
-                }
-
-                if (!envelope.IsSuccess)
-                {
-
-                    Error err = envelope.Error ?? new Error("Api.Error", "Request failed.");
-
-                    return Result<bool>.Failure(err);
-
-                }
-
-                return Result<bool>.Success(envelope.Data);
-
-            }
-
-            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
-            {
-
-                return Result<bool>.Failure(envelope.Error.Value);
-
-            }
-
-            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
-
-            return Result<bool>.Failure(new Error("Api.HttpError", fallback));
-
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-
-            throw;
-
-        }
-        catch (OperationCanceledException)
-        {
-
-            return Result<bool>.Failure(new Error(
-                "Connection.Timeout",
-                "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
-
-        }
-        catch (HttpRequestException)
-        {
-
-            return Result<bool>.Failure(new Error(
-                "Connection",
-                "API is unreachable. Is 'arcanum serve' running in a background terminal?"));
-
-        }
-
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/commlink/send",
+            json,
+            new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" },
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            static envelope => envelope.Data == true
+                ? Result<bool>.Success(true)
+                : Result<bool>.Failure(new Error("Api.InvalidResponse", "Comm Link alert was not accepted by the API.")),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async IAsyncEnumerable<LlamaPullProgress> PullModelStreamAsync(
@@ -2080,11 +2117,18 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 yield break;
             }
 
-            await using (responseStream!)
+            if (responseStream is null)
             {
-                Stream openedStream = responseStream;
 
-                using StreamReader lineReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                yield return new LlamaPullProgress { Completed = true, Error = "Could not read the pull response stream." };
+
+                yield break;
+
+            }
+
+            await using (responseStream)
+            {
+                using StreamReader lineReader = new(responseStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
 
                 while (true)
                 {
@@ -2124,7 +2168,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                     }
 
                     LlamaPullProgress? item;
-                    bool malformed = false;
+                    string? malformedError = null;
 
                     try
                     {
@@ -2132,12 +2176,14 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                     }
                     catch (JsonException)
                     {
+                        malformedError = "Malformed progress frame received; continuing pull.";
                         item = null;
-                        malformed = true;
                     }
 
-                    if (malformed)
+                    if (malformedError is not null)
                     {
+                        yield return new LlamaPullProgress { Completed = false, Error = malformedError };
+
                         continue;
                     }
 
@@ -2154,14 +2200,20 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
     public async Task<Result<CachedModelInfo[]>> ListCachedModelsAsync(CancellationToken cancellationToken = default)
     {
 
-        return await GetApiAsync<CachedModelInfo[]>("api/llama/models", cancellationToken).ConfigureAwait(false);
+        return await GetApiAsync(
+            "api/llama/models",
+            ArcanumJsonContext.Default.ApiResponseCachedModelInfoArray,
+            cancellationToken).ConfigureAwait(false);
 
     }
 
     public async Task<Result<LlamaServerInfo[]>> ListLlamaServersAsync(CancellationToken cancellationToken = default)
     {
 
-        return await GetApiAsync<LlamaServerInfo[]>("api/llama/servers", cancellationToken).ConfigureAwait(false);
+        return await GetApiAsync(
+            "api/llama/servers",
+            ArcanumJsonContext.Default.ApiResponseLlamaServerInfoArray,
+            cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -2303,7 +2355,10 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
     }
 
-    private async Task<Result<T>> GetApiAsync<T>(string path, CancellationToken cancellationToken)
+    private async Task<Result<T>> GetApiAsync<T>(
+        string path,
+        JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
+        CancellationToken cancellationToken)
     {
 
         string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
@@ -2327,37 +2382,18 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            if (typeof(T) == typeof(CachedModelInfo[]))
+            ApiResponse<T>? envelope = responseBytes.Length == 0
+                ? null
+                : JsonSerializer.Deserialize(responseBytes, responseTypeInfo);
+
+            if (envelope is { IsSuccess: true, Data: not null })
             {
-                ApiResponse<CachedModelInfo[]>? envelope = responseBytes.Length == 0
-                    ? null
-                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseCachedModelInfoArray);
-
-                if (envelope is { IsSuccess: true, Data: not null })
-                {
-                    return Result<T>.Success((T)(object)envelope.Data);
-                }
-
-                if (envelope is { IsSuccess: false, Error: not null })
-                {
-                    return Result<T>.Failure(envelope.Error.Value);
-                }
+                return Result<T>.Success(envelope.Data);
             }
-            else if (typeof(T) == typeof(LlamaServerInfo[]))
+
+            if (envelope is { IsSuccess: false, Error: not null })
             {
-                ApiResponse<LlamaServerInfo[]>? envelope = responseBytes.Length == 0
-                    ? null
-                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLlamaServerInfoArray);
-
-                if (envelope is { IsSuccess: true, Data: not null })
-                {
-                    return Result<T>.Success((T)(object)envelope.Data);
-                }
-
-                if (envelope is { IsSuccess: false, Error: not null })
-                {
-                    return Result<T>.Failure(envelope.Error.Value);
-                }
+                return Result<T>.Failure(envelope.Error.Value);
             }
 
             return Result<T>.Failure(new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));

@@ -19,7 +19,7 @@ public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<Arcanu
         string devKey = Environment.GetEnvironmentVariable("ARCANUM_GRIMOIRE_DEV_KEY")
             ?? "compile-time-placeholder-not-for-production";
         GrimoireDbPassphraseSource passphraseSource = new();
-        passphraseSource.SetPassphrase(GrimoireKeyDerivation.DerivePassphraseFromApiKey(devKey));
+        passphraseSource.SetPassphrase(GrimoireKeyDerivation.DerivePassphraseFromApiKeyLegacy(devKey));
         string dbPath = Path.Combine(Path.GetTempPath(), "arcanum-ef-design.db");
         string connectionString = new SqliteConnectionStringBuilder
         {

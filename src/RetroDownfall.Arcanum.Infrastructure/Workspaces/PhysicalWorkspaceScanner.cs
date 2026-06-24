@@ -1,7 +1,7 @@
 using System.Text;
-using RetroDownfall.Arcanum.Core.Workspace;
+using RetroDownfall.Arcanum.Core.Workspaces;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Workspace;
+namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 public sealed class PhysicalWorkspaceScanner : IWorkspaceScanner
 {
