@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RetroDownfall.Arcanum.Core.Storage.Entities;
 
 public sealed class Entry
@@ -21,6 +23,7 @@ public sealed class Entry
 
     public string? ToolArguments { get; set; }
 
+    [JsonIgnore]
     public Session? Session { get; set; }
 
 }
