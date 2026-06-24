@@ -15,6 +15,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
     public string? NextFinishReason { get; set; }
 
+    public Exception? NextStreamException { get; set; }
+
     public string? LastPrompt { get; private set; }
 
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
@@ -49,6 +51,13 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
             yield return new IntelligenceEvent(IntelligenceEventType.Error, failure.Message);
 
             yield break;
+
+        }
+
+        if (NextStreamException is Exception ex)
+        {
+
+            throw ex;
 
         }
 

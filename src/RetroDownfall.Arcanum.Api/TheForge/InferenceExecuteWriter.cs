@@ -105,7 +105,7 @@ internal static class InferenceExecuteWriter
         {
 
         }
-        catch (Exception)
+        catch (Exception ex)
         {
 
             IntelligenceEvent errorEvent = new(
@@ -120,9 +120,27 @@ internal static class InferenceExecuteWriter
 
             eventBuffer.Write(NewlineBytes);
 
-            await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None).ConfigureAwait(false);
+            try
+            {
 
-            await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
+
+                await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+
+            }
+            catch (Exception writeEx)
+            {
+
+                Debug.WriteLine($"Failed to write stream error frame: {writeEx.Message}");
+
+            }
+
+            if (ex is not OperationCanceledException)
+            {
+
+                Debug.WriteLine($"Stream inference failed: {ex.Message}");
+
+            }
 
         }
         finally

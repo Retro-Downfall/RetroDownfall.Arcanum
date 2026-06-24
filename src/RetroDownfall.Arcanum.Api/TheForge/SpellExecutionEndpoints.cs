@@ -125,17 +125,12 @@ internal static partial class SpellExecutionEndpoints
 
                 ApiResponse<PromptResponseDto> response = ApiResponse<PromptResponseDto>.FromResult(envelopeResult, traceId);
 
-                if (turn.IsFailure && string.Equals(turn.Error.Code, "Spell.PathNotAllowed", StringComparison.Ordinal))
-                {
-                    return Results.Json(
-                        response,
-                        ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                        statusCode: StatusCodes.Status403Forbidden);
-                }
-
                 return turn.IsSuccess
                     ? Results.Ok(response)
-                    : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: StatusCodes.Status500InternalServerError);
+                    : Results.Json(
+                        response,
+                        ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
+                        statusCode: InferenceErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
         .WithName("Spell_Execute");
 

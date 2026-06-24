@@ -654,7 +654,10 @@ internal static class PromptEndpoints
 
                 return turn.IsSuccess
                     ? Results.Ok(response)
-                    : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: StatusCodes.Status500InternalServerError);
+                    : Results.Json(
+                        response,
+                        ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
+                        statusCode: InferenceErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
         .WithName("Prompt_Execute");
 
