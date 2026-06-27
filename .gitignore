@@ -7,7 +7,9 @@ artifacts/
 .idea/**/jsLibraryMappings.xml
 
 .tmp/
+.tmp-*/
 TestResults/
+__pycache__/
 *.cobertura.xml
 *.opencover.xml
 coverage.*
