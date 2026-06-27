@@ -11,6 +11,8 @@ TestResults/
 *.cobertura.xml
 *.opencover.xml
 coverage.*
+# coverage.* (above) is for coverage data files; keep the runner script tracked.
+!scripts/coverage.sh
 mcp.db
 mcp.db-shm
 mcp.db-wal
