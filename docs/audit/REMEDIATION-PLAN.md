@@ -187,15 +187,15 @@ Only meaningful **after W0.1** restores `coverage.sh`. The documented gate is li
 
 Surfaced while implementing Waves 0–1; not yet fixed. **DX1 is high-priority — a latent production crash.**
 
-- [ ] **DX1 — [P1] `SessionRepository` `DateTimeOffset` SQL-translation crash (latent)**
+- [x] **DX1 — [P1] `SessionRepository` `DateTimeOffset` SQL-translation crash (latent)** ✅ *done — all order/compare sites (`QueryAsync`, `GetEntriesAscendingAsync`, `GetEntriesAfterAsync`, `GetEntriesAsync`, `ReadEntryBatchesAsync`) converted to parameterized raw SQL; 7 SQLCipher tests added.*
   - **Found:** the EF Core SQLite provider throws `NotSupportedException: SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses` for any LINQ `OrderBy`/comparison on `CreatedAt`/`UpdatedAt` (verified empirically against the real SQLCipher DB at `SessionRepository.cs:322`). `SessionRepository` does exactly this in `QueryAsync` (`:148`), `GetEntriesAscendingAsync` (`:325`), and the paged reads (`:354-356,380,391,470-472`). These back real `/api/sessions` list + entry-pagination endpoints and **crash at runtime**; no real-SQLCipher test covers them, so the green suite never caught it. (W1.2 already fixed the equivalent `GrimoireRepository` paths with parameterized raw SQL.)
   - **Fix:** port the W1.2 parameterized `FromSql` / `SqlQuery<int>` pattern (sortable UTC `CreatedAt` text, index-backed) to every `SessionRepository` `DateTimeOffset` order/compare; add `[Collection("Grimoire")]` SQLCipher tests for `QueryAsync`, `GetEntriesAscendingAsync`, and the paged reads so the real-DB path is actually exercised.
 
-- [ ] **DX2 — [P3][tests] `ConfigurationWriterTests` HOME-env parallelization flake**
+- [x] **DX2 — [P3][tests] `ConfigurationWriterTests` HOME-env parallelization flake** ✅ *done — moved to a `ProcessEnvironment` `DisableParallelization` collection.*
   - **Found:** the test mutates the process-global `HOME` env var without a collection lock, so it races other tests reading `ArcanumPaths` and fails intermittently under parallel scheduling (observed once during W1.1, passed in isolation + on re-run). Undermines gate determinism.
   - **Fix:** put HOME-mutating tests in a `DisableParallelization` collection (or inject a non-global path seam).
 
-- [ ] **DX3 — [P3][tooling] `reportgenerator` local tool fails command resolution**
+- [x] **DX3 — [P3][tooling] `reportgenerator` local tool fails command resolution** ✅ *done — bumped to 5.5.10; `coverage.sh` now renders `.tmp/coverage/report/index.html`.*
   - **Found:** the pinned `dotnet-reportgenerator-globaltool` 5.4.11 restores but `dotnet [tool run] reportgenerator` reports the command unavailable on this host, so `coverage.sh`'s HTML report no-ops (the threshold gate is unaffected). The manifest itself flags 5.5.10 available.
   - **Fix:** bump the tool to 5.5.10 (or add `rollForward`) so the documented `.tmp/coverage/report/index.html` renders.
 
