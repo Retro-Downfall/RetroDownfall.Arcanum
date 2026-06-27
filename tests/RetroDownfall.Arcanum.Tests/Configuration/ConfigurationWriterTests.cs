@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
 
+[Collection("ProcessEnvironment")]
 public sealed class ConfigurationWriterTests : IAsyncLifetime
 {
 
