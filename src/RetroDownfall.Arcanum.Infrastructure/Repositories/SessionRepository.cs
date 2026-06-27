@@ -272,16 +272,23 @@ public sealed class SessionRepository(
 
     public async Task<Entry> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct)
     {
+
+        using IDisposable _ = await SessionWriteLock.AcquireAsync(sessionId, ct).ConfigureAwait(false);
+
         Session? session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct).ConfigureAwait(false);
 
         if (session is null)
         {
+
             throw new InvalidOperationException($"Session {sessionId} was not found.");
+
         }
 
         if (string.Equals(session.Status, "archived", StringComparison.OrdinalIgnoreCase))
         {
+
             throw new InvalidOperationException("Cannot append entries to an archived session.");
+
         }
 
         int entryCount = await db.Entries.CountAsync(e => e.SessionId == sessionId, ct).ConfigureAwait(false);
@@ -296,7 +303,9 @@ public sealed class SessionRepository(
 
         if (entry.CreatedAt == default)
         {
+
             entry.CreatedAt = now;
+
         }
 
         db.Entries.Add(entry);
@@ -307,10 +316,21 @@ public sealed class SessionRepository(
             && entry.Role == MessageRole.User
             && !string.IsNullOrWhiteSpace(entry.Content))
         {
+
             session.Title = TruncateTitle(entry.Content);
+
         }
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Maintain the unsummarized-entry counter so the Forge append path no longer drifts
+        // it (the inference path already does this). -1 means "unknown legacy"; leave it.
+        if (session.UnsummarizedEntryCount >= 0)
+        {
+
+            session.UnsummarizedEntryCount += 1;
+
+        }
+
+        await SqliteBusyRetry.ExecuteAsync(() => db.SaveChangesAsync(ct), ct).ConfigureAwait(false);
 
         return entry;
     }

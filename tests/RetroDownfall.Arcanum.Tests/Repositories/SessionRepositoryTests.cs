@@ -260,4 +260,48 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task AddEntryAsync_increments_unsummarized_entry_count()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "Counter", CancellationToken.None);
+
+        Assert.Equal(0, session.UnsummarizedEntryCount);
+
+        _ = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "first turn",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        _ = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.Assistant,
+                Content = "second turn",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        Session? reloaded = await repository.GetByIdAsync(session.Id, CancellationToken.None);
+
+        Assert.NotNull(reloaded);
+
+        Assert.Equal(2, reloaded!.UnsummarizedEntryCount);
+
+    }
+
 }

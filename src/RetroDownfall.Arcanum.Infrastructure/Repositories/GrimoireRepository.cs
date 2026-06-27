@@ -154,6 +154,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default)
     {
+        Guid sessionId = await _db.Entries
+            .AsNoTracking()
+            .Where(m => m.Id == assistantEntryId)
+            .Select(m => m.SessionId)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        using IDisposable _ = await SessionWriteLock.AcquireAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
         int updated = await SqliteBusyRetry.ExecuteAsync(
             () => _db.Entries
                 .Where(m => m.Id == assistantEntryId)
@@ -200,6 +209,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         {
             return;
         }
+
+        using IDisposable _ = await SessionWriteLock.AcquireAsync(entry.SessionId, cancellationToken).ConfigureAwait(false);
 
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -357,11 +368,13 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     public async Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
+        using IDisposable _ = await SessionWriteLock.AcquireAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        _ = await SqliteBusyRetry.ExecuteAsync(
+        await SqliteBusyRetry.ExecuteAsync(
             () => _db.Entries
                 .Where(m => m.SessionId == sessionId)
                 .ExecuteDeleteAsync(cancellationToken),
