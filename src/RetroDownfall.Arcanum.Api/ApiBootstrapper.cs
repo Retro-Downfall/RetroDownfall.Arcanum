@@ -174,6 +174,8 @@ public static class ApiBootstrapper
 
         services.AddArcanumDaemonServices(configuration);
 
+        services.AddSingleton<Microsoft.AspNetCore.Hosting.IStartupFilter, ConfigurationStartupValidator>();
+
         services.AddSingleton<ApiKeyEndpointFilter>();
 
         services.AddCors(options =>

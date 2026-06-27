@@ -627,4 +627,156 @@ public sealed class ConfigurationValidatorTests
 
     }
 
+    [Fact]
+    public void Validate_NullIntelligence_DoesNotThrow()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Intelligence = null!,
+
+            Providers =
+            [
+
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+
+            ],
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_NullMcp_DoesNotThrow()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Mcp = null!,
+
+            Providers =
+            [
+
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+
+            ],
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_NullProviderModels_TreatedAsNoModels()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Providers =
+            [
+
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = null! },
+
+            ],
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0]");
+
+    }
+
+    [Fact]
+    public void Validate_NullPathAllowlistSubObjects_DoesNotThrow()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Campaigns = null!,
+
+            Spells = null!,
+
+            Perception = null!,
+
+            Host = null!,
+
+            Providers =
+            [
+
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+
+            ],
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_LlamaPortSumExceeds65535_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Providers =
+            [
+
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+
+            ],
+
+            LlamaCpp = new LlamaCppSettings { PortStart = 40_000, PortRange = 30_000 },
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "llamaCpp.portRange");
+
+    }
+
+    [Fact]
+    public void Validate_LlamaPortSumWithinRange_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+
+            Providers =
+            [
+
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+
+            ],
+
+            LlamaCpp = new LlamaCppSettings { PortStart = 50_000, PortRange = 1_000 },
+
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
 }

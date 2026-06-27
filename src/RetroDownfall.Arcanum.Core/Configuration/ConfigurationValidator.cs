@@ -19,10 +19,12 @@ public sealed class ConfigurationValidator
 
             string providerPointer = $"providers[{providerIndex}]";
 
+            string[] models = provider.Models ?? [];
+
             if (provider.Type == AiProviderKind.LlamaCppServer)
             {
 
-                bool hasModels = provider.Models.Length > 0;
+                bool hasModels = models.Length > 0;
 
                 bool hasMap = provider.LlamaCpp?.ModelMap is { Count: > 0 };
 
@@ -36,7 +38,7 @@ public sealed class ConfigurationValidator
                 }
 
             }
-            else if (provider.Models.Length == 0)
+            else if (models.Length == 0)
             {
 
                 errors.Add(new ConfigurationValidationError(
@@ -75,12 +77,16 @@ public sealed class ConfigurationValidator
 
         }
 
-        long toolOutputCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(settings.Intelligence.ToolOutputCapBytes);
+        IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
 
-        int maxJsonRpcLineBytes = ArcanumSettingClamps.McpMaxJsonRpcLineBytes(settings.Mcp.MaxJsonRpcLineBytes);
+        McpSettings mcp = settings.Mcp ?? new McpSettings();
+
+        long toolOutputCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(intelligence.ToolOutputCapBytes);
+
+        int maxJsonRpcLineBytes = ArcanumSettingClamps.McpMaxJsonRpcLineBytes(mcp.MaxJsonRpcLineBytes);
 
         long effectiveToolOutputCapBytes = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
-            settings.Intelligence.ToolOutputCapBytes,
+            intelligence.ToolOutputCapBytes,
             maxJsonRpcLineBytes);
 
         if (effectiveToolOutputCapBytes < toolOutputCapBytes)
@@ -93,10 +99,10 @@ public sealed class ConfigurationValidator
         }
 
         int executeCommandTimeoutSeconds = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(
-            settings.Intelligence.ExecuteCommandTimeoutSeconds);
+            intelligence.ExecuteCommandTimeoutSeconds);
 
         int mcpRequestTimeoutSeconds = ArcanumSettingClamps.McpRequestTimeoutSeconds(
-            settings.Mcp.RequestTimeoutSeconds);
+            mcp.RequestTimeoutSeconds);
 
         if (mcpRequestTimeoutSeconds < executeCommandTimeoutSeconds)
         {
@@ -107,13 +113,28 @@ public sealed class ConfigurationValidator
 
         }
 
-        ValidatePathAllowlist(settings.Campaigns.AllowedRoots, "campaigns.allowedRoots", errors);
+        LlamaCppSettings llamaCpp = settings.LlamaCpp ?? new LlamaCppSettings();
 
-        ValidatePathAllowlist(settings.Spells.AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
+        int llamaPortStart = ArcanumSettingClamps.LlamaPortStart(llamaCpp.PortStart);
 
-        ValidatePathAllowlist(settings.Perception.AllowedWorkspaceRoots, "perception.allowedWorkspaceRoots", errors);
+        int llamaPortRange = ArcanumSettingClamps.LlamaPortRange(llamaCpp.PortRange);
 
-        ValidateHostWorkspace(settings.Host.Workspace, "host.workspace", errors);
+        if (llamaPortStart + llamaPortRange - 1 > 65_535)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "llamaCpp.portRange",
+                $"LlamaCpp.PortStart ({llamaPortStart}) + PortRange ({llamaPortRange}) - 1 exceeds 65535; the computed llama-server port can be out of range."));
+
+        }
+
+        ValidatePathAllowlist((settings.Campaigns ?? new CampaignsSettings()).AllowedRoots, "campaigns.allowedRoots", errors);
+
+        ValidatePathAllowlist((settings.Spells ?? new SpellSettings()).AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
+
+        ValidatePathAllowlist((settings.Perception ?? new PerceptionSettings()).AllowedWorkspaceRoots, "perception.allowedWorkspaceRoots", errors);
+
+        ValidateHostWorkspace((settings.Host ?? new HostSettings()).Workspace, "host.workspace", errors);
 
         if (errors.Count > 0)
         {
@@ -156,12 +177,12 @@ public sealed class ConfigurationValidator
     }
 
     private static void ValidatePathAllowlist(
-        string[] roots,
+        string[]? roots,
         string pointer,
         List<ConfigurationValidationError> errors)
     {
 
-        foreach (string root in roots)
+        foreach (string root in roots ?? [])
         {
 
             if (string.IsNullOrWhiteSpace(root))

@@ -235,7 +235,7 @@ Breaking or client-visible HTTP contract fixes (document here when no `CHANGELOG
 
 ## Configuration
 
-Settings bind under the `Arcanum` object in **`arcanum.json`**, living in the per-user config dir (created on first run): `~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows. Override any key with env vars using the **`ARCANUM_`** prefix and `__` for nesting (use env vars for secrets — e.g. `ARCANUM_Arcanum__Providers__1__ApiKey`). Every numeric setting has a runtime clamp in `ArcanumSettingClamps`.
+Settings bind under the `Arcanum` object in **`arcanum.json`**, living in the per-user config dir (created on first run): `~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows. Override any key with env vars using the **`ARCANUM_`** prefix and `__` for nesting (use env vars for secrets — e.g. `ARCANUM_Arcanum__Providers__1__ApiKey`). Every numeric setting has a runtime clamp in `ArcanumSettingClamps`. On `arcanum serve` startup the configuration is validated **before serving**, and the host aborts with a clear logged message (not a crash) when settings are semantically invalid — an unknown default/fast model, an MCP timeout / JSON-RPC ordering conflict, a llama port range that overflows 65535, or a missing/relative allow-list root.
 
 **The full key reference (types, defaults, clamps) is [DESIGN.md §3.4](DESIGN.md#34-configuration-reference-arcanumsettings).** Sections at a glance:
 
