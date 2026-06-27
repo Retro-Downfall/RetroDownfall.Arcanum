@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Api.Configuration;
 
 internal static class ConfigurationRedactor
 {
-
     public static ArcanumSettings Redact(ArcanumSettings settings)
     {
         ProviderSettings[] providers = settings.Providers ?? [];
@@ -116,5 +115,4 @@ internal static class ConfigurationRedactor
 
         return incoming with { ModelMap = mergedMap };
     }
-
 }

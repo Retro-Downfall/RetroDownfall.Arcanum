@@ -47,7 +47,7 @@ public sealed class OpenAiChatCompletionMapperTests
 
         Assert.Single(ping.Stop!);
 
-        Assert.Equal("END", ping.Stop[0]);
+        Assert.Equal("END", ping.Stop![0]);
     }
 
     [Fact]

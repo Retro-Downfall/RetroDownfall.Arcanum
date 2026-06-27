@@ -36,7 +36,7 @@ public sealed class ConfigurationRedactorTests
 
         Assert.Equal("***", redacted.Providers[0].Endpoint);
 
-        Assert.Equal("***", redacted.Providers[0].LlamaCpp!.ModelMap["model-a"]);
+        Assert.Equal("***", redacted.Providers[0].LlamaCpp!.ModelMap!["model-a"]);
 
         Assert.Equal("***", redacted.CommLink.WebhookUrl);
     }
@@ -124,7 +124,7 @@ public sealed class ConfigurationRedactorTests
 
         Assert.Equal("https://api.openai.com/v1", merged.Providers[0].Endpoint);
 
-        Assert.Equal("https://models.test/a.gguf", merged.Providers[0].LlamaCpp!.ModelMap["model-a"]);
+        Assert.Equal("https://models.test/a.gguf", merged.Providers[0].LlamaCpp!.ModelMap!["model-a"]);
 
         Assert.Equal("https://hooks.test/secret", merged.CommLink.WebhookUrl);
     }

@@ -1,7 +1,6 @@
 using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -15,19 +14,14 @@ WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 if (!string.Equals(builder.Environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase)
     && !string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
 {
-
-    Console.Error.WriteLine(
-        $"Arcanum DevHost is intended for Development or Testing environments. Current environment: {builder.Environment.EnvironmentName}.");
-
+    Console.Error.WriteLine($"Arcanum DevHost is intended for Development or Testing environments. Current environment: {builder.Environment.EnvironmentName}.");
 }
 
 TaskScheduler.UnobservedTaskException += static (_, e) =>
 {
-
     Log.Error(e.Exception, "Unobserved task exception.");
 
     e.SetObserved();
-
 };
 
 builder.Configuration.AddArcanumConfiguration();
@@ -61,16 +55,12 @@ builder.Services.AddArcanumApiServices(builder.Configuration);
 
 if (!string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
 {
-
     if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync().ConfigureAwait(false) is string newApiKey)
     {
-
         Console.WriteLine(newApiKey);
 
         Log.Information("New Master API Key generated and secured. Save this key — it will not be shown again.");
-
     }
-
 }
 
 WebApplication app = builder.Build();

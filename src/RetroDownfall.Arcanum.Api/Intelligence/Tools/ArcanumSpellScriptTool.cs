@@ -12,6 +12,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 [ExcludeFromCodeCoverage] // Reason: executes external spell scripts via AIFunction; covered via ArcanumSpellScriptToolMultiRootTests and spell integration paths.
 public sealed class ArcanumSpellScriptTool : AIFunction
 {
+    public const string ToolName = "run_spell_script";
+
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private static readonly JsonDocument SchemaDocument = JsonDocument.Parse(
@@ -90,7 +92,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
     {
     }
 
-    public override string Name => "run_spell_script";
+    public override string Name => ToolName;
 
     public override string Description =>
         $"Runs a script file only from the active spell and its resonant dependency scripts/ directories (no path traversal). "

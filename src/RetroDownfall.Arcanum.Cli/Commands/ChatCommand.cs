@@ -96,7 +96,7 @@ public sealed class ChatCommand(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string raw;
+            string? raw;
 
             string promptMarkup = stagedFiles.Count > 0
                 ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedFiles.Count} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"

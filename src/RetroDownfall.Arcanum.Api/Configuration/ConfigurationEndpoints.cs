@@ -3,8 +3,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
-using RetroDownfall.Arcanum.Api;
-using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -18,7 +16,6 @@ internal static class ConfigurationEndpoints
 
     public static RouteGroupBuilder MapConfigurationEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet("/config", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
@@ -156,5 +153,4 @@ internal static class ConfigurationEndpoints
 
         return apiGroup;
     }
-
 }

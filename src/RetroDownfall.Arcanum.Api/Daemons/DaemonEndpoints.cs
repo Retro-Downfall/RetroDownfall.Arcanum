@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
-using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -17,7 +16,6 @@ namespace RetroDownfall.Arcanum.Api.Daemons;
 
 internal static class DaemonEndpoints
 {
-
     public static RouteGroupBuilder MapDaemonEndpoints(this RouteGroupBuilder apiGroup)
     {
 
@@ -320,7 +318,5 @@ internal static class DaemonEndpoints
                 return Results.Ok(ApiResponse<UnseenServantJobStatusDto>.FromResult(ok, traceId));
             })
         .WithName($"{routeNamePrefix}PostDaemonJobInitiative");
-
     }
-
 }

@@ -2346,7 +2346,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
             throw ex;
 
+#pragma warning disable CS0162 // yield break is required by the async-iterator shape (CS8419) but unreachable after the throw above.
             yield break;
+#pragma warning restore CS0162
 
         }
 

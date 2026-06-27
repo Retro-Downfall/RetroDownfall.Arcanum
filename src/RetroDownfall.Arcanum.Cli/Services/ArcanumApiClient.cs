@@ -1361,7 +1361,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             await using (responseStream!)
             {
-                Stream openedStream = responseStream;
+                Stream openedStream = responseStream!;
 
                 using StreamReader lineReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
 

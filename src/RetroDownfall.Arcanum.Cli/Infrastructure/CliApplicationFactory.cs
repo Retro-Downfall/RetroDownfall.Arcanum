@@ -164,6 +164,10 @@ internal static class CliApplicationFactory
 
     }
 
+    [UnconditionalSuppressMessage(
+        "AOT",
+        "IL3050",
+        Justification = "Spectre.Console.Cli is reflection-based; TrimmerRootAssembly + DynamicDependency attributes on Program.Main preserve the required command types.")]
     public static CommandApp BuildCommandApp(IServiceCollection services)
     {
 

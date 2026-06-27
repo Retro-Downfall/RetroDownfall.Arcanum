@@ -147,7 +147,7 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
         string codexPath = _workspace.WriteFile("CODEX.md", "# Hello");
 
-        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 1024).ConfigureAwait(false);
+        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 1024);
 
         Assert.True(result.IsSuccess);
 
@@ -161,7 +161,7 @@ public sealed class CodexPathPolicyTests : IClassFixture<TempWorkspace>
 
         string codexPath = _workspace.WriteFile("CODEX.md", new string('x', 64));
 
-        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 32).ConfigureAwait(false);
+        Result<string> result = await CodexPathPolicy.ReadCappedAsync(codexPath, 32);
 
         Assert.True(result.IsFailure);
 

@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using Microsoft.Extensions.Logging;
@@ -39,7 +40,12 @@ public static class SecureFilePermissions
 
         }
 
-        TryApplyUnixFileMode(path, OwnerOnlyFileMode);
+        if (!OperatingSystem.IsWindows())
+        {
+
+            TryApplyUnixFileMode(path, OwnerOnlyFileMode);
+
+        }
 
         if (OperatingSystem.IsWindows())
         {
@@ -60,7 +66,12 @@ public static class SecureFilePermissions
 
         }
 
-        TryApplyUnixFileMode(path, OwnerOnlyDirectoryMode);
+        if (!OperatingSystem.IsWindows())
+        {
+
+            TryApplyUnixFileMode(path, OwnerOnlyDirectoryMode);
+
+        }
 
         if (OperatingSystem.IsWindows())
         {
@@ -245,6 +256,7 @@ public static class SecureFilePermissions
 
     }
 
+    [UnsupportedOSPlatform("windows")]
     private static void CheckUnixPermissions(ILogger logger, string path, bool isDirectory)
     {
 
@@ -279,6 +291,7 @@ public static class SecureFilePermissions
 
     }
 
+    [SupportedOSPlatform("windows")]
     private static void CheckWindowsPermissions(ILogger logger, string path, bool isDirectory)
     {
 
@@ -345,6 +358,7 @@ public static class SecureFilePermissions
 
     }
 
+    [UnsupportedOSPlatform("windows")]
     private static void TryApplyUnixFileMode(string path, UnixFileMode mode)
     {
 
@@ -357,28 +371,13 @@ public static class SecureFilePermissions
         catch (Exception)
         {
 
-            if (OperatingSystem.IsWindows())
-            {
-
-                if (mode.HasFlag(UnixFileMode.UserExecute))
-                {
-
-                    TryApplyWindowsOwnerOnlyDirectoryAcl(path);
-
-                }
-                else
-                {
-
-                    TryApplyWindowsOwnerOnlyFileAcl(path);
-
-                }
-
-            }
+            // Best effort — caller's explicit OperatingSystem.IsWindows() branch owns the Windows ACL path.
 
         }
 
     }
 
+    [SupportedOSPlatform("windows")]
     private static void TryApplyWindowsOwnerOnlyFileAcl(string path)
     {
 
@@ -420,6 +419,7 @@ public static class SecureFilePermissions
 
     }
 
+    [SupportedOSPlatform("windows")]
     private static void TryApplyWindowsOwnerOnlyDirectoryAcl(string path)
     {
 

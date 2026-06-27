@@ -96,7 +96,7 @@ Any change to architecture, contracts, configuration, persistence, MCP surfaces,
 | **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), workspace scanning, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link, GGUF cache + `llama-server` manager | `IsTrimmable` + `PublishAot` (analysis signal) |
 | **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Single shipping executable | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` (the native image) |
-| **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | — |
+| **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
 | **`tests/RetroDownfall.Arcanum.Tests`** | xUnit test suite (not shipped) | MCP, security, config, workspace policy, SQLCipher Grimoire, and API-host integration tests | — |
 
 **Key entry points to know:** `ApiBootstrapper.AddArcanumApiServices` / `MapArcanumEndpoints` (wire everything), `AddArcanumInfrastructure` (Infrastructure DI), `WizardIntelligenceProvider.StreamPromptAsync` (the inference loop), `Cli/Program.cs` (command registration).
@@ -110,7 +110,9 @@ src/
   RetroDownfall.Arcanum.Infrastructure/  # Grimoire, MCP, perception, llama, Comm Link, Serilog
     Generated/                           # EF Core compiled model (commit regenerations)
     Data/Migrations/                     # EF Core migrations
+    Data/SqlMigrations/                  # SQL scripts run at startup
   RetroDownfall.Arcanum.Api/             # endpoints, intelligence hub, /v1, security filter
+    ProvingGrounds/                      # trial/inquisitor endpoint wiring
   RetroDownfall.Arcanum.Cli/             # the `arcanum` executable (Spectre commands)
   RetroDownfall.Arcanum.Api.DevHost/     # debug-only host
 tests/
@@ -120,6 +122,12 @@ docs/                                    # all project documentation lives here
   DESIGN.md                              # authoritative deep reference
   tests.README.md                        # test suite conventions and coverage gates
   CODEX.template.md                      # CODEX scaffold template
+  DESIGN-KDF-UPGRADE.md                  # Grimoire key-derivation upgrade notes
+scripts/coverage.sh                      # run tests, generate Cobertura + HTML coverage; pass --threshold to enforce gates
+scripts/coverage_threshold.py            # tiered coverage threshold enforcement
+scripts/coverage_threshold_test.py       # coverage threshold script tests
+scripts/align-csharp-blanklines.sh       # C# blank-line formatter entrypoint
+scripts/align_csharp_blanklines.py       # C# blank-line formatter logic
 scripts/verify-aot-il-warnings.sh        # AOT IL-warning gate
 Directory.Build.props                    # shared MSBuild props + CVE pin (Microsoft.Bcl.Memory)
 ```
@@ -148,7 +156,7 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Skill / capability (versioned markdown) | **Spell** | `/api/spells` (`SPELL.md` + optional `SKILL.json`) |
 | Parameterized prompt template | **Prompt** | `/api/prompts` |
 | Approval gate for high-risk tools | **Ward** | `/api/wards` (DM resolves allow/deny) |
-| Per-campaign execution sandbox | **Sanctum** | `/api/campaigns/{id}/sanctum` |
+| Per-campaign execution sandbox | **Sanctum** | `/api/campaigns/{campaignId}/sanctum` |
 | High-risk gated tools | **Forbidden Arts** | `Arcanum:Ward:ForbiddenArts` |
 | Autonomous sub-agent | **Apprentice** | `/api/apprentices` |
 | Multi-agent coordination network | **The Conclave** | `cast_sending` tool · `/api/apprentices/{id}/cast` |
@@ -186,7 +194,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | The Forge — campaigns | `/api/campaigns/*` (+ `/codex`, `/export`, `/import`), `/api/codex` | Registers workspace roots; creates `.arcanum/`. |
 | The Forge — prompts | `/api/prompts/*` (`/render`, `/test`, `/execute(-stream)`, versions) | Versioned templates with parameter schemas; `/execute(-stream)` renders and runs session-backed inference (NDJSON stream). |
 | The Forge — apprentices | `/api/apprentices/*` (`/start`, `/pause`, `/resume`, `/cancel`, `/reweave`, `/intervene`, `/cast`, `/chronicle`) | Goal-driven autonomous agents with **Second Wind** (exponential retry/backoff with full jitter), **Shifting Fate** (plan re-weave), **Divine Intervention** (`Escalated` → `/intervene`), **The Conclave** cross-Apprentice delegation (`/cast` + `cast_sending`), and **Simulacrum** parallel steps; Chronicle is SSE. On host restart, `Running` and empty-plan `Planning` apprentices resume automatically; `Planning` apprentices that already have a plan are escalated for Divine Intervention. |
-| Wards & Sanctum | `/api/wards/*`, `/api/campaigns/{id}/sanctum(/breaches)` | Forbidden Arts gating + per-campaign sandbox. |
+| Wards & Sanctum | `/api/wards/*`, `/api/campaigns/{campaignId}/sanctum(/breaches)` | Forbidden Arts gating + per-campaign sandbox. |
 | MCP | `/api/mcp` (list), `/api/mcp/{name}` (status), `/api/mcp/*` (`/start`, `/stop`, `/restart`, `/reload`, `/trust-workspace`) | Manage external + in-process MCP servers. |
 | LlamaCpp | `/api/llama/models(/pull)`, `/api/llama/servers/*` | GGUF cache + `llama-server` lifecycle; pull is **NDJSON**. |
 | Workspaces | `/api/workspaces/*` (+ `/files`, `/files/info`, `/files/contents`) | Registry + read-only file browser. |
@@ -242,7 +250,7 @@ Settings bind under the `Arcanum` object in **`arcanum.json`**, living in the pe
 | `Arcanum:Apprentices` | Concurrency, step timeout, Chronicle channel capacity, **Second Wind** retry/backoff (`MaxStepRetries`, `RetryBackoffSeconds`, `RetryBackoffMaxSeconds`), **Shifting Fate** / **Divine Intervention** toggles, **Simulacrum** parallel-step bound (`MaxSimulacra`, default 3, clamp 1–10). |
 | `Arcanum:LlamaCpp` | `llama-server` path, GPU layers, context size, ports, cache cap, SHA-256 verification (`RequireModelHash`, default `true`; set `false` to allow unverified pulls with `verified:false` in the cache manifest). |
 | `Arcanum:Grimoire` / `Sessions` | Load/query caps, snapshot retention, page sizes, SSE replay caps, `MaxEntriesPerSession` / `MaxEntryContentBytes` entry bounds (also caps stateless `/v1` and ping message content). |
-| `Arcanum:CommLink` | Webhook URL, timeout, scheme allowlist; webhook responses are drained (bounded) after POST. |
+| `Arcanum:CommLink` | Webhook URL, timeout, scheme allowlist (defaults to `["https"]`; add `"http"` to allow plaintext), optional host allowlist; webhook responses are drained (bounded) after POST. |
 | `Arcanum:Perception` / `Spells` / `Campaigns` | Path allowlists (**empty = deny by default**), campaign caps. `Arcanum:Spells:MaxFileSizeBytes` (default 256 KiB) caps spell/frontmatter reads; `Arcanum:Spells:MetadataScanCacheTtlSeconds` (default 5s, `0` disables) caches routing metadata scans. **`MaxDependencies`**, **`MaxDeclaredTools`**, **`MaxResonantDependencies`**, **`MaxResonantBytes`** enforced at API and scan. |
 | `Arcanum:Prompts` | **`MaxParameterValueChars`** (default 4096) enforced on prompt render/execute parameter values. |
 | `Arcanum:Daemon` / `EventBus` / `Logs` / `Workspaces` / `Codex` / `Cli` | Unseen Servant scheduling, SSE channel capacity, global `MaxSseConnections` cap (503 `Api.TooManyConnections`), log ring buffer, file-read caps, `Arcanum:Codex:MaxSizeBytes` (default 256 KiB) for CODEX reads/writes, CLI theming/attachments, **`ApiRequestTimeoutSeconds`** (default 60; non-streaming CLI API calls such as `lore` / `daemon jobs` / `llama status`; streaming `ask` / `chat` / `llama pull` stay unbounded). |
@@ -283,7 +291,7 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 | `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `--unattended`, plus inference flags (below). Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). |
 | `chat` | Interactive multi-turn REPL (Markdig rendering, mana bar). Flags: `-n` / `--new`, `-m`, `--no-tools`, `--unattended`, plus inference flags. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage files inline with `@path`; the mana bar shows a persistent **(Memory Compressed)** suffix after read-time compression until `/new`. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
-| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer panels) + API health probe. Timeout via `Arcanum:Cli:DoctorHealthTimeoutSeconds` (default 2s); an unreachable API is a non-fatal warning (still exits 0). |
+| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer panels) + API health probe. Timeout via `Arcanum:Cli:DoctorHealthTimeoutSeconds` (default 2s); an unreachable API is a non-fatal warning (still exits 0). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. |
 | `key show` | Print the stored master API key from the local secret store (CLI-only; no HTTP). |
 | `lore list\|get\|set\|delete` | Operator key-value memory via `/api/lore` (needs `serve`). Args: `get <KEY>`, `set <KEY> <VALUE>`, `delete <KEY>`. |
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |

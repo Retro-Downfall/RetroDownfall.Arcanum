@@ -400,12 +400,12 @@ public sealed class OutboundUrlGuardTests : IDisposable
     }
 
     [Fact]
-    public async Task ValidateArcanumSettingsAsync_NullCommLink_Succeeds()
+    public async Task ValidateArcanumSettingsAsync_DefaultCommLink_Succeeds()
     {
 
         ArcanumSettings settings = new()
         {
-            CommLink = null,
+            CommLink = new(),
             Providers = [],
         };
 
@@ -416,12 +416,12 @@ public sealed class OutboundUrlGuardTests : IDisposable
     }
 
     [Fact]
-    public async Task ValidateArcanumSettingsAsync_NullProviders_Succeeds()
+    public async Task ValidateArcanumSettingsAsync_EmptyProviders_Succeeds()
     {
 
         ArcanumSettings settings = new()
         {
-            Providers = null,
+            Providers = [],
         };
 
         Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);

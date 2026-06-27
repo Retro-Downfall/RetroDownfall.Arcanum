@@ -1443,7 +1443,7 @@ public sealed class WizardIntelligenceProvider(
 
         }
 
-        string encodingName = settings.Value.Intelligence?.TokenizerEncoding ?? InferenceTokenizerResolver.DefaultEncodingName;
+        string encodingName = settings.Value.Intelligence.TokenizerEncoding ?? InferenceTokenizerResolver.DefaultEncodingName;
 
         Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(encodingName);
 
