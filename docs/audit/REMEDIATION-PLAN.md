@@ -46,16 +46,16 @@ Posture sweeps (whole `src/`): **no** `async void`, **no** `AIFunctionFactory.Cr
 
 The plan's own gates must work before anything else, and the tree must be clean.
 
-- [ ] **W0.1 — Restore the coverage gate (`scripts/coverage.sh`)**
+- [x] **W0.1 — Restore the coverage gate (`scripts/coverage.sh`)** ✅ *done — gate runs at 88.20% line / 76.82% branch, all thresholds met; the `coverage.*` `.gitignore` rule was also silently ignoring the script.*
   - **Closes:** **NEW (tooling)** — `docs/README.md` and this plan reference `./scripts/coverage.sh --threshold` as a standing gate, but **the script does not exist** (`scripts/` has only `coverage_threshold.py` + `coverage_threshold_test.py`). The gate is currently un-runnable.
   - **Fix:** Add `scripts/coverage.sh`: run `dotnet test … --collect:"XPlat Code Coverage"` with a committed `coverlet.runsettings` (the *intended* include/exclude set — exclude generated EF model, source-gen contexts, `[ExcludeFromCodeCoverage]` types, DTO/record contracts), merge to one Cobertura report, and `--threshold` invokes `coverage_threshold.py`. The bare `XPlat` run reports **53.25%/39.89%** precisely because no runsettings exclusions are applied — committing the runsettings is what makes the documented 85/75/100 gate meaningful.
   - **Tests:** `coverage_threshold_test.py` already exists; extend it for the merged-report path. Run `scripts/coverage.sh --threshold` and record the real baseline.
   - **Docs:** README scripts table (already references it — make it true).
 
-- [ ] **W0.2 — Remove orphaned `.tmp-infra-tests-DTJs/` project**
+- [x] **W0.2 — Remove orphaned `.tmp-infra-tests-DTJs/` project** ✅ *done — was tracked; removed + `.gitignore` hardened (`.tmp-*/`, `__pycache__/`).*
   - **Closes:** **NEW (hygiene)** — a stray `InfraTests.csproj` (no sources, not in `RetroDownfall.Arcanum.slnx`, duplicate `RootNamespace`) sits at repo root. Delete it (and ensure `.gitignore` covers `**/.tmp-*`).
 
-- [ ] **W0.3 — Commit the in-flight polish**
+- [x] **W0.3 — Commit the in-flight polish** ✅ *done.*
   - **Closes:** the uncommitted working-tree edits (doc accuracy, blank-line style, `SecureFilePermissions` `[SupportedOSPlatform]`/`[UnsupportedOSPlatform]` annotations, `ApprenticeRepository` dup-`using`, `ArcanumSpellScriptTool.ToolName` const, CLI null-handling). Verify gates, commit, so later waves start from a clean tree.
 
 ---
@@ -64,20 +64,20 @@ The plan's own gates must work before anything else, and the tree must be clean.
 
 Foundational fixes that also repair downstream findings. Do these first, in order.
 
-- [ ] **W1.1 — Validate configuration at startup (systemic S1)**
+- [x] **W1.1 — Validate configuration at startup (systemic S1)** ✅ *done — `ConfigurationStartupValidator` (`IStartupFilter`) aborts boot on invalid config; validator null-hardened + llama port-sum rule added.*
   - **Closes:** P1 `ConfigurationValidator` never runs at boot (`Core/Configuration/ConfigurationValidator.cs:8`; only consumed by injected `validator.Validate(...)` at `Api/Configuration/ConfigurationEndpoints.cs:78,143` — verified first-hand); P1 llama port overflow (fold in a `PortStart + PortRange - 1 ≤ 65535` rule); P2 CommLink `AllowedHosts`/empty `AllowedSchemes` silent no-send; surfaces bad `DefaultModel`/`FastModel`, MCP timeout ordering, missing allow-list roots at boot.
   - **Fix:** Add an `IStartupFilter`/one-shot `IHostedService` (ordered before request serving) that runs `ConfigurationValidator.Validate(settings)` + `OutboundUrlGuard.ValidateArcanumSettingsAsync(settings)` and aborts with a clear message (log + controlled stop — **not** `Environment.FailFast`). Wire it into **both** `serve` (`ServeCommand`/`ApiBootstrapper`) and `DevHost`. Extend the validator with the CommLink scheme/host + port-sum rules.
   - **Also (NEW, Core agent):** null-harden the validator itself — `ConfigurationValidator.cs:78-99,110-116` NREs on `"intelligence": null`/`"mcp": null`, and `:25,39` NREs on a provider with `"models": null`. Null-coalesce nested settings (`settings.Intelligence ?? new()`, `provider.Models ?? []`) at method entry.
   - **Tests:** validator unit tests for CommLink/port/null-subobject rules; integration test asserting startup aborts (not crashes) on a semantically invalid `arcanum.json`.
   - **Docs:** DESIGN §3.4 startup-validation behavior; README configuration note.
 
-- [ ] **W1.2 — Anchor the session load window at the summary watermark (systemic S2)**
+- [x] **W1.2 — Anchor the session load window at the summary watermark (systemic S2)** ✅ *done — watermark-anchored bounded load; implemented with parameterized raw SQL because the EF/SQLite provider cannot `ORDER BY`/compare `DateTimeOffset` (see DX1).*
   - **Closes:** P1 read-time compression silently drops un-summarized middle messages (`Api/Intelligence/WizardIntelligenceProvider.cs:1523-1526` + `Infrastructure/Repositories/GrimoireRepository.cs:398-404,949-956` — verified first-hand: `GetSessionAsync` does `Where(SessionId==id).ToListAsync()` then in-memory `SelectRecentEntries`); P1 hot-path full-session load (`:398-404`, `:433-437`, `:460-464`); P2 `GetRecentSessionEntriesAsync` no upper clamp (`:458` only `Math.Max(1, takeLast)`).
   - **Fix:** Push the window into SQL in `GetSessionAsync`/`GetSessionEntriesAsync`/`GetRecentSessionEntriesAsync`: `Where(CreatedAt > watermark).OrderByDescending(CreatedAt).Take(max(N, unsummarizedCount))` then re-order ascending — mirror the correct `SessionRepository.GetEntriesAscendingAsync:322-327`. Guarantee the loaded set always covers everything after `LastSummarizedMessageAt`; add an upper `Math.Clamp` on `takeLast`. **Also (NEW, Infra-A):** `CountEntriesAfterAsync` (`GrimoireRepository.cs:925-932`) materializes all `CreatedAt` — replace with SQL `CountAsync(e => e.CreatedAt > cutoff)`.
   - **Tests:** regression test creating > `MaxMessagesPerConversationLoad` post-watermark entries asserts none dropped from compressed context; bounded-query shape assertion.
   - **Docs:** DESIGN §10 read-time compression clarification.
 
-- [ ] **W1.3 — Unify session write paths + maintain the counter (systemic S7)**
+- [x] **W1.3 — Unify session write paths + maintain the counter (systemic S7)** ✅ *done — `SessionRepository.AddEntryAsync` now locks + retries + maintains `UnsummarizedEntryCount`; `Finalize`/`Discard`/`Purge` acquire the per-session lock.*
   - **Closes:** P1 `SessionRepository.AddEntryAsync` never maintains `UnsummarizedEntryCount` (`Infrastructure/Repositories/SessionRepository.cs:273-313` vs `GrimoireRepository.cs:863-879`) → summarization drift; P2 dual-write without shared lock; P2 grimoire mutators `Finalize`/`Discard`/`Purge` skip `SessionWriteLock` (`GrimoireRepository.cs:152-174,176-234,358-378`); P2 `SessionRepository` writes skip `SqliteBusyRetry`.
   - **Fix:** Route all session-entry mutations through one path (or share `SessionWriteLock` + `SqliteBusyRetry` + `IncrementUnsummarizedEntryCountIfKnownAsync`). Apply the per-`SessionId` lock to `FinalizeAssistantEntryAsync`, `DiscardAssistantEntryAsync`, `PurgeSessionAsync`, and `SessionRepository.AddEntryAsync`.
   - **Tests:** concurrent inference + Forge-API append on one session asserts counter correctness and no `SQLITE_BUSY` fast-fail; Forge-path counter-maintenance test.
@@ -180,6 +180,24 @@ Only meaningful **after W0.1** restores `coverage.sh`. The documented gate is li
 
 - [ ] **W5.1 — Security types to 100% branch:** add branch tests for `McpSecurityLimits` (61.96%), `SandboxedFileIo` (66.67%), `WardGate` (75%), `ApiKeyDigestCache`/`GrimoireKeyDerivation` (83.33%), `OutboundUrlGuard` (94.12%). Many gaps are the very error/edge paths fixed in Waves 2–3 — write those tests there and this largely closes itself.
 - [ ] **W5.2 — Overall line/branch to target:** once the runsettings exclusions in W0.1 are correct, identify residual under-covered non-excluded code and add focused tests. Do **not** chase coverage on generated/DTO/AOT-excluded code.
+
+---
+
+## Discovered during execution (new findings — not in the original audit)
+
+Surfaced while implementing Waves 0–1; not yet fixed. **DX1 is high-priority — a latent production crash.**
+
+- [ ] **DX1 — [P1] `SessionRepository` `DateTimeOffset` SQL-translation crash (latent)**
+  - **Found:** the EF Core SQLite provider throws `NotSupportedException: SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses` for any LINQ `OrderBy`/comparison on `CreatedAt`/`UpdatedAt` (verified empirically against the real SQLCipher DB at `SessionRepository.cs:322`). `SessionRepository` does exactly this in `QueryAsync` (`:148`), `GetEntriesAscendingAsync` (`:325`), and the paged reads (`:354-356,380,391,470-472`). These back real `/api/sessions` list + entry-pagination endpoints and **crash at runtime**; no real-SQLCipher test covers them, so the green suite never caught it. (W1.2 already fixed the equivalent `GrimoireRepository` paths with parameterized raw SQL.)
+  - **Fix:** port the W1.2 parameterized `FromSql` / `SqlQuery<int>` pattern (sortable UTC `CreatedAt` text, index-backed) to every `SessionRepository` `DateTimeOffset` order/compare; add `[Collection("Grimoire")]` SQLCipher tests for `QueryAsync`, `GetEntriesAscendingAsync`, and the paged reads so the real-DB path is actually exercised.
+
+- [ ] **DX2 — [P3][tests] `ConfigurationWriterTests` HOME-env parallelization flake**
+  - **Found:** the test mutates the process-global `HOME` env var without a collection lock, so it races other tests reading `ArcanumPaths` and fails intermittently under parallel scheduling (observed once during W1.1, passed in isolation + on re-run). Undermines gate determinism.
+  - **Fix:** put HOME-mutating tests in a `DisableParallelization` collection (or inject a non-global path seam).
+
+- [ ] **DX3 — [P3][tooling] `reportgenerator` local tool fails command resolution**
+  - **Found:** the pinned `dotnet-reportgenerator-globaltool` 5.4.11 restores but `dotnet [tool run] reportgenerator` reports the command unavailable on this host, so `coverage.sh`'s HTML report no-ops (the threshold gate is unaffected). The manifest itself flags 5.5.10 available.
+  - **Fix:** bump the tool to 5.5.10 (or add `rollForward`) so the documented `.tmp/coverage/report/index.html` renders.
 
 ---
 
