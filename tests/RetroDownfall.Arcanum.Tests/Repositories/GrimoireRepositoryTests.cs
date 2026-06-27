@@ -281,6 +281,85 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task GetSessionAsync_loads_every_post_watermark_entry_even_beyond_max_messages()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(50);
+
+        DateTime watermark = new(2025, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = Guid.NewGuid();
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CreatedAt = new DateTimeOffset(watermark.AddMinutes(-30), TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(watermark.AddMinutes(maxMessages + 10), TimeSpan.Zero),
+            Status = "active",
+            Title = "watermark anchor",
+            Summary = "Prior turns up to the watermark were summarized.",
+            LastSummarizedMessageAt = watermark,
+        });
+
+        for (int i = 1; i <= 3; i++)
+        {
+
+            _db.Entries.Add(new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"before-watermark-{i}",
+                ModelUsed = "test-model",
+                CreatedAt = new DateTimeOffset(watermark.AddMinutes(-i), TimeSpan.Zero),
+            });
+
+        }
+
+        int postWatermarkCount = maxMessages + 10;
+
+        List<Guid> postWatermarkIds = new();
+
+        for (int i = 1; i <= postWatermarkCount; i++)
+        {
+
+            Guid entryId = Guid.NewGuid();
+
+            postWatermarkIds.Add(entryId);
+
+            _db.Entries.Add(new Entry
+            {
+                Id = entryId,
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"after-watermark-{i}",
+                ModelUsed = "test-model",
+                CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+            });
+
+        }
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        Session? session = await repository.GetSessionAsync(sessionId, CancellationToken.None);
+
+        Assert.NotNull(session);
+
+        HashSet<Guid> loadedIds = session!.Entries.Select(e => e.Id).ToHashSet();
+
+        Guid[] dropped = postWatermarkIds.Where(id => !loadedIds.Contains(id)).ToArray();
+
+        Assert.True(
+            dropped.Length == 0,
+            $"Expected all {postWatermarkCount} post-watermark entries to be loaded, but {dropped.Length} were dropped.");
+
+    }
+
     private GrimoireRepository CreateRepository()
     {
 

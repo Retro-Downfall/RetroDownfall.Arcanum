@@ -395,13 +395,37 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<Entry> entries = await _db.Entries
+        // Anchor the load window at the summary watermark: always load every entry
+        // after LastSummarizedMessageAt (so read-time compression can never silently
+        // drop un-summarized middle messages) plus at least the most-recent
+        // maxMessages, bounded so a long thread is never fully materialized.
+        int take = maxMessages;
+
+        if (session.LastSummarizedMessageAt is { } watermark)
+        {
+
+            int afterWatermark = await CountEntriesAfterAsync(
+                id,
+                new DateTimeOffset(watermark, TimeSpan.Zero),
+                cancellationToken).ConfigureAwait(false);
+
+            take = Math.Max(maxMessages, afterWatermark);
+
+        }
+
+        // SQLite cannot ORDER BY a DateTimeOffset column, so the bounded most-recent
+        // window is pushed down as parameterized SQL. CreatedAt is stored as sortable
+        // UTC text, so "ORDER BY ... DESC LIMIT" selects the newest entries server-side.
+        List<Entry> recent = await _db.Entries
+            .FromSql(
+                $"""SELECT * FROM "Entries" WHERE "SessionId" = {id} ORDER BY "CreatedAt" DESC LIMIT {take}""")
             .AsNoTracking()
-            .Where(m => m.SessionId == id)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        session.Entries = SelectRecentEntries(entries, maxMessages);
+        recent.Reverse();
+
+        session.Entries = recent;
 
         return session;
     }
@@ -430,13 +454,16 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<Entry> entries = await _db.Entries
+        List<Entry> recent = await _db.Entries
+            .FromSql(
+                $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {maxMessages}""")
             .AsNoTracking()
-            .Where(m => m.SessionId == sessionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return SelectRecentEntries(entries, maxMessages)
+        recent.Reverse();
+
+        return recent
             .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
             .ToList();
     }
@@ -455,15 +482,21 @@ public sealed class GrimoireRepository : IGrimoireRepository
             return null;
         }
 
-        int clampedTake = Math.Max(1, takeLast);
+        int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<Entry> entries = await _db.Entries
+        int clampedTake = Math.Clamp(takeLast, 1, maxMessages);
+
+        List<Entry> recent = await _db.Entries
+            .FromSql(
+                $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {clampedTake}""")
             .AsNoTracking()
-            .Where(m => m.SessionId == sessionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return SelectRecentEntries(entries, clampedTake)
+        recent.Reverse();
+
+        return recent
             .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
             .ToList();
     }
@@ -922,14 +955,13 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken)
     {
 
-        List<DateTimeOffset> createdAtValues = await _db.Entries
-            .AsNoTracking()
-            .Where(e => e.SessionId == sessionId)
-            .Select(e => e.CreatedAt)
-            .ToListAsync(cancellationToken)
+        // SQLite cannot translate a DateTimeOffset comparison in LINQ, so the watermark
+        // filter is pushed down as parameterized SQL against the sortable UTC text column.
+        return await _db.Database
+            .SqlQuery<int>(
+                $"""SELECT COUNT(*) AS "Value" FROM "Entries" WHERE "SessionId" = {sessionId} AND "CreatedAt" > {afterExclusive}""")
+            .FirstAsync(cancellationToken)
             .ConfigureAwait(false);
-
-        return createdAtValues.Count(t => t > afterExclusive);
 
     }
 
@@ -944,17 +976,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
         string trimmed = prompt.Trim();
         const int maxLen = 200;
         return trimmed.Length <= maxLen ? trimmed : trimmed[..maxLen];
-    }
-
-    private static List<Entry> SelectRecentEntries(IReadOnlyList<Entry> entries, int take)
-    {
-
-        return entries
-            .OrderByDescending(e => e.CreatedAt)
-            .Take(take)
-            .Reverse()
-            .ToList();
-
     }
 
 }
