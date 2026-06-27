@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -54,38 +55,9 @@ public sealed class SessionRepository(
         int limit = ArcanumSettingClamps.SessionQueryLimit(
             request.Limit ?? settings.DefaultQueryLimit ?? new SessionSettings().DefaultQueryLimit!.Value);
 
-        IQueryable<Session> query = db.Sessions.AsNoTracking();
-
         string statusFilter = string.IsNullOrWhiteSpace(request.Status) ? "active" : request.Status.Trim();
 
-        if (!string.Equals(statusFilter, "all", StringComparison.OrdinalIgnoreCase))
-        {
-            query = query.Where(s => s.Status == statusFilter);
-        }
-
-        if (request.CampaignId is Guid campaignId)
-        {
-            query = query.Where(s => s.CampaignId == campaignId);
-        }
-
-        if (request.From is DateTimeOffset from)
-        {
-            query = query.Where(s => s.UpdatedAt >= from);
-        }
-
-        if (request.To is DateTimeOffset to)
-        {
-            query = query.Where(s => s.UpdatedAt <= to);
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Title))
-        {
-            string titlePattern = SqlLikePatterns.Contains(request.Title.Trim());
-
-            query = query.Where(s =>
-                s.Title != null
-                && EF.Functions.Like(s.Title, titlePattern, SqlLikePatterns.EscapeString));
-        }
+        string? searchTitlePattern = null;
 
         HashSet<Guid>? ftsSessionIds = null;
 
@@ -101,7 +73,7 @@ public sealed class SessionRepository(
                 search = search[..maxQueryLen];
             }
 
-            string titlePattern = SqlLikePatterns.Contains(search);
+            searchTitlePattern = SqlLikePatterns.Contains(search);
 
             string matchQuery = FtsMatchQuerySanitizer.Sanitize(search);
 
@@ -109,44 +81,104 @@ public sealed class SessionRepository(
             {
                 ftsSessionIds = await ResolveFtsSessionIdsAsync(matchQuery, ct).ConfigureAwait(false);
             }
+        }
+
+        // The EF Core SQLite provider cannot ORDER BY or compare a DateTimeOffset column in
+        // LINQ, so the session list is composed as parameterized SQL over the sortable UTC
+        // text columns. Every {n} placeholder is bound to the positional parameter array
+        // (injection-safe); no user-supplied value is ever concatenated into the SQL text.
+        List<object> parameters = [];
+
+        string Bind(object value)
+        {
+            string placeholder = string.Concat("{", parameters.Count.ToString(CultureInfo.InvariantCulture), "}");
+
+            parameters.Add(value);
+
+            return placeholder;
+        }
+
+        List<string> conditions = [];
+
+        if (!string.Equals(statusFilter, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            conditions.Add($"\"Status\" = {Bind(statusFilter)}");
+        }
+
+        if (request.CampaignId is Guid campaignId)
+        {
+            conditions.Add($"\"CampaignId\" = {Bind(campaignId)}");
+        }
+
+        if (request.From is DateTimeOffset from)
+        {
+            conditions.Add($"\"UpdatedAt\" >= {Bind(from.ToUniversalTime())}");
+        }
+
+        if (request.To is DateTimeOffset to)
+        {
+            conditions.Add($"\"UpdatedAt\" <= {Bind(to.ToUniversalTime())}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Title))
+        {
+            string titlePattern = SqlLikePatterns.Contains(request.Title.Trim());
+
+            conditions.Add(
+                $"(\"Title\" IS NOT NULL AND \"Title\" LIKE {Bind(titlePattern)} ESCAPE {Bind(SqlLikePatterns.EscapeString)})");
+        }
+
+        if (searchTitlePattern is not null)
+        {
+            string titleClause =
+                $"\"Title\" IS NOT NULL AND \"Title\" LIKE {Bind(searchTitlePattern)} ESCAPE {Bind(SqlLikePatterns.EscapeString)}";
 
             if (ftsSessionIds is { Count: > 0 })
             {
-                query = query.Where(s =>
-                    (s.Title != null
-                        && EF.Functions.Like(s.Title, titlePattern, SqlLikePatterns.EscapeString))
-                    || ftsSessionIds.Contains(s.Id));
+                conditions.Add(
+                    $"(({titleClause}) OR \"Id\" COLLATE NOCASE IN (SELECT value FROM json_each({Bind(SerializeGuidJsonArray(ftsSessionIds))})))");
             }
             else
             {
-                query = query.Where(s =>
-                    s.Title != null
-                    && EF.Functions.Like(s.Title, titlePattern, SqlLikePatterns.EscapeString));
+                conditions.Add($"({titleClause})");
             }
         }
 
         if (request.Role is MessageRole role)
         {
-            query = query.Where(s => s.Entries.Any(e => e.Role == role));
+            conditions.Add(
+                $"EXISTS (SELECT 1 FROM \"Entries\" AS e WHERE e.\"SessionId\" = \"Sessions\".\"Id\" AND e.\"Role\" = {Bind((int)role)})");
         }
 
         if (!string.IsNullOrWhiteSpace(request.Model))
         {
             string modelPattern = SqlLikePatterns.EscapeLiteral(request.Model.Trim());
 
-            query = query.Where(s =>
-                s.Entries.Any(e =>
-                    EF.Functions.Like(e.ModelUsed, modelPattern, SqlLikePatterns.EscapeString)));
+            conditions.Add(
+                $"EXISTS (SELECT 1 FROM \"Entries\" AS e WHERE e.\"SessionId\" = \"Sessions\".\"Id\" AND e.\"ModelUsed\" LIKE {Bind(modelPattern)} ESCAPE {Bind(SqlLikePatterns.EscapeString)})");
         }
 
         if (request.BeforeUpdatedAt is DateTimeOffset before)
         {
-            query = query.Where(s => s.UpdatedAt < before);
+            conditions.Add($"\"UpdatedAt\" < {Bind(before.ToUniversalTime())}");
         }
 
-        List<Session> page = await query
-            .OrderByDescending(s => s.UpdatedAt)
-            .Take(limit + 1)
+        StringBuilder sqlBuilder = new();
+
+        sqlBuilder.Append("SELECT * FROM \"Sessions\"");
+
+        if (conditions.Count > 0)
+        {
+            sqlBuilder.Append(" WHERE ");
+
+            sqlBuilder.Append(string.Join(" AND ", conditions));
+        }
+
+        sqlBuilder.Append($" ORDER BY \"UpdatedAt\" DESC LIMIT {Bind(limit + 1)}");
+
+        List<Session> page = await db.Sessions
+            .FromSqlRaw(sqlBuilder.ToString(), parameters.ToArray())
+            .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
@@ -339,11 +371,12 @@ public sealed class SessionRepository(
     {
         int clampedTake = Math.Max(1, takeLast);
 
+        // SQLite cannot ORDER BY a DateTimeOffset column, so the most-recent window is pushed
+        // down as parameterized SQL over the sortable UTC CreatedAt text column.
         List<Entry> recentDescending = await db.Entries
+            .FromSql(
+                $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {clampedTake}""")
             .AsNoTracking()
-            .Where(e => e.SessionId == sessionId)
-            .OrderByDescending(e => e.CreatedAt)
-            .Take(clampedTake)
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
@@ -367,15 +400,21 @@ public sealed class SessionRepository(
     {
         int clampedLimit = ArcanumSettingClamps.SessionStreamReplayLimit(limit);
 
+        DateTimeOffset afterUtc = afterCreatedAt.ToUniversalTime();
+
+        // SQLite cannot compare or ORDER BY a DateTimeOffset in LINQ, so the keyset page is
+        // pushed down as parameterized SQL over the sortable UTC CreatedAt text column. The
+        // Id tie-break matches the EF-translated text comparison of the stored GUID column.
         return await db.Entries
+            .FromSql(
+                $"""
+                SELECT * FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND ("CreatedAt" > {afterUtc} OR ("CreatedAt" = {afterUtc} AND "Id" > {afterId}))
+                ORDER BY "CreatedAt", "Id"
+                LIMIT {clampedLimit}
+                """)
             .AsNoTracking()
-            .Where(e => e.SessionId == sessionId)
-            .Where(e =>
-                e.CreatedAt > afterCreatedAt
-                || (e.CreatedAt == afterCreatedAt && e.Id.CompareTo(afterId) > 0))
-            .OrderBy(e => e.CreatedAt)
-            .ThenBy(e => e.Id)
-            .Take(clampedLimit)
             .ToListAsync(ct)
             .ConfigureAwait(false);
     }
@@ -390,27 +429,37 @@ public sealed class SessionRepository(
     {
         int clampedLimit = Math.Clamp(limit, 1, 1000);
 
-        IQueryable<Entry> query = db.Entries
-            .AsNoTracking()
-            .Where(e => e.SessionId == sessionId);
-
+        // SQLite cannot compare or ORDER BY a DateTimeOffset in LINQ, so the descending page
+        // is pushed down as parameterized SQL over the sortable UTC CreatedAt text column.
         if (beforeCreatedAt is DateTimeOffset beforeAt && beforeId is Guid beforeEntryId)
         {
-            query = query.Where(e =>
-                e.CreatedAt < beforeAt
-                || (e.CreatedAt == beforeAt && e.Id.CompareTo(beforeEntryId) < 0));
-        }
-        else
-        {
-            int clampedOffset = Math.Max(0, offset);
+            DateTimeOffset beforeUtc = beforeAt.ToUniversalTime();
 
-            query = query.Skip(clampedOffset);
+            return await db.Entries
+                .FromSql(
+                    $"""
+                    SELECT * FROM "Entries"
+                    WHERE "SessionId" = {sessionId}
+                      AND ("CreatedAt" < {beforeUtc} OR ("CreatedAt" = {beforeUtc} AND "Id" < {beforeEntryId}))
+                    ORDER BY "CreatedAt" DESC, "Id" DESC
+                    LIMIT {clampedLimit}
+                    """)
+                .AsNoTracking()
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
         }
 
-        return await query
-            .OrderByDescending(e => e.CreatedAt)
-            .ThenByDescending(e => e.Id)
-            .Take(clampedLimit)
+        int clampedOffset = Math.Max(0, offset);
+
+        return await db.Entries
+            .FromSql(
+                $"""
+                SELECT * FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                ORDER BY "CreatedAt" DESC, "Id" DESC
+                LIMIT {clampedLimit} OFFSET {clampedOffset}
+                """)
+            .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
     }
@@ -483,15 +532,20 @@ public sealed class SessionRepository(
 
         while (true)
         {
+            DateTimeOffset cursorUtc = cursorCreatedAt.ToUniversalTime();
+
+            // SQLite cannot compare or ORDER BY a DateTimeOffset in LINQ, so each ascending
+            // export batch is pushed down as parameterized SQL over the sortable UTC text column.
             List<Entry> batch = await db.Entries
+                .FromSql(
+                    $"""
+                    SELECT * FROM "Entries"
+                    WHERE "SessionId" = {sessionId}
+                      AND ("CreatedAt" > {cursorUtc} OR ("CreatedAt" = {cursorUtc} AND "Id" > {cursorId}))
+                    ORDER BY "CreatedAt", "Id"
+                    LIMIT {ExportEntryBatchSize}
+                    """)
                 .AsNoTracking()
-                .Where(e => e.SessionId == sessionId)
-                .Where(e =>
-                    e.CreatedAt > cursorCreatedAt
-                    || (e.CreatedAt == cursorCreatedAt && e.Id.CompareTo(cursorId) > 0))
-                .OrderBy(e => e.CreatedAt)
-                .ThenBy(e => e.Id)
-                .Take(ExportEntryBatchSize)
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
 
@@ -590,6 +644,34 @@ public sealed class SessionRepository(
         }
 
         return sessionIds;
+    }
+
+    private static string SerializeGuidJsonArray(IEnumerable<Guid> ids)
+    {
+        // GUID text only ever contains [0-9a-f-], so the JSON array can be assembled without
+        // escaping. The result is bound as a single SQL parameter and parsed by json_each,
+        // and the IN-clause uses COLLATE NOCASE so EF's stored GUID casing is irrelevant.
+        StringBuilder builder = new();
+
+        _ = builder.Append('[');
+
+        bool first = true;
+
+        foreach (Guid id in ids)
+        {
+            if (!first)
+            {
+                _ = builder.Append(',');
+            }
+
+            _ = builder.Append('"').Append(id.ToString()).Append('"');
+
+            first = false;
+        }
+
+        _ = builder.Append(']');
+
+        return builder.ToString();
     }
 
     private static string TruncateTitle(string content)
