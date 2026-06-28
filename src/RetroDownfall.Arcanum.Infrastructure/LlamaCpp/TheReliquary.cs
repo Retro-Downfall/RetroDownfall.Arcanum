@@ -125,9 +125,10 @@ public sealed class TheReliquary : IReliquary
             if (existing is not null)
             {
                 Result verifyResult = await VerifyCachedModelIntegrityAsync(
-                    cacheKey,
+                    GetEntryDirectory(cacheKey),
                     existing,
                     resolvedSha256,
+                    llamaSettings.RequireModelHash,
                     cancellationToken).ConfigureAwait(false);
 
                 if (verifyResult.IsFailure)
@@ -714,39 +715,77 @@ public sealed class TheReliquary : IReliquary
             int maxCached = ArcanumSettingClamps.LlamaMaxCachedModels(
                 _optionsMonitor.CurrentValue.LlamaCpp?.MaxCachedModels ?? new LlamaCppSettings().MaxCachedModels);
 
-            string root = ArcanumPaths.ModelCacheDirectory;
+            ILlamaServerManager? manager = _serviceProvider.GetService<ILlamaServerManager>();
+
+            await EvictFromDirectoryAsync(
+                ArcanumPaths.ModelCacheDirectory,
+                maxCached,
+                manager,
+                _logger,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _evictLock.Release();
+
+        }
+
+    }
+
+    // W2.5 Fix 1: extracted as an internal static seam so the over-cap-when-
+    // all-candidates-in-use behavior is unit-testable without touching the real
+    // ~/.config/arcanum/models cache directory. The instance EvictIfNeededAsync
+    // holds the _evictLock and resolves settings/manager, then delegates here.
+    // Deletion uses Path.Combine(root, cacheKey) (root-aware) so a temp test
+    // root is honored; for the real call this is identical to GetEntryDirectory.
+    internal static async Task EvictFromDirectoryAsync(
+        string root,
+        int maxCached,
+        ILlamaServerManager? manager,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
 
         if (!Directory.Exists(root))
         {
+
             return;
+
         }
 
         List<(string CacheKey, DateTimeOffset LastAccessed)> entries = [];
 
         foreach (string dir in Directory.EnumerateDirectories(root))
         {
+
             cancellationToken.ThrowIfCancellationRequested();
 
             string cacheKey = Path.GetFileName(dir);
 
             if (!File.Exists(Path.Combine(dir, ModelFileName)))
             {
+
                 continue;
+
             }
 
             GgufModelManifest? manifest = TryReadManifest(dir);
 
-            DateTimeOffset lastAccessed = manifest?.LastAccessedAt ?? File.GetLastAccessTimeUtc(Path.Combine(dir, ModelFileName));
+            DateTimeOffset lastAccessed = manifest?.LastAccessedAt
+                ?? File.GetLastAccessTimeUtc(Path.Combine(dir, ModelFileName));
 
             entries.Add((cacheKey, lastAccessed));
+
         }
 
         if (entries.Count <= maxCached)
         {
-            return;
-        }
 
-        ILlamaServerManager? manager = _serviceProvider.GetService<ILlamaServerManager>();
+            return;
+
+        }
 
         entries.Sort(static (a, b) => a.LastAccessed.CompareTo(b.LastAccessed));
 
@@ -754,32 +793,51 @@ public sealed class TheReliquary : IReliquary
 
         for (int i = 0; i < entries.Count && toEvict > 0; i++)
         {
+
             (string cacheKey, _) = entries[i];
 
             if (manager is not null && manager.IsModelInUse(cacheKey))
             {
+
                 continue;
+
             }
 
             try
             {
-                Directory.Delete(GetEntryDirectory(cacheKey), recursive: true);
+
+                Directory.Delete(Path.Combine(root, cacheKey), recursive: true);
 
                 toEvict--;
 
-                _logger.LogInformation("Evicted cached model {CacheKey} (LRU).", cacheKey);
+                logger.LogInformation("Evicted cached model {CacheKey} (LRU).", cacheKey);
+
             }
+
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to evict cached model {CacheKey}.", cacheKey);
+
+                logger.LogWarning(ex, "Failed to evict cached model {CacheKey}.", cacheKey);
+
             }
-        }
 
         }
-        finally
+
+        // W2.5 Fix 1: if toEvict > 0 after the loop, every LRU candidate was in
+        // use and the cache stays over MaxCachedModels. Do NOT force-stop running
+        // servers (destructive). Surface an operator warning with the remaining
+        // over-cap count and the reason. The pull itself already succeeded by the
+        // time eviction runs (the model is downloaded and cached), so failing the
+        // pull here would be semantically wrong — the warning is the
+        // minimum-viable operator signal. (Audit alternative "fail the pull" was
+        // rejected: EnsureModelAsync's callers treat IsFailure as a download
+        // failure and would refuse to use a model that is in fact cached & usable.)
+        if (toEvict > 0)
         {
 
-            _evictLock.Release();
+            logger.LogWarning(
+                "Model cache is over cap by {OverCapCount} entries; all LRU eviction candidates are currently in use and were not removed.",
+                toEvict);
 
         }
 
@@ -792,61 +850,116 @@ public sealed class TheReliquary : IReliquary
 
         string manifestPath = Path.Combine(entryDir, ManifestFileName);
 
-        if (!File.Exists(manifestPath))
-        {
-            return;
-        }
-
         try
         {
-            byte[] bytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
 
-            GgufModelManifest? manifest = JsonSerializer.Deserialize(bytes, LlamaCppJsonContext.Default.GgufModelManifest);
+            await TouchManifestLastAccessedAsync(manifestPath, cancellationToken).ConfigureAwait(false);
 
-            if (manifest is null)
-            {
-                return;
-            }
-
-            manifest = manifest with { LastAccessedAt = DateTimeOffset.UtcNow };
-
-            byte[] updated = JsonSerializer.SerializeToUtf8Bytes(manifest, LlamaCppJsonContext.Default.GgufModelManifest);
-
-            await File.WriteAllBytesAsync(manifestPath, updated, cancellationToken).ConfigureAwait(false);
         }
+
         catch (Exception ex)
         {
+
             _logger.LogDebug(ex, "Failed to update last-accessed for cached model {CacheKey}.", cacheKey);
+
         }
 
     }
 
-    private async Task<Result> VerifyCachedModelIntegrityAsync(
-        string cacheKey,
+    // W2.5 Fix 4: extracted as an internal static seam so the atomic touch is
+    // unit-testable without touching the real cache directory. Reuses
+    // WriteManifestAtomicAsync (W2.5 Fix 3) so the manifest is replaced atomically
+    // (same-directory temp + flush + File.Move(overwrite)) instead of the previous
+    // non-atomic File.WriteAllBytesAsync RMW (which could clobber concurrent
+    // touches or corrupt the manifest on a crash mid-write).
+    internal static async Task TouchManifestLastAccessedAsync(string manifestPath, CancellationToken cancellationToken)
+    {
+
+        if (!File.Exists(manifestPath))
+        {
+
+            return;
+
+        }
+
+        byte[] bytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+
+        GgufModelManifest? manifest = JsonSerializer.Deserialize(bytes, LlamaCppJsonContext.Default.GgufModelManifest);
+
+        if (manifest is null)
+        {
+
+            return;
+
+        }
+
+        manifest = manifest with { LastAccessedAt = DateTimeOffset.UtcNow };
+
+        await WriteManifestAtomicAsync(manifestPath, manifest, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    internal static async Task<Result> VerifyCachedModelIntegrityAsync(
+        string entryDir,
         string modelPath,
         string? expectedSha256,
+        bool requireModelHash,
         CancellationToken cancellationToken)
     {
 
         if (!File.Exists(modelPath))
         {
+
             return Result.Failure(new Error("Llama.CacheCorrupt", "Cached model file is missing."));
+
         }
 
         string computedHash = await ComputeSha256HexAsync(modelPath, cancellationToken).ConfigureAwait(false);
 
-        if (!string.IsNullOrWhiteSpace(expectedSha256)
-            && !string.Equals(computedHash, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+        string? trimmedExpected = string.IsNullOrWhiteSpace(expectedSha256) ? null : expectedSha256.Trim();
+
+        bool hasExpectedHash = trimmedExpected is not null;
+
+        if (hasExpectedHash
+            && !string.Equals(computedHash, trimmedExpected, StringComparison.OrdinalIgnoreCase))
         {
+
             return Result.Failure(new Error("Llama.Sha256Mismatch", "Cached model SHA256 does not match the expected hash."));
+
         }
 
-        GgufModelManifest? manifest = TryReadManifest(GetEntryDirectory(cacheKey));
+        GgufModelManifest? manifest = TryReadManifest(entryDir);
 
-        if (manifest?.Sha256 is { Length: > 0 } manifestHash
-            && !string.Equals(computedHash, manifestHash.Trim(), StringComparison.OrdinalIgnoreCase))
+        bool hasManifestHash = false;
+
+        if (manifest?.Sha256 is { Length: > 0 } manifestHash)
         {
-            return Result.Failure(new Error("Llama.Sha256Mismatch", "Cached model SHA256 does not match the manifest."));
+
+            hasManifestHash = true;
+
+            if (!string.Equals(computedHash, manifestHash.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+
+                return Result.Failure(new Error("Llama.Sha256Mismatch", "Cached model SHA256 does not match the manifest."));
+
+            }
+
+        }
+
+        // W2.5 Fix 2: when RequireModelHash is true, a cache hit with NO verifiable
+        // hash (neither the request/pinned sha256 nor a manifest Sha256) must be
+        // rejected, not silently accepted. This mirrors GgufModelHashPolicy for
+        // the download path: an operator who opted into RequireModelHash must not
+        // have a manifest-less/legacy cache entry accepted with zero verification.
+        // When RequireModelHash is false the accept-on-no-hash behavior is the
+        // intentional operator opt-out and is preserved.
+        if (requireModelHash && !hasExpectedHash && !hasManifestHash)
+        {
+
+            return Result.Failure(new Error(
+                "Llama.UnverifiedCacheEntry",
+                "Cached model has no SHA-256 digest to verify and Arcanum:LlamaCpp:RequireModelHash is true. Remove the cached entry or supply a sha256."));
+
         }
 
         return Result.Success();
@@ -965,8 +1078,14 @@ public sealed class TheReliquary : IReliquary
 
     }
 
-    private static string GetEntryDirectory(string cacheKey) =>
-        Path.Combine(ArcanumPaths.ModelCacheDirectory, cacheKey);
+    // W2.5 Fix 3: normalize at the storage boundary so a caller bypassing
+    // LlamaCacheKey.Normalize cannot pass a path-escaping key (e.g. foo/../../../etc)
+    // that would resolve outside ModelCacheDirectory. LlamaCacheKey.NormalizeModelKey
+    // is idempotent for already-normalized keys, so honest callers are unaffected.
+    // An empty/all-invalid key throws ArgumentException (correct: reject at the
+    // boundary). Made internal so the sanitization contract is unit-testable.
+    internal static string GetEntryDirectory(string cacheKey) =>
+        Path.Combine(ArcanumPaths.ModelCacheDirectory, LlamaCacheKey.NormalizeModelKey(cacheKey));
 
     private static string GetEntryModelPath(string cacheKey) =>
         Path.Combine(GetEntryDirectory(cacheKey), ModelFileName);

@@ -68,6 +68,17 @@ internal sealed class McpProcessTransport : IMcpTransport
 
     private volatile bool _disposed;
 
+    // W2.5 Fix 5: idempotency guard (0 = live, 1 = disposed) shared between the
+    // Exited handler and DisposeAsync so the Process is disposed exactly once
+    // regardless of which path fires first (or if they race).
+
+    private int _processDisposed;
+
+    // W2.5 Fix 5 (test seam): exposes the live Process reference so the
+    // child-exit dispose contract is unit-testable (assert the handle is
+    // released after the Exited handler, and a later DisposeAsync is safe).
+    internal Process? ProcessForTesting => _process;
+
     /// <summary>
     /// Optional callback when a line cannot be parsed as JSON-RPC or does not match a supported shape.
     /// </summary>
@@ -213,9 +224,45 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         process.Exited += (_, _) =>
         {
+
             _inbound.Writer.TryComplete();
 
             OnTransportEnded?.Invoke();
+
+            // W2.5 Fix 5: dispose the Process handle exactly once on child exit
+            // so an undisposed Process + Exited handler do not accumulate under a
+            // crash/restart loop. The guard is shared with DisposeAsync so the two
+            // paths never double-dispose. Synchronous process.Dispose() only — do
+            // NOT block a thread-pool thread on DisposeAsync's async work. The
+            // process local is captured (rather than reading _process) so the rare
+            // exit-before-_process-assignment race still releases the handle.
+
+            if (Interlocked.CompareExchange(ref _processDisposed, 1, 0) == 0)
+            {
+
+                try
+                {
+
+                    process.Dispose();
+
+                }
+
+                catch (InvalidOperationException)
+                {
+
+                    // Already torn down.
+
+                }
+
+                catch (NotSupportedException)
+                {
+
+                }
+
+                _process = null;
+
+            }
+
         };
 
         if (!process.Start())
@@ -309,35 +356,59 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         Process? process = _process;
 
-        if (process is not null)
+        // W2.5 Fix 5: share the _processDisposed guard with the Exited handler so
+        // the two paths never double-dispose the Process. If the child already
+        // exited and the Exited handler disposed it, this CAS fails and we skip
+        // the kill+dispose (the handle is already released).
+
+        if (process is not null && Interlocked.CompareExchange(ref _processDisposed, 1, 0) == 0)
         {
+
             try
             {
+
                 if (!process.HasExited)
                 {
+
                     process.Kill(entireProcessTree: true);
+
                 }
+
             }
+
             catch (InvalidOperationException)
             {
+
                 // Process may already be torn down.
+
             }
+
             catch (NotSupportedException)
             {
+
                 // entireProcessTree not supported on some targets; best-effort single process.
+
                 try
                 {
+
                     if (!process.HasExited)
                     {
+
                         process.Kill();
+
                     }
+
                 }
+
                 catch (InvalidOperationException)
                 {
+
                 }
+
             }
 
             process.Dispose();
+
         }
 
         _process = null;
@@ -413,6 +484,18 @@ internal sealed class McpProcessTransport : IMcpTransport
 
                 }
 
+                catch (ObjectDisposedException)
+                {
+
+                    // W2.5 Fix 5: the Process/streams were disposed (child exited
+                    // and the Exited handler released the handle, or DisposeAsync
+                    // tore it down). Stop draining cleanly instead of faulting the
+                    // background read task.
+
+                    break;
+
+                }
+
                 if (line is null)
                 {
                     break;
@@ -442,6 +525,10 @@ internal sealed class McpProcessTransport : IMcpTransport
         catch (OperationCanceledException)
         {
             // Expected on shutdown.
+        }
+        catch (ObjectDisposedException)
+        {
+            // W2.5 Fix 5: Process/streams disposed mid-read; stop cleanly.
         }
         finally
         {
@@ -484,6 +571,18 @@ internal sealed class McpProcessTransport : IMcpTransport
 
                 }
 
+                catch (ObjectDisposedException)
+                {
+
+                    // W2.5 Fix 5: the Process/streams were disposed (child exited
+                    // and the Exited handler released the handle, or DisposeAsync
+                    // tore it down). Stop draining cleanly instead of faulting the
+                    // background read task.
+
+                    break;
+
+                }
+
                 if (line is null)
                 {
                     break;
@@ -495,6 +594,10 @@ internal sealed class McpProcessTransport : IMcpTransport
         catch (OperationCanceledException)
         {
             // Expected on shutdown.
+        }
+        catch (ObjectDisposedException)
+        {
+            // W2.5 Fix 5: Process/streams disposed mid-read; stop cleanly.
         }
     }
 
