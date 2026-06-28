@@ -99,7 +99,7 @@ Foundational fixes that also repair downstream findings. Do these first, in orde
   - **Tests:** spawned-process env assertion (secrets absent); global MCP env-scrub test.
   - **Docs:** DESIGN §11 + §4.2 MCP notes.
 
-- [ ] **W2.3 — CLI: clean errors instead of crashes**
+- [x] **W2.3 — CLI: clean errors instead of crashes** ✅ *done — `FailFast` on missing key → `MissingMasterApiKeyException` + CLI exit 1; `TryDeserialize<T>` helper guards all ~25 deserialize sites; turn bodies gain `catch (Exception)`. Surfaced DX5 (CLI DI missing `IApiKeyDigestCache`).*
   - **Closes:** P1 `Environment.FailFast` on missing master key (`Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs:47-52`, reached from `Cli/Commands/AskCommand.cs:79`,`ChatCommand.cs:81` — verified first-hand); P2 unguarded non-streaming `JsonSerializer.Deserialize` → `JsonException` escapes (`Cli/Services/ArcanumApiClient.cs:131-133` + ~20 sites: `:225,310,1489,2262,…`) **and NEW: pre-stream streaming-path deserializes (`:1317-1319,2082-2084`)**; P2 turn bodies catch only OCE (`AskCommand.cs:195-198`, `ChatCommand.cs:1501-1504`).
   - **Fix:** detect missing-key in CLI bootstrap (or return a `Result` from the bootstrapper) → print `Security.MissingApiKey` + exit 1, reserving `FailFast` for true integrity failures; centralize non-streaming send+deserialize with one `try/catch (JsonException)` → `InvalidResponseError` and route all sites through it (incl. pre-stream error bodies); wrap turn bodies in `catch (Exception)` → formatted panel + exit 1 (chat: show + continue REPL).
   - **Tests:** CLI exit-1 + friendly message when no key; corrupt-body → `Api.InvalidResponse` (no crash); turn-fault → panel.
@@ -202,6 +202,10 @@ Surfaced while implementing Waves 0–1; not yet fixed. **DX1 is high-priority �
 - [ ] **DX4 — [P3][tests] `InferenceFlagBinderTests` global `AnsiConsole.Console` parallelization flake**
   - **Found (during W2.1):** the test swaps the process-global `AnsiConsole.Console` and asserts empty output, but under parallel scheduling it captured another test's console output (`"Deleted lore for 'ward.color'."`). Passes in isolation; same class as DX2.
   - **Fix:** restore/serialize the console seam — assign the test to a `DisableParallelization` collection (e.g. reuse `ProcessEnvironment`) or use a non-global `TestConsole` instance.
+
+- [ ] **DX5 — [P1][DI] `CliApplicationFactory.ConfigureCliServices` does not register `IApiKeyDigestCache`**
+  - **Found (during W2.3):** the CLI DI registers `ISecretStore → DataProtectionSecretStore`, which requires `IApiKeyDigestCache`, but never registers `IApiKeyDigestCache` — so the full-DI `AskCommand`/`ChatCommand` construction path can fail. Existing `CliApplicationFactoryTests` only exercise `--help`, so command resolution/construction is uncovered. (The W2.3 turn-body test worked around it by registering `IApiKeyDigestCache` in the test's `ServiceCollection`.)
+  - **Fix:** register `IApiKeyDigestCache` (and any other missing `DataProtectionSecretStore` dependencies) in the CLI DI wiring, mirroring the `serve`/DevHost wiring; add a command-resolution smoke test that constructs `AskCommand` via the real DI container.
 
 ---
 
