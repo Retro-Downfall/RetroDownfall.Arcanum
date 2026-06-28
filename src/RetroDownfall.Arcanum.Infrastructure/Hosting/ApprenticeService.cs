@@ -33,6 +33,10 @@ internal sealed class ApprenticeService(
 
     private readonly ConcurrentQueue<Guid> _pendingStarts = new();
 
+    private readonly ConcurrentDictionary<Guid, byte> _pendingStartIds = new();
+
+    private readonly Lock _pendingStartsLock = new();
+
     private readonly ApprenticeConcurrencyGate _concurrencyGate = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -105,10 +109,20 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(new Error("Apprentice.AlreadyRunning", "Apprentice is already running or not in a startable state."));
         }
 
-        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: true, out Result<string>? capacityFailure))
+        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: true, out bool queued, out Result<string>? capacityFailure))
         {
 
             return capacityFailure!;
+
+        }
+
+        if (queued)
+        {
+
+            // Fix 2: the apprentice was successfully queued for the next slot; no
+            // execution task has started yet (it starts when a slot frees up).
+
+            return Result<string>.Success(apprenticeId.ToString());
 
         }
 
@@ -179,7 +193,7 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(new Error("Apprentice.NotPaused", "Apprentice is not paused."));
         }
 
-        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out Result<string>? capacityFailure))
+        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out bool _, out Result<string>? capacityFailure))
         {
 
             return capacityFailure!;
@@ -205,45 +219,101 @@ internal sealed class ApprenticeService(
 
     public async Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
-        IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+        // Fix 1: a queued (Idle) apprentice is not IsCancellable, but it can be
+        // cancelled directly by draining it from the pending start queue. Check
+        // pending FIRST, before the IsCancellable guard, so a queued apprentice
+        // is cancelled (not left to start later).
 
-        Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
-
-        if (apprentice is null)
+        if (RemovePendingStart(apprenticeId))
         {
-            return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+            Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+
+            if (apprentice is null)
+            {
+
+                return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+
+            }
+
+            apprentice.Status = ApprenticeStatus.Cancelled.ToString();
+
+            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+
+                Type = ApprenticeEventType.ApprenticeCancelled,
+
+                ApprenticeId = apprenticeId,
+
+                Timestamp = DateTimeOffset.UtcNow,
+
+            });
+
+            return Result<string>.Success(apprenticeId.ToString());
+
         }
 
-        if (!IsCancellable(apprentice.Status))
+        await using AsyncServiceScope outerScope = scopeFactory.CreateAsyncScope();
+
+        IApprenticeRepository outerRepo = outerScope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Apprentice? loaded = await outerRepo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (loaded is null)
         {
+
+            return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+
+        }
+
+        if (!IsCancellable(loaded.Status))
+        {
+
             return Result<string>.Failure(new Error("Apprentice.NotPaused", "Apprentice is not in a cancellable state."));
+
         }
 
         if (_executionTokens.TryRemove(apprenticeId, out CancellationTokenSource? cts))
         {
+
             try
             {
+
                 await cts.CancelAsync().ConfigureAwait(false);
+
             }
+
             catch (ObjectDisposedException)
             {
+
             }
+
         }
 
-        apprentice.Status = ApprenticeStatus.Cancelled.ToString();
+        loaded.Status = ApprenticeStatus.Cancelled.ToString();
 
-        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+        await outerRepo.UpdateAsync(loaded, cancellationToken).ConfigureAwait(false);
 
         Publish(apprenticeId, new ApprenticeEvent
         {
+
             Type = ApprenticeEventType.ApprenticeCancelled,
+
             ApprenticeId = apprenticeId,
+
             Timestamp = DateTimeOffset.UtcNow,
+
         });
 
         return Result<string>.Success(apprenticeId.ToString());
+
     }
 
     public async Task<Result<ApprenticeDetailDto>> ReweaveAsync(
@@ -397,7 +467,7 @@ internal sealed class ApprenticeService(
 
         }
 
-        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out Result<string>? capacityFailure))
+        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out bool _, out Result<string>? capacityFailure))
         {
 
             apprentice.Status = ApprenticeStatus.Escalated.ToString();
@@ -485,7 +555,7 @@ internal sealed class ApprenticeService(
                     break;
                 }
 
-                if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out Result<string>? recoveryFailure))
+                if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out bool recoveryQueued, out Result<string>? recoveryFailure))
                 {
 
                     logger.LogWarning(
@@ -493,6 +563,19 @@ internal sealed class ApprenticeService(
                         apprentice.Id,
                         recoveryFailure?.Error.Code,
                         recoveryFailure?.Error.Message);
+
+                    continue;
+
+                }
+
+                if (recoveryQueued)
+                {
+
+                    // Fix 2: successfully queued for the next slot; no execution
+                    // task yet. The pending-start drainer will start it.
+
+                    logger.LogInformation(
+                        "Apprentice {ApprenticeId} queued for next slot after host restart.", apprentice.Id);
 
                     continue;
 
@@ -509,10 +592,12 @@ internal sealed class ApprenticeService(
         }
     }
 
-    private bool TryAcquireExecutionSlot(Guid apprenticeId, bool queueOnCapacity, out Result<string>? failure)
+    private bool TryAcquireExecutionSlot(Guid apprenticeId, bool queueOnCapacity, out bool queued, out Result<string>? failure)
     {
 
         failure = null;
+
+        queued = false;
 
         if (!_activeTasks.TryAdd(apprenticeId, Task.CompletedTask))
         {
@@ -542,31 +627,44 @@ internal sealed class ApprenticeService(
 
             int maxPending = ArcanumSettingClamps.MaxPendingStarts(settings.MaxPendingStarts);
 
-            if (_pendingStarts.Count < maxPending)
+            lock (_pendingStartsLock)
             {
 
-                _pendingStarts.Enqueue(apprenticeId);
+                // Dedup: an idempotent re-start of an already-pending apprentice is a
+                // successful queue (no duplicate enqueue).
 
-                failure = Result<string>.Failure(
-                    new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached; queued for next slot."));
+                if (_pendingStartIds.TryAdd(apprenticeId, 0))
+                {
+
+                    if (_pendingStarts.Count >= maxPending)
+                    {
+
+                        _pendingStartIds.TryRemove(apprenticeId, out _);
+
+                        failure = Result<string>.Failure(
+                            new Error("Apprentice.PendingQueueFull", "Maximum concurrent Apprentices and pending start queue are full."));
+
+                        return false;
+
+                    }
+
+                    _pendingStarts.Enqueue(apprenticeId);
+
+                }
 
             }
-            else
-            {
 
-                failure = Result<string>.Failure(
-                    new Error("Apprentice.PendingQueueFull", "Maximum concurrent Apprentices and pending start queue are full."));
+            // Successfully queued (or already queued): not a failure. The caller
+            // learns via queued=true that no execution task has started yet.
 
-            }
+            queued = true;
 
-        }
-        else
-        {
-
-            failure = Result<string>.Failure(
-                new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached."));
+            return true;
 
         }
+
+        failure = Result<string>.Failure(
+            new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached."));
 
         return false;
 
@@ -619,19 +717,46 @@ internal sealed class ApprenticeService(
 
         int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
 
-        while (_pendingStarts.TryDequeue(out Guid nextId))
+        while (true)
         {
+
+            Guid nextId;
+
+            lock (_pendingStartsLock)
+            {
+
+                if (!_pendingStarts.TryDequeue(out nextId))
+                {
+
+                    return;
+
+                }
+
+                // Committing to start (or drop) this id: it is no longer pending.
+
+                _pendingStartIds.TryRemove(nextId, out _);
+
+            }
 
             if (_concurrencyGate.RunningCount >= maxConcurrent)
             {
 
-                _pendingStarts.Enqueue(nextId);
+                // Gate full again: re-enqueue and re-register as pending.
 
-                break;
+                lock (_pendingStartsLock)
+                {
+
+                    _pendingStartIds.TryAdd(nextId, 0);
+
+                    _pendingStarts.Enqueue(nextId);
+
+                }
+
+                return;
 
             }
 
-            if (!TryAcquireExecutionSlot(nextId, queueOnCapacity: false, out _))
+            if (!TryAcquireExecutionSlot(nextId, queueOnCapacity: false, out bool _, out Result<string>? _))
             {
 
                 continue;
@@ -640,7 +765,60 @@ internal sealed class ApprenticeService(
 
             BeginExecutionTask(nextId);
 
-            break;
+            return;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Removes a specific apprentice id from the pending start queue and its
+    /// dedup set. Returns true if the id was pending (and is now removed),
+    /// false otherwise. Used by CancelAsync to drain a queued (Idle) apprentice
+    /// without widening IsCancellable's meaning.
+    /// </summary>
+
+    private bool RemovePendingStart(Guid apprenticeId)
+    {
+
+        lock (_pendingStartsLock)
+        {
+
+            if (!_pendingStartIds.TryRemove(apprenticeId, out _))
+            {
+
+                return false;
+
+            }
+
+            // ConcurrentQueue has no O(1) removal of a specific element: drain
+            // and re-enqueue all ids except the target. The lock keeps the queue
+            // and dedup set in sync atomically.
+
+            if (_pendingStarts.IsEmpty)
+            {
+
+                return true;
+
+            }
+
+            Guid[] snapshot = _pendingStarts.ToArray();
+
+            _pendingStarts.Clear();
+
+            foreach (Guid id in snapshot)
+            {
+
+                if (id != apprenticeId)
+                {
+
+                    _pendingStarts.Enqueue(id);
+
+                }
+
+            }
+
+            return true;
 
         }
 
@@ -701,18 +879,56 @@ internal sealed class ApprenticeService(
             if (!isContinuation)
             {
 
+                // Fix 5: a Planning apprentice reaching here was resumed after a host
+                // restart (GetResumableAsync returns Planning apprentices with empty
+                // plans). It must emit ApprenticeResumed, not a duplicate
+                // ApprenticeStarted. A fresh start (Idle/Failed/Completed/Cancelled)
+                // still emits ApprenticeStarted.
+
+                bool isResumeAfterRestart = string.Equals(
+                    apprentice.Status, ApprenticeStatus.Planning.ToString(), StringComparison.Ordinal);
+
                 apprentice.Status = ApprenticeStatus.Planning.ToString();
 
                 await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
 
-                Publish(apprenticeId, new ApprenticeEvent
+                if (isResumeAfterRestart)
                 {
-                    Type = ApprenticeEventType.ApprenticeStarted,
-                    ApprenticeId = apprenticeId,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    Name = apprentice.Name,
-                    Goal = apprentice.Goal,
-                });
+
+                    Publish(apprenticeId, new ApprenticeEvent
+                    {
+
+                        Type = ApprenticeEventType.ApprenticeResumed,
+
+                        ApprenticeId = apprenticeId,
+
+                        Timestamp = DateTimeOffset.UtcNow,
+
+                        FromStep = apprentice.CurrentStep,
+
+                    });
+
+                }
+
+                else
+                {
+
+                    Publish(apprenticeId, new ApprenticeEvent
+                    {
+
+                        Type = ApprenticeEventType.ApprenticeStarted,
+
+                        ApprenticeId = apprenticeId,
+
+                        Timestamp = DateTimeOffset.UtcNow,
+
+                        Name = apprentice.Name,
+
+                        Goal = apprentice.Goal,
+
+                    });
+
+                }
 
             }
 
@@ -1163,6 +1379,70 @@ internal sealed class ApprenticeService(
         }
         catch (OperationCanceledException)
         {
+
+            // Fix 4: persist an intermediate status so a later resume continues from
+            // the checkpoint rather than re-running the in-progress step (which would
+            // duplicate non-idempotent tool side effects). If the cancel came from
+            // CancelAsync, the status is already Cancelled — do not overwrite it. If
+            // the cancel came from host shutdown (StopAsync), the linked CTS is
+            // cancelled but no status was set, so persist Paused. Use a fresh scope
+            // and a non-cancellable token (the linked CTS is cancelled).
+
+            try
+            {
+
+                await using AsyncServiceScope cancelScope = scopeFactory.CreateAsyncScope();
+
+                IApprenticeRepository cancelRepo = cancelScope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+                Apprentice? cancelApprentice = await cancelRepo
+                    .GetByIdAsync(apprenticeId, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (cancelApprentice is not null)
+                {
+
+                    string current = cancelApprentice.Status;
+
+                    bool isRunning = string.Equals(current, ApprenticeStatus.Running.ToString(), StringComparison.Ordinal)
+                        || string.Equals(current, ApprenticeStatus.Planning.ToString(), StringComparison.Ordinal);
+
+                    // Only persist if still Running/Planning; leave Cancelled/Failed/
+                    // Escalated/Completed (set by CancelAsync/FailApprenticeAsync/etc.) alone.
+
+                    if (isRunning)
+                    {
+
+                        cancelApprentice.Status = ApprenticeStatus.Paused.ToString();
+
+                        await cancelRepo.UpdateAsync(cancelApprentice, CancellationToken.None).ConfigureAwait(false);
+
+                        Publish(apprenticeId, new ApprenticeEvent
+                        {
+
+                            Type = ApprenticeEventType.ApprenticePaused,
+
+                            ApprenticeId = apprenticeId,
+
+                            Timestamp = DateTimeOffset.UtcNow,
+
+                            AtStep = cancelApprentice.CurrentStep,
+
+                        });
+
+                    }
+
+                }
+
+            }
+
+            catch (Exception inner)
+            {
+
+                logger.LogError(inner, "Failed to persist Paused status after Apprentice cancellation.");
+
+            }
+
         }
         catch (Exception ex)
         {
@@ -1920,6 +2200,25 @@ internal sealed class ApprenticeService(
         {
 
             return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, 0, []);
+
+        }
+        catch (Exception ex)
+        {
+
+            // Fix 3: isolate a single branch fault. A non-cancel exception in one
+            // Simulacrum branch must NOT fail the whole Task.WhenAll (which would
+            // fault the apprentice after sibling branches may have run tools).
+            // Surface the fault as a Terminal SingleStepResult so the post-WhenAll
+            // reconciliation handles it alongside paused/advanced branches.
+
+            return new SingleStepResult(
+                stepIndex,
+                StepResultKind.Terminal,
+                null,
+                ApprenticeExecutionPolicy.SanitizeOperatorMessage(ex.Message),
+                false,
+                0,
+                []);
 
         }
         finally
