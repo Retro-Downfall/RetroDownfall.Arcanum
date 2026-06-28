@@ -65,7 +65,7 @@ internal static class SkillJsonIO
 
         string json = JsonSerializer.Serialize(metadata, TheForgeJsonContext.Default.SkillMetadata);
 
-        await File.WriteAllTextAsync(path, json, ct).ConfigureAwait(false);
+        await SpellAtomicFile.WriteAllTextAsync(path, json, ct).ConfigureAwait(false);
     }
 
 }

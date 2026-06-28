@@ -6,6 +6,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 public sealed class PhysicalWorkspaceScanner : IWorkspaceScanner
 {
     private static readonly HashSet<string> IgnoredDirectoryNames = new(StringComparer.OrdinalIgnoreCase) { "bin", "obj", ".git" };
+
+    // Bound the recursive enumeration so a deep tree or directory-symlink cycle cannot scan unbounded,
+    // consistent with the EyeOfTheWorldService step-budget approach.
+    private const int MaxEnumerationSteps = 50_000;
+
+    private const int MaxRecursionDepth = 64;
+
     public Task<string> BuildProjectSummaryAsync(string? rootPath = null, CancellationToken cancellationToken = default)
     {
         string root = string.IsNullOrWhiteSpace(rootPath) ? Environment.CurrentDirectory : Path.GetFullPath(rootPath);
@@ -19,12 +26,19 @@ public sealed class PhysicalWorkspaceScanner : IWorkspaceScanner
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
+            MaxRecursionDepth = MaxRecursionDepth,
         };
+        int steps = 0;
         try
         {
             foreach (string file in Directory.EnumerateFiles(root, "*.sln", enumerationOptions))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (steps >= MaxEnumerationSteps)
+                {
+                    break;
+                }
+                steps++;
                 if (IsUnderIgnoredPath(file, root))
                 {
                     continue;

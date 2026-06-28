@@ -228,4 +228,152 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task ScanAsync_terminates_on_directory_symlink_cycle()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "Directory symlink creation requires elevation on Windows.");
+
+        _workspace.WriteFile(
+            "spells/real-spell/SPELL.md",
+            """
+            ---
+            name: real-spell
+            description: A real spell
+            ---
+            body
+            """);
+
+        string spellsDir = Path.Combine(_workspace.Root, "spells");
+
+        string cycleLink = Path.Combine(spellsDir, "cycle");
+
+        Directory.CreateSymbolicLink(cycleLink, spellsDir);
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(20));
+
+        IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, cts.Token, MaxFileSizeBytes);
+
+        Assert.Contains(spells, s => s.Name == "real-spell");
+
+    }
+
+    [SkippableFact]
+    public async Task ScanAsync_rejects_spell_md_symlinked_outside_root()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "Symlink creation requires elevation on Windows.");
+
+        string outsideFile = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N") + ".md");
+
+        await File.WriteAllTextAsync(
+            outsideFile,
+            """
+            ---
+            name: escaped-secret
+            description: should never be read through a symlink
+            ---
+            body
+            """);
+
+        try
+        {
+
+            string evilDir = Path.Combine(_workspace.Root, "spells", "evil");
+
+            Directory.CreateDirectory(evilDir);
+
+            string evilSpell = Path.Combine(evilDir, "SPELL.md");
+
+            File.CreateSymbolicLink(evilSpell, outsideFile);
+
+            IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
+
+            Assert.DoesNotContain(spells, s => s.Name == "escaped-secret");
+
+        }
+        finally
+        {
+
+            if (File.Exists(outsideFile))
+            {
+
+                File.Delete(outsideFile);
+
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public async Task ScanAsync_drops_skill_metadata_when_declared_tools_exceed_configured_bound()
+    {
+
+        _workspace.WriteFile(
+            "spells/bounded/SPELL.md",
+            """
+            ---
+            name: bounded
+            description: declares multiple tools
+            ---
+            body
+            """);
+
+        _workspace.WriteFile(
+            "spells/bounded/SKILL.json",
+            """
+            {
+              "name": "bounded",
+              "version": "1.0.0",
+              "description": "declares multiple tools",
+              "tags": [],
+              "declaredTools": ["alpha", "beta", "gamma"],
+              "dependencies": []
+            }
+            """);
+
+        IReadOnlyList<ParsedSpell> withinBound = await SpellScanner.ScanAsync(
+            _workspace.Root, CancellationToken.None, MaxFileSizeBytes, maxDeclaredTools: 5);
+
+        ParsedSpell withinSpell = Assert.Single(withinBound, s => s.Name == "bounded");
+
+        Assert.NotNull(withinSpell.SkillMetadata);
+
+        IReadOnlyList<ParsedSpell> belowBound = await SpellScanner.ScanAsync(
+            _workspace.Root, CancellationToken.None, MaxFileSizeBytes, maxDeclaredTools: 1);
+
+        ParsedSpell belowSpell = Assert.Single(belowBound, s => s.Name == "bounded");
+
+        Assert.Null(belowSpell.SkillMetadata);
+
+    }
+
+    [Fact]
+    public async Task ScanAsync_does_not_descend_beyond_max_depth()
+    {
+
+        string relative = "spells";
+
+        for (int i = 0; i < 80; i++)
+        {
+            relative = Path.Combine(relative, "d");
+        }
+
+        _workspace.WriteFile(
+            Path.Combine(relative, "SPELL.md"),
+            """
+            ---
+            name: too-deep
+            description: nested beyond the scan depth cap
+            ---
+            body
+            """);
+
+        IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.DoesNotContain(spells, s => s.Name == "too-deep");
+
+    }
+
 }

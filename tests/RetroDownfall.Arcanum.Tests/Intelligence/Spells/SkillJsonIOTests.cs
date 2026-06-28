@@ -230,4 +230,86 @@ public sealed class SkillJsonIOTests
 
     }
 
+    [SkippableFact]
+    public async Task WriteAsync_overwrites_atomically_and_leaves_no_temp_files()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "Atomic replace is verified via POSIX open-handle snapshot semantics.");
+
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-skill-json-atomic", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(dir);
+
+        string path = Path.Combine(dir, "SKILL.json");
+
+        try
+        {
+
+            SkillMetadata original = new(
+                "original-spell",
+                "1.0.0",
+                "first",
+                [],
+                null,
+                null,
+                [],
+                [],
+                null,
+                null,
+                null,
+                DateTimeOffset.UtcNow);
+
+            await SkillJsonIO.WriteAsync(dir, original, CancellationToken.None);
+
+            // Hold a read handle open across the overwrite. An in-place truncate would mutate the
+            // bytes this handle sees; an atomic temp-file + rename preserves the original inode.
+            await using FileStream openHandle = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+            SkillMetadata replacement = new(
+                "replacement-spell",
+                "2.0.0",
+                "second",
+                [],
+                null,
+                null,
+                [],
+                [],
+                null,
+                null,
+                null,
+                DateTimeOffset.UtcNow);
+
+            await SkillJsonIO.WriteAsync(dir, replacement, CancellationToken.None);
+
+            using StreamReader reader = new(openHandle);
+
+            string snapshot = await reader.ReadToEndAsync();
+
+            Assert.Contains("original-spell", snapshot, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("replacement-spell", snapshot, StringComparison.Ordinal);
+
+            string onDisk = await File.ReadAllTextAsync(path);
+
+            Assert.Contains("replacement-spell", onDisk, StringComparison.Ordinal);
+
+            string[] remaining = Directory.GetFiles(dir);
+
+            Assert.Single(remaining);
+
+            Assert.EndsWith("SKILL.json", remaining[0], StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+
+        }
+
+    }
+
 }

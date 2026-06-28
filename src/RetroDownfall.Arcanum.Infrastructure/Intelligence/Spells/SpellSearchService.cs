@@ -55,10 +55,16 @@ public sealed class SpellSearchService
 
         long maxFileSizeBytes = GetMaxSpellFileSizeBytes();
 
+        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
+
+        int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
+
+        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(spellSettings.MaxDeclaredTools);
+
         await MergeSourceAsync(
             results,
             priority: 1,
-            await SpellScanner.ScanAsync(null, ct, maxFileSizeBytes).ConfigureAwait(false),
+            await SpellScanner.ScanAsync(null, ct, maxFileSizeBytes, maxDependencies, maxDeclaredTools).ConfigureAwait(false),
             SpellSource.Builtin,
             query,
             ct).ConfigureAwait(false);
@@ -68,7 +74,7 @@ public sealed class SpellSearchService
             await MergeSourceAsync(
                 results,
                 priority: 2,
-                await SpellScanner.ScanAsync(query.Workspace, ct, maxFileSizeBytes).ConfigureAwait(false),
+                await SpellScanner.ScanAsync(query.Workspace, ct, maxFileSizeBytes, maxDependencies, maxDeclaredTools).ConfigureAwait(false),
                 SpellSource.Workspace,
                 query,
                 ct).ConfigureAwait(false);
@@ -86,7 +92,7 @@ public sealed class SpellSearchService
             await MergeSourceAsync(
                 results,
                 priority: 3,
-                await SpellScanner.ScanAsync(campaign.Path, ct, maxFileSizeBytes).ConfigureAwait(false),
+                await SpellScanner.ScanAsync(campaign.Path, ct, maxFileSizeBytes, maxDependencies, maxDeclaredTools).ConfigureAwait(false),
                 SpellSource.Campaign,
                 query,
                 ct).ConfigureAwait(false);
