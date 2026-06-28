@@ -87,7 +87,7 @@ Foundational fixes that also repair downstream findings. Do these first, in orde
 
 ## Wave 2 — Reliability & security
 
-- [ ] **W2.1 — Harden `SpellScanner` + workspace scanning + atomic spell writes**
+- [x] **W2.1 — Harden `SpellScanner` + workspace scanning + atomic spell writes** ✅ *safety core done — cycle/depth/step caps + canonical-path visited set (both BFS walks), pre-open handle revalidation, configured `Spells:*` bounds threaded into scans, bounded `PhysicalWorkspaceScanner`, atomic `SPELL.md`/`SKILL.json` writes (`SpellAtomicFile`). **Deferred to a follow-up:** scan-result caching/single-flight (#6), arsenal TTL bypass, export byte caps.*
   - **Closes:** P1 BFS has no visited/depth/step cap → symlink-cycle hang (`Infrastructure/Workspaces/SpellScanner.cs:393-456`, **and NEW: the identical `ScanMetadataTreeAsync:478-540`**); P1 reads without handle/symlink revalidation (`:424,694`); P1 rescan + full re-parse every request (`SpellRepository.cs:54-56,85,113,243,324`; `SpellSearchService.cs:58-93`); P1 non-atomic `SPELL.md` write (`SpellRepository.cs:287`) **and NEW: non-atomic `SKILL.json` write (`SkillJsonIO.cs:62-68`)**; P1 scan ignores configured `Spells:*` (`SpellScanner.cs:759-763`); P1 `PhysicalWorkspaceScanner` unbounded recursion (`PhysicalWorkspaceScanner.cs:18-33`); P2 arsenal cache bypass (TTL=0, `:254-259`), cache stampede (`:170-200,237-249`), export byte bounds (`SpellRepository.cs:477-496`), **NEW unbounded script-filename enumeration (`SpellScanner.cs:839-857`)**.
   - **Fix:** canonical-path visited set + depth/step caps on both BFS methods (reuse `EyeOfTheWorldService` `MaxEnumerationSteps`); `ToolHelpers.RevalidatePathBeforeIo` before every spell/SKILL/script open (mirror `PhysicalFileSystemBrowser.cs:184-187`); temp-write + atomic replace for `SPELL.md` **and** `SKILL.json` (mirror `ConfigurationWriter`/the create-staging path); single-flight on `FullSpellCache`/`MetadataScanCache` + thread the configured TTL from all callers (incl. arsenal); inject live `IOptionsMonitor<ArcanumSettings>` clamps; bound `PhysicalWorkspaceScanner`; enforce export caps.
   - **Tests:** symlink-cycle terminates; symlinked-out spell rejected; configured-bound enforced during scan; atomic-write crash-safety; cache single-flight under concurrency.
@@ -198,6 +198,10 @@ Surfaced while implementing Waves 0–1; not yet fixed. **DX1 is high-priority �
 - [x] **DX3 — [P3][tooling] `reportgenerator` local tool fails command resolution** ✅ *done — bumped to 5.5.10; `coverage.sh` now renders `.tmp/coverage/report/index.html`.*
   - **Found:** the pinned `dotnet-reportgenerator-globaltool` 5.4.11 restores but `dotnet [tool run] reportgenerator` reports the command unavailable on this host, so `coverage.sh`'s HTML report no-ops (the threshold gate is unaffected). The manifest itself flags 5.5.10 available.
   - **Fix:** bump the tool to 5.5.10 (or add `rollForward`) so the documented `.tmp/coverage/report/index.html` renders.
+
+- [ ] **DX4 — [P3][tests] `InferenceFlagBinderTests` global `AnsiConsole.Console` parallelization flake**
+  - **Found (during W2.1):** the test swaps the process-global `AnsiConsole.Console` and asserts empty output, but under parallel scheduling it captured another test's console output (`"Deleted lore for 'ward.color'."`). Passes in isolation; same class as DX2.
+  - **Fix:** restore/serialize the console seam — assign the test to a `DisableParallelization` collection (e.g. reuse `ProcessEnvironment`) or use a non-global `TestConsole` instance.
 
 ---
 
