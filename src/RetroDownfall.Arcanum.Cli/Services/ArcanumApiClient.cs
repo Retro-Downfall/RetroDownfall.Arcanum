@@ -50,6 +50,31 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
     }
 
+    private static T? TryDeserialize<T>(byte[] bytes, JsonTypeInfo<T> typeInfo) where T : class
+    {
+
+        if (bytes.Length == 0)
+        {
+
+            return null;
+
+        }
+
+        try
+        {
+
+            return JsonSerializer.Deserialize(bytes, typeInfo);
+
+        }
+        catch (JsonException)
+        {
+
+            return null;
+
+        }
+
+    }
+
     private static readonly Error MissingApiKeyError = new(
         "Security.MissingApiKey",
         "No API key found. Run 'arcanum serve' once to generate and store a key.");
@@ -128,9 +153,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<T>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, responseTypeInfo);
+            ApiResponse<T>? envelope = TryDeserialize(responseBytes, responseTypeInfo);
 
             if (response.IsSuccessStatusCode)
             {
@@ -220,9 +243,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<PromptResponseDto>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponsePromptResponseDto);
+            ApiResponse<PromptResponseDto>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponsePromptResponseDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -305,9 +326,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<bool>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+            ApiResponse<bool>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
 
             if (response.IsSuccessStatusCode)
             {
@@ -403,9 +422,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<string>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+            ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
             if (response.IsSuccessStatusCode)
             {
@@ -484,9 +501,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<WorkspaceArsenalDto>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseWorkspaceArsenalDto);
+            ApiResponse<WorkspaceArsenalDto>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseWorkspaceArsenalDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -564,9 +579,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<PatternSnapshot>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponsePatternSnapshot);
+            ApiResponse<PatternSnapshot>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponsePatternSnapshot);
 
             if (response.IsSuccessStatusCode)
             {
@@ -658,11 +671,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<SessionQueryResult>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(
-                    responseBytes,
-                    ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
+            ApiResponse<SessionQueryResult>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
 
             if (response.IsSuccessStatusCode)
             {
@@ -735,9 +744,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<SessionAnalytics>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionAnalytics);
+            ApiResponse<SessionAnalytics>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionAnalytics);
 
             if (response.IsSuccessStatusCode)
             {
@@ -815,9 +822,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<bool>? boolEnvelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+            ApiResponse<bool>? boolEnvelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
 
             if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {
@@ -846,9 +851,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                     new Error("Session.NotFound", "No session exists with that id."));
             }
 
-            ApiResponse<string>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+            ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
             {
@@ -902,9 +905,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<SessionDetailDto>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+            ApiResponse<SessionDetailDto>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -1016,9 +1017,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<EntryDto[]>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
+            ApiResponse<EntryDto[]>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
 
             if (response.IsSuccessStatusCode)
             {
@@ -1112,9 +1111,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<bool>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+            ApiResponse<bool>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
 
             if ((int)response.StatusCode == 404)
             {
@@ -1184,9 +1181,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<SessionExportResult>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionExportResult);
+            ApiResponse<SessionExportResult>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseSessionExportResult);
 
             if (response.IsSuccessStatusCode)
             {
@@ -1314,9 +1309,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             {
                 byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-                ApiResponse<string>? envelope = responseBytes.Length == 0
-                    ? null
-                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+                ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 string message;
 
@@ -1484,11 +1477,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
                 byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-                ApiResponse<ListPageResult<LoreDto>>? envelope = responseBytes.Length == 0
-                    ? null
-                    : JsonSerializer.Deserialize(
-                        responseBytes,
-                        ArcanumJsonContext.Default.ApiResponseListPageResultLoreDto);
+                ApiResponse<ListPageResult<LoreDto>>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseListPageResultLoreDto);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -1576,9 +1565,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<LoreDto>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLoreDto);
+            ApiResponse<LoreDto>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLoreDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -1680,9 +1667,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<LoreDto>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLoreDto);
+            ApiResponse<LoreDto>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLoreDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -1762,9 +1747,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<bool>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+            ApiResponse<bool>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
 
             if ((int)response.StatusCode == 404)
             {
@@ -1853,11 +1836,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<UnseenServantJobStatusDto[]>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(
-                    responseBytes,
-                    ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDtoArray);
+            ApiResponse<UnseenServantJobStatusDto[]>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDtoArray);
 
             if (response.IsSuccessStatusCode)
             {
@@ -1944,9 +1923,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<UnseenServantJobStatusDto>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto);
+            ApiResponse<UnseenServantJobStatusDto>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto);
 
             if (response.IsSuccessStatusCode)
             {
@@ -2079,9 +2056,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             {
                 byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-                ApiResponse<string>? envelope = responseBytes.Length == 0
-                    ? null
-                    : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+                ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 string message = envelope is { IsSuccess: false, Error: not null }
                     ? envelope.Error.Value.Message
@@ -2257,9 +2232,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<LlamaServerInfo>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLlamaServerInfo);
+            ApiResponse<LlamaServerInfo>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseLlamaServerInfo);
 
             if (envelope is { IsSuccess: true, Data: not null })
             {
@@ -2320,9 +2293,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<bool>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
+            ApiResponse<bool>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseBoolean);
 
             if (envelope is { IsSuccess: true })
             {
@@ -2382,9 +2353,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
-            ApiResponse<T>? envelope = responseBytes.Length == 0
-                ? null
-                : JsonSerializer.Deserialize(responseBytes, responseTypeInfo);
+            ApiResponse<T>? envelope = TryDeserialize(responseBytes, responseTypeInfo);
 
             if (envelope is { IsSuccess: true, Data: not null })
             {

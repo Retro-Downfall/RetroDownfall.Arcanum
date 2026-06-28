@@ -76,7 +76,19 @@ public sealed class AskCommand(
                 .PerceivePatternAsync(cwd, linked.Token)
                 .ConfigureAwait(false);
 
-            await grimoireBootstrapper.EnsureInitializedAsync(linked.Token).ConfigureAwait(false);
+            try
+            {
+                await grimoireBootstrapper.EnsureInitializedAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (MissingMasterApiKeyException ex)
+            {
+
+                stderrConsole.MarkupLine(
+                    palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(ex.Message)));
+
+                return 1;
+
+            }
 
             ChronosyncReport chronosyncDelta;
 
@@ -195,6 +207,15 @@ public sealed class AskCommand(
         catch (OperationCanceledException)
         {
             return 130;
+        }
+        catch (Exception ex)
+        {
+
+            stderrConsole.MarkupLine(
+                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(ex.Message)));
+
+            return 1;
+
         }
         finally
         {

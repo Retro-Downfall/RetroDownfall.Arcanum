@@ -49,7 +49,7 @@ public static class GrimoireDatabaseBootstrapper
 
             Log.Fatal("Grimoire startup aborted: master API key is not present. Persist a key before enabling the database.");
 
-            Environment.FailFast("Arcanum Grimoire requires the master API key.");
+            throw new MissingMasterApiKeyException();
 
         }
 

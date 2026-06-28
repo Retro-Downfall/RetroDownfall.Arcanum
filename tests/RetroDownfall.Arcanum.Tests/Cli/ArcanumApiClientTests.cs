@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -87,6 +88,30 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(apiError, result.Error);
+
+    }
+
+    [Fact]
+    public async Task AskAsync_returns_invalid_response_when_body_is_not_json()
+    {
+
+        // A non-JSON body (e.g. proxy HTML on a 401/429, or a truncated response) must not
+        // escape as an unhandled JsonException; it should map to Api.InvalidResponse.
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes("<html>bad</html>")),
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        PingRequest body = new("hello");
+
+        Result<string> result = await client.AskAsync(body, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Api.InvalidResponse", result.Error.Code);
 
     }
 

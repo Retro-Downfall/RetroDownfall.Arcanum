@@ -78,7 +78,19 @@ public sealed class ChatCommand(
 
         IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
 
-        await grimoireBootstrapper.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await grimoireBootstrapper.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (MissingMasterApiKeyException ex)
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(ex.Message)));
+
+            return 1;
+
+        }
 
         SessionMut session = new()
         {
@@ -1501,6 +1513,24 @@ public sealed class ChatCommand(
         catch (OperationCanceledException)
         {
             cancelled = true;
+        }
+        catch (Exception ex)
+        {
+
+            AnsiConsole.WriteLine();
+
+            Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(ex.Message))))
+            {
+                Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Error"))),
+                Border = BoxBorder.Rounded,
+                BorderStyle = themePalette.ErrorStyle(),
+                Padding = new Padding(1, 0, 1, 0),
+            };
+
+            AnsiConsole.Write(errorPanel);
+
+            return false;
+
         }
         finally
         {

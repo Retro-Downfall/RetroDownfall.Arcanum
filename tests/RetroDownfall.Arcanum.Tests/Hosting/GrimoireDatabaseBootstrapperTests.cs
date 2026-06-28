@@ -54,6 +54,26 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureInitializedAsync_missing_api_key_throws_MissingMasterApiKeyException()
+    {
+
+        // No API key set on the secret store -> GetApiKeyAsync returns null/whitespace,
+        // which must surface as a recoverable MissingMasterApiKeyException (not Environment.FailFast).
+
+        MissingMasterApiKeyException ex = await Assert.ThrowsAsync<MissingMasterApiKeyException>(() =>
+            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                _secretStore,
+                _passphraseSource,
+                _scopeFactory,
+                _dbPath,
+                _tempDir,
+                CancellationToken.None));
+
+        Assert.Equal(MissingMasterApiKeyException.MessageText, ex.Message);
+
+    }
+
+    [Fact]
     public async Task EnsureInitializedAsync_NewDatabase_CreatesSidecarAndUsesPbkdf2()
     {
 
