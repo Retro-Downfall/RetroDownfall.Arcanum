@@ -1125,6 +1125,23 @@ public sealed class McpConnectionManager(
         return merged;
     }
 
+    /// <summary>
+    /// Decides whether to strip the inherited host environment before spawning an MCP server
+    /// subprocess. Secure default: strip for ALL servers — global (modeled as
+    /// <c>ScopeWorkingDirectory == null</c>) and workspace-scoped alike — so secrets such as the
+    /// <c>ARCANUM_*</c> provider API keys never leak into child processes. A per-server opt-in to
+    /// inherit the host environment is a deliberate follow-up; <see cref="McpServerConfig"/> has no
+    /// such field yet.
+    /// </summary>
+    internal static bool ShouldStripUserEnvironment(McpServerConfig cfg)
+    {
+
+        ArgumentNullException.ThrowIfNull(cfg);
+
+        return true;
+
+    }
+
     private async Task<Result> StartManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
     {
         McpServerConfig cfg = entry.Config;
@@ -1153,7 +1170,7 @@ public sealed class McpConnectionManager(
 
             long transportGeneration = ++entry.TransportGeneration;
 
-            bool stripUserEnvironment = entry.ScopeWorkingDirectory is not null;
+            bool stripUserEnvironment = ShouldStripUserEnvironment(cfg);
 
             Result<string?> cwdResult = ResolveValidatedSubprocessCwd(cfg.Cwd, entry.ScopeWorkingDirectory);
 

@@ -1964,6 +1964,8 @@ internal sealed class ArcanumInternalToolServer
             psi.ArgumentList.Add(token);
         }
 
+        RemoveArcanumSecretVariables(psi.Environment);
+
         using Process process = new();
 
         process.StartInfo = psi;
@@ -2117,6 +2119,34 @@ internal sealed class ArcanumInternalToolServer
         {
             await killRegistration.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Removes every <c>ARCANUM_</c>-prefixed variable from a child-process environment so the
+    /// provider API keys that reach Arcanum via the <c>ARCANUM_</c> configuration env-var prefix
+    /// (see <see cref="ConfigurationBootstrapper"/>) cannot leak to commands spawned by
+    /// <c>execute_command</c>. Every other variable (PATH, HOME, ...) is preserved so arbitrary
+    /// commands still resolve and run.
+    /// </summary>
+    internal static void RemoveArcanumSecretVariables(IDictionary<string, string?> environment)
+    {
+
+        ArgumentNullException.ThrowIfNull(environment);
+
+        string[] keys = environment.Keys.ToArray();
+
+        foreach (string key in keys)
+        {
+
+            if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
+            {
+
+                environment.Remove(key);
+
+            }
+
+        }
+
     }
 
     private static async Task ObserveStreamReadTasksAsync(

@@ -36,7 +36,7 @@ The following items from the Arcanum code review require explicit product/archit
 | Finding | Topic | Current decision |
 |---------|-------|------------------|
 | **#50** | Generate runtime `.sql` + `MigrationOrder` from EF migrations (Approach B) | **Deferred.** Schema changes ship in the existing hand-authored SQL scripts; migrator wraps each script + history row in one transaction (Approach A). |
-| **#25** | Child-process environment allowlist for MCP / `execute_command` | **Deferred.** Inherited `PATH`/`HOME`/proxy vars remain until allowlist contents are agreed. |
+| **#25** | Child-process environment allowlist for MCP / `execute_command` | **Partial.** `execute_command` now strips `ARCANUM_*` secret/config vars (provider API keys) from the child env before spawn while preserving `PATH`/`HOME`; **all** MCP servers (global + workspace) strip the inherited host env by default (`ShouldStripUserEnvironment`) and run only their scrubbed `cfg.Env`. A full per-binary/per-var allowlist and a per-server inherit opt-in remain deferred. |
 | **#10** | OpenAI `/v1` default tool policy for workspace-less requests | **Deferred.** Current exposure unchanged until product decides agentic-by-default vs allowlist. |
 | **#45** | Persist Unseen Servant watermarks to the Grimoire | **Deferred (in-memory by design).** See §8.15; duplicate scheduled runs after restart are documented, not fixed. |
 
