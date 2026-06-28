@@ -8,6 +8,14 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public sealed class HumanPromptRegistry : IHumanPromptRegistry
 {
+    // Self-evicts on completion: TrySubmitResponse, the ct.Register callback, and the finally block
+    // below all TryRemove the entry (reference-equality guarded). The residual unbounded-growth vector
+    // is abandoned ask_human waits with no cancellation (bridged MCP passes Timeout.InfiniteTimeSpan),
+    // so the live set is bounded by the inference timeout except for that path. Migrating to a bounded
+    // LRU store would be WRONG-SHAPED here: silently dropping a pending TaskCompletionSource leaves the
+    // caller awaiting forever, and cancelling an evicted waiter loses the human's eventual response.
+    // The audit's recommended fix (waiter cap with explicit error responses + an ask_human-specific
+    // timeout) is a separate, larger change tracked as a follow-up to W3.1.
     private readonly ConcurrentDictionary<string, TaskCompletionSource<string>> _waiters =
         new(StringComparer.Ordinal);
 

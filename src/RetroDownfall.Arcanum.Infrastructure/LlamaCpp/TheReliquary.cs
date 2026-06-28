@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -11,6 +10,7 @@ using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -40,7 +40,7 @@ public sealed class TheReliquary : IReliquary
 
     private readonly SemaphoreSlim _evictLock = new(1, 1);
 
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _downloadLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly KeyedLock<string> _downloadLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public TheReliquary(
         IHttpClientFactory httpClientFactory,
@@ -116,7 +116,7 @@ public sealed class TheReliquary : IReliquary
 
         SweepStaleTempDownloads();
 
-        await GetDownloadLock(cacheKey).WaitAsync(cancellationToken).ConfigureAwait(false);
+        IDisposable downloadLockReleaser = await _downloadLocks.AcquireAsync(cacheKey, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -196,13 +196,10 @@ public sealed class TheReliquary : IReliquary
         }
         finally
         {
-            GetDownloadLock(cacheKey).Release();
+            downloadLockReleaser.Dispose();
         }
 
     }
-
-    private SemaphoreSlim GetDownloadLock(string cacheKey) =>
-        _downloadLocks.GetOrAdd(cacheKey, static _ => new SemaphoreSlim(1, 1));
 
     private async Task<Result<string>> DownloadWithResumeAsync(
         HttpClient client,
@@ -558,7 +555,7 @@ public sealed class TheReliquary : IReliquary
 
             }
 
-            if (_downloadLocks.TryGetValue(cacheKey, out SemaphoreSlim? downloadLock) && downloadLock.CurrentCount == 0)
+            if (_downloadLocks.IsHeld(cacheKey))
             {
 
                 continue;

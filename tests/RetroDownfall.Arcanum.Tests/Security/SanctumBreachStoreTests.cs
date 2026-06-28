@@ -132,6 +132,52 @@ public sealed class SanctumBreachStoreTests
 
     }
 
+    [Fact]
+    public void Record_MoreThanMaxTrackedCampaigns_EvictsLeastRecentlyUsedCampaignKey()
+    {
+
+        SanctumBreachStore store = new();
+
+        store.Record(CreateBreach("campaign-first", "PathEscape", detail: "first"));
+
+        for (int i = 0; i < SanctumBreachStore.MaxTrackedCampaigns; i++)
+        {
+
+            store.Record(CreateBreach($"campaign-{i}", "PathEscape", detail: $"c-{i}"));
+
+        }
+
+        Assert.Empty(store.GetSnapshot("campaign-first", limit: 10));
+
+        Assert.Single(store.GetSnapshot("campaign-255", limit: 10));
+
+    }
+
+    [Fact]
+    public void GetSnapshot_PromotesCampaignSoItSurvivesSubsequentEvictionPressure()
+    {
+
+        SanctumBreachStore store = new();
+
+        store.Record(CreateBreach("campaign-keep", "PathEscape", detail: "keep"));
+
+        for (int i = 0; i < SanctumBreachStore.MaxTrackedCampaigns - 1; i++)
+        {
+
+            store.Record(CreateBreach($"campaign-fill-{i}", "PathEscape", detail: $"fill-{i}"));
+
+        }
+
+        Assert.Single(store.GetSnapshot("campaign-keep", limit: 10));
+
+        store.Record(CreateBreach("campaign-newest", "PathEscape", detail: "newest"));
+
+        Assert.Single(store.GetSnapshot("campaign-keep", limit: 10));
+
+        Assert.Empty(store.GetSnapshot("campaign-fill-0", limit: 10));
+
+    }
+
     private static SanctumBreach CreateBreach(string campaignId, string breachType, string detail) =>
         new()
         {

@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Infrastructure.Caching;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -8,23 +8,39 @@ public sealed class SanctumBreachStore
 
     private const int MaxBreachesPerCampaign = 1000;
 
-    private readonly ConcurrentDictionary<string, SanctumBreachRingBuffer> _buffers = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Upper bound on the number of distinct campaign keys retained in memory. Each buffer is ring-capped
+    /// by <see cref="MaxBreachesPerCampaign"/>; this caps the key set so the store cannot grow unbounded
+    /// over long uptime. The store is in-memory and lost on host restart (see DESIGN), so LRU-evicting the
+    /// least-recently-touched campaign under cap pressure is safe and matches the audit recommendation.
+    /// </summary>
+    internal const int MaxTrackedCampaigns = 256;
+
+    private readonly BoundedLruCache<string, SanctumBreachRingBuffer> _buffers = new(MaxTrackedCampaigns);
 
     public void Record(SanctumBreach breach)
     {
-        SanctumBreachRingBuffer buffer = _buffers.GetOrAdd(breach.CampaignId, static _ => new SanctumBreachRingBuffer(MaxBreachesPerCampaign));
+
+        SanctumBreachRingBuffer buffer = _buffers.GetOrAdd(
+            breach.CampaignId,
+            static _ => new SanctumBreachRingBuffer(MaxBreachesPerCampaign));
 
         buffer.Add(breach);
+
     }
 
     public IReadOnlyList<SanctumBreach> GetSnapshot(string campaignId, int limit)
     {
+
         if (!_buffers.TryGetValue(campaignId, out SanctumBreachRingBuffer? buffer))
         {
+
             return Array.Empty<SanctumBreach>();
+
         }
 
         return buffer.GetSnapshot(limit);
+
     }
 
     private sealed class SanctumBreachRingBuffer

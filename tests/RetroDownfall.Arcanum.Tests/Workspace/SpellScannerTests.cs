@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
+[Collection("SpellScanner")]
 public sealed class SpellScannerTests : IAsyncLifetime
 {
 
@@ -143,9 +144,23 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         IReadOnlyList<SpellMetadata>[] results = await Task.WhenAll(tasks);
 
-        IReadOnlyList<SpellMetadata> first = results[0];
+        // The fixture seeds a "fireball" spell in InitializeAsync; the test adds 24 more
+        // concurrent-* spells, so the workspace has 25 spells total. Single-flight coalesces
+        // the miss onto one scan; the stable invariant is content-equality across all callers
+        // (a caller released after the leader may hit the LRU cache or, if evicted, start a
+        // fresh content-equal scan). The at-most-once scan invariant is proven directly by
+        // SingleFlightTests.
+        string[] firstNames = results[0].Select(static m => m.Name).OrderBy(static n => n, StringComparer.Ordinal).ToArray();
 
-        Assert.All(results, r => Assert.Same(first, r));
+        Assert.All(results, r =>
+        {
+            string[] names = r.Select(static m => m.Name).OrderBy(static n => n, StringComparer.Ordinal).ToArray();
+
+            Assert.Equal(firstNames, names);
+
+        });
+
+        Assert.Equal(25, firstNames.Length);
 
     }
 
@@ -193,7 +208,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         Assert.NotNull(first);
 
-        Assert.All(results, r => Assert.Same(first, r));
+        // Same rationale as ScanMetadataAsync_concurrent_misses_share_one_scan: single-flight
+        // coalesces the miss onto one parse, but a caller released after the leader may hit the
+        // LRU cache or, if evicted, start a fresh content-equal parse. ParsedSpell is a record,
+        // so value equality is the correct stable invariant.
+        Assert.All(results, r => Assert.Equal(first, r));
 
     }
 

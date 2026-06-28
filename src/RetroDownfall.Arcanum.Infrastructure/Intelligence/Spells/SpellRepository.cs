@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
@@ -21,7 +21,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     private readonly ILogger<SpellRepository> _logger;
 
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceLocks = new(StringComparer.Ordinal);
+    private readonly KeyedLock<string> _workspaceLocks = new(StringComparer.Ordinal);
 
     private readonly IServiceScopeFactory _scopeFactory;
 
@@ -184,9 +184,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             content = SpellFileParser.FormatCreate(trimmedName, request);
         }
 
-        SemaphoreSlim writeLock = GetWorkspaceLock(workspaceRoot);
-
-        await writeLock.WaitAsync(ct).ConfigureAwait(false);
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
         string? stagingDir = null;
 
@@ -227,8 +225,6 @@ internal sealed partial class SpellRepository : ISpellRepository
         finally
         {
             TryDeleteStagingDirectory(stagingDir);
-
-            writeLock.Release();
         }
     }
 
@@ -284,9 +280,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string workspaceRoot = workingDirectory.Trim();
 
-        SemaphoreSlim writeLock = GetWorkspaceLock(workspaceRoot);
-
-        await writeLock.WaitAsync(ct).ConfigureAwait(false);
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
         try
         {
@@ -306,10 +300,6 @@ internal sealed partial class SpellRepository : ISpellRepository
             _logger.LogError(ex, "Failed to update spell {SpellName} at {SpellPath}", trimmedName, workspaceSpell.FilePath);
 
             return Result.Failure(new Error("Spell.WriteFailed", ex.Message));
-        }
-        finally
-        {
-            writeLock.Release();
         }
     }
 
@@ -343,9 +333,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string workspaceRoot = workingDirectory.Trim();
 
-        SemaphoreSlim writeLock = GetWorkspaceLock(workspaceRoot);
-
-        await writeLock.WaitAsync(ct).ConfigureAwait(false);
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
         try
         {
@@ -370,10 +358,6 @@ internal sealed partial class SpellRepository : ISpellRepository
             _logger.LogError(ex, "Failed to delete spell {SpellName} at {SpellPath}", trimmedName, workspaceSpell.FilePath);
 
             return Result.Failure(new Error("Spell.WriteFailed", ex.Message));
-        }
-        finally
-        {
-            writeLock.Release();
         }
     }
 
@@ -667,9 +651,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             content = SpellFileParser.FormatCreate(trimmedName, create);
         }
 
-        SemaphoreSlim writeLock = GetWorkspaceLock(workspaceRoot);
-
-        await writeLock.WaitAsync(ct).ConfigureAwait(false);
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
         string? stagingDir = null;
 
@@ -752,8 +734,6 @@ internal sealed partial class SpellRepository : ISpellRepository
         finally
         {
             TryDeleteStagingDirectory(stagingDir);
-
-            writeLock.Release();
         }
     }
 
@@ -1062,7 +1042,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         return false;
     }
 
-    private SemaphoreSlim GetWorkspaceLock(string workspaceRoot)
+    private static string GetWorkspaceLockKey(string workspaceRoot)
     {
         string key;
 
@@ -1075,7 +1055,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             key = workspaceRoot.Trim();
         }
 
-        return _workspaceLocks.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        return key;
     }
 
     private static bool TryGetFileLength(string filePath, out long length)

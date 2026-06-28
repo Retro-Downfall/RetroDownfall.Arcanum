@@ -113,4 +113,89 @@ public class BoundedLruCacheTests
 
         Assert.InRange(found, 0, 10);
     }
+
+    [Fact]
+    public void GetOrAdd_MissingKey_CreatesAndReturnsValue()
+    {
+        BoundedLruCache<string, int> cache = new(2);
+
+        int value = cache.GetOrAdd("a", _ => 1);
+
+        Assert.Equal(1, value);
+
+        Assert.True(cache.TryGetValue("a", out int stored));
+
+        Assert.Equal(1, stored);
+    }
+
+    [Fact]
+    public void GetOrAdd_ExistingKey_ReturnsExistingValueAndPromotes()
+    {
+        BoundedLruCache<string, int> cache = new(2);
+
+        cache.Set("a", 1);
+        cache.Set("b", 2);
+
+        int value = cache.GetOrAdd("a", _ => 999);
+
+        Assert.Equal(1, value);
+
+        cache.Set("c", 3);
+
+        Assert.True(cache.TryGetValue("a", out int a));
+
+        Assert.Equal(1, a);
+
+        Assert.False(cache.TryGetValue("b", out _));
+    }
+
+    [Fact]
+    public void GetOrAdd_OverCapacity_EvictsLeastRecentlyUsed()
+    {
+        BoundedLruCache<string, int> cache = new(2);
+
+        cache.GetOrAdd("a", _ => 1);
+        cache.GetOrAdd("b", _ => 2);
+        cache.GetOrAdd("c", _ => 3);
+
+        Assert.False(cache.TryGetValue("a", out _));
+
+        Assert.True(cache.TryGetValue("b", out int b));
+
+        Assert.Equal(2, b);
+
+        Assert.True(cache.TryGetValue("c", out int c));
+
+        Assert.Equal(3, c);
+    }
+
+    [Fact]
+    public void GetOrAdd_FactoryInvokedOnceForMissingKey()
+    {
+        BoundedLruCache<string, int> cache = new(4);
+
+        int invocations = 0;
+
+        int value = cache.GetOrAdd("k", _ =>
+        {
+            invocations++;
+
+            return 42;
+        });
+
+        Assert.Equal(42, value);
+
+        Assert.Equal(1, invocations);
+
+        int second = cache.GetOrAdd("k", _ =>
+        {
+            invocations++;
+
+            return 999;
+        });
+
+        Assert.Equal(42, second);
+
+        Assert.Equal(1, invocations);
+    }
 }

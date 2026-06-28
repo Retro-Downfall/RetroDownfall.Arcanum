@@ -115,6 +115,63 @@ internal sealed class BoundedLruCache<TKey, TValue> where TKey : notnull
 
     }
 
+    /// <summary>
+    /// Returns the existing value for <paramref name="key"/>, or invokes <paramref name="valueFactory"/>
+    /// and inserts the result when the key is absent. The factory is invoked under the instance lock, so
+    /// it must not reenter this cache. On a hit the entry is promoted to most-recently-used; on a miss
+    /// that exceeds <see cref="_capacity"/> the least-recently-used entry is evicted.
+    /// </summary>
+    public TValue GetOrAdd(TKey key, Func<TKey, TValue> valueFactory)
+    {
+
+        lock (_lock)
+        {
+
+            if (_nodes.TryGetValue(key, out LinkedListNode<CacheEntry>? existing))
+            {
+
+                _order.Remove(existing);
+
+                _order.AddFirst(existing);
+
+                return existing.Value.Value;
+
+            }
+
+            TValue value = valueFactory(key);
+
+            LinkedListNode<CacheEntry> node = new(new CacheEntry(key, value));
+
+            _order.AddFirst(node);
+
+            _nodes[key] = node;
+
+            if (_order.Count <= _capacity)
+            {
+
+                return value;
+
+            }
+
+            LinkedListNode<CacheEntry>? tail = _order.Last;
+
+            if (tail is null)
+            {
+
+                return value;
+
+            }
+
+            _ = _nodes.TryRemove(tail.Value.Key, out _);
+
+            _order.RemoveLast();
+
+            return value;
+
+        }
+
+    }
+
     private sealed class CacheEntry(TKey key, TValue value)
     {
 

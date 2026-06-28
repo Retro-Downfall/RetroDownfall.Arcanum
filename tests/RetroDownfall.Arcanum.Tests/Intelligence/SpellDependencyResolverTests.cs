@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
+[Collection("SpellScanner")]
 public sealed class SpellDependencyResolverTests : IDisposable
 {
 
