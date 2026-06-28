@@ -10,6 +10,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// AOT-safe in-memory <see cref="IEventBus"/> with bounded per-subscriber channels and DropOldest back-pressure.
 /// </summary>
+/// <remarks>
+/// Per-event-type hub capacity is read from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> each
+/// time a hub is first created. Existing hubs retain their original capacity; a config reload affects only
+/// event types that have not been seen yet. To pick up a new <c>EventBus.ChannelCapacity</c> for an existing
+/// hub, a restart is required.
+/// </remarks>
 internal sealed class InMemoryEventBus(IOptionsMonitor<ArcanumSettings> optionsMonitor) : IEventBus
 {
 

@@ -9,6 +9,12 @@ public sealed record ApprenticeSettings
 
     public int StepTimeoutMinutes { get; init; } = 30;
 
+    /// <summary>
+    /// Per-subscriber bounded channel capacity for Chronicle and session event hubs. Applied
+    /// when a per-apprentice / per-session hub is first created; existing hubs retain their
+    /// original capacity, so a config reload affects only new hubs (effectively startup-only
+    /// for an existing hub). Clamp 100–10,000.
+    /// </summary>
     public int ChronicleChannelCapacity { get; init; } = 1000;
 
     public int MaxStepRetries { get; init; } = 2;

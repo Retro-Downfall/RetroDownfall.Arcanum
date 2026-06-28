@@ -782,7 +782,7 @@ public sealed class McpConnectionManager(
 
                 if (config?.McpServers is { Count: > 0 })
                 {
-                    RegisterFromConfig(config, scopeWorkingDirectory: null);
+                    RegisterFromConfigCore(config, scopeWorkingDirectory: null);
                 }
             }
 
@@ -794,7 +794,7 @@ public sealed class McpConnectionManager(
         }
     }
 
-    private void RegisterFromConfig(McpConfig config, string? scopeWorkingDirectory)
+    private void RegisterFromConfigCore(McpConfig config, string? scopeWorkingDirectory)
     {
         int maxServers = GetClampedMcpMaxServers();
 
@@ -843,6 +843,35 @@ public sealed class McpConnectionManager(
                 cfg.AlwaysOn);
 
             _registry[key] = entry;
+        }
+    }
+
+    // W3.3 Fix 2: the count-check + TryAdd must be serialized across concurrent
+    // registrations. The global path already holds _registryLock (see
+    // EnsureGlobalRegistryLoadedAsync); the workspace-build path did not, so
+    // parallel workspace loads could both pass the count check and overshoot
+    // MaxServers. This wrapper acquires _registryLock for the entire register+
+    // count-check so the cap is enforced atomically. Registration is synchronous
+    // (no awaits inside RegisterFromConfigCore), so the lock is never held across
+    // async work. Callers already holding _registryLock call RegisterFromConfigCore
+    // directly to avoid a non-re-entrant SemaphoreSlim deadlock.
+    internal async Task RegisterFromConfigAsync(McpConfig config, string? scopeWorkingDirectory, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await _registryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+
+            RegisterFromConfigCore(config, scopeWorkingDirectory);
+
+        }
+        finally
+        {
+
+            _registryLock.Release();
+
         }
     }
 
@@ -953,7 +982,7 @@ public sealed class McpConnectionManager(
 
                     }
 
-                    RegisterFromConfig(localConfig, workspaceKey);
+                    await RegisterFromConfigAsync(localConfig, workspaceKey, cancellationToken).ConfigureAwait(false);
 
                     foreach (ManagedMcpServerEntry entry in _registry.Values.Where(e => e.ScopeWorkingDirectory == workspaceKey))
                     {

@@ -278,6 +278,91 @@ public sealed class WardGateTests
 
     }
 
+    // W3.3 Fix 1: the soft cap must be enforced atomically. The old code did a
+    // non-atomic check-then-add (`if (_pending.Count >= max) return; ... TryAdd`),
+    // so N concurrent submissions could all pass the count check and overshoot the
+    // cap. The fix uses an Interlocked increment-then-compare-then-rollback counter
+    // (mirroring SseConnectionGate). A Barrier releases all submissions onto the
+    // gate at the same instant so the check-then-add window is actually contested;
+    // with MaxActiveWards=K < N, at most K wards may ever be active simultaneously.
+    [Fact]
+    public async Task WardAsync_ConcurrentSubmissions_NeverOvershootsMaxActiveWards()
+    {
+
+        const int maxActiveWards = 4;
+
+        const int submissionCount = 16;
+
+        WardGate gate = CreateGate(maxActiveWards: maxActiveWards);
+
+        TimeSpan longTimeout = TimeSpan.FromSeconds(30);
+
+        Task<WardResolution>[] tasks = Enumerable.Range(0, submissionCount)
+            .Select(i => Task.Run(() =>
+            {
+
+                return gate.WardAsync(
+                    $"ward-race-{i}",
+                    "write_file",
+                    arguments: null,
+                    sessionId: null,
+                    longTimeout,
+                    CancellationToken.None);
+
+            }))
+            .ToArray();
+
+        // The Interlocked counter makes simultaneity unnecessary, so no Barrier. Poll until the
+        // capacity-rejected submissions have completed (they return immediately) and the rest are
+        // active (held wards await their TCS and do not complete until resolved below). Use a
+        // generous deadline — thread-pool scheduling under parallel test load can delay task startup.
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+
+        int active;
+
+        while (true)
+        {
+
+            active = gate.GetActiveWards().Count;
+
+            int completed = tasks.Count(t => t.IsCompleted);
+
+            if (active + completed == submissionCount)
+            {
+
+                break;
+
+            }
+
+            if (DateTimeOffset.UtcNow > deadline)
+            {
+
+                throw new TimeoutException(
+                    $"Ward race did not reach steady state: active={active}, completed={completed}.");
+
+            }
+
+            await Task.Delay(25);
+
+        }
+
+        Assert.True(active <= maxActiveWards, $"Overshot cap: {active} active wards > {maxActiveWards}.");
+
+        foreach (ActiveWard ward in gate.GetActiveWards())
+        {
+
+            Assert.Equal(ResolveStatus.Success, gate.Resolve(ward.WardId, allow: true, reason: "test"));
+
+        }
+
+        WardResolution[] resolutions = await Task.WhenAll(tasks);
+
+        int denied = resolutions.Count(r => !r.Allowed && r.Reason == "Maximum active wards reached — action was not allowed");
+
+        Assert.Equal(submissionCount, active + denied);
+
+    }
+
     private static WardGate CreateGate(int timeoutSeconds = 30, int maxActiveWards = 50) =>
         new(new FakeOptionsMonitor(new ArcanumSettings
         {

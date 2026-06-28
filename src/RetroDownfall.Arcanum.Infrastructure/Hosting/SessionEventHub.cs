@@ -8,6 +8,15 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+/// <summary>
+/// Fan-out hub for session entry events, one bounded channel per subscriber per session.
+/// </summary>
+/// <remarks>
+/// Per-session hub capacity is read from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> each
+/// time a hub is first created. Existing hubs retain their original capacity; a config reload affects only
+/// sessions whose event hub has not been created yet. To pick up a new
+/// <c>Apprentices.ChronicleChannelCapacity</c> for an existing session, a restart is required.
+/// </remarks>
 public sealed class SessionEventHub
 {
 

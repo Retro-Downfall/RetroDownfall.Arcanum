@@ -16,15 +16,42 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public sealed class ManaPreflight
 {
 
-    private readonly BoundedLruCache<MessageTokenCacheKey, int> _messageTokenCache;
+    // W3.3 Fix 6: the LRU capacity is reloaded on IOptionsMonitor.OnChange. The
+    // single BoundedLruCache field is swapped atomically via Volatile.Write; in-
+    // flight CountTokens calls finish against the old cache and new calls pick up
+    // the resized one. Losing the old cache contents on a swap is acceptable (the
+    // token count is recomputed on the next miss). The OnChange subscription lives
+    // for the singleton's process lifetime; ManaPreflight is registered as a
+    // singleton and does not implement IDisposable.
+    private BoundedLruCache<MessageTokenCacheKey, int> _messageTokenCache;
+
+    private readonly IOptionsMonitor<ArcanumSettings> _settings;
 
     public ManaPreflight(IOptionsMonitor<ArcanumSettings> settings)
     {
 
-        int capacity = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            settings.CurrentValue.Grimoire?.MaxMessagesPerConversationLoad ?? new GrimoireSettings().MaxMessagesPerConversationLoad);
+        _settings = settings;
 
-        _messageTokenCache = new BoundedLruCache<MessageTokenCacheKey, int>(capacity);
+        _messageTokenCache = new BoundedLruCache<MessageTokenCacheKey, int>(ResolveCapacity(settings.CurrentValue));
+
+        _ = settings.OnChange(OnSettingsChanged);
+
+    }
+
+    private static int ResolveCapacity(ArcanumSettings settings)
+    {
+
+        return ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            settings.Grimoire?.MaxMessagesPerConversationLoad ?? new GrimoireSettings().MaxMessagesPerConversationLoad);
+
+    }
+
+    private void OnSettingsChanged(ArcanumSettings settings, string? _)
+    {
+
+        BoundedLruCache<MessageTokenCacheKey, int> resized = new(ResolveCapacity(settings));
+
+        Volatile.Write(ref _messageTokenCache, resized);
 
     }
 
@@ -37,6 +64,8 @@ public sealed class ManaPreflight
         int perMessageOverheadTokens,
         string encodingName)
     {
+
+        BoundedLruCache<MessageTokenCacheKey, int> cache = Volatile.Read(ref _messageTokenCache);
 
         int total = 0;
 
@@ -56,7 +85,7 @@ public sealed class ManaPreflight
 
             MessageTokenCacheKey key = new(encodingName, ComputeContentHashHex(text));
 
-            if (_messageTokenCache.TryGetValue(key, out int cached))
+            if (cache.TryGetValue(key, out int cached))
             {
 
                 total += cached;
@@ -67,7 +96,7 @@ public sealed class ManaPreflight
 
             int messageTokens = tokenizer.CountTokens(text);
 
-            _messageTokenCache.Set(key, messageTokens);
+            cache.Set(key, messageTokens);
 
             total += messageTokens;
 

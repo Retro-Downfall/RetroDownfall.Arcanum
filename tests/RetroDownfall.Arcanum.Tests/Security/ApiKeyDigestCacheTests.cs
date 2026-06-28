@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -89,6 +90,67 @@ public sealed class ApiKeyDigestCacheTests
         Assert.True(found);
 
         Assert.Same(second, result);
+
+    }
+
+    // W3.3 Fix 5: StoreDigest must publish an immutable (digest, expiry) snapshot
+    // atomically. The old code did two separate Volatile.Writes (expiry first at
+    // :50, then digest at :52); a concurrent reader could see the NEW expiry with
+    // the OLD digest and serve a stale digest as valid. With ttl=0 the "old"
+    // snapshot is instantly expired, so any reader that returns oldDigest after
+    // the new store began must have observed a torn snapshot. The atomic single-
+    // reference publish never exhibits this.
+    [Fact]
+    public async Task StoreDigest_ConcurrentReader_NeverObservesTornSnapshot()
+    {
+
+        FakeTimeProvider timeProvider = new();
+
+        timeProvider.SetUtcNow(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+        ApiKeyDigestCache cache = new(timeProvider);
+
+        byte[] oldDigest = [1, 2, 3];
+
+        byte[] newDigest = [4, 5, 6];
+
+        cache.StoreDigest(oldDigest, ttlSeconds: 0);
+
+        StrongBox<int> sawStaleOld = new(0);
+
+        using CancellationTokenSource cts = new();
+
+        Task[] readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+        {
+
+            while (!cts.Token.IsCancellationRequested)
+            {
+
+                if (cache.TryGetDigest(out byte[]? d) && d is not null && d.SequenceEqual(oldDigest))
+                {
+
+                    Volatile.Write(ref sawStaleOld.Value, 1);
+
+                }
+
+            }
+
+        })).ToArray();
+
+        for (int i = 0; i < 200_000; i++)
+        {
+
+            cache.StoreDigest(oldDigest, ttlSeconds: 0);
+
+            cache.StoreDigest(newDigest, ttlSeconds: 60);
+
+        }
+
+        cts.Cancel();
+
+        await Task.WhenAll(readers);
+
+        Assert.Equal(0, Volatile.Read(ref sawStaleOld.Value));
 
     }
 

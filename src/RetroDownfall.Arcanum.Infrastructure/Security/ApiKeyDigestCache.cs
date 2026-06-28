@@ -5,9 +5,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 public sealed class ApiKeyDigestCache : IApiKeyDigestCache
 {
 
-    private byte[]? _cachedDigest;
+    // W3.3 Fix 5: the (digest, expiry) pair is published as a single immutable
+    // snapshot via one Volatile.Write of this reference. The previous design used
+    // two separate Volatile.Writes (expiry then digest), which let a concurrent
+    // TryGetDigest observe the NEW expiry paired with the OLD digest and serve a
+    // stale digest as valid. A record reference write is atomic on aligned
+    // references, so readers see either the full old snapshot or the full new one.
+    private sealed record DigestEntry(byte[] Digest, long ExpiresAtMilliseconds);
 
-    private long _cachedExpiresAtMilliseconds;
+    private DigestEntry? _entry;
 
     private readonly TimeProvider _timeProvider;
 
@@ -23,14 +29,12 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
 
         long now = _timeProvider.GetUtcNow().Ticks / TimeSpan.TicksPerMillisecond;
 
-        byte[]? cached = Volatile.Read(ref _cachedDigest);
+        DigestEntry? entry = Volatile.Read(ref _entry);
 
-        long expiresAt = Volatile.Read(ref _cachedExpiresAtMilliseconds);
-
-        if (cached is not null && now < expiresAt)
+        if (entry is not null && now < entry.ExpiresAtMilliseconds)
         {
 
-            digest = cached;
+            digest = entry.Digest;
 
             return true;
 
@@ -47,18 +51,16 @@ public sealed class ApiKeyDigestCache : IApiKeyDigestCache
 
         long now = _timeProvider.GetUtcNow().Ticks / TimeSpan.TicksPerMillisecond;
 
-        Volatile.Write(ref _cachedExpiresAtMilliseconds, now + (ttlSeconds * 1000L));
+        DigestEntry snapshot = new(digest, now + (ttlSeconds * 1000L));
 
-        Volatile.Write(ref _cachedDigest, digest);
+        Volatile.Write(ref _entry, snapshot);
 
     }
 
     public void Invalidate()
     {
 
-        Volatile.Write(ref _cachedDigest, null);
-
-        Volatile.Write(ref _cachedExpiresAtMilliseconds, 0);
+        Volatile.Write(ref _entry, null);
 
     }
 

@@ -7,6 +7,15 @@ using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+/// <summary>
+/// Fan-out hub for apprentice Chronicle events, one bounded channel per subscriber per apprentice.
+/// </summary>
+/// <remarks>
+/// Per-apprentice hub capacity is read from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> each
+/// time a hub is first created. Existing hubs retain their original capacity; a config reload affects only
+/// apprentices whose Chronicle hub has not been created yet. To pick up a new
+/// <c>Apprentices.ChronicleChannelCapacity</c> for an existing apprentice, a restart is required.
+/// </remarks>
 public sealed class ChronicleHub
 {
 

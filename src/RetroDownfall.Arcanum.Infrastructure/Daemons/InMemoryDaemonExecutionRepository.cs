@@ -106,6 +106,50 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         string executionId = Guid.NewGuid().ToString("N");
 
+        CreateRecord(daemonId, daemonName, executionId, ct);
+
+        _inFlightByDaemon[daemonId] = executionId;
+
+        return Task.FromResult(executionId);
+    }
+
+    // W3.3 Fix 4: atomic single-running reservation for the on-demand path. The
+    // TryAdd on _inFlightByDaemon is the single atomic step that combines the
+    // "not already running" check with the slot reservation; a concurrent call
+    // for the same daemon loses the TryAdd and returns false without creating a
+    // record. The caller supplies the executionId so DaemonRunner can use it for
+    // the subsequent GetCancellationTokenSource lookup without a second round-trip.
+    public Task<bool> TryStartAsync(string daemonId, string daemonName, string executionId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!_inFlightByDaemon.TryAdd(daemonId, executionId))
+        {
+
+            return Task.FromResult(false);
+
+        }
+
+        try
+        {
+
+            CreateRecord(daemonId, daemonName, executionId, ct);
+
+        }
+        catch
+        {
+
+            _ = _inFlightByDaemon.TryRemove(daemonId, out _);
+
+            throw;
+
+        }
+
+        return Task.FromResult(true);
+    }
+
+    private DaemonExecutionRecord CreateRecord(string daemonId, string daemonName, string executionId, CancellationToken ct)
+    {
         DaemonExecutionRecord record = new()
         {
             Id = executionId,
@@ -127,9 +171,7 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         _byId[executionId] = record;
 
-        _inFlightByDaemon[daemonId] = executionId;
-
-        return Task.FromResult(executionId);
+        return record;
     }
 
     public Task<DaemonExecutionSummary> CompleteAsync(string executionId, CancellationToken ct)
@@ -183,7 +225,7 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             DisposeCancellation(record);
 
-            _ = _inFlightByDaemon.TryRemove(record.DaemonId, out _);
+            RemoveInFlightIfMatch(record.DaemonId, executionId);
 
             return Task.FromResult(record.ToSummary());
         }
@@ -222,10 +264,30 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             DisposeCancellation(record);
 
-            _ = _inFlightByDaemon.TryRemove(record.DaemonId, out _);
+            RemoveInFlightIfMatch(record.DaemonId, executionId);
 
             return record.ToSummary();
         }
+    }
+
+    // W3.3 Fix 4: id-matched removal. Only evict the in-flight slot when the
+    // stored execution id equals the one being completed/cancelled. StartAsync
+    // (scheduled path) overwrites the slot blindly, so a later execution may hold
+    // it; a late completion of the earlier execution must not evict the later one.
+    // TryAdd (TryStart) fails while the key is present, so the compare-then-remove
+    // window is safe: no other TryStart can claim the slot between the read and the
+    // remove, and StartAsync overwrites are handled because the comparison guards.
+    private void RemoveInFlightIfMatch(string daemonId, string executionId)
+    {
+
+        if (_inFlightByDaemon.TryGetValue(daemonId, out string? currentId)
+            && string.Equals(currentId, executionId, StringComparison.Ordinal))
+        {
+
+            _ = _inFlightByDaemon.TryRemove(daemonId, out _);
+
+        }
+
     }
 
     private void TrimHistory(string daemonId, List<DaemonExecutionRecord> list)

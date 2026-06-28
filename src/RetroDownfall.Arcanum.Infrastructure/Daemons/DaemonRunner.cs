@@ -38,15 +38,40 @@ public sealed class DaemonRunner(
                 new Error("Daemon.Disabled", $"Daemon job '{daemonId}' is not enabled for on-demand execution."));
         }
 
-        if (enforceSingleRunning && repository.HasRunningExecution(daemonId))
-        {
-            return Result<DaemonExecutionSummary>.Failure(
-                new Error("Daemon.AlreadyRunning", $"Daemon job '{daemonId}' already has a running execution."));
-        }
+        // W3.3 Fix 4: atomic single-running enforcement for the on-demand path.
+        // The previous HasRunningExecution + StartAsync pair was a TOCTOU — two
+        // concurrent on-demand starts could both pass the check and both start.
+        // TryStartAsync reserves the in-flight slot via ConcurrentDictionary.TryAdd
+        // so the check and the reservation are one atomic step. The scheduled path
+        // (enforceSingleRunning: false) keeps the existing StartAsync behavior.
+        string executionId;
 
-        string executionId = await repository
-            .StartAsync(daemonId, job.Name, ct)
-            .ConfigureAwait(false);
+        if (enforceSingleRunning)
+        {
+
+            executionId = Guid.NewGuid().ToString("N");
+
+            bool started = await repository
+                .TryStartAsync(daemonId, job.Name, executionId, ct)
+                .ConfigureAwait(false);
+
+            if (!started)
+            {
+
+                return Result<DaemonExecutionSummary>.Failure(
+                    new Error("Daemon.AlreadyRunning", $"Daemon job '{daemonId}' already has a running execution."));
+
+            }
+
+        }
+        else
+        {
+
+            executionId = await repository
+                .StartAsync(daemonId, job.Name, ct)
+                .ConfigureAwait(false);
+
+        }
 
         Guid runId = Guid.Parse(executionId);
 

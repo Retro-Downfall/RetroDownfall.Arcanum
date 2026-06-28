@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -119,7 +121,8 @@ public sealed class ChatClientFactoryTests
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             llama ?? new FakeLlamaServerManager(),
-            secretProtector);
+            secretProtector,
+            NullLogger<ChatClientFactory>.Instance);
     }
 
     private sealed class FakeHttpClientFactory : IHttpClientFactory

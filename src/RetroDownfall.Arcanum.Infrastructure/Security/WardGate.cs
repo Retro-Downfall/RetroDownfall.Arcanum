@@ -13,6 +13,15 @@ public sealed class WardGate : IWard
 
     private const string CapacityReason = "Maximum active wards reached — action was not allowed";
 
+    // W3.3 Fix 1: atomic active-ward counter, mirroring SseConnectionGate. The
+    // counter is incremented BEFORE the TryAdd; if it exceeds MaxActiveWards it is
+    // rolled back and the acquire is denied. The TryAdd-failure path (duplicate ward
+    // id) also rolls back. Every terminal removal from _pending decrements exactly
+    // once — ConcurrentDictionary.TryRemove returns true only for the first remover,
+    // so a double-resolve/late-timeout cannot double-decrement. _pending.Count is no
+    // longer used for cap enforcement (it was a non-atomic check-then-add).
+    private int _activeWards;
+
     private readonly ConcurrentDictionary<string, WardEntry> _pending = new();
 
     private readonly ConcurrentDictionary<string, WardResolution> _resolved = new();
@@ -41,8 +50,12 @@ public sealed class WardGate : IWard
         int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
             _settings.CurrentValue.Ward?.MaxActiveWards ?? new WardSettings().MaxActiveWards);
 
-        if (_pending.Count >= maxActiveWards)
+        int active = Interlocked.Increment(ref _activeWards);
+
+        if (active > maxActiveWards)
         {
+
+            Interlocked.Decrement(ref _activeWards);
 
             return new WardResolution(false, CapacityReason, DateTimeOffset.UtcNow);
 
@@ -59,13 +72,19 @@ public sealed class WardGate : IWard
 
         if (!_pending.TryAdd(wardId, entry))
         {
+
+            Interlocked.Decrement(ref _activeWards);
+
             throw new InvalidOperationException($"A ward with id '{wardId}' is already active.");
+
         }
 
         await using CancellationTokenRegistration callerRegistration = cancellationToken.Register(() =>
         {
             if (_pending.TryRemove(wardId, out WardEntry? removed))
             {
+                Interlocked.Decrement(ref _activeWards);
+
                 TryCancelEntry(removed.Cts);
 
                 removed.Tcs.TrySetCanceled(cancellationToken);
@@ -92,6 +111,8 @@ public sealed class WardGate : IWard
 
         if (_pending.TryRemove(wardId, out WardEntry? entry))
         {
+            Interlocked.Decrement(ref _activeWards);
+
             TryCancelEntry(entry.Cts);
 
             DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
@@ -165,6 +186,8 @@ public sealed class WardGate : IWard
         {
             return;
         }
+
+        Interlocked.Decrement(ref _activeWards);
 
         DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
 

@@ -90,6 +90,57 @@ public sealed class DaemonRunnerTests
 
     }
 
+    // W3.3 Fix 4 (atomic single-running enforcement): the on-demand path previously
+    // did a non-atomic HasRunningExecution check followed by StartAsync, so two
+    // concurrent on-demand starts could both pass the check and both start the job.
+    // The fix replaces check+start with an atomic TryStart that reserves the
+    // in-flight slot via ConcurrentDictionary.TryAdd. Two simultaneous on-demand
+    // starts must yield exactly one success and one Daemon.AlreadyRunning.
+    [Fact]
+    public async Task RunAsync_ConcurrentOnDemandStarts_StartExactlyOne()
+    {
+
+        FakeDaemonJob job = new("job-race", "Job Race", canRunOnDemand: true)
+        {
+            RunUntilSignal = true,
+        };
+
+        DaemonRunner runner = CreateRunner([job]);
+
+        using Barrier barrier = new(2);
+
+        Task<Result<DaemonExecutionSummary>>[] runs = Enumerable.Range(0, 2)
+            .Select(_ => Task.Run(() =>
+            {
+
+                barrier.SignalAndWait();
+
+                return runner.RunAsync("job-race", force: false, CancellationToken.None);
+
+            }))
+            .ToArray();
+
+        // Exactly one run should be rejected as AlreadyRunning promptly. If neither
+        // is rejected within the window, both started (the TOCTOU bug) — the timeout
+        // is the failure signal for the unfixed code.
+        await Task.WhenAny(runs[0], runs[1], Task.Delay(TimeSpan.FromSeconds(2)));
+
+        Result<DaemonExecutionSummary>? loser = runs
+            .FirstOrDefault(r => r.IsCompleted && r.Result.IsFailure && r.Result.Error.Code == "Daemon.AlreadyRunning")
+            ?.Result;
+
+        Assert.NotNull(loser);
+
+        job.SignalCompletion();
+
+        await Task.WhenAll(runs);
+
+        Assert.Equal(1, runs.Count(r => r.Result.IsSuccess));
+
+        Assert.Equal(1, runs.Count(r => r.Result.IsFailure && r.Result.Error.Code == "Daemon.AlreadyRunning"));
+
+    }
+
     private static DaemonRunner CreateRunner(
         IEnumerable<IDaemonJob> jobs,
         CapturingEventBus? bus = null)
@@ -122,6 +173,8 @@ public sealed class DaemonRunnerTests
 
         private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private readonly TaskCompletionSource _completionSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public string Id { get; } = id;
 
         public string Name { get; } = name;
@@ -134,12 +187,25 @@ public sealed class DaemonRunnerTests
 
         public TimeSpan RunDelay { get; init; } = TimeSpan.Zero;
 
+        public bool RunUntilSignal { get; init; }
+
         public Task StartedTask => _started.Task;
+
+        public void SignalCompletion() => _completionSignal.TrySetResult();
 
         public async Task RunAsync(CancellationToken ct)
         {
 
             _started.TrySetResult();
+
+            if (RunUntilSignal)
+            {
+
+                await _completionSignal.Task.WaitAsync(ct).ConfigureAwait(false);
+
+                return;
+
+            }
 
             if (RunDelay > TimeSpan.Zero)
             {

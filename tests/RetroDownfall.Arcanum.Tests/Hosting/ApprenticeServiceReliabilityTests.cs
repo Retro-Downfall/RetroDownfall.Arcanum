@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
+[Collection("ApprenticeReliability")]
 public sealed class ApprenticeServiceReliabilityTests
 {
 

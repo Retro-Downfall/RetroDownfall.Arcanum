@@ -2,6 +2,7 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OllamaSharp;
 using OpenAI;
@@ -27,7 +28,8 @@ public sealed class ChatClientFactory(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     ILlamaServerManager llamaServerManager,
-    ConfigurationSecretProtector secretProtector) : IChatClientFactory
+    ConfigurationSecretProtector secretProtector,
+    ILogger<ChatClientFactory> logger) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
@@ -293,6 +295,23 @@ public sealed class ChatClientFactory(
                 break;
 
             }
+
+        }
+
+        // W3.3 Fix 3: soft-cap operator signal. If the cache is still over
+        // MaxCachedEndpointClients here, every remaining entry is leased (RefCount > 0)
+        // and cannot be evicted without disrupting in-flight inference. Do NOT block or
+        // refuse new endpoint keys — surface a warning naming the remaining over-cap
+        // count (same shape as the W2.5b LRU-over-cap warning). A drain/wait is a
+        // larger change and is intentionally out of scope for this fix.
+        int overCapCount = _endpointHttpClients.Count - MaxCachedEndpointClients;
+
+        if (overCapCount > 0)
+        {
+
+            logger.LogWarning(
+                "Endpoint HttpClient cache is over cap by {OverCapCount} entries; all eviction candidates are currently leased and were not removed.",
+                overCapCount);
 
         }
 
