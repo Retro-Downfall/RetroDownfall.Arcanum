@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -81,6 +82,16 @@ internal static class InferenceExecuteWriter
 
         Utf8JsonWriter jsonWriter = new(eventBuffer);
 
+        // W3.4 Group A (S10): track whether any NDJSON frame has been streamed to the
+        // response body. This mirrors HttpResponse.HasStarted (which Kestrel sets on the
+        // first body write) but is host-agnostic — DefaultHttpContext does not flip
+        // HasStarted on direct body writes, and the decision here is precisely "have we
+        // already streamed frames" rather than "have HTTP headers been sent". Once true,
+        // a late non-disconnect exception must NOT append an error frame: the frame would
+        // be ambiguous to a client that has already consumed partial output and may target
+        // a dead socket.
+        bool responseStarted = false;
+
         try
         {
             await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct).ConfigureAwait(false))
@@ -98,6 +109,8 @@ internal static class InferenceExecuteWriter
 
                 await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
 
+                responseStarted = true;
+
             }
 
         }
@@ -105,33 +118,53 @@ internal static class InferenceExecuteWriter
         {
 
         }
+        catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+        {
+
+            // W3.4 Group A (S10): client disconnected mid-stream (broken pipe / reset).
+            // Cancel the linked inference CTS so the producer stops promptly, then break
+            // silently. No error frame is written to the dead socket.
+
+            streamCts.Cancel();
+
+        }
         catch (Exception ex)
         {
 
-            IntelligenceEvent errorEvent = new(
-                IntelligenceEventType.Error,
-                "An internal error occurred during inference streaming.");
+            // W3.4 Group A (S10): only emit an error frame when nothing has been streamed
+            // yet. Once the NDJSON response has started (tokens already sent), appending an
+            // error frame is ambiguous to the client and may target a dead socket.
 
-            eventBuffer.ResetWrittenCount();
-
-            jsonWriter.Reset();
-
-            JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
-
-            eventBuffer.Write(NewlineBytes);
-
-            try
+            if (!responseStarted)
             {
 
-                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
+                IntelligenceEvent errorEvent = new(
+                    IntelligenceEventType.Error,
+                    "An internal error occurred during inference streaming.");
 
-                await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+                eventBuffer.ResetWrittenCount();
 
-            }
-            catch (Exception writeEx)
-            {
+                jsonWriter.Reset();
 
-                Debug.WriteLine($"Failed to write stream error frame: {writeEx.Message}");
+                JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
+
+                eventBuffer.Write(NewlineBytes);
+
+                try
+                {
+
+                    await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
+
+                    await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+
+                }
+
+                catch (Exception writeEx)
+                {
+
+                    Debug.WriteLine($"Failed to write stream error frame: {writeEx.Message}");
+
+                }
 
             }
 

@@ -62,8 +62,22 @@ internal sealed class McpBridgeTool : AIFunction
         {
             return await SendToolsCallAsync(_client, arguments, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
+            // W3.4 Group C #6: caller cancel / per-request timeout must NEVER trigger the
+            // fallback. The tool may still be executing on the local server; re-running it on
+            // the fallback could double-execute a mutating operation. The wire-cancel
+            // notification (McpClient) tells the local server to stop.
+            throw;
+        }
+        catch (McpTransportUnavailableException ex)
+        {
+            // W3.4 Group C #6: restrict the global fallback to TRANSPORT/CONNECTIVITY failures
+            // only (local server down/unreachable / channel closed / transport disposed before
+            // a response). A tools/call that returned an error (isError: true) or a JSON-RPC
+            // error response is a tool-execution failure — the tool already ran, possibly with
+            // side effects — so it must NOT be re-run on the fallback. Those surface as
+            // InvalidOperationException and propagate without a fallback attempt below.
             if (_fallbackClient is null)
             {
                 throw;
@@ -73,7 +87,7 @@ internal sealed class McpBridgeTool : AIFunction
 
             _fallbackLogger?.LogWarning(
                 ex,
-                "MCP tool {ToolName} succeeded via global fallback after local failure.",
+                "MCP tool {ToolName} succeeded via global fallback after local transport failure.",
                 _name);
 
             return result;

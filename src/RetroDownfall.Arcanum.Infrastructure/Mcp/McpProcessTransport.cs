@@ -302,6 +302,9 @@ internal sealed class McpProcessTransport : IMcpTransport
         try
         {
             string json = JsonSerializer.Serialize(request, _json.JsonRpcRequest);
+
+            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+
             StreamWriter stdin = process.StandardInput;
             await stdin.WriteAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
             await stdin.WriteAsync('\n').ConfigureAwait(false);
@@ -332,6 +335,9 @@ internal sealed class McpProcessTransport : IMcpTransport
         try
         {
             string json = JsonSerializer.Serialize(notification, _json.JsonRpcNotification);
+
+            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+
             StreamWriter stdin = process.StandardInput;
             await stdin.WriteAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
             await stdin.WriteAsync('\n').ConfigureAwait(false);

@@ -87,6 +87,8 @@ public sealed class WardGate : IWard
 
                 TryCancelEntry(removed.Cts);
 
+                DisposeEntry(removed);
+
                 removed.Tcs.TrySetCanceled(cancellationToken);
             }
         });
@@ -114,6 +116,8 @@ public sealed class WardGate : IWard
             Interlocked.Decrement(ref _activeWards);
 
             TryCancelEntry(entry.Cts);
+
+            DisposeEntry(entry);
 
             DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
 
@@ -171,6 +175,16 @@ public sealed class WardGate : IWard
 
     }
 
+    // W3.4 Group B: dispose the pooled native memory behind WardEntry.Arguments when the
+    // entry leaves _pending on any terminal path (resolve / timeout / caller-cancel). The
+    // arguments may be null (ward placed without a payload), so guard the disposal.
+    private static void DisposeEntry(WardEntry entry)
+    {
+
+        entry.Arguments?.Dispose();
+
+    }
+
     private async Task RunTimeoutAsync(string wardId, WardEntry entry, TimeSpan timeout, CancellationToken cancellationToken)
     {
         try
@@ -188,6 +202,8 @@ public sealed class WardGate : IWard
         }
 
         Interlocked.Decrement(ref _activeWards);
+
+        DisposeEntry(removed);
 
         DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
 

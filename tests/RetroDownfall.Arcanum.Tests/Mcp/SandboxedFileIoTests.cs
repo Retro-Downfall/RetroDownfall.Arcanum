@@ -156,6 +156,52 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
     }
 
+    // W3.4 Group C #7: the write path validates the target lexically then File.Move's the
+    // temp file (TOCTOU between validation and the move). A post-move handle-identity check
+    // mirrors the read path: the destination's opened handle identity must match the temp
+    // file's pre-move identity (the move preserves the inode on the same filesystem). A
+    // mismatch means the destination was swapped (e.g. to a symlink) between validation and
+    // the move, and the write is rejected as a sandbox escape.
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_rejects_when_destination_handle_mismatches_temp_identity()
+    {
+
+        FileHandleIdentityInterop.TryGetPathIdentityForTests = _ => new FileHandleIdentity(7, 7);
+
+        FileHandleIdentityInterop.TryGetHandleIdentityForTests = _ => new FileHandleIdentity(7, 8);
+
+        try
+        {
+
+            string target = Path.Combine(_workspace.Root, "write-mismatch.txt");
+
+            File.WriteAllText(target, "original");
+
+            (bool success, McpToolsCallResultWire? error) = await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                target,
+                "new content",
+                CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.NotNull(error);
+
+            Assert.Contains("sandbox", error!.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+        }
+
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
+
+            FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
+
+        }
+
+    }
+
     [Fact]
     public void TryGetPathIdentity_MatchesHandleIdentity_OnUnix()
     {

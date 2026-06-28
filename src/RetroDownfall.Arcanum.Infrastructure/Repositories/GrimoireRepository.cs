@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Text;
@@ -649,7 +650,20 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         try
         {
-            await using DbCommand cmd = _db.Database.GetDbConnection().CreateCommand();
+            DbConnection connection = _db.Database.GetDbConnection();
+
+            // W3.4 Group D #8: EF Core closes its connection after each SaveChanges, so the
+            // raw DbCommand below cannot assume the connection is open. Open it explicitly
+            // (mirroring ResolveFtsSessionIdsAsync) before ExecuteReaderAsync; otherwise a
+            // search issued without a prior open query throws InvalidOperationException.
+            if (connection.State != ConnectionState.Open)
+            {
+
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            await using DbCommand cmd = connection.CreateCommand();
 
             cmd.CommandText =
                 """

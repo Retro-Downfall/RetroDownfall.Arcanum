@@ -492,16 +492,48 @@ public sealed class SessionRepository(
 
     private async Task<string> SerializeJsonExportAsync(Session session, Guid sessionId, CancellationToken ct)
     {
-        List<Entry> entries = new();
+        // W3.4 Group E #10: stream-serialize the export instead of accumulating every entry
+        // batch into one List<Entry> before serializing. Each batch's entries are written to a
+        // Utf8JsonWriter as they are read, so the peak managed-memory pressure is one batch
+        // (ExportEntryBatchSize) rather than the whole session. The wire shape is identical to
+        // the previous JsonSerializer.Serialize(SessionExportPayload) output: a camelCase
+        // { "session": {...}, "entries": [...] } object. The endpoint buffers the result into a
+        // string (SessionExportResult.Content), so the output string is still O(total) — that
+        // is inherent to the wire contract, not the accumulation. Source-generated type infos
+        // (TheForgeJsonContext) keep this AOT-safe.
+        using MemoryStream buffer = new();
+
+        using Utf8JsonWriter writer = new(buffer, new JsonWriterOptions { Indented = false });
+
+        writer.WriteStartObject();
+
+        writer.WritePropertyName("session");
+
+        JsonSerializer.Serialize(writer, session, TheForgeJsonContext.Default.Session);
+
+        writer.WritePropertyName("entries");
+
+        writer.WriteStartArray();
 
         await foreach (List<Entry> batch in ReadEntryBatchesAsync(sessionId, ct).ConfigureAwait(false))
         {
-            entries.AddRange(batch);
+
+            foreach (Entry entry in batch)
+            {
+
+                JsonSerializer.Serialize(writer, entry, TheForgeJsonContext.Default.Entry);
+
+            }
+
         }
 
-        return JsonSerializer.Serialize(
-            new SessionExportPayload(session, entries),
-            TheForgeJsonContext.Default.SessionExportPayload);
+        writer.WriteEndArray();
+
+        writer.WriteEndObject();
+
+        await writer.FlushAsync(ct).ConfigureAwait(false);
+
+        return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
     private async Task<string> FormatMarkdownExportAsync(Session session, Guid sessionId, CancellationToken ct)

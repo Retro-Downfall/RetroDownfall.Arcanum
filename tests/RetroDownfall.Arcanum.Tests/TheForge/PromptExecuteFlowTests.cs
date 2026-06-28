@@ -156,15 +156,21 @@ public sealed class PromptExecuteFlowTests
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default) =>
       Task.FromResult(Result<PromptTurnResult>.Success(new PromptTurnResult("ok", null)));
 
+    // W3.4 Group A: fails before streaming any frame, so the response has not started and the
+    // error NDJSON frame is emitted (per the responseStarted guard, a late failure AFTER the
+    // stream has started suppresses the error frame; that case is covered by
+    // InferenceExecuteWriterTests.WriteStreamAsync_LateStreamExceptionAfterStart_DoesNotWriteErrorFrame).
     public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
       PingRequest request,
       [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-      yield return new IntelligenceEvent(IntelligenceEventType.Status, "starting");
-
       await Task.Yield();
 
       throw new InvalidOperationException("stream failed");
+
+#pragma warning disable CS0162 // Unreachable code — yield break satisfies the async-iterator requirement.
+      yield break;
+#pragma warning restore CS0162
     }
 
   }

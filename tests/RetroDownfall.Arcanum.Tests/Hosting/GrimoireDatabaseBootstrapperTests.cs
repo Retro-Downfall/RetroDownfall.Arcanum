@@ -194,6 +194,58 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    // W3.4 Group D #9: graceful shutdown must run PRAGMA wal_checkpoint(TRUNCATE) so the
+    // -wal sidecar file does not persist across restarts. The hosted service's StopAsync
+    // wires this to ArcanumPaths.GrimoireDatabaseFile; the truncation behavior is verified
+    // via the internal overload against the test's bootstrapped DB (StopAsync uses the real
+    // on-disk path, which is not the test's temp DB).
+    [Fact]
+    public async Task CheckpointOnShutdownAsync_truncates_populated_wal_when_no_readers_hold_it()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        string walPath = _dbPath + "-wal";
+
+        long beforeSize = File.Exists(walPath) ? new FileInfo(walPath).Length : 0;
+
+        // EnsureInitializedAsync runs migrations (writing frames to the WAL) and closes the
+        // connection, leaving a populated -wal file (verified by beforeSize > 0). The shutdown
+        // checkpoint must truncate it; without the checkpoint the WAL would persist at beforeSize.
+        await GrimoireDatabaseBootstrapper.CheckpointOnShutdownAsync(
+            _passphraseSource,
+            _dbPath,
+            CancellationToken.None);
+
+        long afterSize = File.Exists(walPath) ? new FileInfo(walPath).Length : 0;
+
+        Assert.True(beforeSize > 0, "WAL was not populated before the checkpoint; the test would be trivial.");
+
+        Assert.True(afterSize == 0, $"WAL was not truncated by the checkpoint: before={beforeSize}, after={afterSize}.");
+
+    }
+
+    // W3.4 Group D #9: the hosted service's StopAsync is the real shutdown entry point and
+    // must invoke the checkpoint best-effort (never throws, even on a missing/stray DB or an
+    // uninitialized passphrase).
+    [Fact]
+    public async Task StopAsync_does_not_throw_on_missing_database()
+    {
+
+        GrimoireDatabaseHostedService svc = new(_scopeFactory, _secretStore, new GrimoireDbPassphraseSource());
+
+        await svc.StopAsync(CancellationToken.None);
+
+    }
+
     public void Dispose()
     {
 

@@ -318,10 +318,20 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             },
             McpJsonSerializerContext.Default.McpInitializeParams);
 
-        JsonRpcResponse? response = await session.SendRequestWithTimeoutAsync(
-            "initialize",
-            parameters,
-            TimeSpan.FromSeconds(5));
+        // W3.4 Group C #4: the client's outbound cap now rejects oversized lines before they
+        // are written (see McpOutboundLineGuardTests). To exercise the SERVER's inbound cap
+        // (a separate defense), serialize the request and write the raw line directly to the
+        // server channel, bypassing the client's outbound guard.
+        JsonRpcRequest request = new()
+        {
+            Method = "initialize",
+            Params = parameters,
+            Id = JsonSerializer.SerializeToElement(0, McpJsonSerializerContext.Default.Int32),
+        };
+
+        string rawLine = JsonSerializer.Serialize(request, McpJsonSerializerContext.Default.JsonRpcRequest);
+
+        JsonRpcResponse? response = await session.SendRawLineWithTimeoutAsync(rawLine, TimeSpan.FromSeconds(5));
 
         Assert.NotNull(response);
 
@@ -782,6 +792,38 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             };
 
             await transport.WriteRequestAsync(request).ConfigureAwait(false);
+
+            using CancellationTokenSource cts = new(timeout);
+
+            try
+            {
+
+                McpInboundEnvelope envelope = await transport.InboundReader
+                    .ReadAsync(cts.Token)
+                    .ConfigureAwait(false);
+
+                Assert.Equal(McpInboundKind.Response, envelope.Kind);
+
+                return envelope.Response;
+
+            }
+
+            catch (OperationCanceledException)
+            {
+
+                return null;
+
+            }
+
+        }
+
+        // W3.4 Group C #4: writes a pre-serialized line directly to the server channel,
+        // bypassing the client's outbound line-size guard so the server's INBOUND cap can be
+        // exercised. The server reads the raw line and applies its own size check.
+        public async Task<JsonRpcResponse?> SendRawLineWithTimeoutAsync(string rawLine, TimeSpan timeout)
+        {
+
+            await transport.WriteRawLineForTestsAsync(rawLine).ConfigureAwait(false);
 
             using CancellationTokenSource cts = new(timeout);
 

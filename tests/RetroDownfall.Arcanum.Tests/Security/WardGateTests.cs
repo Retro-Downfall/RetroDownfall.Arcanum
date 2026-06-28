@@ -373,6 +373,106 @@ public sealed class WardGateTests
             },
         }));
 
+    // W3.4 Group B: WardEntry.Arguments holds a JsonDocument that owns pooled native memory.
+    // On every terminal path out of _pending (resolve / timeout / caller-cancel) the entry
+    // is removed but the JsonDocument is never disposed, leaking native buffers across the
+    // process lifetime. Each of the three terminal paths must dispose the Arguments. A
+    // disposed JsonDocument throws ObjectDisposedException on RootElement access.
+
+    [Fact]
+    public async Task WardAsync_Resolve_disposes_arguments_JsonDocument()
+    {
+
+        WardGate gate = CreateGate();
+
+        JsonDocument arguments = JsonDocument.Parse("""{"path":"README.md"}""");
+
+        Task<WardResolution> wardTask = gate.WardAsync(
+            "ward-dispose-resolve",
+            "write_file",
+            arguments,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        gate.Resolve("ward-dispose-resolve", allow: true, reason: "ok");
+
+        _ = await wardTask;
+
+        Assert.Throws<ObjectDisposedException>(() => arguments.RootElement.ValueKind);
+
+    }
+
+    [Fact]
+    public async Task WardAsync_Timeout_disposes_arguments_JsonDocument()
+    {
+
+        WardGate gate = CreateGate();
+
+        JsonDocument arguments = JsonDocument.Parse("""{"path":"README.md"}""");
+
+        _ = await gate.WardAsync(
+            "ward-dispose-timeout",
+            "write_file",
+            arguments,
+            sessionId: null,
+            timeout: TimeSpan.FromMilliseconds(50),
+            CancellationToken.None);
+
+        // The timeout path runs in the background (RunTimeoutAsync); give it a moment to
+        // remove the entry and dispose the arguments.
+        await Task.Delay(150);
+
+        Assert.Throws<ObjectDisposedException>(() => arguments.RootElement.ValueKind);
+
+    }
+
+    [Fact]
+    public async Task WardAsync_CallerCancel_disposes_arguments_JsonDocument()
+    {
+
+        WardGate gate = CreateGate();
+
+        JsonDocument arguments = JsonDocument.Parse("""{"path":"README.md"}""");
+
+        using CancellationTokenSource cts = new();
+
+        Task<WardResolution> wardTask = gate.WardAsync(
+            "ward-dispose-cancel",
+            "write_file",
+            arguments,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            cts.Token);
+
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wardTask);
+
+        Assert.Throws<ObjectDisposedException>(() => arguments.RootElement.ValueKind);
+
+    }
+
+    [Fact]
+    public async Task WardAsync_NullArguments_does_not_throw_on_resolve()
+    {
+
+        WardGate gate = CreateGate();
+
+        Task<WardResolution> wardTask = gate.WardAsync(
+            "ward-dispose-null",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        Assert.Equal(ResolveStatus.Success, gate.Resolve("ward-dispose-null", allow: true, reason: "ok"));
+
+        _ = await wardTask;
+
+    }
+
     private sealed class FakeOptionsMonitor(ArcanumSettings value) : IOptionsMonitor<ArcanumSettings>
     {
 

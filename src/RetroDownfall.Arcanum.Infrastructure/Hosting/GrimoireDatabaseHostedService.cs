@@ -16,5 +16,9 @@ public sealed class GrimoireDatabaseHostedService(
     public Task StartAsync(CancellationToken cancellationToken) =>
         GrimoireDatabaseBootstrapper.EnsureInitializedAsync(secretStore, passphraseSource, scopeFactory, cancellationToken);
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    // W3.4 Group D #9: checkpoint the WAL on graceful shutdown so the -wal/-shm sidecar files
+    // do not persist across restarts. Best-effort: failures are logged inside the helper and
+    // never block shutdown.
+    public Task StopAsync(CancellationToken cancellationToken) =>
+        GrimoireDatabaseBootstrapper.CheckpointOnShutdownAsync(passphraseSource, cancellationToken);
 }

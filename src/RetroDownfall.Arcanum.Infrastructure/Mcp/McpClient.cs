@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -188,19 +189,54 @@ internal sealed class McpClient : IAsyncDisposable
 
         _requestCancellationBroker?.Register(id, waitToken);
 
-        CancellationTokenRegistration wireCancelReg = cancellationToken.Register(
-            () => DispatchWireCancelNotification(id));
+        // W3.4 Group C #5: register the wire-cancel notification on the linked wait token
+        // (caller + timeout + dispose), NOT the caller's token alone. Otherwise a per-request
+        // TIMEOUT cancels the local wait but never tells the external server to stop, leaving
+        // it processing an orphaned request. Both caller-cancel and timeout now dispatch
+        // notifications/cancelled. The registration handle is intentionally not held for
+        // finally-disposal: disposing it in the finally races with the callback (the finally
+        // can unregister the callback before the cancelling thread invokes it, dropping the
+        // notification). The registration is cleaned up when the linked CTS is disposed at
+        // method exit instead.
+        _ = waitToken.Register(() => DispatchWireCancelNotification(id));
 
         try
         {
-            await _transport.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await _transport.WriteRequestAsync(request, cancellationToken).ConfigureAwait(false);
+
+            }
+
+            catch (OperationCanceledException)
+            {
+
+                // Caller cancellation is not a transport failure — propagate without wrapping.
+                throw;
+
+            }
+
+            catch (Exception ex) when (IsTransportWriteFailure(ex))
+            {
+
+                // W3.4 Group C #6: classify transport/connectivity failures (channel closed,
+                // broken stdin, transport disposed) as McpTransportUnavailableException so
+                // McpBridgeTool can safely fall back to the global server. Tool-execution
+                // failures (InvalidOperationException from RPC errors / isError) and payload
+                // limits (McpLineSizeExceededException) are NOT transport failures and must
+                // not trigger a fallback, so they propagate unwrapped.
+
+                throw new McpTransportUnavailableException(
+                    "MCP transport is unavailable: the local server is down or unreachable.",
+                    ex);
+
+            }
 
             return await tcs.Task.WaitAsync(waitToken).ConfigureAwait(false);
         }
         finally
         {
-            wireCancelReg.Dispose();
-
             _requestCancellationBroker?.Unregister(id);
 
             if (_pending.TryRemove(id, out TaskCompletionSource<JsonElement>? leftover))
@@ -406,7 +442,11 @@ internal sealed class McpClient : IAsyncDisposable
         }
         finally
         {
-            FailAllPending(new InvalidOperationException("MCP transport closed before a response was received."));
+            // W3.4 Group C #6: the transport closed before a response arrived — this is a
+            // transport/connectivity failure (the local server died), so fail pending
+            // requests with McpTransportUnavailableException to allow McpBridgeTool to fall
+            // back to the global server.
+            FailAllPending(new McpTransportUnavailableException("MCP transport closed before a response was received."));
         }
     }
 
@@ -483,6 +523,16 @@ internal sealed class McpClient : IAsyncDisposable
             _ => id.GetRawText(),
         };
     }
+
+    // W3.4 Group C #6: classifies exceptions raised by IMcpTransport.WriteRequestAsync as a
+    // transport/connectivity failure (the local server is down or unreachable). Tool-execution
+    // failures (InvalidOperationException from RPC errors / isError) and payload limits
+    // (McpLineSizeExceededException) are intentionally excluded so McpBridgeTool does not
+    // re-run a possibly-mutating tool on the fallback server.
+    private static bool IsTransportWriteFailure(Exception exception) =>
+        exception is ChannelClosedException
+            or IOException
+            or ObjectDisposedException;
 
     private static string FormulateRpcErrorMessage(JsonRpcError error)
     {

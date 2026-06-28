@@ -17,7 +17,11 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
     public Exception? NextStreamException { get; set; }
 
+    public Exception? ThrowOnSecondYield { get; set; }
+
     public string? LastPrompt { get; private set; }
+
+    public bool StreamCancellationObserved { get; private set; }
 
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
@@ -45,6 +49,13 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
         await Task.CompletedTask.ConfigureAwait(false);
 
+        if (cancellationToken.CanBeCanceled)
+        {
+
+            cancellationToken.Register(() => StreamCancellationObserved = true);
+
+        }
+
         if (NextFailure is Error failure)
         {
 
@@ -62,6 +73,13 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
         }
 
         yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, NextText);
+
+        if (ThrowOnSecondYield is Exception secondEx)
+        {
+
+            throw secondEx;
+
+        }
 
         yield return new IntelligenceEvent(
             IntelligenceEventType.Result,

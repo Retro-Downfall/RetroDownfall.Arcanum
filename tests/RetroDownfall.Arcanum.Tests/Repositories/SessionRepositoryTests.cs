@@ -1,11 +1,13 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+using System.Text.Json;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
@@ -628,6 +630,124 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(new[] { assistantOnly }, byModel.Summaries.Select(x => x.Id).ToArray());
+
+    }
+
+    // W3.4 Group E #10: JSON export must not accumulate every entry batch into one List<T>
+    // before serializing. The stream-serializing implementation writes each batch's entries
+    // to a Utf8JsonWriter as they are read, keeping the SessionExportPayload wire shape
+    // ({ "session": {...}, "entries": [...] }) and the camelCase contract identical to the
+    // previous JsonSerializer.Serialize(SessionExportPayload) output. This characterization
+    // test pins the wire shape so the streaming refactor cannot drift it.
+    [SkippableFact]
+    public async Task ExportAsync_json_preserves_session_export_payload_wire_shape()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "Export shape", CancellationToken.None);
+
+        await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "first turn",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.Assistant,
+                Content = "first reply",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        Result<SessionExportResult> result = await repository.ExportAsync(
+            session.Id,
+            SessionExportFormat.Json,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Code);
+
+        using JsonDocument doc = JsonDocument.Parse(result.Value.Content);
+
+        Assert.True(doc.RootElement.TryGetProperty("session", out JsonElement sessionEl));
+
+        Assert.True(sessionEl.TryGetProperty("id", out JsonElement idEl));
+
+        Assert.Equal(session.Id, idEl.GetGuid());
+
+        Assert.True(doc.RootElement.TryGetProperty("entries", out JsonElement entriesEl));
+
+        Assert.Equal(JsonValueKind.Array, entriesEl.ValueKind);
+
+        Assert.Equal(2, entriesEl.GetArrayLength());
+
+    }
+
+    // W3.4 Group E #10: a session exceeding the export batch size (500) must export ALL
+    // entries via the streaming writer (multiple batches), proving the streaming path
+    // produces the complete payload without accumulating a single List of every entry.
+    [SkippableFact]
+    public async Task ExportAsync_json_streams_all_entries_across_multiple_batches()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ArcanumSettings settings = new()
+        {
+            Sessions = new SessionSettings
+            {
+                MaxEntriesPerSession = 10_000,
+            },
+        };
+
+        SessionRepository repository = new(_db!, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "Large export", CancellationToken.None);
+
+        const int entryCount = 750; // spans two 500-entry batches
+
+        for (int i = 0; i < entryCount; i++)
+        {
+
+            _ = await repository.AddEntryAsync(
+                session.Id,
+                new Entry
+                {
+                    Id = Guid.NewGuid(),
+                    Role = MessageRole.User,
+                    Content = $"entry-{i}",
+                    ModelUsed = "test-model",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                },
+                CancellationToken.None);
+
+        }
+
+        Result<SessionExportResult> result = await repository.ExportAsync(
+            session.Id,
+            SessionExportFormat.Json,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Code);
+
+        using JsonDocument doc = JsonDocument.Parse(result.Value.Content);
+
+        Assert.True(doc.RootElement.TryGetProperty("entries", out JsonElement entriesEl));
+
+        Assert.Equal(entryCount, entriesEl.GetArrayLength());
 
     }
 

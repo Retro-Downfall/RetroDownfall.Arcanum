@@ -90,6 +90,18 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     /// <inheritdoc />
     public ChannelReader<McpInboundEnvelope> InboundReader => _inbound.Reader;
 
+    // W3.4 Group C #4: test seam that writes a raw line directly to the server channel,
+    // bypassing the outbound line-size guard. Used to exercise the server's INBOUND line cap
+    // (which is a separate defense) without the client's outbound cap rejecting the line
+    // first. Production code must not call this.
+    internal Task WriteRawLineForTestsAsync(string line, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return _toServer.WriteAsync(line + "\n", cancellationToken).AsTask();
+
+    }
+
     /// <summary>
     /// Creates a client transport and matching <see cref="ArcanumInternalToolServer"/> sharing bounded line channels.
     /// </summary>
@@ -190,6 +202,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         {
             string json = JsonSerializer.Serialize(request, _json.JsonRpcRequest);
 
+            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+
             await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -208,6 +222,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         try
         {
             string json = JsonSerializer.Serialize(notification, _json.JsonRpcNotification);
+
+            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
 
             await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
         }

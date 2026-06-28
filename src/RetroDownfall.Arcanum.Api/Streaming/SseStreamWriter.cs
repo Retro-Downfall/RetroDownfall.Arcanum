@@ -36,7 +36,24 @@ internal static class SseStreamWriter
             await foreach (T item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
 
-                await writeFrameAsync(item, cancellationToken).ConfigureAwait(false);
+                try
+                {
+
+                    await writeFrameAsync(item, cancellationToken).ConfigureAwait(false);
+
+                }
+
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    // W3.4 Group A (S10): client disconnected mid-stream. Stop writing
+                    // silently — no error or DONE frame to a dead socket. The caller's
+                    // `using`/`finally` disposes the linked CTS, cancelling the producer
+                    // (event bus subscription / chronicle pump) promptly.
+
+                    return;
+
+                }
 
             }
 
@@ -58,7 +75,19 @@ internal static class SseStreamWriter
             if (completed == delay)
             {
 
-                await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
+                try
+                {
+
+                    await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
+
+                }
+
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    return;
+
+                }
 
                 continue;
 
@@ -71,7 +100,19 @@ internal static class SseStreamWriter
 
             }
 
-            await writeFrameAsync(enumerator.Current, cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await writeFrameAsync(enumerator.Current, cancellationToken).ConfigureAwait(false);
+
+            }
+
+            catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+            {
+
+                return;
+
+            }
 
         }
 
@@ -97,6 +138,7 @@ internal static class SseStreamWriter
             await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
 
         }
+
         catch
         {
 

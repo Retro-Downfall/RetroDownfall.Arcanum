@@ -414,60 +414,64 @@ internal static class ApprenticeEndpoints
 
                 List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
-                if (plan.Count > 0)
-                {
-                    await sseWriter.WriteEventAsync(
-                        new ApprenticeEvent
-                        {
-                            Type = ApprenticeEventType.PlanGenerated,
-                            ApprenticeId = id,
-                            Timestamp = DateTimeOffset.UtcNow,
-                            Plan = plan,
-                        },
-                        httpContext.RequestAborted).ConfigureAwait(false);
-                }
-
-                if (ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
-                {
-
-                    ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
-
-                    await sseWriter.WriteEventAsync(
-                        new ApprenticeEvent
-                        {
-                            Type = ApprenticeEventType.ApprenticeEscalated,
-                            ApprenticeId = id,
-                            Timestamp = DateTimeOffset.UtcNow,
-                            StepIndex = apprentice.CurrentStep < plan.Count ? plan[apprentice.CurrentStep].Index : apprentice.CurrentStep + 1,
-                            Error = checkpoint?.EscalationReason ?? apprentice.ErrorMessage,
-                        },
-                        httpContext.RequestAborted).ConfigureAwait(false);
-
-                }
-
-                if (apprentice.CurrentStep < plan.Count
-                    && string.Equals(plan[apprentice.CurrentStep].Status, "in_progress", StringComparison.OrdinalIgnoreCase))
-                {
-                    PlanStep current = plan[apprentice.CurrentStep];
-
-                    await sseWriter.WriteEventAsync(
-                        new ApprenticeEvent
-                        {
-                            Type = ApprenticeEventType.StepStarted,
-                            ApprenticeId = id,
-                            Timestamp = DateTimeOffset.UtcNow,
-                            StepIndex = current.Index,
-                            Description = current.Description,
-                        },
-                        httpContext.RequestAborted).ConfigureAwait(false);
-                }
-
                 TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
                     ArcanumSettingClamps.EventBusHeartbeatSeconds(
                         settings.CurrentValue.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds));
 
                 try
                 {
+
+                    if (plan.Count > 0)
+                    {
+
+                        await sseWriter.WriteEventAsync(
+                            new ApprenticeEvent
+                            {
+                                Type = ApprenticeEventType.PlanGenerated,
+                                ApprenticeId = id,
+                                Timestamp = DateTimeOffset.UtcNow,
+                                Plan = plan,
+                            },
+                            httpContext.RequestAborted).ConfigureAwait(false);
+
+                    }
+
+                    if (ApprenticeExecutionPolicy.IsEscalatedStatus(apprentice.Status))
+                    {
+
+                        ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData);
+
+                        await sseWriter.WriteEventAsync(
+                            new ApprenticeEvent
+                            {
+                                Type = ApprenticeEventType.ApprenticeEscalated,
+                                ApprenticeId = id,
+                                Timestamp = DateTimeOffset.UtcNow,
+                                StepIndex = apprentice.CurrentStep < plan.Count ? plan[apprentice.CurrentStep].Index : apprentice.CurrentStep + 1,
+                                Error = checkpoint?.EscalationReason ?? apprentice.ErrorMessage,
+                            },
+                            httpContext.RequestAborted).ConfigureAwait(false);
+
+                    }
+
+                    if (apprentice.CurrentStep < plan.Count
+                        && string.Equals(plan[apprentice.CurrentStep].Status, "in_progress", StringComparison.OrdinalIgnoreCase))
+                    {
+
+                        PlanStep current = plan[apprentice.CurrentStep];
+
+                        await sseWriter.WriteEventAsync(
+                            new ApprenticeEvent
+                            {
+                                Type = ApprenticeEventType.StepStarted,
+                                ApprenticeId = id,
+                                Timestamp = DateTimeOffset.UtcNow,
+                                StepIndex = current.Index,
+                                Description = current.Description,
+                            },
+                            httpContext.RequestAborted).ConfigureAwait(false);
+
+                    }
 
                     while (liveBuffer.Reader.TryRead(out ApprenticeEvent? buffered) && buffered is not null)
                     {
@@ -485,6 +489,17 @@ internal static class ApprenticeEndpoints
                         httpContext.RequestAborted).ConfigureAwait(false);
 
                 }
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    // W3.4 Group A (S10): client disconnected during plan replay, buffered
+                    // drain, or the live chronicle stream. Break silently — no DONE frame
+                    // to a dead socket. The SseStreamWriter.StreamAsync path also handles
+                    // disconnect internally; this catch covers the direct WriteEventAsync
+                    // calls (plan replay / step-start / escalated) that precede it. The
+                    // finally cancels the pump CTS so the chronicle producer stops promptly.
+
+                }
                 catch (OperationCanceledException)
                 {
 
@@ -493,15 +508,21 @@ internal static class ApprenticeEndpoints
                 }
                 finally
                 {
+
                     await pumpCts.CancelAsync().ConfigureAwait(false);
 
                     try
                     {
+
                         await pumpTask.ConfigureAwait(false);
+
                     }
+
                     catch (OperationCanceledException)
                     {
+
                     }
+
                 }
 
                 return Results.Empty;

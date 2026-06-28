@@ -360,6 +360,33 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    // W3.4 Group D #8: SearchArchivesAsync builds a raw DbCommand over the EF connection but
+    // never opens it. EF Core closes its connection after each SaveChanges, so a search issued
+    // without a prior open query must still work. The sibling ResolveFtsSessionIdsAsync opens
+    // the connection first; SearchArchivesAsync must do the same. Without the fix, the raw
+    // ExecuteReaderAsync on a closed connection throws.
+    [SkippableFact]
+    public async Task SearchArchivesAsync_runs_on_a_cold_closed_connection()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "the cobalt sigil is glowing brightly",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        // SaveChanges above opens then closes the EF connection, so the connection is closed
+        // here. SearchArchivesAsync must open it itself before ExecuteReaderAsync.
+        string result = await repository.SearchArchivesAsync("cobalt", maxResults: 10, CancellationToken.None);
+
+        Assert.Contains("cobalt", result, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     private GrimoireRepository CreateRepository()
     {
 

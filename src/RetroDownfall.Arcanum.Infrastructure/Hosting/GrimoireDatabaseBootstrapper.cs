@@ -30,6 +30,73 @@ public static class GrimoireDatabaseBootstrapper
             ArcanumPaths.GrimoireDirectory,
             cancellationToken);
 
+    /// <summary>
+    /// Runs <c>PRAGMA wal_checkpoint(TRUNCATE)</c> on a fresh connection at graceful shutdown
+    /// so the <c>-wal</c>/<c>-shm</c> sidecar files do not persist across restarts. Best-effort:
+    /// any failure is logged and swallowed so it never blocks shutdown.
+    /// </summary>
+    public static Task CheckpointOnShutdownAsync(
+        IGrimoireDbPassphraseSource passphraseSource,
+        CancellationToken cancellationToken) =>
+        CheckpointOnShutdownAsync(passphraseSource, ArcanumPaths.GrimoireDatabaseFile, cancellationToken);
+
+    internal static async Task CheckpointOnShutdownAsync(
+        IGrimoireDbPassphraseSource passphraseSource,
+        string dbPath,
+        CancellationToken cancellationToken)
+    {
+
+        // W3.4 Group D #9: check the file exists BEFORE accessing the passphrase — the
+        // passphrase source throws if uninitialized, and on a cold shutdown where the DB was
+        // never created there is nothing to checkpoint. The passphrase access is inside the
+        // try below so an uninitialized passphrase on a stray file is also handled best-effort.
+        if (!File.Exists(dbPath))
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            string passphrase = passphraseSource.Passphrase;
+
+            string connectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = dbPath,
+                Password = passphrase,
+            }.ToString();
+
+            await using SqliteConnection connection = new(connectionString);
+
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            // Apply the standard pragmas so busy_timeout/synchronous match the runtime and the
+            // checkpoint can wait briefly for any concurrent reader to release the WAL.
+            await SqliteConnectionPragmas.ApplyAsync(connection, cancellationToken).ConfigureAwait(false);
+
+            await using SqliteCommand checkpoint = connection.CreateCommand();
+
+            // W3.4 Group D #9: TRUNCATE checkpoints the WAL back into the main database and
+            // truncates the -wal file to zero bytes, so it does not persist across restarts.
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+
+            _ = await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            await connection.CloseAsync().ConfigureAwait(false);
+
+        }
+
+        catch (Exception ex)
+        {
+
+            Log.Warning(ex, "Grimoire WAL checkpoint on shutdown failed for {DbPath}; continuing shutdown.", dbPath);
+
+        }
+
+    }
+
     internal static async Task EnsureInitializedAsync(
         ISecretStore secretStore,
         IGrimoireDbPassphraseSource passphraseSource,

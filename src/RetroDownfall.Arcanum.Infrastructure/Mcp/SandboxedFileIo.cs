@@ -189,9 +189,33 @@ internal static class SandboxedFileIo
 
             }
 
+            // W3.4 Group C #7: capture the temp file's identity BEFORE the move. The move
+            // preserves the inode on the same filesystem (temp is created in the destination's
+            // parent dir), so the destination's post-move identity must match this. A mismatch
+            // means the destination was swapped (e.g. to a symlink) between the lexical
+            // revalidation above and the move — a TOCTOU sandbox escape.
+            if (!FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out FileHandleIdentity expectedIdentity))
+            {
+
+                return (false, ToolError(PathEscapesSandboxMessage));
+
+            }
+
             File.Move(tempPath, absolutePath, overwrite: true);
 
             tempPath = string.Empty;
+
+            // W3.4 Group C #7: post-move handle-identity check, mirroring the read path. Open
+            // the destination and verify its handle identity matches the temp file's pre-move
+            // identity. TryRevalidateOpenedHandle also re-checks the opened path is under the
+            // workspace (resolving symlinks), so a swapped destination is rejected here even
+            // if the move followed a symlink (platform-dependent).
+            if (!TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out McpToolsCallResultWire? moveError))
+            {
+
+                return (false, moveError);
+
+            }
 
             return (true, null);
 
@@ -320,6 +344,60 @@ internal static class SandboxedFileIo
             error = ToolError(PathEscapesSandboxMessage);
 
             return false;
+
+        }
+
+        return true;
+
+    }
+
+    // W3.4 Group C #7: opens the just-moved destination and reuses TryRevalidateOpenedHandle
+    // to confirm its handle identity matches the temp file's pre-move identity (and that the
+    // opened path is still under the workspace). A mismatch indicates the destination was
+    // swapped between validation and File.Move. Best-effort I/O failures are treated as a
+    // sandbox escape (fail-closed) because the write's destination could not be confirmed.
+    private static bool TryVerifyMovedDestination(
+        string workspaceRoot,
+        string absolutePath,
+        FileHandleIdentity expectedIdentity,
+        [NotNullWhen(false)] out McpToolsCallResultWire? error)
+    {
+
+        error = null;
+
+        FileStream verifyStream;
+
+        try
+        {
+
+            verifyStream = new FileStream(
+                absolutePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        }
+
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
+        {
+
+            error = ToolError(PathEscapesSandboxMessage);
+
+            return false;
+
+        }
+
+        using (verifyStream)
+        {
+
+            if (!TryRevalidateOpenedHandle(workspaceRoot, verifyStream, expectedIdentity, out error))
+            {
+
+                return false;
+
+            }
 
         }
 

@@ -478,4 +478,89 @@ public sealed class McpClientTests
 
     }
 
+    // W3.4 Group C #5: on a per-request TIMEOUT (not a caller cancellation), the client must
+    // still send the JSON-RPC notifications/cancelled frame so the external MCP server stops
+    // processing the orphaned request. The wire-cancel registration must be on the linked
+    // wait token (caller + timeout + dispose), NOT the caller's token alone — otherwise a
+    // timeout leaves the server running. The handler never responds, so the only way the
+    // server learns to stop is the cancelled notification.
+    [Fact]
+    public async Task SendRequestAsync_per_request_timeout_dispatches_wire_cancel_notification()
+    {
+
+        McpRequestCancellationBroker broker = new();
+
+        FakeMcpTransport transport = new();
+
+        transport.SetRequestHandler(request =>
+        {
+            if (request.Method == "initialize")
+            {
+                JsonElement initResult = JsonSerializer.SerializeToElement(
+                    new McpInitializeServerResult
+                    {
+                        ProtocolVersion = "2024-11-05",
+                        Capabilities = new McpServerCapabilitiesWire(),
+                        ServerInfo = new McpServerInfoWire { Name = "test", Version = "1.0" },
+                    },
+                    McpJsonSerializerContext.Default.McpInitializeServerResult);
+
+                return Task.FromResult<JsonRpcResponse?>(new JsonRpcResponse
+                {
+                    Id = request.Id!.Value,
+                    Result = initResult,
+                });
+            }
+
+            // Never respond — the request must time out.
+            return Task.FromResult<JsonRpcResponse?>(null);
+
+        });
+
+        await using McpClient client = new(
+            transport,
+            TimeSpan.FromSeconds(5),
+            maxToolsListPages: 4,
+            toolOutputCapBytes: 4096,
+            DefaultMaxToolsPerServer,
+            DefaultMaxToolsPerListPage,
+            DefaultMaxToolsTotalBytes,
+            broker);
+
+        await client.InitializeAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.SendRequestAsync("slow", null, CancellationToken.None, TimeSpan.FromMilliseconds(100)));
+
+        // The wire-cancel notification is dispatched from a fire-and-forget Task.Run, so
+        // poll the transport's recorded notifications for a short window.
+        bool sawCancelNotification = false;
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+
+            lock (transport.WrittenNotifications)
+            {
+
+                if (transport.WrittenNotifications.Any(n => n.Method == "notifications/cancelled"))
+                {
+
+                    sawCancelNotification = true;
+
+                    break;
+
+                }
+
+            }
+
+            await Task.Delay(25);
+
+        }
+
+        Assert.True(sawCancelNotification, "notifications/cancelled was not dispatched on per-request timeout.");
+
+    }
+
 }
