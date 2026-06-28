@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
@@ -683,11 +684,22 @@ public sealed class TheReliquary : IReliquary
 
         string manifestPath = Path.Combine(GetEntryDirectory(cacheKey), ManifestFileName);
 
-        byte[] manifestJson = JsonSerializer.SerializeToUtf8Bytes(manifest, LlamaCppJsonContext.Default.GgufModelManifest);
-
-        await File.WriteAllBytesAsync(manifestPath, manifestJson, cancellationToken).ConfigureAwait(false);
+        await WriteManifestAtomicAsync(manifestPath, manifest, cancellationToken).ConfigureAwait(false);
 
         return Result.Success();
+
+    }
+
+    // W2.5 Fix 3: write the manifest atomically (same-directory temp + flush +
+    // File.Move(overwrite)) reusing SpellAtomicFile (W2.1), so a crash between
+    // the model File.Move and the manifest write cannot leave a model with a
+    // partial/missing manifest. The model move itself is already atomic.
+    internal static Task WriteManifestAtomicAsync(string manifestPath, GgufModelManifest manifest, CancellationToken cancellationToken)
+    {
+
+        string manifestJson = JsonSerializer.Serialize(manifest, LlamaCppJsonContext.Default.GgufModelManifest);
+
+        return SpellAtomicFile.WriteAllTextAsync(manifestPath, manifestJson, cancellationToken);
 
     }
 

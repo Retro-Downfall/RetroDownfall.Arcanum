@@ -375,7 +375,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            int port = portOverride ?? TryPickFreePort(settings);
+            int port = portOverride.HasValue ? ClampPort(portOverride.Value) : TryPickFreePort(settings);
 
             if (port < 0)
             {
@@ -551,6 +551,11 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
     }
 
+    internal static int ClampPort(int port) => Math.Clamp(port, 1, 65_535);
+
+    internal static int ComputeCandidatePort(int portStart, int portRange, int startOffset, int i) =>
+        ClampPort(portStart + ((startOffset + i) % portRange));
+
     private int TryPickFreePort(LlamaCppSettings settings)
     {
 
@@ -564,7 +569,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
         for (int i = 0; i < portRange; i++)
         {
-            int port = portStart + ((startOffset + i) % portRange);
+            int port = ComputeCandidatePort(portStart, portRange, startOffset, i);
 
             if (IsPortFree(port))
             {
