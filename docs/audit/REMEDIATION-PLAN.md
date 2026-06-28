@@ -93,7 +93,7 @@ Foundational fixes that also repair downstream findings. Do these first, in orde
   - **Tests:** symlink-cycle terminates; symlinked-out spell rejected; configured-bound enforced during scan; atomic-write crash-safety; cache single-flight under concurrency.
   - **Docs:** DESIGN §19 + §3.4 bounds notes.
 
-- [ ] **W2.2 — Scrub child-process environments (systemic S8)**
+- [x] **W2.2 — Scrub child-process environments (systemic S8)** ✅ *done — `execute_command` strips `ARCANUM_*` secrets (keeps `PATH`/`HOME`); all MCP servers (global + workspace) strip the host env by default. Follow-up: per-server inherit opt-in (no config field yet).*
   - **Closes:** P1 `execute_command` inherits full host env incl. `ARCANUM_*` API keys (`Infrastructure/Mcp/ArcanumInternalToolServer.cs:1947-1960` — verified first-hand: `psi.Environment` never cleared); P2 global MCP children inherit host env (`McpConnectionManager.cs:1156` + `McpProcessTransport.cs:188-205`).
   - **Fix:** `psi.Environment.Clear()` + explicit minimal allowlist for `execute_command` (reuse the workspace MCP scrub policy / `McpSecurityLimits`); default `stripUserEnvironment: true` for **all** MCP children (workspace + global) with explicit opt-in to inherit.
   - **Tests:** spawned-process env assertion (secrets absent); global MCP env-scrub test.
