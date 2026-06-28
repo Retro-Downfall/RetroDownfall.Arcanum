@@ -293,6 +293,49 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Oversized_inbound_line_produces_jsonrpc_error_response_with_null_id()
+    {
+
+        string longClientName = new('x', 200);
+
+        IntelligenceSettings settings = new()
+        {
+            EnableLoreSystem = false,
+            EnableArchiveSearch = false,
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            configureWorkspace: true,
+            intelligenceSettings: settings,
+            maxJsonRpcLineBytes: 128);
+
+        JsonElement parameters = JsonSerializer.SerializeToElement(
+            new McpInitializeParams
+            {
+                ProtocolVersion = "2024-11-05",
+                Capabilities = new McpClientCapabilities(),
+                ClientInfo = new McpClientInfo { Name = longClientName, Version = "1.0" },
+            },
+            McpJsonSerializerContext.Default.McpInitializeParams);
+
+        JsonRpcResponse? response = await session.SendRequestWithTimeoutAsync(
+            "initialize",
+            parameters,
+            TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(response);
+
+        Assert.NotNull(response!.Error);
+
+        Assert.Equal(-32600, response.Error!.Code);
+
+        Assert.Contains("exceeds maximum UTF-8 byte budget", response.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(JsonValueKind.Null, response.Id.ValueKind);
+
+    }
+
+    [Fact]
     public async Task ExecuteCommand_without_workspace_is_blocked_before_spawn()
     {
 
@@ -720,6 +763,47 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Assert.Equal(McpInboundKind.Response, envelope.Kind);
 
             return envelope.Response!;
+
+        }
+
+        public async Task<JsonRpcResponse?> SendRequestWithTimeoutAsync(
+            string method,
+            JsonElement? parameters,
+            TimeSpan timeout)
+        {
+
+            int id = Interlocked.Increment(ref _nextId);
+
+            JsonRpcRequest request = new()
+            {
+                Method = method,
+                Params = parameters,
+                Id = JsonSerializer.SerializeToElement(id, McpJsonSerializerContext.Default.Int32),
+            };
+
+            await transport.WriteRequestAsync(request).ConfigureAwait(false);
+
+            using CancellationTokenSource cts = new(timeout);
+
+            try
+            {
+
+                McpInboundEnvelope envelope = await transport.InboundReader
+                    .ReadAsync(cts.Token)
+                    .ConfigureAwait(false);
+
+                Assert.Equal(McpInboundKind.Response, envelope.Kind);
+
+                return envelope.Response;
+
+            }
+
+            catch (OperationCanceledException)
+            {
+
+                return null;
+
+            }
 
         }
 

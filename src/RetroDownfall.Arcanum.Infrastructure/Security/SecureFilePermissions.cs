@@ -83,6 +83,34 @@ public static class SecureFilePermissions
     }
 
     /// <summary>
+    /// Creates a new empty file at <paramref name="tempPath"/> and applies owner-only Unix permissions
+    /// before any bytes are written, so the temp file is never world/group-readable during the write
+    /// window. On Windows the file is created with <see cref="FileShare.None"/>; ACL hardening is applied
+    /// by <see cref="ApplyOwnerOnlyFile"/> after the final move.
+    /// </summary>
+    public static FileStream CreateOwnerOnlyTempFile(string tempPath)
+    {
+
+        FileStream stream = new(
+            tempPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4096,
+            useAsync: true);
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            File.SetUnixFileMode(tempPath, OwnerOnlyFileMode);
+
+        }
+
+        return stream;
+
+    }
+
+    /// <summary>
     /// Applies owner-only permissions to all sensitive Arcanum paths.
     /// </summary>
     public static void ApplyOwnerOnlyToSensitivePaths()
@@ -117,15 +145,21 @@ public static class SecureFilePermissions
 
         }
 
-        string securityFile = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "security.dat");
+        string securityFile = ArcanumPaths.ApiKeyStoreFile;
 
         if (File.Exists(securityFile))
         {
 
             ApplyOwnerOnlyFile(securityFile);
+
+        }
+
+        string grimoireKeyFile = ArcanumPaths.GrimoireKeyStoreFile;
+
+        if (File.Exists(grimoireKeyFile))
+        {
+
+            ApplyOwnerOnlyFile(grimoireKeyFile);
 
         }
 
@@ -164,7 +198,15 @@ public static class SecureFilePermissions
     /// <summary>
     /// Warns (does not fail startup) when sensitive paths are readable by group or other principals.
     /// </summary>
-    public static void RunStartupPermissionSelfCheck(ILogger logger)
+    public static void RunStartupPermissionSelfCheck(ILogger logger) =>
+        RunStartupPermissionSelfCheck(logger, DefaultSecretFilePaths());
+
+    /// <summary>
+    /// Warns (does not fail startup) when sensitive paths are readable by group or other principals.
+    /// The <paramref name="secretFilePaths"/> override is intended for tests that want to verify the
+    /// self-check covers the secret store files without touching the real <c>%APPDATA%/arcanum/</c> paths.
+    /// </summary>
+    internal static void RunStartupPermissionSelfCheck(ILogger logger, IReadOnlyList<string> secretFilePaths)
     {
 
         string grimoireDir = ArcanumPaths.GrimoireDirectory;
@@ -187,6 +229,13 @@ public static class SecureFilePermissions
         CheckPath(logger, databaseFile, isDirectory: false);
 
         CheckPath(logger, sessionFile, isDirectory: false);
+
+        foreach (string secretFile in secretFilePaths)
+        {
+
+            CheckPath(logger, secretFile, isDirectory: false);
+
+        }
 
         CheckPath(logger, logDirectory, isDirectory: true);
 
@@ -214,6 +263,9 @@ public static class SecureFilePermissions
         }
 
     }
+
+    private static IReadOnlyList<string> DefaultSecretFilePaths() =>
+        [ArcanumPaths.ApiKeyStoreFile, ArcanumPaths.GrimoireKeyStoreFile];
 
     private static void CheckPath(ILogger logger, string path, bool isDirectory)
     {
@@ -359,7 +411,7 @@ public static class SecureFilePermissions
     }
 
     [UnsupportedOSPlatform("windows")]
-    private static void TryApplyUnixFileMode(string path, UnixFileMode mode)
+    internal static void TryApplyUnixFileMode(string path, UnixFileMode mode)
     {
 
         try
@@ -368,10 +420,10 @@ public static class SecureFilePermissions
             File.SetUnixFileMode(path, mode);
 
         }
-        catch (Exception)
+        catch (Exception ex)
         {
 
-            // Best effort — caller's explicit OperatingSystem.IsWindows() branch owns the Windows ACL path.
+            Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
 
         }
 
@@ -410,10 +462,10 @@ public static class SecureFilePermissions
             fileInfo.SetAccessControl(security);
 
         }
-        catch (Exception)
+        catch (Exception ex)
         {
 
-            // Best effort — secrets remain protected by OS user account isolation.
+            Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
 
         }
 
@@ -454,10 +506,10 @@ public static class SecureFilePermissions
             directoryInfo.SetAccessControl(security);
 
         }
-        catch (Exception)
+        catch (Exception ex)
         {
 
-            // Best effort — secrets remain protected by OS user account isolation.
+            Serilog.Log.Warning(ex, "Failed to apply owner-only permissions to {Path}.", path);
 
         }
 

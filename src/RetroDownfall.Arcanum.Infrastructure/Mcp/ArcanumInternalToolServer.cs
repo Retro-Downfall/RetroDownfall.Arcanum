@@ -33,6 +33,8 @@ internal sealed class ArcanumInternalToolServer
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
 
+    private static readonly JsonElement NullId = JsonDocument.Parse("null").RootElement.Clone();
+
     private readonly ChannelReader<string> _fromClient;
 
     private readonly ChannelWriter<string> _toClient;
@@ -263,6 +265,26 @@ internal sealed class ArcanumInternalToolServer
             _logger?.LogWarning(
                 "Arcanum internal MCP server rejected an inbound JSON-RPC line exceeding {MaxBytes} UTF-8 bytes.",
                 _maxJsonRpcLineBytes);
+
+            JsonRpcResponse error = new()
+            {
+                Id = NullId,
+
+                Error = new JsonRpcError
+                {
+                    Code = -32600,
+
+                    Message = "Request line exceeds maximum UTF-8 byte budget.",
+
+                    Data = null,
+                },
+
+                Result = null,
+            };
+
+            string wire = JsonSerializer.Serialize(error, _json.JsonRpcResponse);
+
+            await _toClient.WriteAsync(wire + "\n", cancellationToken).ConfigureAwait(false);
 
             return;
 

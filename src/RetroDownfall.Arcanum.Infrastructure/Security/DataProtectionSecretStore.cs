@@ -25,11 +25,9 @@ public sealed class DataProtectionSecretStore(
 
     private readonly SemaphoreSlim _fileLock = new(1, 1);
 
-    private static string StorePath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "arcanum", "security.dat");
+    private static string StorePath => ArcanumPaths.ApiKeyStoreFile;
 
-    private static string GrimoireStorePath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "arcanum", "grimoire-key.dat");
+    private static string GrimoireStorePath => ArcanumPaths.GrimoireKeyStoreFile;
 
     public void Dispose() => _fileLock.Dispose();
 
@@ -177,7 +175,7 @@ public sealed class DataProtectionSecretStore(
         try
         {
 
-            await using (FileStream stream = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
+            await using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
             {
 
                 await stream.WriteAsync(cipher).ConfigureAwait(false);

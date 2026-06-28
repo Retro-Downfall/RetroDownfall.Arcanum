@@ -1,4 +1,8 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -105,6 +109,220 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(path);
 
         Assert.True(Directory.Exists(path));
+
+    }
+
+    [Fact]
+    public void RunStartupPermissionSelfCheck_warns_for_world_readable_secret_files()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(dir);
+
+        string secFile = Path.Combine(dir, "security.dat");
+
+        string keyFile = Path.Combine(dir, "grimoire-key.dat");
+
+        File.WriteAllText(secFile, "x");
+
+        File.WriteAllText(keyFile, "y");
+
+        File.SetUnixFileMode(secFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        File.SetUnixFileMode(keyFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        CapturingLogger logger = new();
+
+        try
+        {
+
+            SecureFilePermissions.RunStartupPermissionSelfCheck(logger, [secFile, keyFile]);
+
+            Assert.Contains(logger.Warnings, w => w.Message.Contains(secFile, StringComparison.Ordinal));
+
+            Assert.Contains(logger.Warnings, w => w.Message.Contains(keyFile, StringComparison.Ordinal));
+
+        }
+
+        finally
+        {
+
+            Directory.Delete(dir, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public void TryApplyUnixFileMode_logs_warning_when_chmod_fails()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        CapturingSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        try
+        {
+
+            string bogusPath = Path.Combine(_temp.Root, "does-not-exist-" + Guid.NewGuid().ToString("N"));
+
+            SecureFilePermissions.TryApplyUnixFileMode(bogusPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            Assert.Contains(sink.Events, e => e.Level == LogEventLevel.Warning
+                && e.MessageTemplate.Text.Contains("Failed to apply owner-only permissions", StringComparison.OrdinalIgnoreCase));
+
+        }
+
+        finally
+        {
+
+            Serilog.Log.Logger = previous;
+
+        }
+
+    }
+
+    [Fact]
+    public void CreateOwnerOnlyTempFile_creates_file_with_owner_only_mode()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string tempPath = Path.Combine(_temp.Root, "secret.tmp." + Guid.NewGuid().ToString("N"));
+
+        using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
+        {
+
+            stream.Write(new byte[] { 1, 2, 3 });
+
+            stream.Flush();
+
+        }
+
+        UnixFileMode mode = File.GetUnixFileMode(tempPath);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
+
+        File.Delete(tempPath);
+
+    }
+
+    private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger
+    {
+
+        private readonly List<(LogLevel Level, string Message)> _warnings = new();
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Warnings
+        {
+
+            get
+            {
+
+                lock (_warnings)
+                {
+
+                    return _warnings.ToList();
+
+                }
+
+            }
+
+        }
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NoopDisposable.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+
+            if (logLevel == LogLevel.Warning)
+            {
+
+                lock (_warnings)
+                {
+
+                    _warnings.Add((logLevel, formatter(state, exception)));
+
+                }
+
+            }
+
+        }
+
+        private sealed class NoopDisposable : IDisposable
+        {
+
+            public static readonly NoopDisposable Instance = new();
+
+            public void Dispose()
+            {
+            }
+
+        }
+
+    }
+
+    private sealed class CapturingSink : ILogEventSink
+    {
+
+        private readonly List<LogEvent> _events = new();
+
+        public IReadOnlyList<LogEvent> Events
+        {
+
+            get
+            {
+
+                lock (_events)
+                {
+
+                    return _events.ToList();
+
+                }
+
+            }
+
+        }
+
+        public void Emit(LogEvent logEvent)
+        {
+
+            lock (_events)
+            {
+
+                _events.Add(logEvent);
+
+            }
+
+        }
 
     }
 

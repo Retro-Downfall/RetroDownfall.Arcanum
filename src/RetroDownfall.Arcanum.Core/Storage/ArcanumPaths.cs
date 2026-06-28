@@ -12,6 +12,27 @@ public static class ArcanumPaths
     public static string GrimoireDatabaseFile => Path.Combine(GrimoireDirectory, "arcanum.db");
 
     /// <summary>
+    /// Directory holding the Data Protection secret store files: <c>~/.config/arcanum/</c> on Unix,
+    /// <c>%APPDATA%/arcanum/</c> on Windows. Distinct from <see cref="GrimoireDirectory"/> (which lives
+    /// under <c>~/.config/arcanum/</c> on Unix but under <c>%APPDATA%/arcanum/</c> on Windows).
+    /// </summary>
+    public static string SecretStoreDirectory =>
+        Path.Combine(
+            global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.ApplicationData),
+            "arcanum");
+
+    /// <summary>
+    /// Data Protection-encrypted API key store: <c>security.dat</c> under <see cref="SecretStoreDirectory"/>.
+    /// </summary>
+    public static string ApiKeyStoreFile => Path.Combine(SecretStoreDirectory, "security.dat");
+
+    /// <summary>
+    /// Data Protection-encrypted Grimoire database key store: <c>grimoire-key.dat</c> under
+    /// <see cref="SecretStoreDirectory"/>.
+    /// </summary>
+    public static string GrimoireKeyStoreFile => Path.Combine(SecretStoreDirectory, "grimoire-key.dat");
+
+    /// <summary>
     /// Built-in (global) spell catalog root: <c>~/.config/arcanum/spells/</c>.
     /// Distinct from <see cref="GrimoireDirectory"/> (config/DB) and from per-project workspace roots.
     /// </summary>

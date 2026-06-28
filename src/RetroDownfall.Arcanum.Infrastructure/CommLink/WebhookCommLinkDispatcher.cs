@@ -29,7 +29,7 @@ internal sealed class WebhookCommLinkDispatcher(
 
             logger.LogWarning("Comm Link webhook URL is not configured; alert was not sent.");
 
-            return Result.Success();
+            return Result.Failure(new Error("CommLink.Suppressed", "webhook URL is not configured"));
 
         }
 
@@ -38,7 +38,7 @@ internal sealed class WebhookCommLinkDispatcher(
 
             logger.LogWarning("Comm Link webhook URL is invalid; alert was not sent.");
 
-            return Result.Success();
+            return Result.Failure(new Error("CommLink.Suppressed", "webhook URL is invalid"));
 
         }
 
@@ -51,7 +51,7 @@ internal sealed class WebhookCommLinkDispatcher(
                 "Comm Link webhook URL host '{Host}' is not in Arcanum:CommLink:AllowedHosts; alert was not sent.",
                 endpoint.Host);
 
-            return Result.Success();
+            return Result.Failure(new Error("CommLink.Suppressed", "webhook host not allowed"));
 
         }
 
@@ -62,7 +62,7 @@ internal sealed class WebhookCommLinkDispatcher(
                 "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:CommLink:AllowedSchemes; alert was not sent.",
                 endpoint.Scheme);
 
-            return Result.Success();
+            return Result.Failure(new Error("CommLink.Suppressed", "webhook scheme not allowed"));
 
         }
 
@@ -75,7 +75,7 @@ internal sealed class WebhookCommLinkDispatcher(
                 "Comm Link webhook URL was rejected by outbound URL policy: {Reason}",
                 outbound.Error.Message);
 
-            return Result.Success();
+            return Result.Failure(new Error("CommLink.Suppressed", "webhook rejected by outbound URL policy"));
 
         }
 

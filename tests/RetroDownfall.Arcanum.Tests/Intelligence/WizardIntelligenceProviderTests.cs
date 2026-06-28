@@ -1896,7 +1896,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             ward,
             campaignRepository,
             sanctumGuard,
-            new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings)));
+            new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance));
     }
 
     private static PingRequest BaseRequest() =>

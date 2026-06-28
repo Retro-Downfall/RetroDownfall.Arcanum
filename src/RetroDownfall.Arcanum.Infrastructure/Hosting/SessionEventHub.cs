@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -16,16 +17,30 @@ public sealed class SessionEventHub
 
     private readonly IOptionsMonitor<ArcanumSettings> _options;
 
-    public SessionEventHub(IOptionsMonitor<ArcanumSettings> options)
+    private readonly ILogger<SessionEventHub> _logger;
+
+    public SessionEventHub(IOptionsMonitor<ArcanumSettings> options, ILogger<SessionEventHub> logger)
     {
         _options = options;
+
+        _logger = logger;
     }
 
     public void Publish(Guid sessionId, Entry entry)
     {
         PerSessionHub hub = GetOrCreateHub(sessionId);
 
-        hub.Publish(entry);
+        int drops = hub.Publish(entry);
+
+        if (drops > 0)
+        {
+
+            _logger.LogWarning(
+                "Session event hub dropped {Drops} event(s) for session {SessionId} due to slow consumption.",
+                drops,
+                sessionId);
+
+        }
     }
 
     public async IAsyncEnumerable<Entry> SubscribeAsync(
@@ -84,7 +99,7 @@ public sealed class SessionEventHub
             _inner = new ScryingPool<Entry>(capacity);
         }
 
-        public void Publish(Entry entry) => _inner.Publish(entry);
+        public int Publish(Entry entry) => _inner.Publish(entry);
 
         public ChannelReader<Entry> Subscribe(out Guid subscriptionId) =>
             _inner.Subscribe(out subscriptionId);

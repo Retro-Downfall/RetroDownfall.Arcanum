@@ -42,7 +42,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
     }
 
     [Fact]
-    public async Task DispatchAsync_missing_webhook_url_returns_success_without_http()
+    public async Task DispatchAsync_missing_webhook_url_returns_failure_suppressed_without_http()
     {
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
@@ -53,14 +53,18 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         Result result = await dispatcher.DispatchAsync(message);
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("CommLink.Suppressed", result.Error.Code);
+
+        Assert.Equal("webhook URL is not configured", result.Error.Message);
 
         Assert.Empty(handler.Requests);
 
     }
 
     [Fact]
-    public async Task DispatchAsync_invalid_webhook_url_returns_success_without_http()
+    public async Task DispatchAsync_invalid_webhook_url_returns_failure_suppressed_without_http()
     {
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
@@ -74,14 +78,18 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         Result result = await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Warning, "src"));
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("CommLink.Suppressed", result.Error.Code);
+
+        Assert.Equal("webhook URL is invalid", result.Error.Message);
 
         Assert.Empty(handler.Requests);
 
     }
 
     [Fact]
-    public async Task DispatchAsync_disallowed_scheme_returns_success_without_http()
+    public async Task DispatchAsync_disallowed_scheme_returns_failure_suppressed_without_http()
     {
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
@@ -99,28 +107,36 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         Result result = await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Critical, "src"));
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("CommLink.Suppressed", result.Error.Code);
+
+        Assert.Equal("webhook scheme not allowed", result.Error.Message);
 
         Assert.Empty(handler.Requests);
 
     }
 
     [Fact]
-    public async Task DispatchAsync_blocked_http_by_default_returns_success_without_http()
+    public async Task DispatchAsync_loopback_webhook_rejected_by_outbound_policy_returns_failure_suppressed_without_http()
     {
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
         ArcanumSettings settings = new()
         {
-            CommLink = new CommLinkSettings { WebhookUrl = "http://127.0.0.1/hook" },
+            CommLink = new CommLinkSettings { WebhookUrl = "https://127.0.0.1/hook" },
         };
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
         Result result = await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("CommLink.Suppressed", result.Error.Code);
+
+        Assert.Equal("webhook rejected by outbound URL policy", result.Error.Message);
 
         Assert.Empty(handler.Requests);
 
@@ -152,7 +168,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
     }
 
     [Fact]
-    public async Task DispatchAsync_host_not_in_allowed_hosts_returns_success_without_http()
+    public async Task DispatchAsync_host_not_in_allowed_hosts_returns_failure_suppressed_without_http()
     {
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
@@ -170,7 +186,11 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         Result result = await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("CommLink.Suppressed", result.Error.Code);
+
+        Assert.Equal("webhook host not allowed", result.Error.Message);
 
         Assert.Empty(handler.Requests);
 
