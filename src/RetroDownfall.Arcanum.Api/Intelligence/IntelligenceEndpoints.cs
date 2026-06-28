@@ -264,8 +264,11 @@ internal static class IntelligenceEndpoints
 
             long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
 
+            int metadataScanCacheTtlSeconds = ArcanumSettingClamps.MetadataScanCacheTtlSeconds(
+                settings.Value.Spells.MetadataScanCacheTtlSeconds);
+
             IReadOnlyList<Core.Intelligence.Spells.SpellSummary> spellSummaries = await SpellScanner
-                .ScanSummariesAsync(spellRoot, ct, maxSpellFileSizeBytes)
+                .ScanSummariesAsync(spellRoot, ct, maxSpellFileSizeBytes, metadataScanCacheTtlSeconds)
                 .ConfigureAwait(false);
 
             List<string> spellNames = spellSummaries.Select(static s => s.Name).ToList();

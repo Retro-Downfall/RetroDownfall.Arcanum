@@ -104,6 +104,154 @@ public sealed class SpellScannerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ScanMetadataAsync_concurrent_misses_share_one_scan()
+    {
+
+        for (int i = 0; i < 24; i++)
+        {
+
+            _workspace.WriteFile(
+                $"spells/concurrent-{i:D2}/SPELL.md",
+                $"""
+                ---
+                name: concurrent-{i:D2}
+                description: concurrent scan test {i}
+                ---
+                body
+                """);
+
+        }
+
+        const int concurrency = 16;
+
+        Barrier barrier = new(concurrency);
+
+        Task<IReadOnlyList<SpellMetadata>>[] tasks = Enumerable.Range(0, concurrency)
+            .Select(_ => Task.Run(async () =>
+            {
+
+                barrier.SignalAndWait();
+
+                return await SpellScanner.ScanMetadataAsync(
+                    _workspace.Root,
+                    CancellationToken.None,
+                    MaxFileSizeBytes,
+                    metadataScanCacheTtlSeconds: 60);
+
+            }))
+            .ToArray();
+
+        IReadOnlyList<SpellMetadata>[] results = await Task.WhenAll(tasks);
+
+        IReadOnlyList<SpellMetadata> first = results[0];
+
+        Assert.All(results, r => Assert.Same(first, r));
+
+    }
+
+    [Fact]
+    public async Task LoadFullAsync_concurrent_misses_share_one_parse()
+    {
+
+        string spellDir = Path.Combine(_workspace.Root, "spells", "concurrent-full");
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
+
+        _workspace.WriteFile(
+            "spells/concurrent-full/SPELL.md",
+            """
+            ---
+            name: concurrent-full
+            description: concurrent full parse test
+            ---
+            """ + new string('\n', 2000) + "body");
+
+        _workspace.WriteFile("spells/concurrent-full/scripts/a.sh", "#!/bin/sh\necho a\n");
+
+        _workspace.WriteFile("spells/concurrent-full/scripts/b.sh", "#!/bin/sh\necho b\n");
+
+        string spellPath = Path.Combine(spellDir, "SPELL.md");
+
+        const int concurrency = 16;
+
+        Barrier barrier = new(concurrency);
+
+        Task<ParsedSpell?>[] tasks = Enumerable.Range(0, concurrency)
+            .Select(_ => Task.Run(async () =>
+            {
+
+                barrier.SignalAndWait();
+
+                return await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+            }))
+            .ToArray();
+
+        ParsedSpell?[] results = await Task.WhenAll(tasks);
+
+        ParsedSpell? first = results[0];
+
+        Assert.NotNull(first);
+
+        Assert.All(results, r => Assert.Same(first, r));
+
+    }
+
+    [Fact]
+    public async Task ScanSummariesAsync_with_ttl_serves_stale_within_ttl_then_refreshes()
+    {
+
+        _workspace.WriteFile(
+            "spells/ttl-spell/SPELL.md",
+            """
+            ---
+            name: ttl-spell
+            description: original
+            ---
+            body
+            """);
+
+        const int ttl = 1;
+
+        IReadOnlyList<Core.Intelligence.Spells.SpellSummary> first =
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+
+        Core.Intelligence.Spells.SpellSummary firstSummary = Assert.Single(first, s => s.Name == "ttl-spell");
+
+        Assert.Equal("original", firstSummary.Description);
+
+        // Mutate the underlying SPELL.md while the cache entry is still fresh.
+        _workspace.WriteFile(
+            "spells/ttl-spell/SPELL.md",
+            """
+            ---
+            name: ttl-spell
+            description: mutated
+            ---
+            body
+            """);
+
+        IReadOnlyList<Core.Intelligence.Spells.SpellSummary> second =
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+
+        Core.Intelligence.Spells.SpellSummary secondSummary = Assert.Single(second, s => s.Name == "ttl-spell");
+
+        // Within the TTL the cached (stale) description is served, proving the TTL is threaded through.
+        Assert.Equal("original", secondSummary.Description);
+
+        // After the TTL expires the next call re-scans and picks up the mutation.
+        await Task.Delay(TimeSpan.FromSeconds(ttl + 1));
+
+        IReadOnlyList<Core.Intelligence.Spells.SpellSummary> third =
+            await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes, metadataScanCacheTtlSeconds: ttl);
+
+        Core.Intelligence.Spells.SpellSummary thirdSummary = Assert.Single(third, s => s.Name == "ttl-spell");
+
+        Assert.Equal("mutated", thirdSummary.Description);
+
+    }
+
+    [Fact]
     public async Task LoadFullAsync_loads_skill_json_and_scripts()
     {
 

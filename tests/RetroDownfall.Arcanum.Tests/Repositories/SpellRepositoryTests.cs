@@ -689,6 +689,100 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task ExportAsync_skips_oversized_script_file()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "big-script");
+
+        Directory.CreateDirectory(spellDir);
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: big-script
+            description: export with oversized script
+            ---
+            body
+            """);
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(spellDir, "scripts", "small.sh"),
+            new byte[64]);
+
+        // EffectiveSpellMaxFileSizeBytes clamps to a 1 KiB floor; exceed that so the file is skipped.
+        await File.WriteAllBytesAsync(
+            Path.Combine(spellDir, "scripts", "big.sh"),
+            new byte[2048]);
+
+        ArcanumSettings settings = new()
+        {
+            Spells = new SpellSettings { MaxFileSizeBytes = 1 },
+            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1 },
+        };
+
+        SpellRepository repository = CreateRepository(settings: settings);
+
+        SpellExportDto? exported = await repository.ExportAsync("big-script", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        SpellExportScriptDto single = Assert.Single(exported!.Scripts);
+
+        Assert.Equal("small.sh", single.FileName);
+
+    }
+
+    [SkippableFact]
+    public async Task ExportAsync_stops_reading_scripts_when_aggregate_cap_exceeded()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "agg-cap");
+
+        Directory.CreateDirectory(spellDir);
+
+        Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: agg-cap
+            description: export with aggregate cap
+            ---
+            body
+            """);
+
+        // Each script is 600 bytes (under the 1 KiB per-file cap), but two of them together
+        // exceed the 1 KiB aggregate cap, so reading stops after the first.
+        foreach ((string name, int size) in new[] { ("a.sh", 600), ("b.sh", 600), ("c.sh", 600) })
+        {
+            await File.WriteAllBytesAsync(Path.Combine(spellDir, "scripts", name), new byte[size]);
+        }
+
+        ArcanumSettings settings = new()
+        {
+            Spells = new SpellSettings { MaxFileSizeBytes = 1 },
+            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1 },
+        };
+
+        SpellRepository repository = CreateRepository(settings: settings);
+
+        SpellExportDto? exported = await repository.ExportAsync("agg-cap", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        Assert.Single(exported!.Scripts);
+
+    }
+
     [Fact]
     public void TryResolveDeleteTarget_rejects_directory_outside_workspace()
     {
@@ -791,8 +885,13 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
     private SpellRepository CreateRepository(
         ICampaignRepository? campaignRepository = null,
-        IMcpConnectionManager? mcp = null)
+        IMcpConnectionManager? mcp = null,
+        ArcanumSettings? settings = null)
     {
+
+        IOptionsMonitor<ArcanumSettings> optionsMonitor = settings is not null
+            ? new TestOptionsMonitor<ArcanumSettings>(settings)
+            : _fixture.CreateOptionsMonitor();
 
         if (campaignRepository is not null)
         {
@@ -801,7 +900,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
                 NullLogger<SpellRepository>.Instance,
                 new FixedCampaignRepositoryScopeFactory(campaignRepository),
                 mcp ?? new FakeMcpConnectionManager(),
-                _fixture.CreateOptionsMonitor());
+                optionsMonitor);
 
         }
 
@@ -811,7 +910,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         services.AddSingleton<ILogger<CampaignRepository>>(NullLogger<CampaignRepository>.Instance);
 
-        services.AddSingleton<IOptionsSnapshot<ArcanumSettings>>(new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+        services.AddSingleton<IOptionsSnapshot<ArcanumSettings>>(new TestOptionsSnapshot<ArcanumSettings>(settings ?? new ArcanumSettings()));
 
         services.AddScoped<ICampaignRepository, CampaignRepository>();
 
@@ -821,7 +920,7 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             NullLogger<SpellRepository>.Instance,
             provider.GetRequiredService<IServiceScopeFactory>(),
             mcp ?? new FakeMcpConnectionManager(),
-            _fixture.CreateOptionsMonitor());
+            optionsMonitor);
 
     }
 

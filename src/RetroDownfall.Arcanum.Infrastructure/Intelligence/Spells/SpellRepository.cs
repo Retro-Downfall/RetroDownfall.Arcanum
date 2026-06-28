@@ -476,15 +476,46 @@ internal sealed partial class SpellRepository : ISpellRepository
             return null;
         }
 
+        ArcanumSettings settings = _settingsMonitor.CurrentValue;
+
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
+
+        // No dedicated Spells.MaxExportBytes exists; reuse the clamped workspace read-size cap as
+        // the aggregate budget for script bytes so a single export cannot stream unbounded content.
+        long aggregateScriptCap = ArcanumSettingClamps.MaxFileReadSizeBytes(settings.Workspaces.MaxFileReadSizeBytes);
+
         SkillMetadata? metadata = null;
 
         string skillPath = Path.Combine(dir, "SKILL.json");
 
         if (File.Exists(skillPath))
         {
-            string json = await File.ReadAllTextAsync(skillPath, ct).ConfigureAwait(false);
+            if (TryGetFileLength(skillPath, out long skillLength) && skillLength > perFileCap)
+            {
+                _logger.LogWarning(
+                    "Skipping oversized SKILL.json for spell {SpellName} export: {Size} bytes exceeds {Cap} bytes.",
+                    name,
+                    skillLength,
+                    perFileCap);
+            }
+            else
+            {
+                try
+                {
+                    string json = await File.ReadAllTextAsync(skillPath, ct).ConfigureAwait(false);
 
-            metadata = JsonSerializer.Deserialize(json, Core.Serialization.TheForgeJsonContext.Default.SkillMetadata);
+                    metadata = JsonSerializer.Deserialize(json, Core.Serialization.TheForgeJsonContext.Default.SkillMetadata);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+                catch (JsonException)
+                {
+                }
+            }
         }
 
         string fullContent = await File.ReadAllTextAsync(detail.FilePath, ct).ConfigureAwait(false);
@@ -495,11 +526,57 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (Directory.Exists(scriptsDir))
         {
+            long totalScriptBytes = 0;
+
             foreach (string path in Directory.EnumerateFiles(scriptsDir))
             {
-                byte[] bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
+                if (!TryGetFileLength(path, out long fileLength))
+                {
+                    continue;
+                }
+
+                if (fileLength > perFileCap)
+                {
+                    _logger.LogWarning(
+                        "Skipping oversized script {ScriptPath} for spell {SpellName} export: {Size} bytes exceeds {Cap} bytes.",
+                        path,
+                        name,
+                        fileLength,
+                        perFileCap);
+
+                    continue;
+                }
+
+                if (totalScriptBytes + fileLength > aggregateScriptCap)
+                {
+                    _logger.LogWarning(
+                        "Stopping script export for spell {SpellName}: aggregate {Total} bytes + {Size} bytes would exceed cap {Cap} bytes.",
+                        name,
+                        totalScriptBytes,
+                        fileLength,
+                        aggregateScriptCap);
+
+                    break;
+                }
+
+                byte[] bytes;
+
+                try
+                {
+                    bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    continue;
+                }
 
                 scripts.Add(new SpellExportScriptDto(Path.GetFileName(path), Convert.ToBase64String(bytes)));
+
+                totalScriptBytes += fileLength;
             }
         }
 
@@ -999,6 +1076,28 @@ internal sealed partial class SpellRepository : ISpellRepository
         }
 
         return _workspaceLocks.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+    }
+
+    private static bool TryGetFileLength(string filePath, out long length)
+    {
+        try
+        {
+            length = new FileInfo(filePath).Length;
+
+            return true;
+        }
+        catch (IOException)
+        {
+            length = 0L;
+
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            length = 0L;
+
+            return false;
+        }
     }
 
     [GeneratedRegex("^[A-Za-z0-9_-]+$")]

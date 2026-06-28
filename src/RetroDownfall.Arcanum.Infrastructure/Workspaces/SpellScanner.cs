@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -57,6 +58,19 @@ internal static class SpellScanner
 
     private static readonly BoundedLruCache<MetadataScanCacheKey, MetadataScanCacheEntry> MetadataScanCache =
         new(MetadataScanCacheCapacity);
+
+    /// <summary>
+    /// Per-key single-flight map for in-flight <see cref="ScanMetadataAsync"/> miss waves, so
+    /// concurrent misses for the same workspace share one scan task instead of stampeding.
+    /// Entries are cleaned up once the shared task completes (see <see cref="SingleFlight"/>).
+    /// </summary>
+    private static readonly ConcurrentDictionary<MetadataScanCacheKey, Lazy<Task<IReadOnlyList<SpellMetadata>>>> MetadataScanInFlight = new();
+
+    /// <summary>
+    /// Per-key single-flight map for in-flight <see cref="LoadFullAsync"/> miss waves, keyed by
+    /// the same <c>$"{fullPath}|{mtimeTicks}"</c> string as <see cref="FullSpellCache"/>.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, Lazy<Task<ParsedSpell?>>> FullSpellInFlight = new();
 
     private readonly record struct MetadataScanCacheKey(string GlobalRoot, string WorkspaceRoot);
 
@@ -195,30 +209,42 @@ internal static class SpellScanner
             return cachedEntry.Metadata;
         }
 
-        List<SpellMetadata> globalSpells = [];
+        // Single-flight the miss path: concurrent misses for the same (global, local) root pair
+        // share one scan task. Only the leader scans and populates the LRU cache.
+        IReadOnlyList<SpellMetadata> merged = await SingleFlight.CoalesceAsync(
+            MetadataScanInFlight,
+            cacheKey,
+            async () =>
+            {
 
-        if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
-        {
-            globalSpells = await Task.Run(
-                () => ScanMetadataTreeAsync(globalRoot, maxFileSizeBytes, cancellationToken),
-                cancellationToken).ConfigureAwait(false);
-        }
+                List<SpellMetadata> globalSpells = [];
 
-        List<SpellMetadata> localSpells = [];
+                if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
+                {
+                    globalSpells = await Task.Run(
+                        () => ScanMetadataTreeAsync(globalRoot, maxFileSizeBytes, cancellationToken),
+                        cancellationToken).ConfigureAwait(false);
+                }
 
-        if (localRoot.Length > 0 && Directory.Exists(localRoot))
-        {
-            localSpells = await Task.Run(
-                () => ScanMetadataTreeAsync(localRoot, maxFileSizeBytes, cancellationToken),
-                cancellationToken).ConfigureAwait(false);
-        }
+                List<SpellMetadata> localSpells = [];
 
-        IReadOnlyList<SpellMetadata> merged = MergeSpellMetadata(globalSpells, localSpells);
+                if (localRoot.Length > 0 && Directory.Exists(localRoot))
+                {
+                    localSpells = await Task.Run(
+                        () => ScanMetadataTreeAsync(localRoot, maxFileSizeBytes, cancellationToken),
+                        cancellationToken).ConfigureAwait(false);
+                }
 
-        if (ttlSeconds > 0)
-        {
-            MetadataScanCache.Set(cacheKey, new MetadataScanCacheEntry(merged, DateTimeOffset.UtcNow));
-        }
+                IReadOnlyList<SpellMetadata> result = MergeSpellMetadata(globalSpells, localSpells);
+
+                if (ttlSeconds > 0)
+                {
+                    MetadataScanCache.Set(cacheKey, new MetadataScanCacheEntry(result, DateTimeOffset.UtcNow));
+                }
+
+                return result;
+
+            }).ConfigureAwait(false);
 
         return merged;
     }
@@ -264,12 +290,30 @@ internal static class SpellScanner
             return cached;
         }
 
-        ParsedSpell? parsed = await TryParseSpellFileAsync(fullPath, maxFileSizeBytes, maxDependencies, maxDeclaredTools, workspaceRootForRevalidation: null, cancellationToken).ConfigureAwait(false);
+        // Single-flight the miss path: concurrent misses for the same (path, mtime) key share
+        // one parse task. Only the leader parses and populates the LRU cache.
+        ParsedSpell? parsed = await SingleFlight.CoalesceAsync(
+            FullSpellInFlight,
+            cacheKey,
+            async () =>
+            {
 
-        if (parsed is not null)
-        {
-            FullSpellCache.Set(cacheKey, parsed);
-        }
+                ParsedSpell? result = await TryParseSpellFileAsync(
+                    fullPath,
+                    maxFileSizeBytes,
+                    maxDependencies,
+                    maxDeclaredTools,
+                    workspaceRootForRevalidation: null,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (result is not null)
+                {
+                    FullSpellCache.Set(cacheKey, result);
+                }
+
+                return result;
+
+            }).ConfigureAwait(false);
 
         return parsed;
     }
@@ -277,9 +321,15 @@ internal static class SpellScanner
     internal static async Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary>> ScanSummariesAsync(
         string? workspaceRoot,
         CancellationToken cancellationToken,
-        long maxFileSizeBytes)
+        long maxFileSizeBytes,
+        int metadataScanCacheTtlSeconds = 0)
     {
-        IReadOnlyList<SpellMetadata> metadata = await ScanMetadataAsync(workspaceRoot, cancellationToken, maxFileSizeBytes).ConfigureAwait(false);
+
+        IReadOnlyList<SpellMetadata> metadata = await ScanMetadataAsync(
+            workspaceRoot,
+            cancellationToken,
+            maxFileSizeBytes,
+            metadataScanCacheTtlSeconds).ConfigureAwait(false);
 
         var summaries = new RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary[metadata.Count];
 
