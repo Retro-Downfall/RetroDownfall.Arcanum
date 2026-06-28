@@ -697,7 +697,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
     }
 
-    private sealed class ManagedLlamaServer
+    internal sealed class ManagedLlamaServer
     {
 
         private readonly object _gate = new();
@@ -711,6 +711,8 @@ public sealed class LlamaServerManager : ILlamaServerManager
         private readonly Action<string> _onUnexpectedExit;
 
         private int _waitingForSlot;
+
+        private bool _processDetached;
 
         public ManagedLlamaServer(
             string cacheKey,
@@ -992,8 +994,22 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
         }
 
-        private void DetachAndDisposeProcess(Process process)
+        private void DetachAndDisposeProcess(Process? process)
         {
+
+            lock (_gate)
+            {
+
+                if (_processDetached || process is null)
+                {
+
+                    return;
+
+                }
+
+                _processDetached = true;
+
+            }
 
             try
             {
@@ -1045,6 +1061,8 @@ public sealed class LlamaServerManager : ILlamaServerManager
         private void OnExited(object? sender, EventArgs e)
         {
 
+            Process? process;
+
             LlamaServerState previous;
 
             lock (_gate)
@@ -1064,6 +1082,10 @@ public sealed class LlamaServerManager : ILlamaServerManager
                 State = LlamaServerState.Error;
 
                 LastError = "llama-server process exited unexpectedly.";
+
+                process = Process;
+
+                Process = null;
             }
 
             _eventBus.Publish(new LlamaServerEvent(
@@ -1076,6 +1098,8 @@ public sealed class LlamaServerManager : ILlamaServerManager
             _logger.LogError("llama-server for {CacheKey} exited unexpectedly.", CacheKey);
 
             _onUnexpectedExit(CacheKey);
+
+            DetachAndDisposeProcess(process);
 
         }
 

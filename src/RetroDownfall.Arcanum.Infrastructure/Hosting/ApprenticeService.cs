@@ -397,16 +397,20 @@ internal sealed class ApprenticeService(
 
         }
 
-        apprentice.Status = ApprenticeStatus.Running.ToString();
-
-        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
         if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out Result<string>? capacityFailure))
         {
+
+            apprentice.Status = ApprenticeStatus.Escalated.ToString();
+
+            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
 
             return capacityFailure!;
 
         }
+
+        apprentice.Status = ApprenticeStatus.Running.ToString();
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
 
         BeginExecutionTask(apprenticeId);
 
@@ -481,8 +485,14 @@ internal sealed class ApprenticeService(
                     break;
                 }
 
-                if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out _))
+                if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out Result<string>? recoveryFailure))
                 {
+
+                    logger.LogWarning(
+                        "Apprentice {ApprenticeId} could not be resumed after host restart ({Code}): {Message}. It remains in the DB and will retry on the next restart that has capacity.",
+                        apprentice.Id,
+                        recoveryFailure?.Error.Code,
+                        recoveryFailure?.Error.Message);
 
                     continue;
 
