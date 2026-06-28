@@ -70,6 +70,8 @@ internal static class CliApplicationFactory
             .SetApplicationName("ArcanumCore")
             .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
 
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
 
         services.AddArcanumGrimoireForCli();

@@ -5,6 +5,7 @@ using Spectre.Console.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("GlobalConsole")]
 public sealed class InferenceFlagBinderTests
 {
 

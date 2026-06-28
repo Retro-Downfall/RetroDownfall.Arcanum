@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Security;
 using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -86,6 +88,33 @@ public sealed class CliApplicationFactoryTests
         Assert.Equal(Timeout.InfiniteTimeSpan, streamingClient.Timeout);
 
         Assert.Equal(TimeSpan.FromSeconds(60), requestClient.Timeout);
+
+    }
+
+    [Fact]
+    public void ConfigureCliServices_registers_api_key_digest_cache_so_secret_store_resolves()
+    {
+
+        // Regression guard for DX5: DataProtectionSecretStore requires IApiKeyDigestCache,
+        // which the CLI DI wiring previously omitted, so constructing AskCommand/ChatCommand
+        // via the real container threw. Resolve the secret store and an AskCommand to prove
+        // the full construction path now works.
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        IApiKeyDigestCache digestCache = provider.GetRequiredService<IApiKeyDigestCache>();
+
+        Assert.NotNull(digestCache);
+
+        AskCommand askCommand = provider.GetRequiredService<AskCommand>();
+
+        Assert.NotNull(askCommand);
 
     }
 
