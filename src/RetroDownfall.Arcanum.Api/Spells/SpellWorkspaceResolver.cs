@@ -2,7 +2,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Spells;
 
@@ -15,7 +15,7 @@ public sealed class SpellWorkspaceResolver(
     {
         if (!string.IsNullOrWhiteSpace(workspaceQuery))
         {
-            if (!ToolHelpers.TryNormalizeWorkspace(workspaceQuery, out string? normalized, out string? errorMessage))
+            if (!WorkspacePathPolicy.TryNormalizeWorkspace(workspaceQuery, out string? normalized, out string? errorMessage))
             {
                 return Result<string?>.Failure(new Error(ErrorCodes.Spell.InvalidWorkspace, errorMessage ?? "Invalid workspace path."));
             }

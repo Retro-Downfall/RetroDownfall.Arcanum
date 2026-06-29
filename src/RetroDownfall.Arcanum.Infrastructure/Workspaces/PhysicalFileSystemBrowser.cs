@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -77,7 +77,7 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
 
                         ct.ThrowIfCancellationRequested();
 
-                        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
+                        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
                         {
                             continue;
                         }
@@ -117,7 +117,7 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
 
                     ct.ThrowIfCancellationRequested();
 
-                    if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
                     {
                         continue;
                     }
@@ -181,7 +181,7 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
             return new Error("Workspace.FileNotFound", "The file or directory was not found.");
         }
 
-        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
         {
             return new Error("Workspace.SymbolicLinkEscape", "The path resolves outside the workspace via a symbolic link.");
         }
@@ -253,7 +253,7 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
                 new Error("Workspace.FileNotFound", "The file or directory was not found."));
         }
 
-        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
         {
             return Task.FromResult<Result<FileEntry>>(
                 new Error("Workspace.SymbolicLinkEscape", "The path resolves outside the workspace via a symbolic link."));

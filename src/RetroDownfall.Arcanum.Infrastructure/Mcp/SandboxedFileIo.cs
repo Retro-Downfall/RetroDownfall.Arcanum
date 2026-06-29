@@ -1,5 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -21,7 +25,7 @@ internal static class SandboxedFileIo
 
         error = null;
 
-        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
 
             error = ToolError(PathEscapesSandboxMessage);
@@ -30,7 +34,7 @@ internal static class SandboxedFileIo
 
         }
 
-        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, absolutePath, out string? resolvedFinalPath))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, absolutePath, out string? resolvedFinalPath))
         {
 
             error = ToolError(PathEscapesSandboxMessage);
@@ -117,7 +121,7 @@ internal static class SandboxedFileIo
         CancellationToken cancellationToken)
     {
 
-        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
 
             return (false, ToolError(PathEscapesSandboxMessage));
@@ -150,7 +154,7 @@ internal static class SandboxedFileIo
 
         }
 
-        if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
 
             return (false, ToolError(PathEscapesSandboxMessage));
@@ -191,7 +195,7 @@ internal static class SandboxedFileIo
                 // (e.g. to a symlink) between the lexical revalidation and the move — a TOCTOU
                 // sandbox escape, which fails the replace closed (temp is removed, destination kept).
                 beforeReplace: () =>
-                    ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, absolutePath)
+                    WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath)
                         && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
                 // W3.4 Group C #7: post-move handle-identity check, mirroring the read path. Open
                 // the destination and verify its handle identity matches the temp file's pre-move
@@ -289,7 +293,7 @@ internal static class SandboxedFileIo
 
         }
 
-        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
         {
 
             error = ToolError(PathEscapesSandboxMessage);

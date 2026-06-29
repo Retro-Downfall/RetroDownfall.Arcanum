@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Sanctum;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
@@ -256,7 +255,7 @@ public sealed class SanctumGuard(
 
     private static bool IsUnderAllowedRoots(string workspaceRoot, string candidateFull, IReadOnlyList<string> allowedPaths)
     {
-        if (ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, candidateFull, out _))
+        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, candidateFull, out _))
         {
             return true;
         }
@@ -279,7 +278,7 @@ public sealed class SanctumGuard(
                 continue;
             }
 
-            if (ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(allowedFull, candidateFull, out _))
+            if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(allowedFull, candidateFull, out _))
             {
                 return true;
             }

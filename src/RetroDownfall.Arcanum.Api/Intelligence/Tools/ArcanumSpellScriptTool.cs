@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
@@ -149,7 +149,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         (string scriptsRootFull, string candidate) = matches[0];
 
-        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
         {
             return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
         }
@@ -178,7 +178,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             }
 
-            if (!ToolHelpers.RevalidatePathBeforeIo(scriptsRootFull, candidate))
+            if (!WorkspacePathPolicy.RevalidatePathBeforeIo(scriptsRootFull, candidate))
             {
 
                 return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
@@ -303,7 +303,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
                 continue;
             }
 
-            if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
             {
                 continue;
             }

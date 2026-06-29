@@ -1,7 +1,7 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -50,7 +50,7 @@ internal static class WorkspacePathResolver
             return new Error("Workspace.PathTraversal", "The relative path escapes the workspace root.");
         }
 
-        if (!ToolHelpers.IsPathUnderWorkspace(workspaceRoot, resolved))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspace(workspaceRoot, resolved))
         {
             return new Error("Workspace.PathTraversal", "The relative path escapes the workspace root.");
         }
@@ -60,7 +60,7 @@ internal static class WorkspacePathResolver
         if (File.Exists(resolved) || Directory.Exists(resolved))
         {
 
-            if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, resolved, out _))
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, resolved, out _))
             {
                 return new Error("Workspace.SymbolicLinkEscape", "The path resolves outside the workspace via a symbolic link.");
             }

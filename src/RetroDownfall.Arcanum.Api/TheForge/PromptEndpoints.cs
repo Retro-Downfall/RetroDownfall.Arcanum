@@ -13,7 +13,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -441,7 +441,7 @@ internal static class PromptEndpoints
                                 traceId));
                     }
 
-                    if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
                             Path.GetFullPath(containmentRoot ?? string.Empty),
                             codexPathResult.Value!.Path,
                             out _))

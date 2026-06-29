@@ -19,7 +19,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -265,7 +265,7 @@ internal static class IntelligenceEndpoints
         {
             string workingDirectory = body?.WorkingDirectory ?? string.Empty;
 
-            string? spellRoot = ToolHelpers.TryNormalizeWorkspace(workingDirectory, out string? root, out _)
+            string? spellRoot = WorkspacePathPolicy.TryNormalizeWorkspace(workingDirectory, out string? root, out _)
                 ? root
                 : null;
 

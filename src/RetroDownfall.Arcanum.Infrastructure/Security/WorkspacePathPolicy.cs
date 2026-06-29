@@ -1,8 +1,28 @@
 using System.Diagnostics.CodeAnalysis;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
+namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
-internal static class ToolHelpers
+/// <summary>
+/// Cross-cutting workspace path containment policy shared by MCP sandbox I/O, spell scanning,
+/// sanctum guards, and API path resolution.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Read tier 1 — lexical / symlink revalidation:</b>
+/// <see cref="IsPathUnderWorkspace"/>, <see cref="IsPathUnderWorkspaceWithSymlinkCheck"/>, and
+/// <see cref="RevalidatePathBeforeIo"/> perform prefix checks and walk symlink targets to ensure
+/// every existing ancestor stays under the workspace root. This tier is sufficient for read-only
+/// scans and pre-I/O lexical checks (for example <c>SpellScanner</c> tree walks).
+/// </para>
+/// <para>
+/// <b>Read tier 2 — handle-identity I/O:</b>
+/// Mutating or trust-sensitive reads must additionally capture expected
+/// <see cref="FileHandleIdentity"/> from the resolved path and re-validate the opened handle after
+/// <c>FileStream</c> creation (<c>SandboxedFileIo</c> in the MCP layer). Handle identity
+/// closes TOCTOU gaps between lexical validation and actual file use.
+/// </para>
+/// </remarks>
+internal static class WorkspacePathPolicy
 {
 
     /// <summary>

@@ -1,9 +1,9 @@
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-public sealed class ToolHelpersTests : IAsyncLifetime
+public sealed class WorkspacePathPolicyTests : IAsyncLifetime
 {
 
     private readonly TempWorkspace _workspace = new();
@@ -16,7 +16,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
     public void TryNormalizeWorkspace_EmptyDirectory_ReturnsConfigurationError()
     {
 
-        bool ok = ToolHelpers.TryNormalizeWorkspace("", out string? normalized, out string? error);
+        bool ok = WorkspacePathPolicy.TryNormalizeWorkspace("", out string? normalized, out string? error);
 
         Assert.False(ok);
 
@@ -30,7 +30,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
     public void TryNormalizeWorkspace_ValidDirectory_ReturnsFullPath()
     {
 
-        bool ok = ToolHelpers.TryNormalizeWorkspace(_workspace.Root, out string? normalized, out string? error);
+        bool ok = WorkspacePathPolicy.TryNormalizeWorkspace(_workspace.Root, out string? normalized, out string? error);
 
         Assert.True(ok);
 
@@ -44,7 +44,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
     public void TryNormalizeWorkspace_UnresolvablePath_ReturnsConfigurationError()
     {
 
-        bool ok = ToolHelpers.TryNormalizeWorkspace("?\u0000invalid", out string? normalized, out string? error);
+        bool ok = WorkspacePathPolicy.TryNormalizeWorkspace("?\u0000invalid", out string? normalized, out string? error);
 
         if (ok)
         {
@@ -65,11 +65,11 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string child = Path.Combine(root, "src", "App.cs");
 
-        Assert.True(ToolHelpers.IsPathUnderWorkspace(root, root));
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspace(root, root));
 
-        Assert.True(ToolHelpers.IsPathUnderWorkspace(root, child));
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspace(root, child));
 
-        Assert.False(ToolHelpers.IsPathUnderWorkspace(root, Path.Combine(Path.GetTempPath(), "outside.txt")));
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspace(root, Path.Combine(Path.GetTempPath(), "outside.txt")));
 
     }
 
@@ -79,7 +79,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string target = Path.Combine(_workspace.Root, "new", "file.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, target, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, target, out string? resolved);
 
         Assert.True(allowed);
 
@@ -93,7 +93,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string file = _workspace.WriteFile("nested/readme.md", "content");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, file, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, file, out string? resolved);
 
         Assert.True(allowed);
 
@@ -107,7 +107,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, outside, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, outside, out _);
 
         Assert.False(allowed);
 
@@ -119,7 +119,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string file = _workspace.WriteFile("src/Program.cs", "// code");
 
-        Assert.True(ToolHelpers.RevalidatePathBeforeIo(_workspace.Root, file));
+        Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(_workspace.Root, file));
 
     }
 
@@ -131,7 +131,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string lexicalEscape = Path.Combine(root, "..", Path.GetFileName(root) + "-sibling", "secret.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, lexicalEscape, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, lexicalEscape, out _);
 
         Assert.False(allowed);
 
@@ -141,7 +141,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
     public void TryNormalizeWorkspace_WhitespaceOnly_ReturnsConfigurationError()
     {
 
-        bool ok = ToolHelpers.TryNormalizeWorkspace("   ", out string? normalized, out string? error);
+        bool ok = WorkspacePathPolicy.TryNormalizeWorkspace("   ", out string? normalized, out string? error);
 
         Assert.False(ok);
 
@@ -172,7 +172,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
             string targetFile = Path.Combine(linkPath, "newfile.txt");
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, targetFile, out _);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, targetFile, out _);
 
             Assert.False(allowed);
         }
@@ -200,7 +200,7 @@ public sealed class ToolHelpersTests : IAsyncLifetime
 
         string targetFile = Path.Combine(linkPath, "notes.md");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, targetFile, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, targetFile, out _);
 
         Assert.True(allowed);
 

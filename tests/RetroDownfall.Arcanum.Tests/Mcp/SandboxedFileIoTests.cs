@@ -1,11 +1,12 @@
 using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-[Collection("ToolHelpers")]
+[Collection("WorkspacePathPolicy")]
 public sealed class SandboxedFileIoTests : IAsyncLifetime
 {
 

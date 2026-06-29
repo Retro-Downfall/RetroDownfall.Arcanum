@@ -210,7 +210,7 @@ public sealed class WizardIntelligenceProvider(
         }
         else
         {
-            string? spellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
+            string? spellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy.TryNormalizeWorkspace(
                 request.WorkingDirectory,
                 out string? spellRoot,
                 out _)
@@ -661,7 +661,7 @@ public sealed class WizardIntelligenceProvider(
         }
         else
         {
-            string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Mcp.ToolHelpers.TryNormalizeWorkspace(
+            string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy.TryNormalizeWorkspace(
                 request.WorkingDirectory,
                 out string? streamSpellRoot,
                 out _)

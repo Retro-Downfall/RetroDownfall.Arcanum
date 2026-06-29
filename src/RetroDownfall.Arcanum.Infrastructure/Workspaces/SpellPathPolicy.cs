@@ -2,7 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -65,14 +65,14 @@ internal static partial class SpellPathPolicy
             return false;
         }
 
-        if (ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(globalRoot, fullPath, out _))
+        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(globalRoot, fullPath, out _))
         {
             return true;
         }
 
         if (!string.IsNullOrWhiteSpace(spellWorkspaceRoot)
-            && ToolHelpers.TryNormalizeWorkspace(spellWorkspaceRoot, out string? normalizedRoot, out _)
-            && ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(normalizedRoot, fullPath, out _))
+            && WorkspacePathPolicy.TryNormalizeWorkspace(spellWorkspaceRoot, out string? normalizedRoot, out _)
+            && WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(normalizedRoot, fullPath, out _))
         {
             return true;
         }

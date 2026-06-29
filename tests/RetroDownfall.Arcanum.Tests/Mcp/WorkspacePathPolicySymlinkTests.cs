@@ -1,17 +1,17 @@
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using Xunit;
 
-[Collection("ToolHelpers")]
-public sealed class ToolHelpersSymlinkTests : IDisposable
+[Collection("WorkspacePathPolicy")]
+public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 {
 
     private readonly string _root;
 
     private readonly List<string> _cleanup = [];
 
-    public ToolHelpersSymlinkTests()
+    public WorkspacePathPolicySymlinkTests()
     {
         _root = Path.Combine(Path.GetTempPath(), "arcanum-toolhelpers-" + Guid.NewGuid().ToString("N"));
 
@@ -25,7 +25,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     {
         string root = Path.GetFullPath(_root);
 
-        Assert.True(ToolHelpers.IsPathUnderWorkspace(root, root));
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspace(root, root));
     }
 
     [SkippableFact]
@@ -39,7 +39,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string child = Path.Combine(root.ToUpperInvariant(), "file.txt");
 
-        Assert.True(ToolHelpers.IsPathUnderWorkspace(root, child));
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspace(root, child));
     }
 
     [SkippableFact]
@@ -47,7 +47,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     {
         Skip.If(OperatingSystem.IsWindows());
 
-        ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
+        WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
 
         try
         {
@@ -57,11 +57,11 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
             string child = Path.Combine(root.ToUpperInvariant(), "file.txt");
 
-            Assert.True(ToolHelpers.IsPathUnderWorkspace(root, child));
+            Assert.True(WorkspacePathPolicy.IsPathUnderWorkspace(root, child));
         }
         finally
         {
-            ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
+            WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
         }
     }
 
@@ -70,7 +70,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     {
         Skip.If(OperatingSystem.IsWindows());
 
-        ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
+        WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
 
         try
         {
@@ -86,7 +86,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
             File.WriteAllText(child, "ok");
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, child, out string? resolved);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, child, out string? resolved);
 
             Assert.True(allowed);
 
@@ -94,7 +94,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         }
         finally
         {
-            ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
+            WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
         }
     }
 
@@ -103,7 +103,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     {
         string root = Path.GetFullPath(_root);
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, root, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, root, out string? resolved);
 
         Assert.True(allowed);
 
@@ -117,7 +117,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         File.WriteAllText(file, "ok");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, file, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, file, out string? resolved);
 
         Assert.True(allowed);
 
@@ -144,7 +144,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
             File.CreateSymbolicLink(linkPath, outside);
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out _);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out _);
 
             Assert.False(allowed);
         }
@@ -170,7 +170,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         File.CreateSymbolicLink(linkPath, innerFile);
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out string? resolved);
 
         Assert.True(allowed);
 
@@ -197,7 +197,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string targetFile = Path.Combine(linkPath, "child.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
 
         Assert.False(allowed);
     }
@@ -215,7 +215,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string lexical = Path.Combine(root, "..", Path.GetFileName(root) + "-peer", "secret.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, lexical, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, lexical, out _);
 
         Assert.False(allowed);
     }
@@ -238,7 +238,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string targetFile = Path.Combine(linkPath, "notes.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
 
         Assert.True(allowed);
     }
@@ -259,7 +259,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         Directory.CreateSymbolicLink(linkPath, inner);
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out string? resolved);
 
         Assert.True(allowed);
 
@@ -286,7 +286,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string targetFile = Path.Combine(linkPath, "newfile.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
 
         Assert.False(allowed);
     }
@@ -300,7 +300,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string targetFile = Path.Combine(nestedDir, "readme.md");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out _);
 
         Assert.True(allowed);
     }
@@ -325,7 +325,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         File.WriteAllText(Path.Combine(realDir, "inside.txt"), "ok");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, targetFile, out string? resolved);
 
         Assert.True(allowed);
 
@@ -348,7 +348,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         File.CreateSymbolicLink(linkFile, realFile);
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkFile, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkFile, out string? resolved);
 
         Assert.True(allowed);
 
@@ -368,9 +368,9 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetRelativePathResolverForTests((_, _) => "../outside");
+            WorkspacePathPolicy.SetRelativePathResolverForTests((_, _) => "../outside");
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
 
             Assert.False(allowed);
 
@@ -378,7 +378,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetRelativePathResolverForTests(null);
+            WorkspacePathPolicy.SetRelativePathResolverForTests(null);
 
         }
 
@@ -397,9 +397,9 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetRelativePathResolverForTests((_, _) => "/absolute/outside");
+            WorkspacePathPolicy.SetRelativePathResolverForTests((_, _) => "/absolute/outside");
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
 
             Assert.False(allowed);
 
@@ -407,7 +407,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetRelativePathResolverForTests(null);
+            WorkspacePathPolicy.SetRelativePathResolverForTests(null);
 
         }
 
@@ -435,7 +435,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string target = Path.Combine(sub, "lnk");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, target, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, target, out string? resolved);
 
         Assert.True(allowed);
 
@@ -447,11 +447,11 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
     public void TryResolveFinalSymlinkTargetForCoverageTest_NonExistentPath_ReturnsTrue()
     {
 
-        ToolHelpers.SetSymlinkResolverForTests(null);
+        WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         string missing = Path.Combine(_root, "ghost-path");
 
-        bool ok = ToolHelpers.TryResolveFinalSymlinkTargetForCoverageTest(missing, out string? resolved);
+        bool ok = WorkspacePathPolicy.TryResolveFinalSymlinkTargetForCoverageTest(missing, out string? resolved);
 
         Assert.True(ok);
 
@@ -474,14 +474,14 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(_ =>
+            WorkspacePathPolicy.SetSymlinkResolverForTests(_ =>
             {
                 calls++;
 
                 return calls == 1 ? (true, null) : (false, null);
             });
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out _);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out _);
 
             Assert.False(allowed);
 
@@ -491,7 +491,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(null);
+            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         }
 
@@ -514,18 +514,18 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(_ => (true, null));
+            WorkspacePathPolicy.SetSymlinkResolverForTests(_ => (true, null));
 
-            Assert.True(ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nullTarget));
+            Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nullTarget));
 
             Assert.Equal(Path.GetFullPath(file), nullTarget);
 
-            ToolHelpers.SetSymlinkResolverForTests(path =>
+            WorkspacePathPolicy.SetSymlinkResolverForTests(path =>
                 string.Equals(path, file, StringComparison.Ordinal)
                     ? (true, redirected)
                     : (true, null));
 
-            Assert.True(ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nonNullTarget));
+            Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? nonNullTarget));
 
             Assert.Equal(redirected, nonNullTarget);
 
@@ -533,7 +533,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(null);
+            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         }
 
@@ -547,7 +547,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
             return;
         }
 
-        ToolHelpers.SetSymlinkResolverForTests(null);
+        WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         string inner = Path.Combine(_root, "native-inner");
 
@@ -557,7 +557,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         Directory.CreateSymbolicLink(linkPath, inner);
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, linkPath, out string? resolved);
 
         Assert.True(allowed);
 
@@ -582,12 +582,12 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(path =>
+            WorkspacePathPolicy.SetSymlinkResolverForTests(path =>
                 string.Equals(path, file, StringComparison.Ordinal)
                     ? (true, redirected)
                     : (true, null));
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
 
             Assert.True(allowed);
 
@@ -597,7 +597,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(null);
+            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         }
 
@@ -616,9 +616,9 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(_ => (true, null));
+            WorkspacePathPolicy.SetSymlinkResolverForTests(_ => (true, null));
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, file, out string? resolved);
 
             Assert.True(allowed);
 
@@ -628,7 +628,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(null);
+            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         }
 
@@ -647,9 +647,9 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(_ => (false, null));
+            WorkspacePathPolicy.SetSymlinkResolverForTests(_ => (false, null));
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out _);
 
             Assert.False(allowed);
 
@@ -657,7 +657,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(null);
+            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         }
 
@@ -680,12 +680,12 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         try
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(path =>
+            WorkspacePathPolicy.SetSymlinkResolverForTests(path =>
                 string.Equals(path, nested, StringComparison.Ordinal)
                     ? (true, redirected)
                     : (true, null));
 
-            bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out string? resolved);
+            bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, nested, out string? resolved);
 
             Assert.True(allowed);
 
@@ -695,7 +695,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
         finally
         {
 
-            ToolHelpers.SetSymlinkResolverForTests(null);
+            WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         }
 
@@ -723,7 +723,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string target = Path.Combine(sub, "lnk", "nested.txt");
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, target, out _);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, target, out _);
 
         Assert.True(allowed);
 
@@ -737,7 +737,7 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         Directory.CreateDirectory(leafDir);
 
-        bool allowed = ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_root, leafDir, out string? resolved);
+        bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, leafDir, out string? resolved);
 
         Assert.True(allowed);
 
@@ -754,17 +754,17 @@ public sealed class ToolHelpersSymlinkTests : IDisposable
 
         string targetFile = Path.Combine(nestedDir, "Program.cs");
 
-        Assert.True(ToolHelpers.RevalidatePathBeforeIo(_root, targetFile));
+        Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(_root, targetFile));
     }
 
     public void Dispose()
     {
 
-        ToolHelpers.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
+        WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
 
-        ToolHelpers.SetRelativePathResolverForTests(null);
+        WorkspacePathPolicy.SetRelativePathResolverForTests(null);
 
-        ToolHelpers.SetSymlinkResolverForTests(null);
+        WorkspacePathPolicy.SetSymlinkResolverForTests(null);
 
         foreach (string path in _cleanup)
         {

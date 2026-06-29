@@ -1332,7 +1332,7 @@ internal sealed class ArcanumInternalToolServer
             return false;
         }
 
-        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(root, resolved, out _))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, resolved, out _))
         {
             error = ToolError(PathEscapesSandboxMessage);
 
@@ -1350,7 +1350,7 @@ internal sealed class ArcanumInternalToolServer
     {
         error = null;
 
-        if (!ToolHelpers.RevalidatePathBeforeIo(_workspaceRoot!, absolutePath))
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(_workspaceRoot!, absolutePath))
         {
             error = ToolError(PathEscapesSandboxMessage);
 
@@ -1784,7 +1784,7 @@ internal sealed class ArcanumInternalToolServer
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
-                        if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
+                        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
                         {
                             continue;
                         }
@@ -1840,7 +1840,7 @@ internal sealed class ArcanumInternalToolServer
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
                     {
                         continue;
                     }

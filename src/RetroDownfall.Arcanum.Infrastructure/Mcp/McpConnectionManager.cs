@@ -1451,7 +1451,7 @@ public sealed class McpConnectionManager(
                     ? Path.GetFullPath(trimmed)
                     : Path.GetFullPath(Path.Combine(workspaceRoot, trimmed));
 
-                if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, resolved, out _))
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, resolved, out _))
                 {
                     return Result<string?>.Failure(new Error(
                         "Mcp.InvalidCwd",

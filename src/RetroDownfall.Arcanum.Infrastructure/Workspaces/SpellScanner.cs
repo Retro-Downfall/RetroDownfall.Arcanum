@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -383,7 +383,7 @@ internal static class SpellScanner
             return false;
         }
 
-        return IsPathUnderWorkspaceRoot(globalRoot, fullPath);
+        return WorkspacePathPolicy.IsPathUnderWorkspace(globalRoot, fullPath);
     }
 
     private static IReadOnlyList<SpellMetadata> MergeSpellMetadata(
@@ -540,7 +540,7 @@ internal static class SpellScanner
 
             (string currentDir, int depth) = queue.Dequeue();
 
-            if (!IsPathUnderWorkspaceRoot(rootFullPath, currentDir))
+            if (!WorkspacePathPolicy.IsPathUnderWorkspace(rootFullPath, currentDir))
             {
                 continue;
             }
@@ -565,7 +565,7 @@ internal static class SpellScanner
                     continue;
                 }
 
-                if (!IsPathUnderWorkspaceRoot(rootFullPath, filePath))
+                if (!WorkspacePathPolicy.IsPathUnderWorkspace(rootFullPath, filePath))
                 {
                     continue;
                 }
@@ -607,14 +607,14 @@ internal static class SpellScanner
 
                 string fullSub = Path.GetFullPath(subDir);
 
-                if (!IsPathUnderWorkspaceRoot(rootFullPath, fullSub))
+                if (!WorkspacePathPolicy.IsPathUnderWorkspace(rootFullPath, fullSub))
                 {
                     continue;
                 }
 
                 string canonicalSub = ResolveCanonicalDirectory(fullSub);
 
-                if (!IsPathUnderWorkspaceRoot(canonicalRoot, canonicalSub))
+                if (!WorkspacePathPolicy.IsPathUnderWorkspace(canonicalRoot, canonicalSub))
                 {
                     continue;
                 }
@@ -653,21 +653,6 @@ internal static class SpellScanner
         }
     }
 
-    private static bool IsPathUnderWorkspaceRoot(string workspaceRootFull, string candidateFull)
-    {
-        char sep = Path.DirectorySeparatorChar;
-
-        string normalizedRoot = workspaceRootFull.TrimEnd(sep);
-
-        string prefix = normalizedRoot + sep;
-
-        StringComparison cmp = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-
-        return candidateFull.Equals(normalizedRoot, cmp) || candidateFull.StartsWith(prefix, cmp);
-    }
-
     private static async Task<SpellMetadata?> TryParseSpellMetadataAsync(
         string filePath,
         long maxFileSizeBytes,
@@ -675,7 +660,7 @@ internal static class SpellScanner
         CancellationToken cancellationToken)
     {
         if (workspaceRootForRevalidation is not null
-            && !ToolHelpers.RevalidatePathBeforeIo(workspaceRootForRevalidation, filePath))
+            && !WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, filePath))
         {
             return null;
         }
@@ -793,7 +778,7 @@ internal static class SpellScanner
         CancellationToken cancellationToken)
     {
         if (workspaceRootForRevalidation is not null
-            && !ToolHelpers.RevalidatePathBeforeIo(workspaceRootForRevalidation, filePath))
+            && !WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, filePath))
         {
             return null;
         }
@@ -864,7 +849,7 @@ internal static class SpellScanner
 
             if (File.Exists(skillJsonPath)
                 && (workspaceRootForRevalidation is null
-                    || ToolHelpers.RevalidatePathBeforeIo(workspaceRootForRevalidation, skillJsonPath))
+                    || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, skillJsonPath))
                 && TryGetFileLength(skillJsonPath, out long skillJsonLength)
                 && !ExceedsMaxFileSize(skillJsonLength, maxFileSizeBytes))
             {

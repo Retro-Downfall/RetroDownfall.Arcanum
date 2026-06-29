@@ -1,7 +1,8 @@
 using System.Runtime.InteropServices;
+
 using Microsoft.Win32.SafeHandles;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
+namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 /// <summary>
 /// Stable volume + file identity for post-open sandbox revalidation (dev/ino on Unix, volume serial + file index on Windows).

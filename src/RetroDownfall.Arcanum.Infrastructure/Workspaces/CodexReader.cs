@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -20,14 +20,14 @@ internal static class CodexReader
         string? localContent = null;
 
         if (!string.IsNullOrWhiteSpace(workingDirectory)
-            && ToolHelpers.TryNormalizeWorkspace(workingDirectory, out string? workspaceRoot, out _)
+            && WorkspacePathPolicy.TryNormalizeWorkspace(workingDirectory, out string? workspaceRoot, out _)
             && Directory.Exists(workspaceRoot))
         {
             try
             {
                 string localCodexFull = Path.GetFullPath(Path.Combine(workspaceRoot, "CODEX.md"));
 
-                if (ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, localCodexFull, out _))
+                if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, localCodexFull, out _))
                 {
                     localContent = await TryReadCachedAsync(localCodexFull, maxSizeBytes, ct).ConfigureAwait(false);
                 }
