@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 
@@ -50,23 +51,12 @@ internal static class ProvingGroundsEndpoints
 
     private static IResult MapTrialFailure(Result<TrialResult> result, string traceId)
     {
-        ApiResponse<TrialResult> response = ApiResponse<TrialResult>.FromResult(result, traceId);
 
-        return result.Error.Code switch
-        {
-            "ProvingGrounds.SpellNotFound" or "ProvingGrounds.PromptNotFound" => Results.Json(
-                response,
-                ArcanumJsonContext.Default.ApiResponseTrialResult,
-                statusCode: StatusCodes.Status404NotFound),
-            "ProvingGrounds.InferenceFailed" => Results.Json(
-                response,
-                ArcanumJsonContext.Default.ApiResponseTrialResult,
-                statusCode: StatusCodes.Status500InternalServerError),
-            _ => Results.Json(
-                response,
-                ArcanumJsonContext.Default.ApiResponseTrialResult,
-                statusCode: StatusCodes.Status400BadRequest),
-        };
+        return Results.Json(
+            ApiResponse<TrialResult>.FromResult(result, traceId),
+            ArcanumJsonContext.Default.ApiResponseTrialResult,
+            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+
     }
 
 }

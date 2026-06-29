@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Streaming;
@@ -21,7 +22,7 @@ internal static class SseConnectionResults
                         "The server has reached the maximum number of concurrent SSE connections.")),
                 traceId),
             ArcanumJsonContext.Default.ApiResponseBoolean,
-            statusCode: StatusCodes.Status503ServiceUnavailable);
+            statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Api.TooManyConnections));
 
     }
 

@@ -507,10 +507,18 @@ internal static class CampaignEndpoints
 
         if (string.Equals(error.Code, ErrorCodes.Campaign.PathNotAllowed, StringComparison.Ordinal))
         {
-            return Results.Json(response, ArcanumJsonContext.Default.ApiResponseCampaignDto, statusCode: StatusCodes.Status403Forbidden);
+
+            return Results.Json(
+                response,
+                ArcanumJsonContext.Default.ApiResponseCampaignDto,
+                statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
+
         }
 
-        return Results.BadRequest(response);
+        return Results.Json(
+            response,
+            ArcanumJsonContext.Default.ApiResponseCampaignDto,
+            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
     }
 
 }

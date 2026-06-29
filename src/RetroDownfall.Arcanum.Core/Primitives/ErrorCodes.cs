@@ -227,4 +227,22 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>ProvingGrounds — spell/prompt/plan validation trials.</summary>
+    public static class ProvingGrounds
+    {
+
+        public const string InvalidTrial = "ProvingGrounds.InvalidTrial";
+
+        public const string TooManyInquisitors = "ProvingGrounds.TooManyInquisitors";
+
+        public const string WorkspaceNotAllowed = "ProvingGrounds.WorkspaceNotAllowed";
+
+        public const string SpellNotFound = "ProvingGrounds.SpellNotFound";
+
+        public const string PromptNotFound = "ProvingGrounds.PromptNotFound";
+
+        public const string InferenceFailed = "ProvingGrounds.InferenceFailed";
+
+    }
+
 }

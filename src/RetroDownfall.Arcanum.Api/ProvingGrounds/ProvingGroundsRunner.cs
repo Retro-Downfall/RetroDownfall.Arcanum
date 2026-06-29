@@ -28,18 +28,18 @@ public sealed partial class ProvingGroundsRunner(
     {
         if (trial is null)
         {
-            return Result<TrialResult>.Failure(new Error("ProvingGrounds.InvalidTrial", "Trial payload is required."));
+            return Result<TrialResult>.Failure(new Error(ErrorCodes.ProvingGrounds.InvalidTrial, "Trial payload is required."));
         }
 
         if (string.IsNullOrWhiteSpace(trial.Target))
         {
-            return Result<TrialResult>.Failure(new Error("ProvingGrounds.InvalidTrial", "Trial target is required."));
+            return Result<TrialResult>.Failure(new Error(ErrorCodes.ProvingGrounds.InvalidTrial, "Trial target is required."));
         }
 
         if (trial.Inquisitors is null || trial.Inquisitors.Count == 0)
         {
             return Result<TrialResult>.Failure(
-                new Error("ProvingGrounds.InvalidTrial", "At least one Inquisitor is required."));
+                new Error(ErrorCodes.ProvingGrounds.InvalidTrial, "At least one Inquisitor is required."));
         }
 
         ArcanumSettings arc = options.Value;
@@ -50,7 +50,7 @@ public sealed partial class ProvingGroundsRunner(
         {
             return Result<TrialResult>.Failure(
                 new Error(
-                    "ProvingGrounds.TooManyInquisitors",
+                    ErrorCodes.ProvingGrounds.TooManyInquisitors,
                     $"Trial defines {trial.Inquisitors.Count} Inquisitors; the maximum is {maxInquisitors}."));
         }
 
@@ -59,7 +59,7 @@ public sealed partial class ProvingGroundsRunner(
         if (workspaceResult.IsFailure)
         {
             return Result<TrialResult>.Failure(
-                new Error("ProvingGrounds.WorkspaceNotAllowed", workspaceResult.Error.Message));
+                new Error(ErrorCodes.ProvingGrounds.WorkspaceNotAllowed, workspaceResult.Error.Message));
         }
 
         string resolvedWorkspace = workspaceResult.Value!;
@@ -79,7 +79,7 @@ public sealed partial class ProvingGroundsRunner(
         {
             return Result<TrialResult>.Failure(
                 new Error(
-                    "ProvingGrounds.InferenceFailed",
+                    ErrorCodes.ProvingGrounds.InferenceFailed,
                     $"Trial inference failed: {turn.Error.Message}"));
         }
 
@@ -130,7 +130,7 @@ public sealed partial class ProvingGroundsRunner(
             TrialTargetKind.Spell => await ResolveSpellPingAsync(trial, resolvedWorkspace, cancellationToken).ConfigureAwait(false),
             TrialTargetKind.Prompt => await ResolvePromptPingAsync(trial, resolvedWorkspace, cancellationToken).ConfigureAwait(false),
             TrialTargetKind.ApprenticeGoal => ResolveApprenticeGoalPing(trial, resolvedWorkspace),
-            _ => Result<PingRequest>.Failure(new Error("ProvingGrounds.InvalidTrial", $"Unknown target kind '{trial.TargetKind}'.")),
+            _ => Result<PingRequest>.Failure(new Error(ErrorCodes.ProvingGrounds.InvalidTrial, $"Unknown target kind '{trial.TargetKind}'.")),
         };
     }
 
@@ -148,7 +148,7 @@ public sealed partial class ProvingGroundsRunner(
         if (spell is null)
         {
             return Result<PingRequest>.Failure(
-                new Error("ProvingGrounds.SpellNotFound", $"Spell '{spellName}' was not found in the resolved workspace."));
+                new Error(ErrorCodes.ProvingGrounds.SpellNotFound, $"Spell '{spellName}' was not found in the resolved workspace."));
         }
 
         string userPrompt = ResolveVariable(trial.Variables, "input") ?? string.Empty;
@@ -172,7 +172,7 @@ public sealed partial class ProvingGroundsRunner(
         if (!Guid.TryParse(trial.Target.Trim(), out Guid promptId))
         {
             return Result<PingRequest>.Failure(
-                new Error("ProvingGrounds.InvalidTrial", "Prompt target must be a valid prompt GUID."));
+                new Error(ErrorCodes.ProvingGrounds.InvalidTrial, "Prompt target must be a valid prompt GUID."));
         }
 
         Prompt? prompt = await promptRepository
@@ -182,7 +182,7 @@ public sealed partial class ProvingGroundsRunner(
         if (prompt is null)
         {
             return Result<PingRequest>.Failure(
-                new Error("ProvingGrounds.PromptNotFound", $"Prompt '{promptId}' was not found."));
+                new Error(ErrorCodes.ProvingGrounds.PromptNotFound, $"Prompt '{promptId}' was not found."));
         }
 
         Result<PromptRenderResultDto> renderResult = promptRenderer.Render(prompt, trial.Variables);

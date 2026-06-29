@@ -75,7 +75,7 @@ internal static class IntelligenceEndpoints
                         Result<PromptResponseDto>.Failure(resolvedRequest.Error),
                         badTraceId),
                     ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                    statusCode: InferenceErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code));
+                    statusCode: ArcanumErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code));
             }
 
             Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(resolvedRequest.Value, cancellationToken).ConfigureAwait(false);
@@ -96,7 +96,7 @@ internal static class IntelligenceEndpoints
             // than a hardcoded 500, matching /prompts/{id}/execute.
             return turn.IsSuccess
                 ? Results.Ok(response)
-                : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: InferenceErrorMapper.ResolveStatusCode(turn.Error.Code));
+                : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
         })
         .WithName("PostIntelligencePing")
         .WithLargeRequestBody();
@@ -241,7 +241,7 @@ internal static class IntelligenceEndpoints
                 // W6.3: map the resolve failure through the shared mapper (Campaign.NotFound -> 404)
                 // so ping-stream matches the buffered /intelligence/ping status semantics instead of
                 // a flat 400.
-                httpContext.Response.StatusCode = InferenceErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code);
+                httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code);
 
                 await httpContext.Response.WriteAsJsonAsync(
                     ApiResponse<string>.FromResult(Result<string>.Failure(resolvedRequest.Error), badTraceId),

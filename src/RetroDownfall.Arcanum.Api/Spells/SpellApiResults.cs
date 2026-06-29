@@ -2,6 +2,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 
 namespace RetroDownfall.Arcanum.Api.Spells;
 
@@ -51,12 +52,11 @@ internal static class SpellApiResults
     {
         ApiResponse<T> response = ApiResponse<T>.FromResult(Result<T>.Failure(error), traceId);
 
-        if (string.Equals(error.Code, ErrorCodes.Spell.PathNotAllowed, StringComparison.Ordinal))
-        {
-            return Results.Json(response, responseTypeInfo, statusCode: StatusCodes.Status403Forbidden);
-        }
+        return Results.Json(
+            response,
+            responseTypeInfo,
+            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
 
-        return Results.Json(response, responseTypeInfo, statusCode: StatusCodes.Status400BadRequest);
     }
 
 }

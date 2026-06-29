@@ -871,7 +871,7 @@ internal static class OpenAiV1Endpoints
     }
 
     private static int ResolveOpenAiInferenceFailureStatusCode(string internalCode) =>
-        InferenceErrorMapper.ResolveStatusCode(internalCode);
+        ArcanumErrorMapper.ResolveStatusCode(internalCode);
 
     internal static IResult CreateUnhandledInferenceErrorResult() =>
         JsonError(

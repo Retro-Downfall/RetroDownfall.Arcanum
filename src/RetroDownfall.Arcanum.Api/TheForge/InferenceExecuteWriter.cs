@@ -51,7 +51,7 @@ internal static class InferenceExecuteWriter
             return;
         }
 
-        httpContext.Response.StatusCode = InferenceErrorMapper.ResolveStatusCode(turn.Error.Code);
+        httpContext.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code);
 
         await JsonSerializer.SerializeAsync(
             httpContext.Response.Body,

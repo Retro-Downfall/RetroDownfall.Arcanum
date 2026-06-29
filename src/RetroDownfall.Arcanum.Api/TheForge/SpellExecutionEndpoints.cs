@@ -130,7 +130,7 @@ internal static partial class SpellExecutionEndpoints
                     : Results.Json(
                         response,
                         ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                        statusCode: InferenceErrorMapper.ResolveStatusCode(turn.Error.Code));
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
         .WithName("Spell_Execute");
 
@@ -172,9 +172,7 @@ internal static partial class SpellExecutionEndpoints
 
                 if (workspaceResult.IsFailure)
                 {
-                    ctx.Response.StatusCode = string.Equals(workspaceResult.Error.Code, ErrorCodes.Spell.PathNotAllowed, StringComparison.Ordinal)
-                        ? StatusCodes.Status403Forbidden
-                        : StatusCodes.Status400BadRequest;
+                    ctx.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(workspaceResult.Error.Code);
 
                     await ctx.Response
                         .WriteAsJsonAsync(
