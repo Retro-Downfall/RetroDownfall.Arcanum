@@ -35,7 +35,7 @@ internal static class ExecuteWorkspaceResolver
             if (campaign is null)
             {
                 return Result<string?>.Failure(
-                    new Error("Campaign.NotFound", "No campaign exists with that identifier."));
+                    new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
             }
 
             return Result<string?>.Success(campaign.Path);

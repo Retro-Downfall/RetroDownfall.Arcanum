@@ -46,7 +46,7 @@ internal static class WorkspaceEndpoints
                 return workspace is null
                     ? Results.Json(
                         ApiResponse<WorkspaceInfo>.FromResult(
-                            Result<WorkspaceInfo>.Failure(new Error("Workspace.NotFound", "No workspace exists with that id.")),
+                            Result<WorkspaceInfo>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
                         statusCode: StatusCodes.Status404NotFound)
@@ -86,7 +86,7 @@ internal static class WorkspaceEndpoints
                     return Results.BadRequest(
                         ApiResponse<WorkspaceInfo>.FromResult(
                             Result<WorkspaceInfo>.Failure(
-                                new Error("Workspace.NameEmpty", "Workspace name cannot be empty.")),
+                                new Error(ErrorCodes.Workspace.NameEmpty, "Workspace name cannot be empty.")),
                             traceId));
                 }
 
@@ -101,7 +101,7 @@ internal static class WorkspaceEndpoints
                         ApiResponse<WorkspaceInfo>.FromResult(result, traceId));
                 }
 
-                if (string.Equals(result.Error.Code, "Workspace.PathNotAllowed", StringComparison.Ordinal))
+                if (string.Equals(result.Error.Code, ErrorCodes.Workspace.PathNotAllowed, StringComparison.Ordinal))
                 {
                     return Results.Json(
                         ApiResponse<WorkspaceInfo>.FromResult(
@@ -148,7 +148,7 @@ internal static class WorkspaceEndpoints
                     return Results.BadRequest(
                         ApiResponse<WorkspaceInfo>.FromResult(
                             Result<WorkspaceInfo>.Failure(
-                                new Error("Validation.InvalidBody", "Request body is required.")),
+                                new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -156,7 +156,7 @@ internal static class WorkspaceEndpoints
                     .UpdateAsync(id, request, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                if (result.IsFailure && result.Error.Code == "Workspace.NotFound")
+                if (result.IsFailure && result.Error.Code == ErrorCodes.Workspace.NotFound)
                 {
                     return Results.Json(
                         ApiResponse<WorkspaceInfo>.FromResult(result, traceId),
@@ -184,7 +184,7 @@ internal static class WorkspaceEndpoints
                     .UnregisterAsync(id, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                if (result.IsFailure && result.Error.Code == "Workspace.NotFound")
+                if (result.IsFailure && result.Error.Code == ErrorCodes.Workspace.NotFound)
                 {
                     return Results.Json(
                         ApiResponse<bool>.FromResult(result, traceId),
@@ -222,7 +222,7 @@ internal static class WorkspaceEndpoints
                 {
                     return Results.Json(
                         ApiResponse<FileListResult>.FromResult(
-                            Result<FileListResult>.Failure(new Error("Workspace.NotFound", "No workspace exists with that id.")),
+                            Result<FileListResult>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseFileListResult,
                         statusCode: StatusCodes.Status404NotFound);
@@ -260,7 +260,7 @@ internal static class WorkspaceEndpoints
                 {
                     return Results.Json(
                         ApiResponse<FileEntry>.FromResult(
-                            Result<FileEntry>.Failure(new Error("Workspace.NotFound", "No workspace exists with that id.")),
+                            Result<FileEntry>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseFileEntry,
                         statusCode: StatusCodes.Status404NotFound);
@@ -298,7 +298,7 @@ internal static class WorkspaceEndpoints
                 {
                     return Results.Json(
                         ApiResponse<FileReadResult>.FromResult(
-                            Result<FileReadResult>.Failure(new Error("Workspace.NotFound", "No workspace exists with that id.")),
+                            Result<FileReadResult>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseFileReadResult,
                         statusCode: StatusCodes.Status404NotFound);

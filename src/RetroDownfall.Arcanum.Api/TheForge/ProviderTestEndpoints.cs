@@ -32,7 +32,7 @@ internal static class ProviderTestEndpoints
                     return Results.BadRequest(
                         ApiResponse<ProviderTestResult>.FromResult(
                             Result<ProviderTestResult>.Failure(
-                                new Error("Validation.InvalidBody", "endpoint is required.")),
+                                new Error(ErrorCodes.Validation.InvalidBody, "endpoint is required.")),
                             traceId));
                 }
 

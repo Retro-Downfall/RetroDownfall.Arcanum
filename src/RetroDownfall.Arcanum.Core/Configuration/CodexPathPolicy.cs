@@ -40,7 +40,7 @@ public static class CodexPathPolicy
         {
             return Result<CodexValidationResult>.Failure(
                 new Error(
-                    "Prompt.CodexPathNotContained",
+                    ErrorCodes.Prompt.CodexPathNotContained,
                     "A workspace or campaign root is required to read a codex file."));
         }
 
@@ -65,7 +65,7 @@ public static class CodexPathPolicy
         {
             return Result<CodexValidationResult>.Failure(
                 new Error(
-                    "Prompt.CodexPathNotContained",
+                    ErrorCodes.Prompt.CodexPathNotContained,
                     "A workspace or campaign root is required to read a codex file."));
         }
 
@@ -73,7 +73,7 @@ public static class CodexPathPolicy
         {
             return Result<CodexValidationResult>.Failure(
                 new Error(
-                    "Prompt.CodexPathNotContained",
+                    ErrorCodes.Prompt.CodexPathNotContained,
                     "The codex path must be under the prompt campaign or working directory."));
         }
 

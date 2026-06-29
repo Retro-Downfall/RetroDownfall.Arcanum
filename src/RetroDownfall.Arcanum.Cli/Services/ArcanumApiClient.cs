@@ -76,11 +76,11 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
     }
 
     private static readonly Error MissingApiKeyError = new(
-        "Security.MissingApiKey",
+        ErrorCodes.Security.MissingApiKey,
         "No API key found. Run 'arcanum serve' once to generate and store a key.");
 
     private static readonly Error RequestTimeoutError = new(
-        "Connection.Timeout",
+        ErrorCodes.Connection.Timeout,
         "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.");
 
     private static readonly Error RequestUnreachableError = new(
@@ -220,7 +220,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<string>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -278,7 +278,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<string>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -299,7 +299,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<bool>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -359,7 +359,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result<bool>.Failure(
-                    new Error("Intelligence.HumanPromptNotFound", "No active ask_human prompt matches that promptId."));
+                    new Error(ErrorCodes.Intelligence.HumanPromptNotFound, "No active ask_human prompt matches that promptId."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -378,7 +378,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<bool>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -396,7 +396,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<string>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -457,7 +457,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<string>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -475,7 +475,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<WorkspaceArsenalDto>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -541,7 +541,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<WorkspaceArsenalDto>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -559,7 +559,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<PatternSnapshot>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -621,7 +621,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<PatternSnapshot>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -642,7 +642,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<SessionQueryResult>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -708,7 +708,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<SessionQueryResult>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -726,7 +726,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<SessionAnalytics>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -786,7 +786,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<SessionAnalytics>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -804,7 +804,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -848,7 +848,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result.Failure(
-                    new Error("Session.NotFound", "No session exists with that id."));
+                    new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
             }
 
             ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
@@ -869,7 +869,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -887,7 +887,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<SessionDetailDto>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -939,7 +939,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result<SessionDetailDto>.Failure(
-                    new Error("Session.NotFound", "No session exists with that id."));
+                    new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -958,7 +958,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<SessionDetailDto>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -980,7 +980,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<EntryDto[]>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1051,7 +1051,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result<EntryDto[]>.Failure(
-                    new Error("Session.NotFound", "No session exists with that id."));
+                    new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -1070,7 +1070,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<EntryDto[]>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1088,7 +1088,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1121,7 +1121,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result.Failure(
-                    new Error("Session.NotFound", "No session exists with that id."));
+                    new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -1140,7 +1140,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1161,7 +1161,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<SessionExportResult>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1215,7 +1215,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result<SessionExportResult>.Failure(
-                    new Error("Session.NotFound", "No session exists with that id."));
+                    new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -1234,7 +1234,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<SessionExportResult>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1433,7 +1433,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<List<LoreDto>>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1523,7 +1523,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             catch (OperationCanceledException)
             {
                 return Result<List<LoreDto>>.Failure(new Error(
-                    "Connection.Timeout",
+                    ErrorCodes.Connection.Timeout,
                     "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
             }
             catch (HttpRequestException)
@@ -1545,7 +1545,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<LoreDto>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1599,7 +1599,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result<LoreDto>.Failure(
-                    new Error("Grimoire.LoreNotFound", "No lore exists with that key."));
+                    new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
             }
 
             if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -1618,7 +1618,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<LoreDto>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1639,7 +1639,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<LoreDto>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1709,7 +1709,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<LoreDto>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1727,7 +1727,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<bool>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1757,7 +1757,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 }
 
                 return Result<bool>.Failure(
-                    new Error("Grimoire.LoreNotFound", "No lore exists with that key."));
+                    new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
             }
 
             if (response.IsSuccessStatusCode)
@@ -1800,7 +1800,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<bool>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1818,7 +1818,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<UnseenServantJobStatusDto[]>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1872,7 +1872,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<UnseenServantJobStatusDto[]>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -1893,7 +1893,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<UnseenServantJobStatusDto>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -1965,7 +1965,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<UnseenServantJobStatusDto>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -2209,7 +2209,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<LlamaServerInfo>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -2258,7 +2258,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<LlamaServerInfo>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -2278,7 +2278,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<bool>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -2319,7 +2319,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<bool>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)
@@ -2342,7 +2342,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         if (apiKey is null)
         {
             return Result<T>.Failure(new Error(
-                "Security.MissingApiKey",
+                ErrorCodes.Security.MissingApiKey,
                 "No API key found. Run 'arcanum serve' once to generate and store a key."));
         }
 
@@ -2379,7 +2379,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (OperationCanceledException)
         {
             return Result<T>.Failure(new Error(
-                "Connection.Timeout",
+                ErrorCodes.Connection.Timeout,
                 "The request to the Arcanum API timed out. The server may be busy with a long-running model operation."));
         }
         catch (HttpRequestException)

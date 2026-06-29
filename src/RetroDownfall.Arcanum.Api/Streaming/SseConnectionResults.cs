@@ -17,7 +17,7 @@ internal static class SseConnectionResults
             ApiResponse<bool>.FromResult(
                 Result<bool>.Failure(
                     new Error(
-                        "Api.TooManyConnections",
+                        ErrorCodes.Api.TooManyConnections,
                         "The server has reached the maximum number of concurrent SSE connections.")),
                 traceId),
             ArcanumJsonContext.Default.ApiResponseBoolean,

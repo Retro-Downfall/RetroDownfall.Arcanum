@@ -134,9 +134,9 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
         {
             await repo.AddAsync(campaign, ct).ConfigureAwait(false);
         }
-        catch (InvalidOperationException ex) when (ex.Message == "Campaign.MaxReached")
+        catch (InvalidOperationException ex) when (ex.Message == ErrorCodes.Campaign.MaxReached)
         {
-            return new Error("Campaign.MaxReached", "The maximum number of campaigns has been reached.");
+            return new Error(ErrorCodes.Campaign.MaxReached, "The maximum number of campaigns has been reached.");
         }
 
         Directory.CreateDirectory(Path.Combine(normalizedPath, ".arcanum"));
@@ -153,7 +153,7 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         if (!Guid.TryParse(id, out Guid guid))
         {
-            return new Error("Workspace.NotFound", "The workspace was not found.");
+            return new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found.");
         }
 
         await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
@@ -164,7 +164,7 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         if (existing is null)
         {
-            return new Error("Workspace.NotFound", "The workspace was not found.");
+            return new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found.");
         }
 
         string updatedName = existing.Name;
@@ -173,7 +173,7 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
         {
             if (string.IsNullOrWhiteSpace(request.Name))
             {
-                return new Error("Workspace.NameEmpty", "Workspace name cannot be empty.");
+                return new Error(ErrorCodes.Workspace.NameEmpty, "Workspace name cannot be empty.");
             }
 
             updatedName = request.Name.Trim();
@@ -208,7 +208,7 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         if (!Guid.TryParse(id, out Guid guid))
         {
-            return new Error("Workspace.NotFound", "The workspace was not found.");
+            return new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found.");
         }
 
         await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
@@ -219,7 +219,7 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         if (!deleted)
         {
-            return new Error("Workspace.NotFound", "The workspace was not found.");
+            return new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found.");
         }
 
         return true;
@@ -237,8 +237,8 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
     private static Error MapPathValidationError(Error error) =>
         error.Code switch
         {
-            "Campaign.InvalidPath" => new Error("Workspace.PathNotFound", error.Message),
-            "Campaign.PathNotAllowed" => new Error("Workspace.PathNotAllowed", error.Message),
+            ErrorCodes.Campaign.InvalidPath => new Error("Workspace.PathNotFound", error.Message),
+            ErrorCodes.Campaign.PathNotAllowed => new Error(ErrorCodes.Workspace.PathNotAllowed, error.Message),
             _ => error,
         };
 

@@ -29,7 +29,7 @@ internal static class SanctumEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SanctumConfig>.FromResult(
-                            Result<SanctumConfig>.Failure(new Error("Campaign.NotFound", "Campaign was not found.")),
+                            Result<SanctumConfig>.Failure(new Error(ErrorCodes.Campaign.NotFound, "Campaign was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSanctumConfig,
                         statusCode: StatusCodes.Status404NotFound);
@@ -60,7 +60,7 @@ internal static class SanctumEndpoints
                     return Results.BadRequest(
                         ApiResponse<SanctumConfig>.FromResult(
                             Result<SanctumConfig>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }
@@ -71,7 +71,7 @@ internal static class SanctumEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SanctumConfig>.FromResult(
-                            Result<SanctumConfig>.Failure(new Error("Campaign.NotFound", "Campaign was not found.")),
+                            Result<SanctumConfig>.Failure(new Error(ErrorCodes.Campaign.NotFound, "Campaign was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSanctumConfig,
                         statusCode: StatusCodes.Status404NotFound);
@@ -118,7 +118,7 @@ internal static class SanctumEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SanctumBreach[]>.FromResult(
-                            Result<SanctumBreach[]>.Failure(new Error("Campaign.NotFound", "Campaign was not found.")),
+                            Result<SanctumBreach[]>.Failure(new Error(ErrorCodes.Campaign.NotFound, "Campaign was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSanctumBreachArray,
                         statusCode: StatusCodes.Status404NotFound);

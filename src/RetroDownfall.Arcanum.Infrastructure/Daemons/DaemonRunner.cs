@@ -29,7 +29,7 @@ public sealed class DaemonRunner(
         if (job is null)
         {
             return Result<DaemonExecutionSummary>.Failure(
-                new Error("Daemon.NotFound", $"Daemon job '{daemonId}' was not found."));
+                new Error(ErrorCodes.Daemon.NotFound, $"Daemon job '{daemonId}' was not found."));
         }
 
         if (!force && !job.CanRunOnDemand)
@@ -84,7 +84,7 @@ public sealed class DaemonRunner(
         if (executionCts is null)
         {
             return Result<DaemonExecutionSummary>.Failure(
-                new Error("Daemon.NotFound", $"Execution '{executionId}' was not found after start."));
+                new Error(ErrorCodes.Daemon.NotFound, $"Execution '{executionId}' was not found after start."));
         }
 
         try

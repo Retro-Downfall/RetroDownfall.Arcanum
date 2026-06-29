@@ -117,7 +117,7 @@ public sealed class WizardIntelligenceProvider(
 
         if (!HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
-            return Result<PromptTurnResult>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required."));
+            return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
         }
 
         CancellationToken callerToken = cancellationToken;
@@ -136,7 +136,7 @@ public sealed class WizardIntelligenceProvider(
         {
             logger.LogWarning(ex, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
 
-            return Result<PromptTurnResult>.Failure(new Error("Hub.Model", PublicModelResolutionFailureMessage));
+            return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
         }
 
         using (lease)
@@ -319,7 +319,7 @@ public sealed class WizardIntelligenceProvider(
                                 .ConfigureAwait(false);
                         }
 
-                        return Result<PromptTurnResult>.Failure(new Error("Hub.ToolLoop", "Tool invocation limit reached."));
+                        return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.ToolLoop, "Tool invocation limit reached."));
                     }
 
                     foreach (FunctionCallContent fcc in calls)
@@ -410,7 +410,7 @@ public sealed class WizardIntelligenceProvider(
 
                 logger.LogWarning("Inference wall-clock timeout exceeded for model {ModelName}.", targetModel);
 
-                return Result<PromptTurnResult>.Failure(new Error("Hub.Timeout", PublicInferenceTimeoutMessage));
+                return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Timeout, PublicInferenceTimeoutMessage));
 
             }
             catch (OperationCanceledException)
@@ -460,7 +460,7 @@ public sealed class WizardIntelligenceProvider(
 
                 return Result<PromptTurnResult>.Failure(
                     new Error(
-                        lease.IsOllama ? "Ollama.Error" : "Hub.Error",
+                        lease.IsOllama ? ErrorCodes.Ollama.Error : ErrorCodes.Hub.Error,
                         BuildInferenceFailureMessage(lease)));
             }
         }
@@ -1145,7 +1145,7 @@ public sealed class WizardIntelligenceProvider(
         {
             logger.LogError(ex, "Model pull failed for {ModelName}.", modelName);
 
-            return Result.Failure(new Error("Ollama.Pull", PublicModelPullFailureMessage));
+            return Result.Failure(new Error(ErrorCodes.Ollama.Pull, PublicModelPullFailureMessage));
         }
     }
 
@@ -1170,7 +1170,7 @@ public sealed class WizardIntelligenceProvider(
         {
             logger.LogWarning(ex, "Failed to list local Ollama models while checking {ModelName}.", modelName);
 
-            return Result<bool>.Failure(new Error("Ollama.ListModels", PublicListLocalModelsFailureMessage));
+            return Result<bool>.Failure(new Error(ErrorCodes.Ollama.ListModels, PublicListLocalModelsFailureMessage));
         }
     }
 
@@ -3081,7 +3081,7 @@ public sealed class WizardIntelligenceProvider(
         if (files.Count > maxFiles)
         {
             error = new Error(
-                "Validation.AttachedFiles",
+                ErrorCodes.Validation.AttachedFiles,
                 $"At most {maxFiles} attached files are allowed per request.");
 
             return false;
@@ -3097,7 +3097,7 @@ public sealed class WizardIntelligenceProvider(
 
             if (item is null)
             {
-                error = new Error("Validation.AttachedFiles", "Attached file entries cannot be null.");
+                error = new Error(ErrorCodes.Validation.AttachedFiles, "Attached file entries cannot be null.");
 
                 return false;
             }
@@ -3105,7 +3105,7 @@ public sealed class WizardIntelligenceProvider(
             if (string.IsNullOrWhiteSpace(item.RelativePath))
             {
                 error = new Error(
-                    "Validation.AttachedFiles",
+                    ErrorCodes.Validation.AttachedFiles,
                     "Each attached file must have a non-empty relative path.");
 
                 return false;
@@ -3113,7 +3113,7 @@ public sealed class WizardIntelligenceProvider(
 
             if (item.RelativePath.Length > maxPathChars)
             {
-                error = new Error("Validation.AttachedFiles", "Attached file path is too long.");
+                error = new Error(ErrorCodes.Validation.AttachedFiles, "Attached file path is too long.");
 
                 return false;
             }
@@ -3125,7 +3125,7 @@ public sealed class WizardIntelligenceProvider(
             if (utf8Len > maxBytes)
             {
                 error = new Error(
-                    "Validation.AttachedFiles",
+                    ErrorCodes.Validation.AttachedFiles,
                     $"Attached file content exceeds the maximum size ({maxBytes} bytes UTF-8).");
 
                 return false;
@@ -3136,7 +3136,7 @@ public sealed class WizardIntelligenceProvider(
             if (totalUtf8 > maxTotalBytes)
             {
                 error = new Error(
-                    "Validation.AttachedFiles",
+                    ErrorCodes.Validation.AttachedFiles,
                     "Total size of attached files exceeds the allowed limit for this request.");
 
                 return false;

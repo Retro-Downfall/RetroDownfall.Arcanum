@@ -17,12 +17,12 @@ public sealed class SpellWorkspaceResolver(
         {
             if (!ToolHelpers.TryNormalizeWorkspace(workspaceQuery, out string? normalized, out string? errorMessage))
             {
-                return Result<string?>.Failure(new Error("Spell.InvalidWorkspace", errorMessage ?? "Invalid workspace path."));
+                return Result<string?>.Failure(new Error(ErrorCodes.Spell.InvalidWorkspace, errorMessage ?? "Invalid workspace path."));
             }
 
             if (!Directory.Exists(normalized))
             {
-                return Result<string?>.Failure(new Error("Spell.InvalidWorkspace", "Workspace directory does not exist."));
+                return Result<string?>.Failure(new Error(ErrorCodes.Spell.InvalidWorkspace, "Workspace directory does not exist."));
             }
 
             return EnforceAllowlist(normalized);
@@ -103,7 +103,7 @@ public sealed class SpellWorkspaceResolver(
 
         if (string.IsNullOrWhiteSpace(resolved.Value))
         {
-            return Result<string>.Failure(new Error("Spell.NoWorkspace", "A workspace directory is required for this operation."));
+            return Result<string>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required for this operation."));
         }
 
         return Result<string>.Success(resolved.Value);
@@ -116,7 +116,7 @@ public sealed class SpellWorkspaceResolver(
         Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
             normalizedWorkspace,
             allowedRoots,
-            "Spell.PathNotAllowed",
+            ErrorCodes.Spell.PathNotAllowed,
             "The specified workspace is outside the configured Spells.AllowedWorkspaceRoots.");
 
         if (allowed.IsFailure)

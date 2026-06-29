@@ -44,7 +44,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<SessionDetailDto>.FromResult(
                             Result<SessionDetailDto>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }
@@ -125,7 +125,7 @@ internal static class SessionEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SessionDetailDto>.FromResult(
-                            Result<SessionDetailDto>.Failure(new Error("Session.NotFound", "Session was not found.")),
+                            Result<SessionDetailDto>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -159,7 +159,7 @@ internal static class SessionEndpoints
                 {
                     return Results.Json(
                         ApiResponse<EntryDto[]>.FromResult(
-                            Result<EntryDto[]>.Failure(new Error("Session.NotFound", "Session was not found.")),
+                            Result<EntryDto[]>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEntryDtoArray,
                         statusCode: StatusCodes.Status404NotFound);
@@ -194,7 +194,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<EntryDto>.FromResult(
                             Result<EntryDto>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }
@@ -230,7 +230,7 @@ internal static class SessionEndpoints
                 {
                     return Results.Json(
                         ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Failure(new Error("Session.NotFound", "Session was not found.")),
+                            Result<EntryDto>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEntryDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -271,7 +271,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<SessionDetailDto>.FromResult(
                             Result<SessionDetailDto>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }
@@ -282,7 +282,7 @@ internal static class SessionEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SessionDetailDto>.FromResult(
-                            Result<SessionDetailDto>.Failure(new Error("Session.NotFound", "Session was not found.")),
+                            Result<SessionDetailDto>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -335,7 +335,7 @@ internal static class SessionEndpoints
 
                     return Results.Json(
                         ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error("Session.NotFound", "No session exists with that id.")),
+                            Result<bool>.Failure(new Error(ErrorCodes.Session.NotFound, "No session exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: StatusCodes.Status404NotFound);
@@ -357,7 +357,7 @@ internal static class SessionEndpoints
                     .ExportAsync(id, format, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                if (result.IsFailure && result.Error.Code == "Session.NotFound")
+                if (result.IsFailure && result.Error.Code == ErrorCodes.Session.NotFound)
                 {
                     return Results.Json(
                         ApiResponse<SessionExportResult>.FromResult(result, traceId),
@@ -380,7 +380,7 @@ internal static class SessionEndpoints
                     string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                     Result<bool> notFound = Result<bool>.Failure(
-                        new Error("Session.NotFound", "No session exists with that id."));
+                        new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
 
                     return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
                 }
@@ -417,7 +417,7 @@ internal static class SessionEndpoints
 
                     return Results.Json(
                         ApiResponse<SessionDetailDto>.FromResult(
-                            Result<SessionDetailDto>.Failure(new Error("Session.NotFound", "No session exists with that id.")),
+                            Result<SessionDetailDto>.Failure(new Error(ErrorCodes.Session.NotFound, "No session exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
                         statusCode: StatusCodes.Status404NotFound);

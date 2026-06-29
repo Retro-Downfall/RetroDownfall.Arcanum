@@ -822,29 +822,29 @@ internal static class OpenAiV1Endpoints
     private static string MapPublicOpenAiErrorCode(string internalCode) =>
         internalCode switch
         {
-            "Hub.Model" => "model_not_found",
-            "Validation.InvalidPrompt" => "missing_required_parameter",
-            "Validation.AttachedFiles" => "invalid_value",
-            "Hub.ToolLoop" => "server_error",
-            "Hub.Timeout" => "server_error",
-            "Ollama.Pull" => "model_not_found",
-            "Ollama.ListModels" => "server_error",
-            "Ollama.Error" => "inference_failed",
-            "Hub.Error" => "inference_failed",
+            ErrorCodes.Hub.Model => "model_not_found",
+            ErrorCodes.Validation.InvalidPrompt => "missing_required_parameter",
+            ErrorCodes.Validation.AttachedFiles => "invalid_value",
+            ErrorCodes.Hub.ToolLoop => "server_error",
+            ErrorCodes.Hub.Timeout => "server_error",
+            ErrorCodes.Ollama.Pull => "model_not_found",
+            ErrorCodes.Ollama.ListModels => "server_error",
+            ErrorCodes.Ollama.Error => "inference_failed",
+            ErrorCodes.Hub.Error => "inference_failed",
             _ => "inference_failed",
         };
 
     private static string ResolvePublicInferenceFailureMessage(string internalCode) =>
         internalCode switch
         {
-            "Hub.Model" =>
+            ErrorCodes.Hub.Model =>
                 "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
-            "Validation.InvalidPrompt" => "Prompt is required.",
-            "Validation.AttachedFiles" => "Attached file validation failed.",
-            "Hub.ToolLoop" => "Tool invocation limit reached.",
-            "Hub.Timeout" => "Inference timed out.",
-            "Ollama.Pull" => "The requested model could not be downloaded from Ollama.",
-            "Ollama.ListModels" => "Could not reach Ollama to list local models.",
+            ErrorCodes.Validation.InvalidPrompt => "Prompt is required.",
+            ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
+            ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
+            ErrorCodes.Hub.Timeout => "Inference timed out.",
+            ErrorCodes.Ollama.Pull => "The requested model could not be downloaded from Ollama.",
+            ErrorCodes.Ollama.ListModels => "Could not reach Ollama to list local models.",
             _ => "Inference failed. See server logs for details.",
         };
 

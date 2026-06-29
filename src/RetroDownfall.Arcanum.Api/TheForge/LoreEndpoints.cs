@@ -61,7 +61,7 @@ internal static class LoreEndpoints
                     string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
                     Result<LoreDto> notFound = Result<LoreDto>.Failure(
-                        new Error("Grimoire.LoreNotFound", "No lore exists with that key."));
+                        new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
 
                     return Results.NotFound(ApiResponse<LoreDto>.FromResult(notFound, traceId));
                 }
@@ -102,7 +102,7 @@ internal static class LoreEndpoints
                 {
 
                     Result<LoreDto> invalid = Result<LoreDto>.Failure(
-                        new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage));
+                        new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage));
 
                     return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
 
@@ -161,7 +161,7 @@ internal static class LoreEndpoints
                 if (!removed)
                 {
                     Result<bool> notFound = Result<bool>.Failure(
-                        new Error("Grimoire.LoreNotFound", "No lore exists with that key."));
+                        new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
 
                     return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
                 }

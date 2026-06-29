@@ -655,7 +655,7 @@ public sealed class McpConnectionManager(
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
 
-            return new Error("Mcp.MissingWorkspace", "workingDirectory is required to trust a workspace-local mcp.json.");
+            return new Error(ErrorCodes.Mcp.MissingWorkspace, "workingDirectory is required to trust a workspace-local mcp.json.");
 
         }
 
@@ -1630,7 +1630,7 @@ public sealed class McpConnectionManager(
             return new Error("Mcp.NotFound", $"MCP server '{name}' was not found.");
         }
 
-        return new Error("Mcp.AmbiguousServer", $"Multiple MCP servers named '{name}' exist; specify workingDirectory.");
+        return new Error(ErrorCodes.Mcp.AmbiguousServer, $"Multiple MCP servers named '{name}' exist; specify workingDirectory.");
     }
 
     private static string? NormalizeScopeWorkingDirectory(string? workingDirectory)

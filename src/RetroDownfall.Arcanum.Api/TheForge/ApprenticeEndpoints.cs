@@ -66,7 +66,7 @@ internal static class ApprenticeEndpoints
                 {
                     return Results.Json(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
-                            Result<ApprenticeDetailDto>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found.")),
+                            Result<ApprenticeDetailDto>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -96,7 +96,7 @@ internal static class ApprenticeEndpoints
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }
@@ -113,7 +113,7 @@ internal static class ApprenticeEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
-                            Result<ApprenticeDetailDto>.Failure(new Error("Apprentice.InvalidGoal", "Apprentice goal is required.")),
+                            Result<ApprenticeDetailDto>.Failure(new Error(ErrorCodes.Apprentice.InvalidGoal, "Apprentice goal is required.")),
                             traceId));
                 }
 
@@ -167,7 +167,7 @@ internal static class ApprenticeEndpoints
 
                     return Results.Json(
                         ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found.")),
+                            Result<bool>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: StatusCodes.Status404NotFound);
@@ -179,7 +179,7 @@ internal static class ApprenticeEndpoints
 
                     return Results.Json(
                         ApiResponse<string>.FromResult(
-                            Result<string>.Failure(new Error("Apprentice.Running", "Apprentice must be idle or in a terminal state before deletion.")),
+                            Result<string>.Failure(new Error(ErrorCodes.Apprentice.Running, "Apprentice must be idle or in a terminal state before deletion.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseString,
                         statusCode: StatusCodes.Status409Conflict);
@@ -255,7 +255,7 @@ internal static class ApprenticeEndpoints
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
-                                new Error("Apprentice.InvalidPlan", "Request body must include at least one plan step.")),
+                                new Error(ErrorCodes.Apprentice.InvalidPlan, "Request body must include at least one plan step.")),
                             traceId));
 
                 }
@@ -285,7 +285,7 @@ internal static class ApprenticeEndpoints
                     return Results.BadRequest(
                         ApiResponse<string>.FromResult(
                             Result<string>.Failure(
-                                new Error("Apprentice.InvalidGuidance", "Dungeon Master guidance is required.")),
+                                new Error(ErrorCodes.Apprentice.InvalidGuidance, "Dungeon Master guidance is required.")),
                             traceId));
 
                 }
@@ -316,7 +316,7 @@ internal static class ApprenticeEndpoints
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
-                                new Error("Apprentice.InvalidGoal", "Apprentice goal is required.")),
+                                new Error(ErrorCodes.Apprentice.InvalidGoal, "Apprentice goal is required.")),
                             traceId));
 
                 }
@@ -329,7 +329,7 @@ internal static class ApprenticeEndpoints
                     return Results.Json(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
                             Result<ApprenticeDetailDto>.Failure(
-                                new Error("Apprentice.NotFound", "Apprentice was not found.")),
+                                new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -375,7 +375,7 @@ internal static class ApprenticeEndpoints
 
                     return Results.Json(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
-                            Result<ApprenticeDetailDto>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found.")),
+                            Result<ApprenticeDetailDto>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -606,11 +606,11 @@ internal static class ApprenticeEndpoints
 
         return result.Error.Code switch
         {
-            "Apprentice.NotFound" => Results.Json(
+            ErrorCodes.Apprentice.NotFound => Results.Json(
                 ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                 statusCode: StatusCodes.Status404NotFound),
-            "Apprentice.CannotReweave" => Results.Json(
+            ErrorCodes.Apprentice.CannotReweave => Results.Json(
                 ApiResponse<ApprenticeDetailDto>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                 statusCode: StatusCodes.Status409Conflict),
@@ -621,7 +621,7 @@ internal static class ApprenticeEndpoints
 
     private static IResult MapCastResult(Error error, string traceId)
     {
-        if (error.Code == "Apprentice.ConclaveDisabled")
+        if (error.Code == ErrorCodes.Apprentice.ConclaveDisabled)
         {
 
             return Results.Json(
@@ -633,7 +633,7 @@ internal static class ApprenticeEndpoints
 
         }
 
-        if (error.Code is "Apprentice.ConclaveDepthExceeded" or "Apprentice.ConclaveBreadthExceeded")
+        if (error.Code is ErrorCodes.Apprentice.ConclaveDepthExceeded or ErrorCodes.Apprentice.ConclaveBreadthExceeded)
         {
 
             return Results.Json(
@@ -664,11 +664,11 @@ internal static class ApprenticeEndpoints
 
         return result.Error.Code switch
         {
-            "Apprentice.NotFound" => Results.Json(
+            ErrorCodes.Apprentice.NotFound => Results.Json(
                 ApiResponse<string>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: StatusCodes.Status404NotFound),
-            "Apprentice.NotEscalated" => Results.Json(
+            ErrorCodes.Apprentice.NotEscalated => Results.Json(
                 ApiResponse<string>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: StatusCodes.Status409Conflict),
@@ -686,11 +686,11 @@ internal static class ApprenticeEndpoints
 
         return result.Error.Code switch
         {
-            "Apprentice.NotFound" => Results.Json(
+            ErrorCodes.Apprentice.NotFound => Results.Json(
                 ApiResponse<string>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseString,
                 statusCode: StatusCodes.Status404NotFound),
-            "Apprentice.AlreadyRunning" or "Apprentice.NotPaused" or "Apprentice.Running" or "Apprentice.MaxReached" =>
+            ErrorCodes.Apprentice.AlreadyRunning or ErrorCodes.Apprentice.NotPaused or ErrorCodes.Apprentice.Running or ErrorCodes.Apprentice.MaxReached =>
                 Results.Json(
                     ApiResponse<string>.FromResult(result, traceId),
                     ArcanumJsonContext.Default.ApiResponseString,
@@ -701,11 +701,11 @@ internal static class ApprenticeEndpoints
 
     private static IResult MapApprenticeWorkspaceError(Error error, string traceId)
     {
-        if (error.Code == "Campaign.PathNotAllowed")
+        if (error.Code == ErrorCodes.Campaign.PathNotAllowed)
         {
             return Results.Json(
                 ApiResponse<ApprenticeDetailDto>.FromResult(
-                    Result<ApprenticeDetailDto>.Failure(new Error("Apprentice.InvalidWorkspace", error.Message)),
+                    Result<ApprenticeDetailDto>.Failure(new Error(ErrorCodes.Apprentice.InvalidWorkspace, error.Message)),
                     traceId),
                 ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
                 statusCode: StatusCodes.Status403Forbidden);
@@ -713,7 +713,7 @@ internal static class ApprenticeEndpoints
 
         return Results.BadRequest(
             ApiResponse<ApprenticeDetailDto>.FromResult(
-                Result<ApprenticeDetailDto>.Failure(new Error("Apprentice.InvalidWorkspace", error.Message)),
+                Result<ApprenticeDetailDto>.Failure(new Error(ErrorCodes.Apprentice.InvalidWorkspace, error.Message)),
                 traceId));
     }
 

@@ -96,7 +96,7 @@ internal static class PromptEndpoints
                 {
                     return Results.Json(
                         ApiResponse<PromptDetailDto>.FromResult(
-                            Result<PromptDetailDto>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -199,7 +199,7 @@ internal static class PromptEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<PromptDetailDto>.FromResult(
-                            Result<PromptDetailDto>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -209,7 +209,7 @@ internal static class PromptEndpoints
                 {
                     return Results.Json(
                         ApiResponse<PromptDetailDto>.FromResult(
-                            Result<PromptDetailDto>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -299,7 +299,7 @@ internal static class PromptEndpoints
                 {
                     return Results.Json(
                         ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                            Result<bool>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: StatusCodes.Status404NotFound);
@@ -326,7 +326,7 @@ internal static class PromptEndpoints
                 {
                     return Results.Json(
                         ApiResponse<PromptRenderResultDto>.FromResult(
-                            Result<PromptRenderResultDto>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                            Result<PromptRenderResultDto>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptRenderResultDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -362,7 +362,7 @@ internal static class PromptEndpoints
                 {
                     return Results.Json(
                         ApiResponse<PromptTestResultDto>.FromResult(
-                            Result<PromptTestResultDto>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                            Result<PromptTestResultDto>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptTestResultDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -450,7 +450,7 @@ internal static class PromptEndpoints
                             ApiResponse<PromptTestResultDto>.FromResult(
                                 Result<PromptTestResultDto>.Failure(
                                     new Error(
-                                        "Prompt.CodexPathNotContained",
+                                        ErrorCodes.Prompt.CodexPathNotContained,
                                         "The codex path must be under the prompt campaign or working directory.")),
                                 traceId));
                     }
@@ -522,7 +522,7 @@ internal static class PromptEndpoints
                 {
                     return Results.Json(
                         ApiResponse<PromptExportDto>.FromResult(
-                            Result<PromptExportDto>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                            Result<PromptExportDto>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptExportDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -546,7 +546,7 @@ internal static class PromptEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<PromptSummaryDto>.FromResult(
-                            Result<PromptSummaryDto>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<PromptSummaryDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -579,7 +579,7 @@ internal static class PromptEndpoints
                 if (body is null || string.IsNullOrWhiteSpace(body.UserMessage))
                 {
                     Result<PromptResponseDto> invalid = Result<PromptResponseDto>.Failure(
-                        new Error("Validation.InvalidPrompt", "userMessage is required."));
+                        new Error(ErrorCodes.Validation.InvalidPrompt, "userMessage is required."));
 
                     return Results.Json(
                         ApiResponse<PromptResponseDto>.FromResult(invalid, traceId),
@@ -592,7 +592,7 @@ internal static class PromptEndpoints
                 if (prompt is null)
                 {
                     Result<PromptResponseDto> notFound = Result<PromptResponseDto>.Failure(
-                        new Error("Prompt.NotFound", "No prompt exists with that identifier."));
+                        new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier."));
 
                     return Results.Json(
                         ApiResponse<PromptResponseDto>.FromResult(notFound, traceId),
@@ -699,7 +699,7 @@ internal static class PromptEndpoints
                 if (body is null || string.IsNullOrWhiteSpace(body.UserMessage))
                 {
                     Result<string> invalid = Result<string>.Failure(
-                        new Error("Validation.InvalidPrompt", "userMessage is required."));
+                        new Error(ErrorCodes.Validation.InvalidPrompt, "userMessage is required."));
 
                     ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
 
@@ -719,7 +719,7 @@ internal static class PromptEndpoints
                     await ctx.Response
                         .WriteAsJsonAsync(
                             ApiResponse<string>.FromResult(
-                                Result<string>.Failure(new Error("Prompt.NotFound", "No prompt exists with that identifier.")),
+                                Result<string>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
                                 traceId),
                             ArcanumJsonContext.Default.ApiResponseString,
                             cancellationToken: ctx.RequestAborted)
@@ -750,7 +750,7 @@ internal static class PromptEndpoints
 
                 if (workspaceResult.IsFailure)
                 {
-                    ctx.Response.StatusCode = string.Equals(workspaceResult.Error.Code, "Spell.PathNotAllowed", StringComparison.Ordinal)
+                    ctx.Response.StatusCode = string.Equals(workspaceResult.Error.Code, ErrorCodes.Spell.PathNotAllowed, StringComparison.Ordinal)
                         ? StatusCodes.Status403Forbidden
                         : StatusCodes.Status400BadRequest;
 

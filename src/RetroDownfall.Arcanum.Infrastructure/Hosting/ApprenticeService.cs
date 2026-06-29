@@ -92,7 +92,7 @@ internal sealed class ApprenticeService(
 
         if (!settings.Enabled)
         {
-            return Result<string>.Failure(new Error("Apprentice.Disabled", "Apprentice orchestration is disabled."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.Disabled, "Apprentice orchestration is disabled."));
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -103,12 +103,12 @@ internal sealed class ApprenticeService(
 
         if (apprentice is null)
         {
-            return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
 
         if (!CanStart(apprentice.Status))
         {
-            return Result<string>.Failure(new Error("Apprentice.AlreadyRunning", "Apprentice is already running or not in a startable state."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.AlreadyRunning, "Apprentice is already running or not in a startable state."));
         }
 
         if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: true, out bool queued, out Result<string>? capacityFailure))
@@ -143,12 +143,12 @@ internal sealed class ApprenticeService(
 
         if (apprentice is null)
         {
-            return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
 
         if (!IsPausable(apprentice.Status))
         {
-            return Result<string>.Failure(new Error("Apprentice.Running", "Apprentice is not running or planning."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.Running, "Apprentice is not running or planning."));
         }
 
         if (_executionTokens.TryGetValue(apprenticeId, out CancellationTokenSource? cts))
@@ -187,12 +187,12 @@ internal sealed class ApprenticeService(
 
         if (apprentice is null)
         {
-            return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
         }
 
         if (!string.Equals(apprentice.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal))
         {
-            return Result<string>.Failure(new Error("Apprentice.NotPaused", "Apprentice is not paused."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotPaused, "Apprentice is not paused."));
         }
 
         if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out bool _, out Result<string>? capacityFailure))
@@ -239,7 +239,7 @@ internal sealed class ApprenticeService(
             if (apprentice is null)
             {
 
-                return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+                return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
 
             }
 
@@ -271,14 +271,14 @@ internal sealed class ApprenticeService(
         if (loaded is null)
         {
 
-            return Result<string>.Failure(new Error("Apprentice.NotFound", "Apprentice was not found."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
 
         }
 
         if (!IsCancellable(loaded.Status))
         {
 
-            return Result<string>.Failure(new Error("Apprentice.NotPaused", "Apprentice is not in a cancellable state."));
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.NotPaused, "Apprentice is not in a cancellable state."));
 
         }
 
@@ -342,7 +342,7 @@ internal sealed class ApprenticeService(
         {
 
             return Result<ApprenticeDetailDto>.Failure(
-                new Error("Apprentice.NotFound", "Apprentice was not found."));
+                new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
 
         }
 
@@ -350,7 +350,7 @@ internal sealed class ApprenticeService(
         {
 
             return Result<ApprenticeDetailDto>.Failure(
-                new Error("Apprentice.CannotReweave", "Apprentice is not in a state that allows re-weaving the plan."));
+                new Error(ErrorCodes.Apprentice.CannotReweave, "Apprentice is not in a state that allows re-weaving the plan."));
 
         }
 
@@ -388,7 +388,7 @@ internal sealed class ApprenticeService(
         {
 
             return Result<string>.Failure(
-                new Error("Apprentice.InvalidGuidance", "Dungeon Master guidance is required."));
+                new Error(ErrorCodes.Apprentice.InvalidGuidance, "Dungeon Master guidance is required."));
 
         }
 
@@ -402,7 +402,7 @@ internal sealed class ApprenticeService(
         {
 
             return Result<string>.Failure(
-                new Error("Apprentice.NotFound", "Apprentice was not found."));
+                new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found."));
 
         }
 
@@ -410,7 +410,7 @@ internal sealed class ApprenticeService(
         {
 
             return Result<string>.Failure(
-                new Error("Apprentice.NotEscalated", "Apprentice is not awaiting Divine Intervention."));
+                new Error(ErrorCodes.Apprentice.NotEscalated, "Apprentice is not awaiting Divine Intervention."));
 
         }
 
@@ -605,7 +605,7 @@ internal sealed class ApprenticeService(
         {
 
             failure = Result<string>.Failure(
-                new Error("Apprentice.AlreadyRunning", "Apprentice is already running or not in a startable state."));
+                new Error(ErrorCodes.Apprentice.AlreadyRunning, "Apprentice is already running or not in a startable state."));
 
             return false;
 
@@ -646,7 +646,7 @@ internal sealed class ApprenticeService(
                         _pendingStartIds.TryRemove(apprenticeId, out _);
 
                         failure = Result<string>.Failure(
-                            new Error("Apprentice.PendingQueueFull", "Maximum concurrent Apprentices and pending start queue are full."));
+                            new Error(ErrorCodes.Apprentice.PendingQueueFull, "Maximum concurrent Apprentices and pending start queue are full."));
 
                         return false;
 
@@ -668,7 +668,7 @@ internal sealed class ApprenticeService(
         }
 
         failure = Result<string>.Failure(
-            new Error("Apprentice.MaxReached", "Maximum concurrent Apprentices reached."));
+            new Error(ErrorCodes.Apprentice.MaxReached, "Maximum concurrent Apprentices reached."));
 
         return false;
 

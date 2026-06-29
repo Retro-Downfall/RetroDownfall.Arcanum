@@ -434,7 +434,7 @@ public sealed class TheReliquary : IReliquary
 
             if (!Directory.Exists(entryDir))
             {
-                return Result.Failure(new Error("Llama.ModelNotCached", $"No cached model found for key '{cacheKey}'."));
+                return Result.Failure(new Error(ErrorCodes.Llama.ModelNotCached, $"No cached model found for key '{cacheKey}'."));
             }
 
             Directory.Delete(entryDir, recursive: true);

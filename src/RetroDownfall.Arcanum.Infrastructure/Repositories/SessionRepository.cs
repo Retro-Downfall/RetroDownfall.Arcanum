@@ -280,7 +280,7 @@ public sealed class SessionRepository(
         if (session is null)
         {
             return Result<SessionExportResult>.Failure(
-                new Error("Session.NotFound", "No session exists with that id."));
+                new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
         }
 
         return format switch

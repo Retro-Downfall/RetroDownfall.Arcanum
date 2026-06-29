@@ -43,7 +43,7 @@ Severity here = **design leverage**, not defect risk (Waves 1–5 already closed
   - **Fix:** one `Infrastructure/Storage/AtomicFile.ReplaceAsync(path, writeBody, permissionHook?)` (same-dir temp, flush-to-disk, atomic `File.Move` replace, optional post-move `SecureFilePermissions` hook). Migrate the three call sites to delegate; keep `SandboxedFileIo`'s extra handle-revalidation as a wrapper *around* it.
   - **Risk:** Low. Blast radius ~5 files. Crash-safety tests already exist per site.
 
-- [ ] **W6.2 — `ErrorCodes` constants + taxonomy (de-magic the code strings)**
+- [x] **W6.2 — `ErrorCodes` constants + taxonomy (de-magic the code strings)** ✅ *done — `Core/Primitives/ErrorCodes.cs` centralizes cross-layer dotted codes; literals replaced in Api/Infrastructure/Cli/InferenceErrorMapper.*
   - **Closes:** dotted error codes (`Campaign.NotFound`, `Apprentice.NotFound`, `Connection.Timeout`, `CommLink.Suppressed`, `Api.TooManyConnections`, …) are repeated magic strings across Api/Infra/Cli; grep works, compile-time safety + mapper-completeness do not.
   - **Fix:** `Core/Primitives/ErrorCodes.cs` constants for any code used in >1 layer, grouped by a short taxonomy comment (Validation / NotFound / Capacity / Timeout / Suppressed / Hub). Replace literals incrementally; document "suppressed outcomes are expected, not 5xx."
   - **Risk:** Low (string→const). Sets up W6.8.

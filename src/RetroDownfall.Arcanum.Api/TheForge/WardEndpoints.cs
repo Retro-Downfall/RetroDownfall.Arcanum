@@ -71,7 +71,7 @@ internal static class WardEndpoints
                     return Results.BadRequest(
                         ApiResponse<WardResolutionDto>.FromResult(
                             Result<WardResolutionDto>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }

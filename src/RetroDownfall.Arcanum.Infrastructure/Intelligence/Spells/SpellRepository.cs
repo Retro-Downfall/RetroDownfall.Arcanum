@@ -104,7 +104,7 @@ internal sealed partial class SpellRepository : ISpellRepository
     {
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-            return Result.Failure(new Error("Spell.NoWorkspace", "A workspace directory is required to create spells."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to create spells."));
         }
 
         string? nameError = ValidateName(request.Name);
@@ -232,12 +232,12 @@ internal sealed partial class SpellRepository : ISpellRepository
     {
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-            return Result.Failure(new Error("Spell.NoWorkspace", "A workspace directory is required to update spells."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to update spells."));
         }
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            return Result.Failure(new Error("Spell.NotFound", "Spell was not found."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
         }
 
         string trimmedName = name.Trim();
@@ -253,7 +253,7 @@ internal sealed partial class SpellRepository : ISpellRepository
                 return Result.Failure(new Error("Spell.BuiltinReadOnly", "Built-in spells cannot be modified."));
             }
 
-            return Result.Failure(new Error("Spell.NotFound", "Spell was not found."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
         }
 
         string? frontmatterError = SpellFrontmatterValidator.ValidateUpdate(request);
@@ -307,12 +307,12 @@ internal sealed partial class SpellRepository : ISpellRepository
     {
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-            return Result.Failure(new Error("Spell.NoWorkspace", "A workspace directory is required to delete spells."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to delete spells."));
         }
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            return Result.Failure(new Error("Spell.NotFound", "Spell was not found."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
         }
 
         string trimmedName = name.Trim();
@@ -328,7 +328,7 @@ internal sealed partial class SpellRepository : ISpellRepository
                 return Result.Failure(new Error("Spell.BuiltinReadOnly", "Built-in spells cannot be deleted."));
             }
 
-            return Result.Failure(new Error("Spell.NotFound", "Spell was not found."));
+            return Result.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
         }
 
         string workspaceRoot = workingDirectory.Trim();
@@ -573,7 +573,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (string.IsNullOrWhiteSpace(workspace))
         {
-            return Result<SpellSummary>.Failure(new Error("Spell.NoWorkspace", "A workspace directory is required to import spells."));
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to import spells."));
         }
 
         string name = request.Payload.Metadata?.Name
@@ -969,7 +969,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         }
         catch (Exception)
         {
-            error = new Error("Spell.InvalidWorkspace", "The workspace directory could not be resolved.");
+            error = new Error(ErrorCodes.Spell.InvalidWorkspace, "The workspace directory could not be resolved.");
 
             return false;
         }

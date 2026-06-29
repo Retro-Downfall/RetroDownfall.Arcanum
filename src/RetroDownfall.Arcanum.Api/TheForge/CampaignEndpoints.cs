@@ -52,7 +52,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.InvalidPath", "path query parameter is required.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.InvalidPath, "path query parameter is required.")),
                             traceId));
                 }
 
@@ -62,7 +62,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.Json(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.NotFound", "No campaign is registered at that path.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign is registered at that path.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseCampaignDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -87,7 +87,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.Json(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.NotFound", "No campaign exists with that identifier.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseCampaignDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -114,7 +114,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -185,11 +185,11 @@ internal static class CampaignEndpoints
                 {
                     await repo.AddAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
                 }
-                catch (InvalidOperationException ex) when (ex.Message == "Campaign.MaxReached")
+                catch (InvalidOperationException ex) when (ex.Message == ErrorCodes.Campaign.MaxReached)
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.MaxReached", "The maximum number of campaigns has been reached.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.MaxReached, "The maximum number of campaigns has been reached.")),
                             traceId));
                 }
 
@@ -211,7 +211,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -221,7 +221,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.Json(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.NotFound", "No campaign exists with that identifier.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseCampaignDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -290,7 +290,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.Json(
                         ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error("Campaign.NotFound", "No campaign exists with that identifier.")),
+                            Result<bool>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: StatusCodes.Status404NotFound);
@@ -312,7 +312,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.Json(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.NotFound", "No campaign exists with that identifier.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseCampaignDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -384,7 +384,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.Json(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.NotFound", "No campaign exists with that identifier.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseCampaignDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -505,7 +505,7 @@ internal static class CampaignEndpoints
     {
         ApiResponse<CampaignDto> response = ApiResponse<CampaignDto>.FromResult(Result<CampaignDto>.Failure(error), traceId);
 
-        if (string.Equals(error.Code, "Campaign.PathNotAllowed", StringComparison.Ordinal))
+        if (string.Equals(error.Code, ErrorCodes.Campaign.PathNotAllowed, StringComparison.Ordinal))
         {
             return Results.Json(response, ArcanumJsonContext.Default.ApiResponseCampaignDto, statusCode: StatusCodes.Status403Forbidden);
         }

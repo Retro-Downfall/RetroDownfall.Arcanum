@@ -129,7 +129,7 @@ internal static class SpellForgeEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SpellExportDto>.FromResult(
-                            Result<SpellExportDto>.Failure(new Error("Spell.NotFound", "No spell exists with that name.")),
+                            Result<SpellExportDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSpellExportDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -154,7 +154,7 @@ internal static class SpellForgeEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<SpellSummary>.FromResult(
-                            Result<SpellSummary>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<SpellSummary>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 

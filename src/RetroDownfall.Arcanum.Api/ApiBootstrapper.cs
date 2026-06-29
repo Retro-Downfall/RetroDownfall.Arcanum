@@ -90,7 +90,7 @@ public static class ApiBootstrapper
                 string traceId = Activity.Current?.Id ?? http.TraceIdentifier;
 
                 Result<string> rejected = Result<string>.Failure(
-                    new Error("RateLimit.TooManyRequests", "Too many requests; please slow down and retry."));
+                    new Error(ErrorCodes.RateLimit.TooManyRequests, "Too many requests; please slow down and retry."));
 
                 ApiResponse<string> envelope = ApiResponse<string>.FromResult(rejected, traceId);
 

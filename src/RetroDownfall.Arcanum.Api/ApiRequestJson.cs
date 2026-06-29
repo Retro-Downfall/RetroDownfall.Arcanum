@@ -50,7 +50,7 @@ internal static class ApiRequestJson
 
         return Results.Json(
             ApiResponse<TResponse>.FromResult(
-                Result<TResponse>.Failure(new Error("Validation.InvalidBody", message)),
+                Result<TResponse>.Failure(new Error(ErrorCodes.Validation.InvalidBody, message)),
                 traceId),
             responseTypeInfo,
             statusCode: StatusCodes.Status400BadRequest);

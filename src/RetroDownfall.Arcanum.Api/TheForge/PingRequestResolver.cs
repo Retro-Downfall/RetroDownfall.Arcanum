@@ -30,7 +30,7 @@ internal static class PingRequestResolver
         if (campaign is null)
         {
             return Result<PingRequest>.Failure(
-                new Error("Campaign.NotFound", "No campaign exists with that identifier."));
+                new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
         }
 
         return Result<PingRequest>.Success(request with { WorkingDirectory = campaign.Path });

@@ -76,7 +76,7 @@ internal static class SpellEndpoints
                 {
                     return Results.Json(
                         ApiResponse<SpellDetail>.FromResult(
-                            Result<SpellDetail>.Failure(new Error("Spell.NotFound", "No spell exists with that name.")),
+                            Result<SpellDetail>.Failure(new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSpellDetail,
                         statusCode: StatusCodes.Status404NotFound);
@@ -117,7 +117,7 @@ internal static class SpellEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<bool>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -177,7 +177,7 @@ internal static class SpellEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<bool>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 

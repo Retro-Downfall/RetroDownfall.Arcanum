@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 public static class OutboundUrlGuard
 {
 
-    public const string BlockedErrorCode = "Security.BlockedOutboundUrl";
+    public const string BlockedErrorCode = ErrorCodes.Security.BlockedOutboundUrl;
 
     private const string BlockedMessage =
         "Outbound URL targets a loopback, private, or link-local address and is not permitted.";

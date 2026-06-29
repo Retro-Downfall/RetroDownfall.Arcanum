@@ -50,7 +50,7 @@ internal static class DaemonEndpoints
                 return job is null
                     ? Results.Json(
                         ApiResponse<DaemonJobInfo>.FromResult(
-                            Result<DaemonJobInfo>.Failure(new Error("Daemon.NotFound", "No daemon job exists with that id.")),
+                            Result<DaemonJobInfo>.Failure(new Error(ErrorCodes.Daemon.NotFound, "No daemon job exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseDaemonJobInfo,
                         statusCode: StatusCodes.Status404NotFound)
@@ -166,7 +166,7 @@ internal static class DaemonEndpoints
                 if (body is null)
                 {
                     Result<bool> invalid = Result<bool>.Failure(
-                        new Error("Validation.InvalidBody", "Request body is required."));
+                        new Error(ErrorCodes.Validation.InvalidBody, "Request body is required."));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
                 }
@@ -282,7 +282,7 @@ internal static class DaemonEndpoints
                 if (body is null)
                 {
                     Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
-                        new Error("Validation.InvalidBody", "Request body is required."));
+                        new Error(ErrorCodes.Validation.InvalidBody, "Request body is required."));
 
                     return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
                 }

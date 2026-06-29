@@ -234,7 +234,7 @@ internal static class LlamaEndpoints
         if (!modelCache.IsCached(normalizedKey))
         {
             Result<LlamaServerInfo> missing = Result<LlamaServerInfo>.Failure(
-                new Error("Llama.ModelNotCached", $"Model '{normalizedKey}' is not cached. Pull it first."));
+                new Error(ErrorCodes.Llama.ModelNotCached, $"Model '{normalizedKey}' is not cached. Pull it first."));
 
             return Results.Json(
                 ApiResponse<LlamaServerInfo>.FromResult(missing, traceId),
@@ -328,7 +328,7 @@ internal static class LlamaEndpoints
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidBody", message));
+        Result<string> invalid = Result<string>.Failure(new Error(ErrorCodes.Validation.InvalidBody, message));
 
         return Results.Json(
             ApiResponse<string>.FromResult(invalid, traceId),

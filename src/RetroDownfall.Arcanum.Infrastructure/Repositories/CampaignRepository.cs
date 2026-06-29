@@ -123,7 +123,7 @@ public sealed class CampaignRepository : ICampaignRepository
 
         if (count >= maxCampaigns)
         {
-            throw new InvalidOperationException("Campaign.MaxReached");
+            throw new InvalidOperationException(ErrorCodes.Campaign.MaxReached);
         }
 
         campaign.NameLower = campaign.Name.Trim().ToLowerInvariant();

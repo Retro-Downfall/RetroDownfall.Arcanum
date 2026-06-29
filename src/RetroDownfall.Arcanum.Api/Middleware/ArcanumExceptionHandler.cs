@@ -55,7 +55,7 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             httpContext.Response.ContentType = "application/json";
 
             ApiResponse<bool> invalidBody = ApiResponse<bool>.FromResult(
-                Result<bool>.Failure(new Error("Validation.InvalidBody", ApiRequestJson.MalformedJsonMessage)),
+                Result<bool>.Failure(new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.MalformedJsonMessage)),
                 traceId);
 
             await httpContext.Response

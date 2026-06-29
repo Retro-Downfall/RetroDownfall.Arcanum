@@ -51,7 +51,7 @@ internal static class SpellApiResults
     {
         ApiResponse<T> response = ApiResponse<T>.FromResult(Result<T>.Failure(error), traceId);
 
-        if (string.Equals(error.Code, "Spell.PathNotAllowed", StringComparison.Ordinal))
+        if (string.Equals(error.Code, ErrorCodes.Spell.PathNotAllowed, StringComparison.Ordinal))
         {
             return Results.Json(response, responseTypeInfo, statusCode: StatusCodes.Status403Forbidden);
         }

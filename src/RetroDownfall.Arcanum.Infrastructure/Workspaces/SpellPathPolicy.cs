@@ -35,18 +35,18 @@ internal static partial class SpellPathPolicy
         if (!SpellFileNameRegex().IsMatch(fileName))
         {
             return Result<string>.Failure(
-                new Error("Spell.PathNotAllowed", "Override spell path must reference SPELL.md or SPELL.v{N}.md."));
+                new Error(ErrorCodes.Spell.PathNotAllowed, "Override spell path must reference SPELL.md or SPELL.v{N}.md."));
         }
 
         if (!IsUnderKnownSpellRoot(fullPath, spellWorkspaceRoot))
         {
             return Result<string>.Failure(
-                new Error("Spell.PathNotAllowed", "Override spell path is outside allowed spell directories."));
+                new Error(ErrorCodes.Spell.PathNotAllowed, "Override spell path is outside allowed spell directories."));
         }
 
         if (!File.Exists(fullPath))
         {
-            return Result<string>.Failure(new Error("Spell.NotFound", "The specified spell file does not exist."));
+            return Result<string>.Failure(new Error(ErrorCodes.Spell.NotFound, "The specified spell file does not exist."));
         }
 
         return Result<string>.Success(fullPath);

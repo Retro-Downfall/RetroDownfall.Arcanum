@@ -27,7 +27,7 @@ public static class ConclaveLineage
 
             return Result.Failure(
                 new Error(
-                    "Apprentice.ConclaveDepthExceeded",
+                    ErrorCodes.Apprentice.ConclaveDepthExceeded,
                     $"Conclave delegation depth would exceed the configured maximum ({maxDelegationDepth})."));
 
         }
@@ -45,7 +45,7 @@ public static class ConclaveLineage
 
             return Result.Failure(
                 new Error(
-                    "Apprentice.ConclaveBreadthExceeded",
+                    ErrorCodes.Apprentice.ConclaveBreadthExceeded,
                     $"Conclave descendant count for this root would exceed the configured maximum ({maxDescendantsPerRoot})."));
 
         }

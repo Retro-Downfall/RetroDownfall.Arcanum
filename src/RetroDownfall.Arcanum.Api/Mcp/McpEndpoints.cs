@@ -55,7 +55,7 @@ internal static class McpEndpoints
                 if (matches.Count > 1)
                 {
                     Result<McpServerInfo> ambiguous = Result<McpServerInfo>.Failure(
-                        new Error("Mcp.AmbiguousServer", $"Multiple MCP servers named '{name}' exist; specify workingDirectory."));
+                        new Error(ErrorCodes.Mcp.AmbiguousServer, $"Multiple MCP servers named '{name}' exist; specify workingDirectory."));
 
                     return Results.BadRequest(ApiResponse<McpServerInfo>.FromResult(ambiguous, traceId));
                 }
@@ -63,7 +63,7 @@ internal static class McpEndpoints
                 if (matches.Count == 0)
                 {
                     Result<McpServerInfo> notFound = Result<McpServerInfo>.Failure(
-                        new Error("Mcp.ServerNotFound", $"No MCP server named '{name}' was found."));
+                        new Error(ErrorCodes.Mcp.ServerNotFound, $"No MCP server named '{name}' was found."));
 
                     return Results.NotFound(ApiResponse<McpServerInfo>.FromResult(notFound, traceId));
                 }
@@ -78,7 +78,7 @@ internal static class McpEndpoints
             if (server is null)
             {
                 Result<McpServerInfo> notFound = Result<McpServerInfo>.Failure(
-                    new Error("Mcp.ServerNotFound", $"No MCP server named '{name}' was found."));
+                    new Error(ErrorCodes.Mcp.ServerNotFound, $"No MCP server named '{name}' was found."));
 
                 return Results.NotFound(ApiResponse<McpServerInfo>.FromResult(notFound, traceId));
             }
@@ -135,7 +135,7 @@ internal static class McpEndpoints
 
                 return Results.BadRequest(
                     ApiResponse<bool>.FromResult(
-                        Result<bool>.Failure(new Error("Mcp.MissingWorkspace", "workingDirectory is required.")),
+                        Result<bool>.Failure(new Error(ErrorCodes.Mcp.MissingWorkspace, "workingDirectory is required.")),
                         traceId));
 
             }

@@ -197,7 +197,7 @@ public static class ApprenticeExecutionPolicy
         {
 
             return Result<List<PlanStep>>.Failure(
-                new Error("Apprentice.InvalidPlan", "At least one plan step is required."));
+                new Error(ErrorCodes.Apprentice.InvalidPlan, "At least one plan step is required."));
 
         }
 
@@ -205,7 +205,7 @@ public static class ApprenticeExecutionPolicy
         {
 
             return Result<List<PlanStep>>.Failure(
-                new Error("Apprentice.InvalidPlan", $"Plan may not exceed {MaxReweaveStepCount} steps."));
+                new Error(ErrorCodes.Apprentice.InvalidPlan, $"Plan may not exceed {MaxReweaveStepCount} steps."));
 
         }
 
@@ -220,7 +220,7 @@ public static class ApprenticeExecutionPolicy
             {
 
                 return Result<List<PlanStep>>.Failure(
-                    new Error("Apprentice.InvalidPlan", "Every plan step must include a description."));
+                    new Error(ErrorCodes.Apprentice.InvalidPlan, "Every plan step must include a description."));
 
             }
 

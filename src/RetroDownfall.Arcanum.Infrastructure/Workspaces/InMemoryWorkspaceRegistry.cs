@@ -59,7 +59,7 @@ public sealed class InMemoryWorkspaceRegistry : IWorkspaceRegistry
         if (string.IsNullOrWhiteSpace(request.Name))
         {
             return Task.FromResult<Result<WorkspaceInfo>>(
-                new Error("Workspace.NameEmpty", "Workspace name cannot be empty."));
+                new Error(ErrorCodes.Workspace.NameEmpty, "Workspace name cannot be empty."));
         }
 
         string trimmedName = request.Name.Trim();
@@ -116,7 +116,7 @@ public sealed class InMemoryWorkspaceRegistry : IWorkspaceRegistry
             if (!_workspacesById.TryGetValue(id, out WorkspaceInfo? existing))
             {
                 return Task.FromResult<Result<WorkspaceInfo>>(
-                    new Error("Workspace.NotFound", "The workspace was not found."));
+                    new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found."));
             }
 
             string updatedName = existing.Name;
@@ -127,7 +127,7 @@ public sealed class InMemoryWorkspaceRegistry : IWorkspaceRegistry
                 if (string.IsNullOrWhiteSpace(request.Name))
                 {
                     return Task.FromResult<Result<WorkspaceInfo>>(
-                        new Error("Workspace.NameEmpty", "Workspace name cannot be empty."));
+                        new Error(ErrorCodes.Workspace.NameEmpty, "Workspace name cannot be empty."));
                 }
 
                 updatedName = request.Name.Trim();
@@ -173,7 +173,7 @@ public sealed class InMemoryWorkspaceRegistry : IWorkspaceRegistry
             if (!_workspacesById.Remove(id))
             {
                 return Task.FromResult<Result<bool>>(
-                    new Error("Workspace.NotFound", "The workspace was not found."));
+                    new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found."));
             }
 
             return Task.FromResult<Result<bool>>(true);
@@ -183,8 +183,8 @@ public sealed class InMemoryWorkspaceRegistry : IWorkspaceRegistry
     private static Error MapPathValidationError(Error error) =>
         error.Code switch
         {
-            "Campaign.InvalidPath" => new Error("Workspace.PathNotFound", error.Message),
-            "Campaign.PathNotAllowed" => new Error("Workspace.PathNotAllowed", error.Message),
+            ErrorCodes.Campaign.InvalidPath => new Error("Workspace.PathNotFound", error.Message),
+            ErrorCodes.Campaign.PathNotAllowed => new Error(ErrorCodes.Workspace.PathNotAllowed, error.Message),
             _ => error,
         };
 

@@ -30,7 +30,7 @@ internal static class CodexEndpoints
                 if (campaign is null)
                 {
                     Result<CodexContentDto> notFound = Result<CodexContentDto>.Failure(
-                        new Error("Campaign.NotFound", "No campaign exists with that identifier."));
+                        new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
 
                     return Results.Json(
                         ApiResponse<CodexContentDto>.FromResult(notFound, traceId),
@@ -60,7 +60,7 @@ internal static class CodexEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CodexContentDto>.FromResult(
-                            Result<CodexContentDto>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<CodexContentDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 
@@ -69,7 +69,7 @@ internal static class CodexEndpoints
                 if (campaign is null)
                 {
                     Result<CodexContentDto> notFound = Result<CodexContentDto>.Failure(
-                        new Error("Campaign.NotFound", "No campaign exists with that identifier."));
+                        new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
 
                     return Results.Json(
                         ApiResponse<CodexContentDto>.FromResult(notFound, traceId),
@@ -111,7 +111,7 @@ internal static class CodexEndpoints
 
                     return Results.Json(
                         ApiResponse<CodexContentDto>.FromResult(
-                            Result<CodexContentDto>.Failure(new Error("Campaign.NotFound", "No campaign exists with that identifier.")),
+                            Result<CodexContentDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseCodexContentDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -152,7 +152,7 @@ internal static class CodexEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CodexContentDto>.FromResult(
-                            Result<CodexContentDto>.Failure(new Error("Validation.InvalidBody", "Request body is required.")),
+                            Result<CodexContentDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "Request body is required.")),
                             traceId));
                 }
 

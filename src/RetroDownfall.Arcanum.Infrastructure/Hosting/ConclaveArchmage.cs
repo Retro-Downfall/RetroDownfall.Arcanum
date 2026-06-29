@@ -23,19 +23,19 @@ internal sealed class ConclaveArchmage(
         if (!settings.CurrentValue.Conclave.Enabled)
         {
             return Result<Apprentice>.Failure(
-                new Error("Apprentice.ConclaveDisabled", "The Conclave is disabled; cross-Apprentice delegation is not available."));
+                new Error(ErrorCodes.Apprentice.ConclaveDisabled, "The Conclave is disabled; cross-Apprentice delegation is not available."));
         }
 
         if (string.IsNullOrWhiteSpace(request.Goal))
         {
             return Result<Apprentice>.Failure(
-                new Error("Apprentice.InvalidGoal", "A non-empty goal is required to cast a sending."));
+                new Error(ErrorCodes.Apprentice.InvalidGoal, "A non-empty goal is required to cast a sending."));
         }
 
         if (string.IsNullOrWhiteSpace(request.WorkspacePath))
         {
             return Result<Apprentice>.Failure(
-                new Error("Apprentice.InvalidWorkspace", "A workspace is required to cast a sending."));
+                new Error(ErrorCodes.Apprentice.InvalidWorkspace, "A workspace is required to cast a sending."));
         }
 
         ConclaveSettings conclave = settings.CurrentValue.Conclave ?? new ConclaveSettings();

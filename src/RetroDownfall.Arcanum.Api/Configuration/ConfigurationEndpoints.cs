@@ -59,7 +59,7 @@ internal static class ConfigurationEndpoints
             if (request is null)
             {
                 Result<bool> invalid = Result<bool>.Failure(
-                    new Error("Validation.InvalidBody", "Request body must be a valid ArcanumSettings JSON object."));
+                    new Error(ErrorCodes.Validation.InvalidBody, "Request body must be a valid ArcanumSettings JSON object."));
 
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
             }
@@ -137,7 +137,7 @@ internal static class ConfigurationEndpoints
             if (request is null)
             {
                 Result<bool> invalid = Result<bool>.Failure(
-                    new Error("Validation.InvalidBody", "Request body must be a valid ArcanumSettings JSON object."));
+                    new Error(ErrorCodes.Validation.InvalidBody, "Request body must be a valid ArcanumSettings JSON object."));
 
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
             }

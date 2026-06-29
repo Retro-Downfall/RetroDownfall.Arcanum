@@ -36,7 +36,7 @@ internal static class IntelligenceEndpoints
             if (body is null
                 || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
             {
-                Result<PromptResponseDto> invalid = Result<PromptResponseDto>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required unless StatelessMessages is provided."));
+                Result<PromptResponseDto> invalid = Result<PromptResponseDto>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required unless StatelessMessages is provided."));
 
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
@@ -126,7 +126,7 @@ internal static class IntelligenceEndpoints
                 {
 
                     Result<bool> invalid = Result<bool>.Failure(
-                        new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage));
+                        new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
 
@@ -147,7 +147,7 @@ internal static class IntelligenceEndpoints
                 {
                     Result<bool> notFound = Result<bool>.Failure(
                         new Error(
-                            "Intelligence.HumanPromptNotFound",
+                            ErrorCodes.Intelligence.HumanPromptNotFound,
                             "No active ask_human prompt matches that promptId (unknown, expired, or already answered)."));
 
                     return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
@@ -187,7 +187,7 @@ internal static class IntelligenceEndpoints
 
                 await httpContext.Response.WriteAsJsonAsync(
                     ApiResponse<string>.FromResult(
-                        Result<string>.Failure(new Error("Validation.InvalidBody", ApiRequestJson.MalformedJsonMessage)),
+                        Result<string>.Failure(new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.MalformedJsonMessage)),
                         badTraceId),
                     ArcanumJsonContext.Default.ApiResponseString,
                     cancellationToken: ct).ConfigureAwait(false);
@@ -199,7 +199,7 @@ internal static class IntelligenceEndpoints
             if (body is null
                 || (string.IsNullOrWhiteSpace(body.Prompt) && body.StatelessMessages is not { Count: > 0 }))
             {
-                Result<string> invalid = Result<string>.Failure(new Error("Validation.InvalidPrompt", "Prompt is required unless StatelessMessages is provided."));
+                Result<string> invalid = Result<string>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required unless StatelessMessages is provided."));
 
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 

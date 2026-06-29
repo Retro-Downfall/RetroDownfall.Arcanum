@@ -42,7 +42,7 @@ internal static partial class SpellExecutionEndpoints
                 if (body is null || string.IsNullOrWhiteSpace(body.Prompt))
                 {
                     Result<PromptResponseDto> invalid = Result<PromptResponseDto>.Failure(
-                        new Error("Validation.InvalidPrompt", "Prompt is required."));
+                        new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
 
                     return Results.Json(
                         ApiResponse<PromptResponseDto>.FromResult(invalid, traceId),
@@ -72,7 +72,7 @@ internal static partial class SpellExecutionEndpoints
                 if (spell is null)
                 {
                     Result<PromptResponseDto> notFound = Result<PromptResponseDto>.Failure(
-                        new Error("Spell.NotFound", "No spell exists with that name in the resolved workspace."));
+                        new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name in the resolved workspace."));
 
                     return Results.Json(
                         ApiResponse<PromptResponseDto>.FromResult(notFound, traceId),
@@ -152,7 +152,7 @@ internal static partial class SpellExecutionEndpoints
                 if (body is null || string.IsNullOrWhiteSpace(body.Prompt))
                 {
                     Result<string> invalid = Result<string>.Failure(
-                        new Error("Validation.InvalidPrompt", "Prompt is required."));
+                        new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
 
                     ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
 
@@ -172,7 +172,7 @@ internal static partial class SpellExecutionEndpoints
 
                 if (workspaceResult.IsFailure)
                 {
-                    ctx.Response.StatusCode = string.Equals(workspaceResult.Error.Code, "Spell.PathNotAllowed", StringComparison.Ordinal)
+                    ctx.Response.StatusCode = string.Equals(workspaceResult.Error.Code, ErrorCodes.Spell.PathNotAllowed, StringComparison.Ordinal)
                         ? StatusCodes.Status403Forbidden
                         : StatusCodes.Status400BadRequest;
 
@@ -197,7 +197,7 @@ internal static partial class SpellExecutionEndpoints
                     await ctx.Response
                         .WriteAsJsonAsync(
                             ApiResponse<string>.FromResult(
-                                Result<string>.Failure(new Error("Spell.NotFound", "No spell exists with that name in the resolved workspace.")),
+                                Result<string>.Failure(new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name in the resolved workspace.")),
                                 traceId),
                             ArcanumJsonContext.Default.ApiResponseString,
                             cancellationToken: ctx.RequestAborted)
@@ -287,7 +287,7 @@ internal static partial class SpellExecutionEndpoints
                 if (spell is null || string.IsNullOrWhiteSpace(spell.FilePath))
                 {
                     Result<SpellVersionDto[]> notFound = Result<SpellVersionDto[]>.Failure(
-                        new Error("Spell.NotFound", "No spell exists with that name in the resolved workspace."));
+                        new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name in the resolved workspace."));
 
                     return Results.Json(
                         ApiResponse<SpellVersionDto[]>.FromResult(notFound, traceId),
@@ -300,7 +300,7 @@ internal static partial class SpellExecutionEndpoints
                 if (string.IsNullOrWhiteSpace(spellDir) || !Directory.Exists(spellDir))
                 {
                     Result<SpellVersionDto[]> notFound = Result<SpellVersionDto[]>.Failure(
-                        new Error("Spell.NotFound", "The spell directory does not exist."));
+                        new Error(ErrorCodes.Spell.NotFound, "The spell directory does not exist."));
 
                     return Results.Json(
                         ApiResponse<SpellVersionDto[]>.FromResult(notFound, traceId),

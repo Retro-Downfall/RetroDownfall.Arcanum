@@ -15,7 +15,7 @@ public static class CampaignPathPolicy
     {
         if (string.IsNullOrWhiteSpace(path))
         {
-            return Result<string>.Failure(new Error("Campaign.InvalidPath", "Campaign path is required."));
+            return Result<string>.Failure(new Error(ErrorCodes.Campaign.InvalidPath, "Campaign path is required."));
         }
 
         string normalized;
@@ -26,12 +26,12 @@ public static class CampaignPathPolicy
         }
         catch (Exception)
         {
-            return Result<string>.Failure(new Error("Campaign.InvalidPath", "The campaign path is invalid."));
+            return Result<string>.Failure(new Error(ErrorCodes.Campaign.InvalidPath, "The campaign path is invalid."));
         }
 
         if (!Directory.Exists(normalized))
         {
-            return Result<string>.Failure(new Error("Campaign.InvalidPath", "The campaign path does not exist or is not a directory."));
+            return Result<string>.Failure(new Error(ErrorCodes.Campaign.InvalidPath, "The campaign path does not exist or is not a directory."));
         }
 
         string[] allowedRoots = settings.Campaigns?.AllowedRoots ?? [];
@@ -39,7 +39,7 @@ public static class CampaignPathPolicy
         Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
             normalized,
             allowedRoots,
-            "Campaign.PathNotAllowed",
+            ErrorCodes.Campaign.PathNotAllowed,
             "The campaign path is not under an allowed root.");
 
         if (allowed.IsFailure)

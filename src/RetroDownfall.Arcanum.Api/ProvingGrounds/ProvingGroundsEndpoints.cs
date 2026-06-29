@@ -26,7 +26,7 @@ internal static class ProvingGroundsEndpoints
                     return Results.BadRequest(
                         ApiResponse<TrialResult>.FromResult(
                             Result<TrialResult>.Failure(
-                                new Error("Validation.InvalidBody", ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
 
                 }
