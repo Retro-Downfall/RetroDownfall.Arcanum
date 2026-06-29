@@ -65,6 +65,14 @@ public static class ErrorCodes
 
         public const string NotFound = "Session.NotFound";
 
+        public const string Archived = "Session.Archived";
+
+        public const string TooManyEntries = "Session.TooManyEntries";
+
+        public const string EntryTooLarge = "Session.EntryTooLarge";
+
+        public const string EmptyContent = "Session.EmptyContent";
+
     }
 
     /// <summary>Grimoire — lore and knowledge store.</summary>

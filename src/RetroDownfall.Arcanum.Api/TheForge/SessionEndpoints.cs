@@ -203,7 +203,8 @@ internal static class SessionEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Failure(new Error("Session.EmptyContent", "Entry content is required.")),
+                            Result<EntryDto>.Failure(
+                                new Error(ErrorCodes.Session.EmptyContent, "Entry content is required.")),
                             traceId));
                 }
 
@@ -215,47 +216,26 @@ internal static class SessionEndpoints
                     ModelUsed = request.ModelUsed ?? string.Empty,
                 };
 
-                try
-                {
-                    Entry saved = await repo.AddEntryAsync(id, entry, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Entry> addResult = await repo.AddEntryAsync(id, entry, ctx.RequestAborted).ConfigureAwait(false);
 
-                    eventHub.Publish(id, saved);
-
-                    return Results.Ok(
-                        ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Success(SessionMapping.ToEntryDto(saved)),
-                            traceId));
-                }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+                if (addResult.IsFailure)
                 {
+
                     return Results.Json(
                         ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            Result<EntryDto>.Failure(addResult.Error),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEntryDto,
-                        statusCode: StatusCodes.Status404NotFound);
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(addResult.Error.Code));
+
                 }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("archived", StringComparison.OrdinalIgnoreCase))
-                {
-                    return Results.BadRequest(
-                        ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Failure(new Error("Session.Archived", ex.Message)),
-                            traceId));
-                }
-                catch (InvalidOperationException ex) when (ex.Message.StartsWith("Session.TooManyEntries:", StringComparison.Ordinal))
-                {
-                    return Results.BadRequest(
-                        ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Failure(new Error("Session.TooManyEntries", ex.Message)),
-                            traceId));
-                }
-                catch (InvalidOperationException ex) when (ex.Message.StartsWith("Session.EntryTooLarge:", StringComparison.Ordinal))
-                {
-                    return Results.BadRequest(
-                        ApiResponse<EntryDto>.FromResult(
-                            Result<EntryDto>.Failure(new Error("Session.EntryTooLarge", ex.Message)),
-                            traceId));
-                }
+
+                eventHub.Publish(id, addResult.Value);
+
+                return Results.Ok(
+                    ApiResponse<EntryDto>.FromResult(
+                        Result<EntryDto>.Success(SessionMapping.ToEntryDto(addResult.Value)),
+                        traceId));
             })
         .WithName("AppendSessionEntry");
 

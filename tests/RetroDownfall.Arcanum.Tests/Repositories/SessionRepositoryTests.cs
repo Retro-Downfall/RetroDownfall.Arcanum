@@ -172,7 +172,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task AddEntryAsync_TooManyEntries_Throws()
+    public async Task AddEntryAsync_TooManyEntries_ReturnsFailure()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -193,7 +193,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         for (int i = 0; i < 100; i++)
         {
 
-            _ = await repository.AddEntryAsync(
+            Result<Entry> ok = await repository.AddEntryAsync(
                 session.Id,
                 new Entry
                 {
@@ -205,27 +205,32 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
                 },
                 CancellationToken.None);
 
+            Assert.True(ok.IsSuccess, ok.Error.Code);
+
         }
 
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            repository.AddEntryAsync(
-                session.Id,
-                new Entry
-                {
-                    Id = Guid.NewGuid(),
-                    Role = MessageRole.User,
-                    Content = "second",
-                    ModelUsed = "test-model",
-                    CreatedAt = DateTimeOffset.UtcNow,
-                },
-                CancellationToken.None));
+        Result<Entry> result = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "second",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
 
-        Assert.StartsWith("Session.TooManyEntries:", ex.Message, StringComparison.Ordinal);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Session.TooManyEntries, result.Error.Code);
+
+        Assert.StartsWith("Session.TooManyEntries:", result.Error.Message, StringComparison.Ordinal);
 
     }
 
     [SkippableFact]
-    public async Task AddEntryAsync_EntryTooLarge_Throws()
+    public async Task AddEntryAsync_EntryTooLarge_ReturnsFailure()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -245,20 +250,85 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         string oversized = new('x', 1025);
 
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            repository.AddEntryAsync(
-                session.Id,
-                new Entry
-                {
-                    Id = Guid.NewGuid(),
-                    Role = MessageRole.User,
-                    Content = oversized,
-                    ModelUsed = "test-model",
-                    CreatedAt = DateTimeOffset.UtcNow,
-                },
-                CancellationToken.None));
+        Result<Entry> result = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = oversized,
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
 
-        Assert.StartsWith("Session.EntryTooLarge:", ex.Message, StringComparison.Ordinal);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Session.EntryTooLarge, result.Error.Code);
+
+        Assert.StartsWith("Session.EntryTooLarge:", result.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task AddEntryAsync_NotFound_ReturnsFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+
+        Result<Entry> result = await repository.AddEntryAsync(
+            Guid.NewGuid(),
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "orphan",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
+
+        Assert.Equal("Session was not found.", result.Error.Message);
+
+    }
+
+    [SkippableFact]
+    public async Task AddEntryAsync_Archived_ReturnsFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "Closed", CancellationToken.None);
+
+        await repository.ArchiveAsync(session.Id, CancellationToken.None);
+
+        _db!.ChangeTracker.Clear();
+
+        Result<Entry> result = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "too late",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Session.Archived, result.Error.Code);
+
+        Assert.Equal("Cannot append entries to an archived session.", result.Error.Message);
 
     }
 

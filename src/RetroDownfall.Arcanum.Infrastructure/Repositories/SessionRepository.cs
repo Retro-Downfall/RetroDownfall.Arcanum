@@ -302,7 +302,7 @@ public sealed class SessionRepository(
         };
     }
 
-    public async Task<Entry> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct)
+    public async Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct)
     {
 
         using IDisposable _ = await SessionWriteLock.AcquireAsync(sessionId, ct).ConfigureAwait(false);
@@ -312,14 +312,15 @@ public sealed class SessionRepository(
         if (session is null)
         {
 
-            throw new InvalidOperationException($"Session {sessionId} was not found.");
+            return Result<Entry>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found."));
 
         }
 
         if (string.Equals(session.Status, "archived", StringComparison.OrdinalIgnoreCase))
         {
 
-            throw new InvalidOperationException("Cannot append entries to an archived session.");
+            return Result<Entry>.Failure(
+                new Error(ErrorCodes.Session.Archived, "Cannot append entries to an archived session."));
 
         }
 
@@ -327,7 +328,14 @@ public sealed class SessionRepository(
 
         SessionSettings sessionSettings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
 
-        GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 1, sessionSettings, entry.Content);
+        Error? limitError = GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 1, sessionSettings, entry.Content);
+
+        if (limitError is not null)
+        {
+
+            return Result<Entry>.Failure(limitError.Value);
+
+        }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -364,7 +372,7 @@ public sealed class SessionRepository(
 
         await SqliteBusyRetry.ExecuteAsync(() => db.SaveChangesAsync(ct), ct).ConfigureAwait(false);
 
-        return entry;
+        return Result<Entry>.Success(entry);
     }
 
     public async Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default)

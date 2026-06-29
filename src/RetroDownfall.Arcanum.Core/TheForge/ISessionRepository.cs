@@ -16,7 +16,7 @@ public interface ISessionRepository
 
     Task<Result<SessionExportResult>> ExportAsync(Guid id, SessionExportFormat format, CancellationToken ct);
 
-    Task<Entry> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct);
+    Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct);
 
     Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default);
 

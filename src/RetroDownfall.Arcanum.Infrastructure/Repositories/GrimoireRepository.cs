@@ -63,7 +63,14 @@ public sealed class GrimoireRepository : IGrimoireRepository
             {
                 int entryCount = await GetEntryCountAsync(sid, cancellationToken).ConfigureAwait(false);
 
-                GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), prompt, string.Empty);
+                Error? limitError = GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), prompt, string.Empty);
+
+                if (limitError is not null)
+                {
+
+                    throw new InvalidOperationException(limitError.Value.Message);
+
+                }
 
                 _db.Entries.Add(new Entry
                 {
@@ -113,7 +120,14 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         Guid newSessionId = Guid.NewGuid();
 
-        GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 2, GetSessionSettings(), prompt, string.Empty);
+        Error? newSessionLimitError = GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 2, GetSessionSettings(), prompt, string.Empty);
+
+        if (newSessionLimitError is not null)
+        {
+
+            throw new InvalidOperationException(newSessionLimitError.Value.Message);
+
+        }
 
         _db.Sessions.Add(new Session
         {
@@ -267,7 +281,14 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             int entryCount = await GetEntryCountAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
-            GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), callLine, resultLine);
+            Error? toolLimitError = GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), callLine, resultLine);
+
+            if (toolLimitError is not null)
+            {
+
+                throw new InvalidOperationException(toolLimitError.Value.Message);
+
+            }
 
             _db.Entries.Add(new Entry
             {
@@ -324,7 +345,14 @@ public sealed class GrimoireRepository : IGrimoireRepository
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 2, GetSessionSettings(), userPrompt, assistantText);
+            Error? exchangeLimitError = GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 2, GetSessionSettings(), userPrompt, assistantText);
+
+            if (exchangeLimitError is not null)
+            {
+
+                throw new InvalidOperationException(exchangeLimitError.Value.Message);
+
+            }
 
             _db.Sessions.Add(new Session
             {

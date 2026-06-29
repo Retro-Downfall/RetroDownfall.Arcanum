@@ -1,12 +1,16 @@
 using System.Text;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public static class GrimoireLimits
 {
 
-    public static void EnforceEntryLimits(
+    public static Error? EnforceEntryLimits(
         int currentEntryCount,
         int entriesToAdd,
         SessionSettings? settings,
@@ -22,7 +26,8 @@ public static class GrimoireLimits
         if (currentEntryCount + entriesToAdd > maxEntries)
         {
 
-            throw new InvalidOperationException(
+            return new Error(
+                ErrorCodes.Session.TooManyEntries,
                 $"Session.TooManyEntries: Session cannot exceed {maxEntries} entries.");
 
         }
@@ -40,12 +45,15 @@ public static class GrimoireLimits
             if (Encoding.UTF8.GetByteCount(content) > maxBytes)
             {
 
-                throw new InvalidOperationException(
+                return new Error(
+                    ErrorCodes.Session.EntryTooLarge,
                     $"Session.EntryTooLarge: Entry content cannot exceed {maxBytes} bytes.");
 
             }
 
         }
+
+        return null;
 
     }
 
