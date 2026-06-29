@@ -24,6 +24,8 @@ public sealed class SessionRepository(
 
     private const int FtsSessionIdLimit = 2048;
 
+    private readonly SessionEntryPersistence _entryPersistence = new(db);
+
     public async Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -305,7 +307,7 @@ public sealed class SessionRepository(
     public async Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct)
     {
 
-        using IDisposable _ = await SessionWriteLock.AcquireAsync(sessionId, ct).ConfigureAwait(false);
+        using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, ct).ConfigureAwait(false);
 
         Session? session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct).ConfigureAwait(false);
 
@@ -324,11 +326,11 @@ public sealed class SessionRepository(
 
         }
 
-        int entryCount = await db.Entries.CountAsync(e => e.SessionId == sessionId, ct).ConfigureAwait(false);
+        int entryCount = await _entryPersistence.GetEntryCountAsync(sessionId, ct).ConfigureAwait(false);
 
         SessionSettings sessionSettings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
 
-        Error? limitError = GrimoireLimits.EnforceEntryLimits(entryCount, entriesToAdd: 1, sessionSettings, entry.Content);
+        Error? limitError = SessionEntryPersistence.CheckEntryLimits(entryCount, entriesToAdd: 1, sessionSettings, entry.Content);
 
         if (limitError is not null)
         {
@@ -363,14 +365,9 @@ public sealed class SessionRepository(
 
         // Maintain the unsummarized-entry counter so the Forge append path no longer drifts
         // it (the inference path already does this). -1 means "unknown legacy"; leave it.
-        if (session.UnsummarizedEntryCount >= 0)
-        {
+        await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
 
-            session.UnsummarizedEntryCount += 1;
-
-        }
-
-        await SqliteBusyRetry.ExecuteAsync(() => db.SaveChangesAsync(ct), ct).ConfigureAwait(false);
+        await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, ct).ConfigureAwait(false);
 
         return Result<Entry>.Success(entry);
     }
@@ -450,11 +447,20 @@ public sealed class SessionRepository(
 
     public async Task UpdateSessionAsync(Session session, CancellationToken ct)
     {
-        session.UpdatedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        db.Sessions.Update(session);
+        // Patch only Forge-owned scalar fields; Grimoire-owned counters and rollups are excluded.
+        _ = await db.Sessions
+            .Where(s => s.Id == session.Id)
+            .ExecuteUpdateAsync(
+                s => s
+                    .SetProperty(x => x.Title, session.Title)
+                    .SetProperty(x => x.Status, session.Status)
+                    .SetProperty(x => x.UpdatedAt, now),
+                ct)
+            .ConfigureAwait(false);
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        session.UpdatedAt = now;
     }
 
     public async Task ArchiveAsync(Guid id, CancellationToken ct)

@@ -114,10 +114,7 @@ Severity here = **design leverage**, not defect risk (Waves 1–5 already closed
   - **Fix:** route all non-streaming calls through `SendRequestAsync`; keep streaming methods as thin wrappers over a shared "send + pre-stream envelope read + byte pump". (Codegen/Refit is a *future* option, not now.)
   - **Risk:** Medium, mostly mechanical; `ArcanumApiClientTests` cover it. Biggest CLI-coherence win.
 
-- [ ] **W6.14 — Extract internal `SessionEntryPersistence` (one entry-write owner)**
-  - **Closes:** `GrimoireRepository` and `SessionRepository` both insert into `Entries` with copy-pasted lock + `SqliteBusyRetry` + `UnsummarizedEntryCount` + `UpdatedAt`; remediation synchronized behavior but not ownership. A future `AddEntryAsync`-like method on either side can reintroduce drift. `UpdateSessionAsync` can also clobber the counter.
-  - **Fix:** internal `SessionEntryPersistence` (Infrastructure) owns insert/finalize/discard + lock + retry + limits + counter; both repos delegate. **Keep the two Core interfaces.** Make `UpdateSessionAsync` patch scalar fields (ignore counter).
-  - **Risk:** Medium–high (central write path). Depends on W6.7/W6.9. Highest persistence payoff.
+- [x] **W6.14 — Extract internal `SessionEntryPersistence` (one entry-write owner)** ✅ *done — `SessionEntryPersistence` owns lock acquisition, busy retry, limit checks, counter maintenance, and UpdatedAt bumps; `GrimoireRepository` and `SessionRepository` delegate entry-write invariants; `UpdateSessionAsync` patches Title/Status only.*
 
 - [ ] **W6.15 — Extract `PromptTurnEngine` from `WizardIntelligenceProvider`**
   - **Closes:** ~3,184 lines; parallel `ExecutePromptAsync`/`StreamPromptAsync` pipelines duplicate setup/teardown (so bugs get fixed twice — the remediation did exactly this), plus smeared Sanctum/Ward enforcement, grimoire side-effects, message mapping, failure sanitization.

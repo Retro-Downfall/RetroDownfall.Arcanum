@@ -377,6 +377,50 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task UpdateSessionAsync_does_not_clobber_unsummarized_entry_count()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+
+        Session session = await repository.CreateAsync(campaignId: null, title: "Before patch", CancellationToken.None);
+
+        _ = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = Guid.NewGuid(),
+                Role = MessageRole.User,
+                Content = "turn one",
+                ModelUsed = "test-model",
+                CreatedAt = DateTimeOffset.UtcNow,
+            },
+            CancellationToken.None);
+
+        Session? beforePatch = await repository.GetByIdAsync(session.Id, CancellationToken.None);
+
+        Assert.NotNull(beforePatch);
+
+        Assert.Equal(1, beforePatch!.UnsummarizedEntryCount);
+
+        beforePatch.Title = "After patch";
+
+        beforePatch.UnsummarizedEntryCount = 0;
+
+        await repository.UpdateSessionAsync(beforePatch, CancellationToken.None);
+
+        Session? afterPatch = await repository.GetByIdAsync(session.Id, CancellationToken.None);
+
+        Assert.NotNull(afterPatch);
+
+        Assert.Equal("After patch", afterPatch!.Title);
+
+        Assert.Equal(1, afterPatch.UnsummarizedEntryCount);
+
+    }
+
+    [SkippableFact]
     public async Task GetEntriesAscendingAsync_returns_entries_in_created_at_order()
     {
 
