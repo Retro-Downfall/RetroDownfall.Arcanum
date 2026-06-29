@@ -30,10 +30,13 @@ Wave 6 was executed as **sequential subagents on `composer-2.5-fast`**, one gate
 | W6.16 ArcanumInternalToolServer | `7829c09` | ✅ done — partial-class split (main −77% → 636 lines) |
 | W6.17 McpConnectionManager | `9bd6c44` | ✅ done — partial-class split (main −67% → 712 lines) |
 
-**Deferred follow-ups (safely not forced — higher risk, behavior-change potential):**
-- **W6.15b** — extract `GrimoireTurnWriter` + `InferenceContextBuilder`, and a callback/iterator-based unified Execute/Stream tool-round loop (the two paths use `GetResponseAsync` vs `GetStreamingResponseAsync` + an Ollama tool-fallback restart).
-- **W6.16b** — replace the `tools/call` switch with an explicitly-registered (AOT-safe) tool-handler registry.
-- **W6.17b** — extract a stateless `McpToolMerger` once the merge methods are parameterized off the manager's instance state.
+**Follow-ups (completed in a second subagent pass):**
+- **W6.17b** — stateless `McpToolMerger` extracted (`7bf5e48`, +8 tests). ✅
+- **W6.16b** — `tools/call` switch replaced by an explicit AOT-safe tool-handler registry + list↔registry invariant test (`b83692f`, +2 tests). ✅
+- **W6.15b** — `GrimoireTurnWriter` (`327a2ee`) + `InferenceContextBuilder` (`441dbf5`) extracted; `WizardIntelligenceProvider` now **1,858 lines (−42% from the original 3,184)**. ✅ (partial)
+
+**Still deferred (one item — genuinely needs new tests first, not forced):**
+- **Unified Execute/Stream tool-round loop** — the buffered path (`GetResponseAsync`) and streaming path (`GetStreamingResponseAsync` + per-token yield + Ollama tool-fallback restart + partial-content finalize) are structurally different; unifying them safely requires dedicated streaming/buffered contract tests around tool-round termination, cancellation, and finish-reason before attempting. Left as a future pass.
 
 ---
 
