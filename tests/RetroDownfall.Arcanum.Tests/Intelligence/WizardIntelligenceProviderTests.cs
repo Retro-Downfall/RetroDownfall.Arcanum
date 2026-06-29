@@ -1861,6 +1861,214 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    // === Execute/Stream tool-round loop contract (W6.15c guard) ===
+    // Characterization tests pinning the OBSERVABLE behavior shared and divergent between
+    // ExecutePromptAsync (buffered) and StreamPromptAsync (streaming) so a future unification of
+    // the two tool-round loops (deferred W6.15c) can be verified green-to-green. These assert
+    // end-state behavior (events/Result/grimoire side-effects), not internal control flow, so the
+    // future merge is free to pick a shared implementation strategy.
+
+    [Fact]
+    public async Task LoopContract_StreamingToolRound_EmitsOrderedToolCallResultTokensResult()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(ArcanumLocalTimeTool.ToolName);
+
+        chat.EnqueueStreamTokens("the", " answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "what time?", SkipSpellRouting = true, DisableMcpTools = true });
+
+        int toolCallIndex = events.FindIndex(static e => e.Type == IntelligenceEventType.ToolCall);
+
+        int toolResultIndex = events.FindIndex(static e => e.Type == IntelligenceEventType.ToolResult);
+
+        int resultIndex = events.FindIndex(static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.True(toolCallIndex >= 0, "expected a ToolCall event");
+
+        Assert.True(toolResultIndex > toolCallIndex, "ToolResult must follow its ToolCall");
+
+        Assert.True(resultIndex > toolResultIndex, "Result must be emitted after the tool round");
+
+        Assert.Contains(events.Skip(toolResultIndex + 1), static e => e.Type == IntelligenceEventType.Token);
+
+    }
+
+    [Fact]
+    public async Task LoopContract_BufferedToolInvocationFailure_PropagatesAsHubError()
+    {
+
+        // Buffered uses suppressInvocationFailures=false, so a throwing tool aborts the turn with
+        // Hub.Error — the deliberate counterpart to streaming (Scenario37) which suppresses the
+        // failure into a ToolResult event.
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueToolCall("failing_tool");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateThrowingMcpTool("failing_tool"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "tool fail", SkipSpellRouting = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Hub.Error", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task LoopContract_FinishReasonParity_BufferedAndStreaming_DefaultStop()
+    {
+
+        ScriptingChatClient bufferedChat = new();
+
+        bufferedChat.EnqueueText("done");
+
+        WizardIntelligenceProvider bufferedWizard = CreateWizard(bufferedChat);
+
+        Result<PromptTurnResult> buffered = await bufferedWizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hi", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(buffered.IsSuccess);
+
+        Assert.Equal("stop", buffered.Value!.FinishReason);
+
+        ScriptingChatClient streamChat = new();
+
+        streamChat.EnqueueStreamTokens("done");
+
+        WizardIntelligenceProvider streamWizard = CreateWizard(streamChat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            streamWizard,
+            BaseRequest() with { Prompt = "hi", SkipSpellRouting = true, DisableMcpTools = true });
+
+        IntelligenceEvent result = Assert.Single(events, static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.Equal("stop", result.FinishReason);
+
+    }
+
+    [Fact]
+    public async Task LoopContract_BufferedUsage_AccumulatesAcrossToolRounds()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        FakeGrimoireRepository grimoire = new();
+
+        ScriptingChatClient chat = new() { UsageTotalTokens = 30 };
+
+        chat.EnqueueToolCall(ArcanumLocalTimeTool.ToolName);
+
+        chat.EnqueueText("answered");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableTokenTracking = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "time then answer",
+                SessionId = sessionId,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        // tool-call response (30) + final text response (30), summed by AccumulateUsage across rounds.
+        Assert.Equal(60, grimoire.LastIncrementedTokens);
+
+    }
+
+    [Fact]
+    public async Task LoopContract_BufferedTimeout_DiscardsInFlightRow_NoOrphan()
+    {
+
+        FakeGrimoireRepository grimoire = new();
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueSlowBuffered(TimeSpan.FromSeconds(30), "late");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1 },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "timeout",
+                SessionId = Guid.NewGuid(),
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Hub.Timeout", result.Error.Code);
+
+        // W3.5: the in-flight assistant row is discarded via CancellationToken.None, not orphaned.
+        Assert.Equal(1, grimoire.DiscardCallCount);
+
+    }
+
+    [Fact]
+    public async Task LoopContract_StreamingFailureWithPartial_FinalizesPartial_NoOrphan()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        FakeGrimoireRepository grimoire = new() { FixedSessionId = sessionId };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamFailure(new InvalidOperationException("stream broke mid-flight"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "partial then fail",
+                SessionId = sessionId,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
+
+        // EnqueueStreamFailure yields "partial" before throwing; that partial is finalized via
+        // CancellationToken.None (not discarded), so no orphaned in-flight row remains.
+        Assert.Equal(1, grimoire.FinalizeCallCount);
+
+        Assert.Equal(0, grimoire.DiscardCallCount);
+
+    }
+
     private WizardIntelligenceProvider CreateWizard(
         ScriptingChatClient chatClient,
         ArcanumSettings? settings = null,
@@ -2285,14 +2493,31 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
-        private static ChatResponse ResponseTool(
+        private ChatResponse ResponseTool(
             string toolName,
             string callId,
-            Dictionary<string, object?> arguments) =>
-            new(new MeAiChatMessage(ChatRole.Assistant,
+            Dictionary<string, object?> arguments)
+        {
+
+            ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant,
             [
                 new FunctionCallContent(callId, toolName, arguments),
             ]));
+
+            if (UsageTotalTokens is { } total)
+            {
+
+                response.Usage = new UsageDetails
+                {
+                    InputTokenCount = total / 2,
+                    OutputTokenCount = total - (total / 2),
+                };
+
+            }
+
+            return response;
+
+        }
 
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamTokens(
             IEnumerable<string> tokens,
@@ -2550,6 +2775,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public long LastIncrementedTokens { get; private set; }
 
+        public int DiscardCallCount { get; private set; }
+
+        public int FinalizeCallCount { get; private set; }
+
         public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(Session?.Id == id ? Session : null);
 
@@ -2575,6 +2804,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default)
         {
 
+            FinalizeCallCount++;
+
             if (ThrowOnFinalize)
             {
                 throw new InvalidOperationException("finalize failed");
@@ -2584,8 +2815,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
-        public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+        public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
+        {
+
+            DiscardCallCount++;
+
+            return Task.CompletedTask;
+
+        }
 
         public Task AppendToolInteractionAsync(
             Guid sessionId,
