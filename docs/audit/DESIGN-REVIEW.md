@@ -8,6 +8,35 @@
 
 ---
 
+## Execution status — COMPLETE (2026-06-28)
+
+Wave 6 was executed as **sequential subagents on `composer-2.5-fast`**, one gated commit per item (build + test green every commit; AOT + coverage at checkpoints). Final gates at HEAD: **build 0/0, 1428 tests pass, AOT IL pass, coverage 88.22% line / 79.30% branch (security types 100%)**.
+
+| Item | Commit | Status |
+|------|--------|--------|
+| W6.3 / W6.4 / W6.5 (quick wins) | `3532839` | ✅ done |
+| W6.1 AtomicFile.ReplaceAsync | `12f52f0` | ✅ done |
+| W6.6 AdmissionGate | `3029d77` | ✅ done |
+| W6.7 EntryTemporalQueries | `d3d508e` | ✅ done |
+| W6.11 CappedChildProcessRunner | `ddee8d5` | ✅ done |
+| W6.2 ErrorCodes | `9b5b8a3` | ✅ done (294 sites, no value change) |
+| W6.8 ArcanumErrorMapper | `992d56c` | ✅ done (+62 table tests) |
+| W6.9 Result&lt;Entry&gt; + outcome-model doc | `404fc86` | ✅ done (string-parsing removed) |
+| W6.10 WorkspacePathPolicy | `e427b72` | ✅ done |
+| W6.12 EntryWindowPolicy | `d209df8` | ✅ done (behavior-preserving) |
+| W6.13 ArcanumApiClient migration | `c3e1c2e` | ✅ done (−979 lines) |
+| W6.14 SessionEntryPersistence | `d7fd14e` | ✅ done (+ UpdateSession counter fix) |
+| W6.15 PromptTurnEngine | `2292308` | ⚠️ **partial** — `ToolExecutionPipeline` extracted (wizard 3184→2438); see deferred |
+| W6.16 ArcanumInternalToolServer | `7829c09` | ✅ done — partial-class split (main −77% → 636 lines) |
+| W6.17 McpConnectionManager | `9bd6c44` | ✅ done — partial-class split (main −67% → 712 lines) |
+
+**Deferred follow-ups (safely not forced — higher risk, behavior-change potential):**
+- **W6.15b** — extract `GrimoireTurnWriter` + `InferenceContextBuilder`, and a callback/iterator-based unified Execute/Stream tool-round loop (the two paths use `GetResponseAsync` vs `GetStreamingResponseAsync` + an Ollama tool-fallback restart).
+- **W6.16b** — replace the `tools/call` switch with an explicitly-registered (AOT-safe) tool-handler registry.
+- **W6.17b** — extract a stateless `McpToolMerger` once the merge methods are parameterized off the manager's instance state.
+
+---
+
 ## What is genuinely well-designed (keep; do not regress)
 
 - **`OutboundUrlGuard`** — the SSRF egress model (untrusted vs provider modes, settings validation, `Create*EgressHandler()`, DNS-rebind pinning). This is the *exemplar* the other cross-cutting policies should imitate.
