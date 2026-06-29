@@ -25,7 +25,6 @@ using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
-using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -41,8 +40,8 @@ public sealed class WizardIntelligenceProvider(
     InferenceTokenizerResolver inferenceTokenizerResolver,
     ManaPreflight manaPreflight,
     ICampaignRepository campaignRepository,
-    SessionEventHub sessionEventHub,
-    ToolExecutionPipeline toolExecutionPipeline) : IArcanumIntelligenceProvider
+    ToolExecutionPipeline toolExecutionPipeline,
+    GrimoireTurnWriter grimoireTurnWriter) : IArcanumIntelligenceProvider
 {
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
@@ -137,31 +136,9 @@ public sealed class WizardIntelligenceProvider(
                 .ConfigureAwait(false);
         }
 
-        Guid? assistantEntryId = null;
-
-        Guid? grimoireSessionId = null;
-
-        bool assistantEntryFinalized = false;
-
-        if (!HasStatelessMessages(request))
-        {
-            try
-            {
-                (Guid sid, Guid aid) = await grimoire
-                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, inferenceToken)
-                    .ConfigureAwait(false);
-
-                grimoireSessionId = sid;
-
-                assistantEntryId = aid;
-
-                await PublishLatestSavedEntriesAsync(sid, 2, inferenceToken).ConfigureAwait(false);
-            }
-            catch (Exception beginEx)
-            {
-                logger.LogWarning(beginEx, "Grimoire could not begin assistant reply for model {ModelName}.", targetModel);
-            }
-        }
+        GrimoireTurnWriter.TurnHandle grimoireTurn = await grimoireTurnWriter
+            .TryBeginBufferedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
+            .ConfigureAwait(false);
 
         string? codexContent = await CodexReader
             .ReadCodexAsync(
@@ -193,9 +170,10 @@ public sealed class WizardIntelligenceProvider(
 
             if (routedSpell.IsFailure)
             {
-                if (!assistantEntryFinalized)
+                if (!grimoireTurn.IsFinalized)
                 {
-                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, inferenceToken)
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
                         .ConfigureAwait(false);
                 }
 
@@ -279,9 +257,10 @@ public sealed class WizardIntelligenceProvider(
 
                     if (toolRoundsExecuted > maxToolRounds)
                     {
-                        if (!assistantEntryFinalized)
+                        if (!grimoireTurn.IsFinalized)
                         {
-                            await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, inferenceToken)
+                            await grimoireTurnWriter
+                                .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
                                 .ConfigureAwait(false);
                         }
 
@@ -296,7 +275,7 @@ public sealed class WizardIntelligenceProvider(
                                 request,
                                 chatOptions,
                                 activeSpell,
-                                grimoireSessionId?.ToString(),
+                                grimoireTurn.SessionId?.ToString(),
                                 turnContext,
                                 suppressInvocationFailures: false,
                                 inferenceToken)
@@ -310,8 +289,8 @@ public sealed class WizardIntelligenceProvider(
                             processed.CallId,
                             processed.ResultText);
 
-                        await TryAppendToolInteractionToGrimoireAsync(
-                            grimoireSessionId,
+                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                            grimoireTurn.SessionId,
                             processed.ToolName,
                             processed.ArgsSnapshot,
                             processed.ResultText,
@@ -323,30 +302,12 @@ public sealed class WizardIntelligenceProvider(
 
                 string finalText = response.Text;
 
-                if (assistantEntryId is { } finalizeId)
-                {
-                    try
-                    {
-                        await grimoire
-                            .FinalizeAssistantEntryAsync(finalizeId, finalText, inferenceToken)
-                            .ConfigureAwait(false);
-
-                        assistantEntryFinalized = true;
-
-                        if (grimoireSessionId is { } publishSessionId)
-                        {
-                            await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, inferenceToken)
-                                .ConfigureAwait(false);
-                        }
-                    }
-                    catch (Exception persistEx)
-                    {
-                        logger.LogWarning(persistEx, "Grimoire could not finalize assistant entry for model {ModelName}.", targetModel);
-                    }
-                }
+                await grimoireTurnWriter
+                    .TryFinalizeBufferedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
+                    .ConfigureAwait(false);
 
                 await TryIncrementSessionTokensAsync(
-                    grimoireSessionId,
+                    grimoireTurn.SessionId,
                     accumulatedUsage,
                     inferenceToken)
                     .ConfigureAwait(false);
@@ -358,10 +319,11 @@ public sealed class WizardIntelligenceProvider(
             catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
             {
 
-                if (!assistantEntryFinalized)
+                if (!grimoireTurn.IsFinalized)
                 {
 
-                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, CancellationToken.None)
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
                         .ConfigureAwait(false);
 
                 }
@@ -374,13 +336,14 @@ public sealed class WizardIntelligenceProvider(
             catch (OperationCanceledException)
             {
 
-                if (!assistantEntryFinalized)
+                if (!grimoireTurn.IsFinalized)
                 {
 
                     // W3.5: clean up with CancellationToken.None — callerToken is already cancelled
                     // here, so passing it would make the discard/finalize itself throw OCE before it
                     // ran, leaving an orphaned in-flight assistant row on caller disconnect.
-                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, CancellationToken.None)
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
                         .ConfigureAwait(false);
 
                 }
@@ -408,11 +371,12 @@ public sealed class WizardIntelligenceProvider(
                     lease.IsOllama ? "Ollama" : "Hub",
                     targetModel);
 
-                if (!assistantEntryFinalized)
+                if (!grimoireTurn.IsFinalized)
                 {
                     // W3.5: non-cancellable cleanup so a cancelled inferenceToken cannot abort the
                     // discard and orphan the in-flight assistant row.
-                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, CancellationToken.None)
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
                         .ConfigureAwait(false);
                 }
 
@@ -484,11 +448,7 @@ public sealed class WizardIntelligenceProvider(
 
         ChatClientLease lease = leaseOrNull!;
 
-        Guid? assistantEntryId = null;
-
-        Guid? boundSessionId = null;
-
-        bool assistantEntryFinalized = false;
+        GrimoireTurnWriter.TurnHandle grimoireTurn = new();
 
         StringBuilder streamAccumulator = new(1024);
 
@@ -672,25 +632,12 @@ public sealed class WizardIntelligenceProvider(
 
         if (!HasStatelessMessages(request))
         {
-            try
-            {
-                (Guid sessionId, Guid aid) = await grimoire
-                    .BeginAssistantReplyAsync(request.SessionId, prompt, targetModel, inferenceToken)
-                    .ConfigureAwait(false);
-
-                assistantEntryId = aid;
-
-                boundSessionId = sessionId;
-
-                await PublishLatestSavedEntriesAsync(sessionId, 2, inferenceToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Grimoire could not start streamed session persistence for model {ModelName}.", targetModel);
-            }
+            grimoireTurn = await grimoireTurnWriter
+                .TryBeginStreamedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
+                .ConfigureAwait(false);
         }
 
-        if (boundSessionId is { } bcid)
+        if (grimoireTurn.SessionId is { } bcid)
         {
             yield return new IntelligenceEvent(
                 IntelligenceEventType.SessionBound,
@@ -889,7 +836,7 @@ public sealed class WizardIntelligenceProvider(
                             request,
                             streamChatOptions,
                             streamActiveSpell,
-                            boundSessionId?.ToString(),
+                            grimoireTurn.SessionId?.ToString(),
                             streamTurnContext,
                             suppressInvocationFailures: true,
                             inferenceToken)
@@ -913,8 +860,8 @@ public sealed class WizardIntelligenceProvider(
                         processed.CallId,
                         processed.ResultText);
 
-                    await TryAppendToolInteractionToGrimoireAsync(
-                        boundSessionId,
+                    await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                        grimoireTurn.SessionId,
                         processed.ToolName,
                         processed.ArgsSnapshot,
                         processed.ResultText,
@@ -936,17 +883,15 @@ public sealed class WizardIntelligenceProvider(
 
         if (inferenceError is not null)
         {
-            if (!assistantEntryFinalized)
+            if (!grimoireTurn.IsFinalized)
             {
                 // W3.5: cleanup must use CancellationToken.None, not the (often already-cancelled)
                 // inferenceToken — otherwise ResolveInterruptedAssistantEntryAsync rethrows OCE here
                 // and the terminal Error event below is never emitted to the client.
-                await ResolveInterruptedAssistantEntryAsync(
-                    assistantEntryId,
+                await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(
+                    grimoireTurn,
                     streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
                     CancellationToken.None).ConfigureAwait(false);
-
-                assistantEntryFinalized = true;
             }
 
             yield return new IntelligenceEvent(IntelligenceEventType.Error, inferenceError);
@@ -956,27 +901,11 @@ public sealed class WizardIntelligenceProvider(
 
         string finalText = streamAccumulator.ToString();
 
-        if (assistantEntryId is { } finalizeId)
-        {
-            try
-            {
-                await grimoire.FinalizeAssistantEntryAsync(finalizeId, finalText, inferenceToken).ConfigureAwait(false);
+        await grimoireTurnWriter
+            .TryFinalizeStreamedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
+            .ConfigureAwait(false);
 
-                assistantEntryFinalized = true;
-
-                if (boundSessionId is { } publishSessionId)
-                {
-                    await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, inferenceToken)
-                        .ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Grimoire could not finalize streamed assistant entry for model {ModelName}.", targetModel);
-            }
-        }
-
-        await TryIncrementSessionTokensAsync(boundSessionId, streamAccumulatedUsage, inferenceToken)
+        await TryIncrementSessionTokensAsync(grimoireTurn.SessionId, streamAccumulatedUsage, inferenceToken)
             .ConfigureAwait(false);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
@@ -990,22 +919,11 @@ public sealed class WizardIntelligenceProvider(
         }
         finally
         {
-            if (!assistantEntryFinalized && assistantEntryId is not null)
-            {
-                try
-                {
-                    await ResolveInterruptedAssistantEntryAsync(
-                        assistantEntryId,
-                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                        CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Grimoire could not resolve interrupted streamed assistant entry during cleanup.");
-                }
-            }
+            await grimoireTurnWriter
+                .TryResolveInterruptedOnStreamExitAsync(
+                    grimoireTurn,
+                    streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null)
+                .ConfigureAwait(false);
 
             lease.Dispose();
         }
@@ -2196,123 +2114,6 @@ public sealed class WizardIntelligenceProvider(
 
     }
 
-
-    private async Task ResolveInterruptedAssistantEntryAsync(
-        Guid? assistantEntryId,
-        string? streamedContent,
-        CancellationToken cancellationToken)
-    {
-        if (assistantEntryId is not { } entryId)
-        {
-            return;
-        }
-
-        try
-        {
-            if (!string.IsNullOrEmpty(streamedContent))
-            {
-                await grimoire
-                    .FinalizeAssistantEntryAsync(entryId, streamedContent, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                await grimoire
-                    .DiscardAssistantEntryAsync(entryId, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Grimoire could not resolve interrupted assistant entry {AssistantEntryId}.",
-                entryId);
-        }
-    }
-
-    private async Task TryAppendToolInteractionToGrimoireAsync(
-        Guid? sessionId,
-        string toolName,
-        string arguments,
-        string result,
-        string modelUsed,
-        CancellationToken cancellationToken)
-    {
-        if (!sessionId.HasValue)
-        {
-            return;
-        }
-
-        try
-        {
-            await grimoire
-                .AppendToolInteractionAsync(
-                    sessionId.Value,
-                    toolName,
-                    arguments,
-                    result,
-                    modelUsed,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            await PublishLatestSavedEntriesAsync(sessionId.Value, 2, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Grimoire could not append tool interaction for tool {ToolName}.", toolName);
-        }
-    }
-
-    private async Task PublishLatestSavedEntriesAsync(Guid sessionId, int takeLast, CancellationToken cancellationToken)
-    {
-        List<GrimoireEntryDto>? entries = await grimoire
-            .GetRecentSessionEntriesAsync(sessionId, takeLast, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (entries is null || entries.Count == 0)
-        {
-            return;
-        }
-
-        foreach (GrimoireEntryDto dto in entries)
-        {
-            sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
-        }
-    }
-
-    private async Task PublishSavedEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken)
-    {
-        GrimoireEntryDto? dto = await grimoire
-            .GetEntryByIdAsync(sessionId, entryId, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (dto is null)
-        {
-            return;
-        }
-
-        sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
-    }
-
-    private static Entry ToEntry(GrimoireEntryDto dto, Guid sessionId) =>
-        new()
-        {
-            Id = dto.Id,
-            SessionId = sessionId,
-            Role = dto.Role,
-            Content = dto.Content,
-            ModelUsed = dto.ModelUsed,
-            CreatedAt = dto.CreatedAt,
-        };
 
     private bool TryValidateAttachedFiles(PingRequest request, out Error error)
     {

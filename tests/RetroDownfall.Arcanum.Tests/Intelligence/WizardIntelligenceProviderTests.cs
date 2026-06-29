@@ -1894,12 +1894,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
             campaignRepository,
-            new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
             new ToolExecutionPipeline(
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 ward,
                 sanctumGuard,
-                NullLogger<ToolExecutionPipeline>.Instance));
+                NullLogger<ToolExecutionPipeline>.Instance),
+            new GrimoireTurnWriter(
+                grimoire,
+                new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
+                NullLogger<GrimoireTurnWriter>.Instance));
     }
 
     private static PingRequest BaseRequest() =>
