@@ -371,11 +371,8 @@ public sealed class SessionRepository(
     {
         int clampedTake = Math.Max(1, takeLast);
 
-        // SQLite cannot ORDER BY a DateTimeOffset column, so the most-recent window is pushed
-        // down as parameterized SQL over the sortable UTC CreatedAt text column.
-        List<Entry> recentDescending = await db.Entries
-            .FromSql(
-                $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {clampedTake}""")
+        List<Entry> recentDescending = await EntryTemporalQueries
+            .LoadRecentDescending(db, sessionId, clampedTake)
             .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -400,20 +397,8 @@ public sealed class SessionRepository(
     {
         int clampedLimit = ArcanumSettingClamps.SessionStreamReplayLimit(limit);
 
-        DateTimeOffset afterUtc = afterCreatedAt.ToUniversalTime();
-
-        // SQLite cannot compare or ORDER BY a DateTimeOffset in LINQ, so the keyset page is
-        // pushed down as parameterized SQL over the sortable UTC CreatedAt text column. The
-        // Id tie-break matches the EF-translated text comparison of the stored GUID column.
-        return await db.Entries
-            .FromSql(
-                $"""
-                SELECT * FROM "Entries"
-                WHERE "SessionId" = {sessionId}
-                  AND ("CreatedAt" > {afterUtc} OR ("CreatedAt" = {afterUtc} AND "Id" > {afterId}))
-                ORDER BY "CreatedAt", "Id"
-                LIMIT {clampedLimit}
-                """)
+        return await EntryTemporalQueries
+            .LoadAfterKeyset(db, sessionId, afterCreatedAt, afterId, clampedLimit)
             .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -429,36 +414,21 @@ public sealed class SessionRepository(
     {
         int clampedLimit = Math.Clamp(limit, 1, 1000);
 
-        // SQLite cannot compare or ORDER BY a DateTimeOffset in LINQ, so the descending page
-        // is pushed down as parameterized SQL over the sortable UTC CreatedAt text column.
         if (beforeCreatedAt is DateTimeOffset beforeAt && beforeId is Guid beforeEntryId)
         {
-            DateTimeOffset beforeUtc = beforeAt.ToUniversalTime();
 
-            return await db.Entries
-                .FromSql(
-                    $"""
-                    SELECT * FROM "Entries"
-                    WHERE "SessionId" = {sessionId}
-                      AND ("CreatedAt" < {beforeUtc} OR ("CreatedAt" = {beforeUtc} AND "Id" < {beforeEntryId}))
-                    ORDER BY "CreatedAt" DESC, "Id" DESC
-                    LIMIT {clampedLimit}
-                    """)
+            return await EntryTemporalQueries
+                .LoadBeforeKeyset(db, sessionId, beforeAt, beforeEntryId, clampedLimit)
                 .AsNoTracking()
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
+
         }
 
         int clampedOffset = Math.Max(0, offset);
 
-        return await db.Entries
-            .FromSql(
-                $"""
-                SELECT * FROM "Entries"
-                WHERE "SessionId" = {sessionId}
-                ORDER BY "CreatedAt" DESC, "Id" DESC
-                LIMIT {clampedLimit} OFFSET {clampedOffset}
-                """)
+        return await EntryTemporalQueries
+            .LoadDescendingPaged(db, sessionId, clampedLimit, clampedOffset)
             .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -564,19 +534,8 @@ public sealed class SessionRepository(
 
         while (true)
         {
-            DateTimeOffset cursorUtc = cursorCreatedAt.ToUniversalTime();
-
-            // SQLite cannot compare or ORDER BY a DateTimeOffset in LINQ, so each ascending
-            // export batch is pushed down as parameterized SQL over the sortable UTC text column.
-            List<Entry> batch = await db.Entries
-                .FromSql(
-                    $"""
-                    SELECT * FROM "Entries"
-                    WHERE "SessionId" = {sessionId}
-                      AND ("CreatedAt" > {cursorUtc} OR ("CreatedAt" = {cursorUtc} AND "Id" > {cursorId}))
-                    ORDER BY "CreatedAt", "Id"
-                    LIMIT {ExportEntryBatchSize}
-                    """)
+            List<Entry> batch = await EntryTemporalQueries
+                .LoadAfterKeyset(db, sessionId, cursorCreatedAt, cursorId, ExportEntryBatchSize)
                 .AsNoTracking()
                 .ToListAsync(ct)
                 .ConfigureAwait(false);

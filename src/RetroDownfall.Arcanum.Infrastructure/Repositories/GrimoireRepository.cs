@@ -427,12 +427,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         }
 
-        // SQLite cannot ORDER BY a DateTimeOffset column, so the bounded most-recent
-        // window is pushed down as parameterized SQL. CreatedAt is stored as sortable
-        // UTC text, so "ORDER BY ... DESC LIMIT" selects the newest entries server-side.
-        List<Entry> recent = await _db.Entries
-            .FromSql(
-                $"""SELECT * FROM "Entries" WHERE "SessionId" = {id} ORDER BY "CreatedAt" DESC LIMIT {take}""")
+        List<Entry> recent = await EntryTemporalQueries
+            .LoadRecentDescending(_db, id, take)
             .AsNoTracking()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -468,9 +464,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        List<Entry> recent = await _db.Entries
-            .FromSql(
-                $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {maxMessages}""")
+        List<Entry> recent = await EntryTemporalQueries
+            .LoadRecentDescending(_db, sessionId, maxMessages)
             .AsNoTracking()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -501,9 +496,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         int clampedTake = Math.Clamp(takeLast, 1, maxMessages);
 
-        List<Entry> recent = await _db.Entries
-            .FromSql(
-                $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {clampedTake}""")
+        List<Entry> recent = await EntryTemporalQueries
+            .LoadRecentDescending(_db, sessionId, clampedTake)
             .AsNoTracking()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -982,11 +976,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         CancellationToken cancellationToken)
     {
 
-        // SQLite cannot translate a DateTimeOffset comparison in LINQ, so the watermark
-        // filter is pushed down as parameterized SQL against the sortable UTC text column.
-        return await _db.Database
-            .SqlQuery<int>(
-                $"""SELECT COUNT(*) AS "Value" FROM "Entries" WHERE "SessionId" = {sessionId} AND "CreatedAt" > {afterExclusive}""")
+        return await EntryTemporalQueries
+            .CountAfter(_db, sessionId, afterExclusive)
             .FirstAsync(cancellationToken)
             .ConfigureAwait(false);
 
