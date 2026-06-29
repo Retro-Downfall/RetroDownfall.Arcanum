@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -25,8 +26,12 @@ public sealed class McpConnectionManager(
     IUnseenServantPacer pacer,
     IEventBus eventBus,
     ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
+    IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> settings) : IMcpConnectionManager, IAsyncDisposable
 {
+
+    /// <summary>Named <see cref="HttpClient"/> for the Streamable HTTP MCP transport (SSRF-guarded egress).</summary>
+    public const string McpHttpClientName = "McpHttp";
 
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
@@ -37,6 +42,10 @@ public sealed class McpConnectionManager(
     private static readonly TimeSpan AlwaysOnRestartBackoff = TimeSpan.FromSeconds(60);
 
     private static readonly McpServerConfig InternalMcpServerConfig = new() { Command = "arcanum-internal" };
+
+    // Bridges Streamable HTTP multi-round tool-response (MRTR) input requests into the shared
+    // human-prompt channel (same surface as the in-process ask_human tool).
+    private readonly IMcpInputElicitor _httpInputElicitor = new HumanPromptMcpInputElicitor(humanPromptRegistry);
 
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
 
@@ -571,7 +580,7 @@ public sealed class McpConnectionManager(
                     continue;
                 }
 
-                foreach (McpClient client in partitionLazy.Value.Clients)
+                foreach (IMcpClient client in partitionLazy.Value.Clients)
                 {
                     try
                     {
@@ -1171,15 +1180,58 @@ public sealed class McpConnectionManager(
 
     }
 
+    // W-MCP-HTTP: an stdio server may opt specific host variables back in via `inheritEnv` (e.g.
+    // PATH/HOME for npx). Names are matched case-insensitively so the deny-list bypass works on
+    // either casing; the host lookup uses the operator-provided name verbatim. Returns null when
+    // nothing is opted in so the secure strip-everything default is preserved.
+    internal static IReadOnlySet<string>? BuildInheritEnvironmentAllowlist(string[]? inheritEnv)
+    {
+
+        if (inheritEnv is not { Length: > 0 })
+        {
+
+            return null;
+
+        }
+
+        HashSet<string> allowlist = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string name in inheritEnv)
+        {
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+
+                allowlist.Add(name.Trim());
+
+            }
+
+        }
+
+        return allowlist.Count == 0 ? null : allowlist;
+
+    }
+
+    // W-MCP-HTTP: transport factory. Stdio spawns a subprocess + correlation client; Http builds a
+    // stateless Streamable HTTP client over the SSRF-guarded named HttpClient; legacy SSE remains
+    // unsupported. Both transports converge on FinishStartAsync (initialize + tools/list + wiring).
     private async Task<Result> StartManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
     {
         McpServerConfig cfg = entry.Config;
 
-        if (entry.Transport is McpServerTransport.Sse)
+        return entry.Transport switch
         {
-            return new Error("Mcp.SseNotSupported", "SSE transport is not yet supported.");
-        }
+            McpServerTransport.Http => await StartHttpServerCoreAsync(entry, cfg, cancellationToken).ConfigureAwait(false),
+            McpServerTransport.Sse => new Error("Mcp.SseNotSupported", "SSE transport is not yet supported."),
+            _ => await StartStdioServerCoreAsync(entry, cfg, cancellationToken).ConfigureAwait(false),
+        };
+    }
 
+    private async Task<Result> StartStdioServerCoreAsync(
+        ManagedMcpServerEntry entry,
+        McpServerConfig cfg,
+        CancellationToken cancellationToken)
+    {
         string? command = cfg.Command;
 
         if (string.IsNullOrWhiteSpace(command))
@@ -1187,53 +1239,88 @@ public sealed class McpConnectionManager(
             return new Error("Mcp.MissingCommand", $"MCP server '{entry.Name}' has no command.");
         }
 
-        McpClient? client = null;
+        string[] args = cfg.Args ?? [];
+
+        string logScope = entry.ScopeWorkingDirectory ?? "global";
+
+        ManagedMcpServerEntry capturedEntry = entry;
+
+        long transportGeneration = ++entry.TransportGeneration;
+
+        bool stripUserEnvironment = ShouldStripUserEnvironment(cfg);
+
+        IReadOnlySet<string>? inheritEnvironmentAllowlist = BuildInheritEnvironmentAllowlist(cfg.InheritEnv);
+
+        Result<string?> cwdResult = ResolveValidatedSubprocessCwd(cfg.Cwd, entry.ScopeWorkingDirectory);
+
+        if (cwdResult.IsFailure)
+        {
+            return cwdResult.Error;
+        }
+
+        McpProcessTransport transport = new(
+            command.Trim(),
+            arguments: string.Empty,
+            maxJsonRpcLineBytes: GetClampedMcpMaxJsonRpcLineBytes(),
+            argumentList: args,
+            environment: cfg.Env,
+            workingDirectory: cwdResult.Value,
+            stripUserEnvironment: stripUserEnvironment,
+            inheritEnvironmentAllowlist: inheritEnvironmentAllowlist)
+        {
+            OnStderrLine = line => logger.LogDebug(
+                "MCP server {ServerName} ({Scope}) stderr: {Line}",
+                entry.Name,
+                logScope,
+                line),
+            OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration),
+        };
+
+        McpClient client = CreateMcpClient(transport);
+
+        return await FinishStartAsync(entry, cfg, client, logScope, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Result> StartHttpServerCoreAsync(
+        ManagedMcpServerEntry entry,
+        McpServerConfig cfg,
+        CancellationToken cancellationToken)
+    {
+        Result<Uri> endpointResult = await ResolveValidatedHttpEndpointAsync(cfg, cancellationToken).ConfigureAwait(false);
+
+        if (endpointResult.IsFailure)
+        {
+            return endpointResult.Error;
+        }
+
+        string logScope = entry.ScopeWorkingDirectory ?? "global";
+
+        McpHttpClient client = CreateHttpMcpClient(endpointResult.Value);
+
+        return await FinishStartAsync(entry, cfg, client, logScope, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Shared start completion for both transports: run the initialize handshake, project tools, and
+    // wire the entry. On any non-cancellation failure the freshly created client is disposed (which
+    // tears down a stdio subprocess) and the entry is reset so a retry starts clean.
+    private async Task<Result> FinishStartAsync(
+        ManagedMcpServerEntry entry,
+        McpServerConfig cfg,
+        IMcpClient client,
+        string logScope,
+        CancellationToken cancellationToken)
+    {
+        IMcpClient? pending = client;
 
         try
         {
-            string[] args = cfg.Args ?? [];
+            await pending.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
-            string logScope = entry.ScopeWorkingDirectory ?? "global";
+            IReadOnlyList<McpBridgeTool> tools = await pending.GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
-            ManagedMcpServerEntry capturedEntry = entry;
+            entry.Client = pending;
 
-            long transportGeneration = ++entry.TransportGeneration;
-
-            bool stripUserEnvironment = ShouldStripUserEnvironment(cfg);
-
-            Result<string?> cwdResult = ResolveValidatedSubprocessCwd(cfg.Cwd, entry.ScopeWorkingDirectory);
-
-            if (cwdResult.IsFailure)
-            {
-                return cwdResult.Error;
-            }
-
-            McpProcessTransport transport = new(
-                command.Trim(),
-                arguments: string.Empty,
-                maxJsonRpcLineBytes: GetClampedMcpMaxJsonRpcLineBytes(),
-                argumentList: args,
-                environment: cfg.Env,
-                workingDirectory: cwdResult.Value,
-                stripUserEnvironment: stripUserEnvironment)
-            {
-                OnStderrLine = line => logger.LogDebug(
-                    "MCP server {ServerName} ({Scope}) stderr: {Line}",
-                    entry.Name,
-                    logScope,
-                    line),
-                OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration),
-            };
-
-            client = CreateMcpClient(transport);
-
-            await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
-
-            IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
-
-            entry.Client = client;
-
-            client = null;
+            pending = null;
 
             entry.LoadedTools.Clear();
 
@@ -1254,9 +1341,9 @@ public sealed class McpConnectionManager(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (client is not null)
+            if (pending is not null)
             {
-                await client.DisposeAsync().ConfigureAwait(false);
+                await pending.DisposeAsync().ConfigureAwait(false);
             }
 
             Exception baseEx = ex.GetBaseException();
@@ -1279,7 +1366,7 @@ public sealed class McpConnectionManager(
 
     private async Task StopManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
     {
-        McpClient? client = entry.Client;
+        IMcpClient? client = entry.Client;
 
         entry.Client = null;
 
@@ -1308,7 +1395,7 @@ public sealed class McpConnectionManager(
         }
     }
 
-    private void RemoveClientFromPartition(ManagedMcpServerEntry entry, McpClient client)
+    private void RemoveClientFromPartition(ManagedMcpServerEntry entry, IMcpClient client)
     {
         string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
 
@@ -1454,7 +1541,7 @@ public sealed class McpConnectionManager(
 
                 entry.ErrorMessage = "MCP server process exited unexpectedly.";
 
-                McpClient? client = entry.Client;
+                IMcpClient? client = entry.Client;
 
                 entry.Client = null;
 
@@ -1563,11 +1650,35 @@ public sealed class McpConnectionManager(
         }
     }
 
-    private static McpServerTransport InferTransport(McpServerConfig cfg)
+    // W-MCP-HTTP: an explicit `type` wins; otherwise a configured `url` implies the Streamable
+    // HTTP transport (2026-07-28) and a bare command implies stdio. An explicit `type: "sse"`
+    // selects the legacy SSE transport, which remains unsupported. Unknown `type` values fall
+    // back to URL inference so a hand-edited config still resolves to a usable transport.
+    internal static McpServerTransport InferTransport(McpServerConfig cfg)
     {
+        ArgumentNullException.ThrowIfNull(cfg);
+
+        if (!string.IsNullOrWhiteSpace(cfg.Type))
+        {
+            if (string.Equals(cfg.Type, "stdio", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpServerTransport.Stdio;
+            }
+
+            if (string.Equals(cfg.Type, "http", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpServerTransport.Http;
+            }
+
+            if (string.Equals(cfg.Type, "sse", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpServerTransport.Sse;
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(cfg.Url))
         {
-            return McpServerTransport.Sse;
+            return McpServerTransport.Http;
         }
 
         return McpServerTransport.Stdio;
@@ -1680,7 +1791,7 @@ public sealed class McpConnectionManager(
     private sealed class McpPartitionClients
     {
 
-        public List<McpClient> Clients { get; } = [];
+        public List<IMcpClient> Clients { get; } = [];
 
         public List<McpServerMetadata> Servers { get; } = [];
 
@@ -1805,6 +1916,102 @@ public sealed class McpConnectionManager(
 
     }
 
+    private TimeSpan GetClampedMcpHttpRequestTimeout()
+    {
+
+        return TimeSpan.FromSeconds(
+            ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(settings.CurrentValue.Mcp.HttpRequestTimeoutSeconds));
+
+    }
+
+    private McpHttpClient CreateHttpMcpClient(Uri endpoint)
+    {
+
+        HttpClient httpClient = httpClientFactory.CreateClient(McpHttpClientName);
+
+        return new McpHttpClient(
+            endpoint,
+            httpClient,
+            GetClampedMcpRequestTimeout(),
+            GetClampedMcpMaxPaginationPages(),
+            GetClampedToolOutputCapBytes(),
+            GetClampedMcpMaxToolsPerServer(),
+            GetClampedMcpMaxToolsPerListPage(),
+            GetClampedMcpMaxToolsTotalBytes(),
+            GetClampedMcpMaxJsonRpcLineBytes(),
+            _httpInputElicitor,
+            logger);
+
+    }
+
+    // W-MCP-HTTP: validates a Streamable HTTP endpoint before connecting. The URL must be an
+    // absolute http/https URI; plaintext http is refused unless the host is in
+    // Arcanum:Mcp:AllowedHttpHosts; and the SSRF policy (loopback / private / link-local blocking
+    // with DNS-rebind pinning) is enforced up front via OutboundUrlGuard and again at connect time
+    // by the named client's egress handler.
+    private async Task<Result<Uri>> ResolveValidatedHttpEndpointAsync(McpServerConfig cfg, CancellationToken cancellationToken)
+    {
+
+        string? url = cfg.Url;
+
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? endpoint))
+        {
+
+            return Result<Uri>.Failure(new Error("Mcp.InvalidUrl", "MCP HTTP server requires an absolute http or https url."));
+
+        }
+
+        if (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps)
+        {
+
+            return Result<Uri>.Failure(new Error("Mcp.InvalidUrl", "MCP HTTP server url must use the http or https scheme."));
+
+        }
+
+        if (endpoint.Scheme == Uri.UriSchemeHttp && !IsHttpHostAllowed(endpoint.Host))
+        {
+
+            return Result<Uri>.Failure(new Error(
+                "Mcp.InsecureUrl",
+                $"Plaintext http MCP server '{endpoint.Host}' requires the host in Arcanum:Mcp:AllowedHttpHosts; otherwise use https."));
+
+        }
+
+        Result outbound = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url, cancellationToken).ConfigureAwait(false);
+
+        if (outbound.IsFailure)
+        {
+
+            return Result<Uri>.Failure(new Error("Mcp.BlockedUrl", outbound.Error.Message));
+
+        }
+
+        return Result<Uri>.Success(endpoint);
+
+    }
+
+    private bool IsHttpHostAllowed(string host)
+    {
+
+        string[] allowed = settings.CurrentValue.Mcp.AllowedHttpHosts ?? [];
+
+        foreach (string candidate in allowed)
+        {
+
+            if (!string.IsNullOrWhiteSpace(candidate)
+                && string.Equals(host, candidate.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
     private int GetClampedListDirectoryMaxPaths()
     {
         return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.CurrentValue.Intelligence.ListDirectoryMaxPaths);
@@ -1852,7 +2059,7 @@ public sealed class McpConnectionManager(
 
         McpClient? client = null;
 
-        List<McpClient> partitionClients = partition.Clients;
+        List<IMcpClient> partitionClients = partition.Clients;
 
         try
         {

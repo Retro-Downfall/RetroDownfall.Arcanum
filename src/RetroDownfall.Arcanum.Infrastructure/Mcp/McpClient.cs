@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -11,7 +10,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// MCP session client: correlates JSON-RPC responses by <c>id</c>, performs <c>initialize</c> / <c>tools/list</c>, and exposes <see cref="McpBridgeTool"/> instances.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: MCP JSON-RPC session client over transports; covered via McpClientTests and InProcessMcpTransport integration tests.
-internal sealed class McpClient : IAsyncDisposable
+internal sealed class McpClient : IMcpClient
 {
     private readonly TimeSpan _defaultRequestTimeout;
 
@@ -123,31 +122,31 @@ internal sealed class McpClient : IAsyncDisposable
 
             await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
             EnsureCorrelationLoopStarted();
-            McpInitializeParams initParams = new()
-            {
-                ProtocolVersion = "2024-11-05",
-                Capabilities = new McpClientCapabilities(),
-                ClientInfo = new McpClientInfo
-                {
-                    Name = typeof(McpClient).Assembly.GetName().Name ?? "RetroDownfall.Arcanum.Infrastructure",
-                    Version = typeof(McpClient).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-                },
-            };
-            JsonElement initElement = JsonSerializer.SerializeToElement(initParams, _json.McpInitializeParams);
-            _ = await SendRequestAsync("initialize", initElement, cancellationToken, _defaultRequestTimeout)
+            await McpProtocol.InitializeAsync(
+                    this,
+                    McpProtocol.StdioProtocolVersion,
+                    SendInitializedNotificationAsync,
+                    _json,
+                    _defaultRequestTimeout,
+                    cancellationToken)
                 .ConfigureAwait(false);
-            JsonRpcNotification initialized = new()
-            {
-                Method = "notifications/initialized",
-                Params = null,
-            };
-            await _transport.WriteNotificationAsync(initialized, cancellationToken).ConfigureAwait(false);
             _initialized = true;
         }
         finally
         {
             _initLock.Release();
         }
+    }
+
+    private Task SendInitializedNotificationAsync(CancellationToken cancellationToken)
+    {
+        JsonRpcNotification initialized = new()
+        {
+            Method = "notifications/initialized",
+            Params = null,
+        };
+
+        return _transport.WriteNotificationAsync(initialized, cancellationToken);
     }
 
     /// <summary>
@@ -257,128 +256,14 @@ internal sealed class McpClient : IAsyncDisposable
             throw new InvalidOperationException("McpClient must be initialized before calling GetToolsAsync.");
         }
 
-        List<McpBridgeTool> tools = [];
+        McpToolListCaps caps = new(
+            _maxToolsListPages,
+            _maxToolsPerServer,
+            _maxToolsPerListPage,
+            _maxToolsTotalBytes);
 
-        string? cursor = null;
-
-        long totalToolBytes = 0L;
-
-        HashSet<string> seenCursors = new(StringComparer.Ordinal);
-
-        for (int page = 0; page < _maxToolsListPages; page++)
-        {
-
-            if (cursor is not null)
-            {
-
-                if (!seenCursors.Add(cursor))
-                {
-
-                    break;
-
-                }
-
-            }
-            if (tools.Count >= _maxToolsPerServer)
-            {
-
-                break;
-
-            }
-
-            JsonElement? listParams = cursor is null
-                ? null
-                : JsonSerializer.SerializeToElement(new McpToolsListParams { Cursor = cursor },
-                    _json.McpToolsListParams);
-            JsonElement pageResult =
-                await SendRequestAsync("tools/list", listParams, cancellationToken, _defaultRequestTimeout)
-                    .ConfigureAwait(false);
-            if (!pageResult.TryGetProperty("tools", out JsonElement toolsArray) ||
-                toolsArray.ValueKind != JsonValueKind.Array)
-            {
-                break;
-            }
-
-            int toolsOnPage = 0;
-
-            foreach (JsonElement tool in toolsArray.EnumerateArray())
-            {
-                if (tools.Count >= _maxToolsPerServer)
-                {
-
-                    break;
-
-                }
-
-                if (toolsOnPage >= _maxToolsPerListPage)
-                {
-
-                    break;
-
-                }
-
-                int toolUtf8Bytes = Encoding.UTF8.GetByteCount(tool.GetRawText());
-
-                if (totalToolBytes + toolUtf8Bytes > _maxToolsTotalBytes)
-                {
-
-                    break;
-
-                }
-
-                if (!tool.TryGetProperty("name", out JsonElement nameEl) || nameEl.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                string? name = nameEl.GetString();
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    continue;
-                }
-
-                string description = string.Empty;
-
-                if (tool.TryGetProperty("description", out JsonElement descEl) &&
-                    descEl.ValueKind == JsonValueKind.String)
-                {
-                    description = McpSecurityLimits.BoundToolDescription(descEl.GetString() ?? string.Empty);
-                }
-
-                JsonElement inputSchema;
-
-                if (tool.TryGetProperty("inputSchema", out JsonElement schemaEl) &&
-                    schemaEl.ValueKind == JsonValueKind.Object)
-                {
-                    inputSchema = McpSecurityLimits.BoundToolInputSchema(schemaEl, _json);
-                }
-                else
-                {
-                    inputSchema = JsonSerializer.SerializeToElement(new McpEmptyJsonObject(), _json.McpEmptyJsonObject);
-                }
-
-                tools.Add(new McpBridgeTool(name, description, inputSchema, this, _toolOutputCapBytes));
-
-                totalToolBytes += toolUtf8Bytes;
-
-                toolsOnPage++;
-
-            }
-
-            if (!pageResult.TryGetProperty("nextCursor", out JsonElement next) ||
-                next.ValueKind != JsonValueKind.String)
-            {
-                break;
-            }
-
-            cursor = next.GetString();
-            if (string.IsNullOrEmpty(cursor))
-            {
-                break;
-            }
-        }
-
-        return tools;
+        return await McpProtocol.GetToolsAsync(this, caps, _toolOutputCapBytes, _json, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
@@ -460,7 +345,7 @@ internal sealed class McpClient : IAsyncDisposable
 
         if (response.Error is { } rpcError)
         {
-            tcs.TrySetException(new InvalidOperationException(FormulateRpcErrorMessage(rpcError)));
+            tcs.TrySetException(new InvalidOperationException(McpProtocol.FormulateRpcErrorMessage(rpcError)));
             return;
         }
 
@@ -533,17 +418,6 @@ internal sealed class McpClient : IAsyncDisposable
         exception is ChannelClosedException
             or IOException
             or ObjectDisposedException;
-
-    private static string FormulateRpcErrorMessage(JsonRpcError error)
-    {
-        string message = $"{error.Code}: {error.Message}";
-        if (error.Data is { } data)
-        {
-            message += " " + data.GetRawText();
-        }
-
-        return message.Trim();
-    }
 
     private static async Task AwaitTaskGracefullyAsync(Task task)
     {

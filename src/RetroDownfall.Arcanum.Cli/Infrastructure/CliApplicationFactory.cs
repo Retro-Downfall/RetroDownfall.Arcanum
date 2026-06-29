@@ -207,7 +207,7 @@ internal static class CliApplicationFactory
             key.SetDescription("Master API key utilities (local secret store only; no HTTP).");
 
             key.AddCommand<KeyShowCommand>("show")
-                .WithDescription("Print the stored master API key to stdout.");
+                .WithDescription("Print the stored master API key to stderr (so stdout piping does not capture the secret).");
         });
 
         config.AddBranch("daemon", daemon =>

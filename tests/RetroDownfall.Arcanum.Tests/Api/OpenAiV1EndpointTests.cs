@@ -89,6 +89,41 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
+    public async Task PostChatCompletions_UnsupportedContentPartType_Returns400InvalidValue()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // An unknown multimodal part type was previously silently dropped by the mapper; W3.5 rejects
+        // it up front with a 400 invalid_value before model resolution.
+        string payload = """
+            {
+              "model": "any-model",
+              "messages": [
+                { "role": "user", "content": [ { "type": "video_url", "video_url": { "url": "x" } } ] }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_value", body!.Error.Code);
+
+    }
+
+    [SkippableFact]
     public async Task GetModels_WithValidApiKey_ReturnsOpenAiModelList()
     {
 

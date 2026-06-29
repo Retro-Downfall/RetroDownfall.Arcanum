@@ -7,7 +7,11 @@ public static class ProviderResolver
 {
 
     /// <summary>
-    /// Case-insensitive match between a configured model id and a requested id, including Ollama-style <c>:latest</c> tag stripping.
+    /// Case-insensitive match between a configured model id and a requested id, with **symmetric**
+    /// Ollama-style tag handling: a bare name matches a tagged name in either direction
+    /// (<c>llama3</c> ↔ <c>llama3:8b</c>), while two differently-tagged names do not
+    /// (<c>llama3:8b</c> ≠ <c>llama3:70b</c>). Tag-insensitive comparison applies only when exactly
+    /// one side carries a <c>:tag</c>.
     /// </summary>
     public static bool ModelNameMatches(string configuredModel, string needle)
     {
@@ -17,17 +21,25 @@ public static class ProviderResolver
             return true;
         }
 
-        if (!needle.Contains(':'))
-        {
-            int colonIndex = configuredModel.IndexOf(':');
+        bool configuredHasTag = configuredModel.Contains(':');
 
-            if (colonIndex >= 0)
-            {
-                return configuredModel.AsSpan(0, colonIndex).Equals(needle, StringComparison.OrdinalIgnoreCase);
-            }
+        bool needleHasTag = needle.Contains(':');
+
+        if (configuredHasTag == needleHasTag)
+        {
+            return false;
         }
 
-        return false;
+        return StripTag(configuredModel).Equals(StripTag(needle), StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    private static ReadOnlySpan<char> StripTag(string model)
+    {
+
+        int colonIndex = model.IndexOf(':');
+
+        return colonIndex >= 0 ? model.AsSpan(0, colonIndex) : model.AsSpan();
 
     }
 

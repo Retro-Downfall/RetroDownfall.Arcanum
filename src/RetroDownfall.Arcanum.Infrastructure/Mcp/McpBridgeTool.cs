@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
-/// Bridges a remote MCP tool to <see cref="AIFunction"/> via <see cref="McpClient.SendRequestAsync"/> (<c>tools/call</c>).
+/// Bridges a remote MCP tool to <see cref="AIFunction"/> via <see cref="IMcpClient.SendRequestAsync"/> (<c>tools/call</c>).
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: remote MCP tool AIFunction bridge; covered via McpBridgeTool tests and in-process MCP integration paths.
 internal sealed class McpBridgeTool : AIFunction
@@ -20,9 +20,9 @@ internal sealed class McpBridgeTool : AIFunction
 
     private readonly JsonElement _inputSchema;
 
-    private readonly McpClient _client;
+    private readonly IMcpClient _client;
 
-    private readonly McpClient? _fallbackClient;
+    private readonly IMcpClient? _fallbackClient;
 
     private readonly ILogger? _fallbackLogger;
 
@@ -34,9 +34,9 @@ internal sealed class McpBridgeTool : AIFunction
         string name,
         string description,
         JsonElement inputSchema,
-        McpClient client,
+        IMcpClient client,
         long toolOutputCapBytes,
-        McpClient? fallbackClient = null,
+        IMcpClient? fallbackClient = null,
         ILogger? fallbackLogger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -94,7 +94,7 @@ internal sealed class McpBridgeTool : AIFunction
         }
     }
 
-    private async Task<object?> SendToolsCallAsync(McpClient client, AIFunctionArguments arguments, CancellationToken cancellationToken)
+    private async Task<object?> SendToolsCallAsync(IMcpClient client, AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
         JsonElement paramsElement = BuildToolsCallParamsElement(arguments);
 

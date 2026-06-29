@@ -67,7 +67,10 @@ public sealed class ManaPreflight
 
         BoundedLruCache<MessageTokenCacheKey, int> cache = Volatile.Read(ref _messageTokenCache);
 
-        int total = 0;
+        // W3.5: accumulate in long and saturate to int.MaxValue. A very large history previously
+        // could overflow the int and wrap negative, making (total <= effectiveLimit) true and
+        // SKIPPING compression exactly when it was most needed.
+        long total = 0L;
 
         foreach (MeAiChatMessage message in messages)
         {
@@ -102,7 +105,7 @@ public sealed class ManaPreflight
 
         }
 
-        return total;
+        return total > int.MaxValue ? int.MaxValue : (int)total;
 
     }
 
@@ -137,21 +140,15 @@ public sealed class ManaPreflight
     private static string? ExtractTextForCounting(MeAiChatMessage message)
     {
 
-        string? direct = message.Text;
-
-        if (!string.IsNullOrEmpty(direct))
-        {
-
-            return direct;
-
-        }
-
+        // W3.5: enumerate ALL contents (not just message.Text). A message that carries both text
+        // and non-text parts (e.g. an assistant turn with tool calls) previously counted only the
+        // text via the message.Text short-circuit, under-counting the non-text payload.
         IList<AIContent> contents = message.Contents;
 
         if (contents.Count == 0)
         {
 
-            return null;
+            return message.Text;
 
         }
 
@@ -160,34 +157,18 @@ public sealed class ManaPreflight
         foreach (AIContent item in contents)
         {
 
-            if (item is TextContent tc)
+            string? s = item is TextContent tc ? tc.Text : item.ToString();
+
+            if (!string.IsNullOrEmpty(s))
             {
 
-                if (!string.IsNullOrEmpty(tc.Text))
-                {
-
-                    _ = sb.Append(tc.Text);
-
-                }
-
-            }
-            else
-            {
-
-                string? s = item.ToString();
-
-                if (!string.IsNullOrEmpty(s))
-                {
-
-                    _ = sb.Append(s);
-
-                }
+                _ = sb.Append(s);
 
             }
 
         }
 
-        return sb.Length == 0 ? null : sb.ToString();
+        return sb.Length == 0 ? message.Text : sb.ToString();
 
     }
 

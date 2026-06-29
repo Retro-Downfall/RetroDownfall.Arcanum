@@ -239,9 +239,13 @@ public static class ArcanumSettingClamps
 
     public static int McpMaxJsonRpcLineBytes(int value) => Math.Clamp(value, 65_536, 8_388_608);
 
+    public static int McpHttpRequestTimeoutSeconds(int value) => Math.Clamp(value, 10, 600);
+
     public static int MaxOpenApiMessages(int value) => Math.Clamp(value, 1, 10_000);
 
     public static int MaxStatelessMessages(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int MaxContentPartsPerMessage(int value) => Math.Clamp(value, 1, 1_024);
 
     public static int MaxPingPromptChars(int value) => Math.Clamp(value, 1, 262_144);
 

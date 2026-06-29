@@ -89,6 +89,31 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
     }
 
     [Fact]
+    public async Task Invoke_UnsupportedExtension_IsRejectedWithoutLaunch()
+    {
+        string scriptPath = Path.Combine(_rootA, "payload.bin");
+
+        await File.WriteAllTextAsync(scriptPath, "not a real interpreter target");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        ArcanumSpellScriptTool tool = new(
+            [_rootA],
+            TimeSpan.FromSeconds(10),
+            10);
+
+        string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "payload.bin" }))
+            as string;
+
+        Assert.NotNull(result);
+
+        Assert.Contains("unsupported script type", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Invoke_PathTraversalInScriptName_IsRejected()
     {
         ArcanumSpellScriptTool tool = new(

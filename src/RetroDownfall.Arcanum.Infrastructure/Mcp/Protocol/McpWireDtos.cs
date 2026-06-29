@@ -325,4 +325,48 @@ public sealed record McpCancelledParams
     public string? Reason { get; init; }
 }
 
+/// <summary>
+/// Streamable HTTP "input required" result (multi-round tool response). When a <c>tools/call</c>
+/// result carries <c>inputRequired: true</c>, the client gathers a response for every
+/// <see cref="InputRequests"/> entry and re-POSTs the same call augmented with
+/// <c>inputResponses</c> and the echoed opaque <see cref="RequestState"/>.
+/// </summary>
+public sealed record McpInputRequiredResult
+{
+    [JsonPropertyName("inputRequired")]
+    public bool InputRequired { get; init; }
+
+    [JsonPropertyName("inputRequests")]
+    public McpInputRequest[] InputRequests { get; init; } = [];
+
+    [JsonPropertyName("requestState")]
+    public JsonElement RequestState { get; init; }
+}
+
+/// <summary>
+/// One input request inside an <see cref="McpInputRequiredResult"/>. <see cref="Id"/> correlates the
+/// request with its <see cref="McpInputResponse"/> on the re-POST.
+/// </summary>
+public sealed record McpInputRequest
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    [JsonPropertyName("prompt")]
+    public string? Prompt { get; init; }
+}
+
+/// <summary>
+/// One input response posted back to satisfy an <see cref="McpInputRequest"/> during a multi-round
+/// tool response.
+/// </summary>
+public sealed record McpInputResponse
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    [JsonPropertyName("value")]
+    public required string Value { get; init; }
+}
+
 

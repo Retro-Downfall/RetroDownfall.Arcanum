@@ -12,7 +12,7 @@ public sealed record McpConfig
 }
 
 /// <summary>
-/// One stdio MCP server entry under <c>mcpServers</c>.
+/// One MCP server entry under <c>mcpServers</c> (stdio subprocess or Streamable HTTP endpoint).
 /// </summary>
 public sealed record McpServerConfig
 {
@@ -27,6 +27,22 @@ public sealed record McpServerConfig
     public string? Url { get; init; }
 
     public string? Cwd { get; init; }
+
+    /// <summary>
+    /// Explicit transport selector: <c>"stdio"</c> or <c>"http"</c> (Streamable HTTP, 2026-07-28).
+    /// When null, the transport is inferred from <see cref="Url"/> (a URL implies <c>http</c>,
+    /// otherwise <c>stdio</c>). An explicit <c>"sse"</c> selects the legacy SSE transport, which
+    /// remains unsupported.
+    /// </summary>
+    public string? Type { get; init; }
+
+    /// <summary>
+    /// Names of host-process environment variables an stdio server is permitted to inherit even
+    /// though the host environment is otherwise stripped (e.g. <c>["PATH", "HOME"]</c> so an
+    /// <c>npx</c>-launched server can locate Node.js and the npm cache). Listed names bypass the
+    /// <see cref="McpSecurityLimits.IsBlockedEnvironmentVariable"/> deny-list; ignored for HTTP servers.
+    /// </summary>
+    public string[]? InheritEnv { get; init; }
 }
 
 /// <summary>

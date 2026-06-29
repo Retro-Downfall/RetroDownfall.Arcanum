@@ -4,5 +4,5 @@ namespace RetroDownfall.Arcanum.Core.Chronosync;
 
 public interface IChronosyncEngine
 {
-    Task<ChronosyncReport> AnalyzeAndSyncAsync(PatternSnapshot currentSnapshot);
+    Task<ChronosyncReport> AnalyzeAndSyncAsync(PatternSnapshot currentSnapshot, CancellationToken cancellationToken = default);
 }

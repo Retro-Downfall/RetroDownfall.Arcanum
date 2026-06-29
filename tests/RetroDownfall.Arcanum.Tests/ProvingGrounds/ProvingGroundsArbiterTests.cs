@@ -186,7 +186,39 @@ public sealed class ProvingGroundsArbiterTests
     }
 
     [Fact]
-    public async Task AdjudicateAsync_ExceedsMaxInquisitors_Throws()
+    public async Task AdjudicateAsync_CancelledToken_ThrowsBetweenInquisitors()
+    {
+
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        using CancellationTokenSource cts = new();
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => arbiter.AdjudicateAsync("text", [new RegexInquisitor("a")], judgeModel: null, cts.Token));
+
+    }
+
+    [Fact]
+    public async Task JsonSchemaInquisitor_UnknownDeclaredType_FailsClosed()
+    {
+
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse("""{"properties":{"x":{"type":"mystery"}}}""").RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            """{"x":"hi"}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+    }
+
+    [Fact]
+    public async Task AdjudicateAsync_ExceedsMaxInquisitors_ReturnsFailedVerdict()
     {
 
         ProvingGroundsArbiter arbiter = CreateArbiter(
@@ -200,8 +232,15 @@ public sealed class ProvingGroundsArbiterTests
             new RegexInquisitor("c"),
         ];
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => arbiter.AdjudicateAsync("text", many, judgeModel: null));
+        // W4.1: over-limit now returns a single failed verdict instead of throwing, so direct
+        // arbiter callers get the same Result-shaped outcome as the pre-validating API runner.
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync("text", many, judgeModel: null);
+
+        InquisitorVerdict verdict = Assert.Single(verdicts);
+
+        Assert.False(verdict.Passed);
+
+        Assert.Contains("maximum is 2", verdict.Detail, StringComparison.Ordinal);
 
     }
 

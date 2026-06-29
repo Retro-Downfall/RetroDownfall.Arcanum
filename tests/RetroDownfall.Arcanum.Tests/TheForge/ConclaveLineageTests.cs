@@ -86,7 +86,64 @@ public sealed class ConclaveLineageTests
 
     }
 
+    [Fact]
+    public async Task CountDescendantsOfRootAsync_CountsDescendantsAcrossPages()
+    {
+
+        Guid root = Guid.NewGuid();
+
+        Guid childA = Guid.NewGuid();
+
+        Guid childB = Guid.NewGuid();
+
+        Guid grandchild = Guid.NewGuid();
+
+        // Page size 1 forces the loader to paginate; the old single-page (HasMore-ignoring) count
+        // would have missed every descendant past the first page.
+        PagingLineageRepository repo = new(pageSize: 1);
+
+        DateTimeOffset baseTime = DateTimeOffset.UtcNow;
+
+        repo.Items.Add(MakeApprenticeAt(root, null, baseTime));
+
+        repo.Items.Add(MakeApprenticeAt(childA, root, baseTime.AddSeconds(-1)));
+
+        repo.Items.Add(MakeApprenticeAt(childB, root, baseTime.AddSeconds(-2)));
+
+        repo.Items.Add(MakeApprenticeAt(grandchild, childA, baseTime.AddSeconds(-3)));
+
+        int descendants = await ConclaveLineage.CountDescendantsOfRootAsync(repo, root, maxDescendants: 100);
+
+        Assert.Equal(3, descendants);
+
+        Assert.True(repo.ListCallCount > 1, "Expected the loader to paginate across more than one page.");
+
+    }
+
+    [Fact]
+    public async Task FindRootAsync_CycleInParentChain_Terminates()
+    {
+
+        Guid a = Guid.NewGuid();
+
+        Guid b = Guid.NewGuid();
+
+        LineageRepository repo = new();
+
+        repo.Items.Add(MakeApprentice(a, b));
+
+        repo.Items.Add(MakeApprentice(b, a));
+
+        Guid root = await ConclaveLineage.FindRootAsync(repo, a);
+
+        Assert.True(root == a || root == b);
+
+    }
+
     private static Apprentice MakeApprentice(Guid id, Guid? parentId) =>
+        MakeApprenticeAt(id, parentId, DateTimeOffset.UtcNow);
+
+    private static Apprentice MakeApprenticeAt(Guid id, Guid? parentId, DateTimeOffset updatedAt) =>
         new()
         {
             Id = id,
@@ -95,8 +152,8 @@ public sealed class ConclaveLineageTests
             Status = ApprenticeStatus.Idle.ToString(),
             WorkspacePath = "/tmp/ws",
             ParentApprenticeId = parentId,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
+            CreatedAt = updatedAt,
+            UpdatedAt = updatedAt,
         };
 
     private sealed class LineageRepository : IApprenticeRepository
@@ -114,6 +171,65 @@ public sealed class ConclaveLineageTests
             DateTimeOffset? beforeUpdatedAt = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Apprentice>([.. Items], false));
+
+        public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+        {
+
+            Items.Add(apprentice);
+
+            return Task.FromResult(apprentice);
+
+        }
+
+        public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
+            Task.FromResult(apprentice);
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Items.RemoveAll(a => a.Id == id) > 0);
+
+        public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult((IReadOnlyList<Apprentice>)[]);
+
+        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult((IReadOnlyList<Apprentice>)[]);
+
+    }
+
+    private sealed class PagingLineageRepository(int pageSize) : IApprenticeRepository
+    {
+
+        public List<Apprentice> Items { get; } = [];
+
+        public int ListCallCount { get; private set; }
+
+        public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Items.FirstOrDefault(a => a.Id == id));
+
+        public Task<ListPageResult<Apprentice>> ListAsync(
+            Guid? campaignId,
+            string? status,
+            int? limit = null,
+            DateTimeOffset? beforeUpdatedAt = null,
+            CancellationToken cancellationToken = default)
+        {
+
+            ListCallCount++;
+
+            List<Apprentice> ordered = Items.OrderByDescending(a => a.UpdatedAt).ToList();
+
+            List<Apprentice> remaining = beforeUpdatedAt is { } cursor
+                ? ordered.Where(a => a.UpdatedAt < cursor).ToList()
+                : ordered;
+
+            List<Apprentice> pageItems = remaining.Take(pageSize).ToList();
+
+            bool hasMore = remaining.Count > pageItems.Count;
+
+            DateTimeOffset? next = pageItems.Count > 0 ? pageItems[^1].UpdatedAt : null;
+
+            return Task.FromResult(new ListPageResult<Apprentice>([.. pageItems], hasMore, NextBeforeUpdatedAt: next));
+
+        }
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {

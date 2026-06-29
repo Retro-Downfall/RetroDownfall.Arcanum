@@ -30,21 +30,40 @@ public sealed class ProvingGroundsArbiter(
 
         if (inquisitors.Count > maxInquisitors)
         {
-            throw new InvalidOperationException(
-                $"Trial defines {inquisitors.Count} Inquisitors; the maximum is {maxInquisitors}.");
+            // W4.1: return a failed verdict rather than throwing, so a direct arbiter caller that
+            // skips the API runner's pre-validation gets the same Result-shaped outcome (one error
+            // model, not two).
+            return [new InquisitorVerdict(
+                "trial",
+                "trial",
+                false,
+                $"Trial defines {inquisitors.Count} Inquisitors; the maximum is {maxInquisitors}.")];
         }
+
+        // W3.6: clamp the trial output before any parse / judge-prompt assembly so a very large
+        // target output cannot force an unbounded JsonDocument.Parse or an unbounded judge prompt
+        // (the per-inference ping bounds do not apply to this internal adjudication path).
+        int maxOutputChars = ArcanumSettingClamps.MaxPingPromptChars(
+            (arc.Intelligence ?? new IntelligenceSettings()).MaxPingPromptChars);
+
+        string boundedOutput = output.Length > maxOutputChars ? output[..maxOutputChars] : output;
 
         List<InquisitorVerdict> verdicts = new(inquisitors.Count);
 
         foreach (Inquisitor inquisitor in inquisitors)
         {
+            // W3.6: synchronous regex/json inquisitors can run for up to ~1s each across many
+            // inquisitors; honor cooperative cancellation between each so client cancel / shutdown
+            // is not delayed.
+            cancellationToken.ThrowIfCancellationRequested();
+
             InquisitorVerdict verdict = inquisitor switch
             {
-                RegexInquisitor regex => AdjudicateRegex(regex, output),
-                JsonSchemaInquisitor jsonSchema => AdjudicateJsonSchema(jsonSchema, output),
+                RegexInquisitor regex => AdjudicateRegex(regex, boundedOutput),
+                JsonSchemaInquisitor jsonSchema => AdjudicateJsonSchema(jsonSchema, boundedOutput),
                 SemanticInquisitor semantic => await AdjudicateSemanticAsync(
                     semantic,
-                    output,
+                    boundedOutput,
                     judgeModel,
                     arc,
                     cancellationToken).ConfigureAwait(false),
@@ -277,9 +296,17 @@ public sealed class ProvingGroundsArbiter(
 
         string answer = result.Value!.Text.Trim();
 
-        bool answerIsYes = answer.StartsWith("YES", StringComparison.OrdinalIgnoreCase);
+        // W4.1: require an exact YES/NO first token (punctuation-trimmed) rather than StartsWith, so
+        // "NOPE"/"NOT"/"YESSIR" no longer classify as NO/YES.
+        string[] answerTokens = answer.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
-        bool answerIsNo = answer.StartsWith("NO", StringComparison.OrdinalIgnoreCase);
+        string firstToken = answerTokens.Length > 0
+            ? answerTokens[0].Trim('.', '!', '?', ',', ';', ':', '"', '\'')
+            : string.Empty;
+
+        bool answerIsYes = string.Equals(firstToken, "YES", StringComparison.OrdinalIgnoreCase);
+
+        bool answerIsNo = string.Equals(firstToken, "NO", StringComparison.OrdinalIgnoreCase);
 
         if (!answerIsYes && !answerIsNo)
         {
@@ -310,7 +337,9 @@ public sealed class ProvingGroundsArbiter(
             "object" => value.ValueKind == JsonValueKind.Object,
             "array" => value.ValueKind == JsonValueKind.Array,
             "null" => value.ValueKind == JsonValueKind.Null,
-            _ => true,
+            // W3.6: fail closed on an unrecognized declared type rather than passing it — an author
+            // who declares a type outside the supported subset must not get a silent green verdict.
+            _ => false,
         };
     }
 

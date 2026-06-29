@@ -373,32 +373,4 @@ internal static class GrimoireSqlSchemaMigrator
 
     }
 
-    private static string StripAddColumnStatements(string script)
-    {
-
-        string[] lines = script.Split('\n');
-
-        List<string> kept = new(lines.Length);
-
-        for (int i = 0; i < lines.Length; i++)
-        {
-
-            string line = lines[i];
-
-            if (line.TrimStart().StartsWith("ALTER TABLE", StringComparison.OrdinalIgnoreCase)
-                && line.Contains(" ADD", StringComparison.OrdinalIgnoreCase))
-            {
-
-                continue;
-
-            }
-
-            kept.Add(line);
-
-        }
-
-        return string.Join('\n', kept);
-
-    }
-
 }

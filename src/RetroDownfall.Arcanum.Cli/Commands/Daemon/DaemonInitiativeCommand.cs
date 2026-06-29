@@ -14,6 +14,17 @@ public sealed class DaemonInitiativeCommand(ArcanumApiClient apiClient, IThemePa
     protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
 
+        // W4.1: validate the interval client-side so an obviously-invalid value fails fast with a
+        // clear message instead of round-tripping to the API.
+        if (settings.Minutes < 1)
+        {
+
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Minutes must be a positive integer (>= 1).")));
+
+            return 1;
+
+        }
+
         Result<UnseenServantJobStatusDto> result = await apiClient
             .AdjustDaemonJobInitiativeAsync(settings.JobName, settings.Minutes, cancellationToken)
             .ConfigureAwait(false);

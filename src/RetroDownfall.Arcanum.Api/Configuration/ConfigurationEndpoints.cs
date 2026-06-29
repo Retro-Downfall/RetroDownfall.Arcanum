@@ -66,6 +66,17 @@ internal static class ConfigurationEndpoints
 
             ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(request, currentSettings.Value);
 
+            // W3.5: a residual "***" after merge means a new provider / model-map key whose masked
+            // value could not be restored — reject it instead of persisting the literal mask.
+            Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
+
+            if (residualMask.IsFailure)
+            {
+                Result<bool> invalid = Result<bool>.Failure(residualMask.Error);
+
+                return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+            }
+
             Result outbound = await OutboundUrlGuard.ValidateArcanumSettingsAsync(merged, cancellationToken).ConfigureAwait(false);
 
             if (outbound.IsFailure)

@@ -423,8 +423,10 @@ internal static class PromptEndpoints
                         }
                     }
 
-                    long maxBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
-                        settings.Value.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes);
+                    // W3.5: use the effective codex cap (min of codex + workspace read caps), matching
+                    // codex GET/PUT — the workspace read cap alone (up to 10 MiB) let /prompts/{id}/test
+                    // pull a far larger codex file into prompt assembly than codex endpoints allow.
+                    long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
 
                     Result<CodexValidationResult> codexPathResult = CodexPathPolicy.ValidateContainedFile(
                         request.CodexPath,

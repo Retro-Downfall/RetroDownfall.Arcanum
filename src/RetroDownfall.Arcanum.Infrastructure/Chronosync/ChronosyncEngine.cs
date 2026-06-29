@@ -28,10 +28,12 @@ public sealed class ChronosyncEngine : IChronosyncEngine
         _logger = logger;
     }
 
-    public async Task<ChronosyncReport> AnalyzeAndSyncAsync(PatternSnapshot currentSnapshot)
+    public async Task<ChronosyncReport> AnalyzeAndSyncAsync(
+        PatternSnapshot currentSnapshot,
+        CancellationToken cancellationToken = default)
     {
         WorkspaceContext? latest = await _grimoire
-            .GetLatestWorkspaceContextAsync(currentSnapshot.RootPath)
+            .GetLatestWorkspaceContextAsync(currentSnapshot.RootPath, cancellationToken)
             .ConfigureAwait(false);
 
         PatternSnapshot? previous = null;
@@ -95,7 +97,8 @@ public sealed class ChronosyncEngine : IChronosyncEngine
                     CreatedAt = _time.GetUtcNow(),
                     WorkspacePath = currentSnapshot.RootPath,
                     SerializedSnapshot = json,
-                })
+                },
+                cancellationToken)
             .ConfigureAwait(false);
 
         return new ChronosyncReport(previousTime, newThreads, missingThreads, domainChanged, previous?.Domain);

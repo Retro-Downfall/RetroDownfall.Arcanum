@@ -15,4 +15,7 @@ public enum McpServerTransport
     [JsonStringEnumMemberName("sse")]
     Sse,
 
+    [JsonStringEnumMemberName("http")]
+    Http,
+
 }

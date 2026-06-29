@@ -80,12 +80,19 @@ internal static class AskHumanToolCallStreamHandler
             catch (InvalidOperationException)
             {
 
+                // W4.1: was a silent SubmitFailed — tell the operator why the prompt could not be answered.
+                AnsiConsole.MarkupLine(
+                    palette.ErrorMarkup(Markup.Escape("ask_human: no interactive input is available to answer the prompt.")));
+
                 return AskHumanResult.SubmitFailed;
 
             }
 
             if (string.IsNullOrWhiteSpace(answer))
             {
+
+                AnsiConsole.MarkupLine(
+                    palette.ErrorMarkup(Markup.Escape("ask_human: no answer was provided; the prompt was left unanswered.")));
 
                 return AskHumanResult.SubmitFailed;
 
@@ -98,8 +105,11 @@ internal static class AskHumanToolCallStreamHandler
 
         if (submitResult.IsFailure)
         {
+            // W4.1: surface the actual error code/message instead of a generic line so a failed
+            // submit (unknown/expired promptId, transport fault) is diagnosable.
             AnsiConsole.MarkupLine(
-                palette.ErrorMarkup(Markup.Escape("Failed to submit response to Daemon. The stream may be disconnected.")));
+                palette.ErrorMarkup(Markup.Escape(
+                    $"Failed to submit response to Daemon ({submitResult.Error.Code}): {submitResult.Error.Message}")));
 
             return AskHumanResult.SubmitFailed;
         }

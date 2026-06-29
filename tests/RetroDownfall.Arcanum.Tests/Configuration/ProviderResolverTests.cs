@@ -11,9 +11,10 @@ public sealed class ProviderResolverTests
     [InlineData("llama3:latest", "llama3", true)]
     [InlineData("llama3:latest", "llama3:latest", true)]
     [InlineData("llama3:8b", "llama3", true)]
-    [InlineData("llama3", "llama3:8b", false)]
+    [InlineData("llama3", "llama3:8b", true)]
+    [InlineData("llama3:8b", "llama3:70b", false)]
     [InlineData("gpt-4", "gpt-4o", false)]
-    public void ModelNameMatches_HandlesCaseAndTagStripping(string configured, string needle, bool expected)
+    public void ModelNameMatches_HandlesCaseAndSymmetricTagStripping(string configured, string needle, bool expected)
     {
 
         bool matches = ProviderResolver.ModelNameMatches(configured, needle);

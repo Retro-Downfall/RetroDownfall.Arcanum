@@ -1315,7 +1315,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
                 if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
                 {
-                    message = envelope.Error.Value.Message;
+                    message = FormatApiError(envelope.Error.Value);
                 }
                 else
                 {
@@ -2059,7 +2059,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 string message = envelope is { IsSuccess: false, Error: not null }
-                    ? envelope.Error.Value.Message
+                    ? FormatApiError(envelope.Error.Value)
                     : $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
 
                 yield return new LlamaPullProgress { Completed = true, Error = message };
@@ -2192,6 +2192,11 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
     }
 
+    // W4.1: include the error Code (not just the Message) when surfacing a pre-stream HTTP error
+    // envelope, so the CLI shows the same "{code}: {message}" detail as in-band stream error events.
+    private static string FormatApiError(Error error) =>
+        string.IsNullOrEmpty(error.Code) ? error.Message : $"{error.Code}: {error.Message}";
+
     public async Task<Result<LlamaServerInfo>> StartLlamaServerAsync(
         string cacheKey,
         int? gpuLayers,
@@ -2228,7 +2233,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         try
         {
-            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -2289,7 +2294,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         try
         {
-            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 
@@ -2349,7 +2354,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         try
         {
-            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
 

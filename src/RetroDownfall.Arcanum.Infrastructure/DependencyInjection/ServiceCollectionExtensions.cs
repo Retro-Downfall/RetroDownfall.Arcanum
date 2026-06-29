@@ -225,6 +225,19 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ITrustedMcpWorkspaceStore, TrustedMcpWorkspaceStore>();
 
+        services.AddHttpClient(
+            McpConnectionManager.McpHttpClientName,
+            (sp, client) =>
+            {
+                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+                int timeoutSeconds = ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(
+                    opts.CurrentValue.Mcp?.HttpRequestTimeoutSeconds ?? new McpSettings().HttpRequestTimeoutSeconds);
+
+                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
+
         services.AddSingleton<McpConnectionManager>();
 
         services.AddSingleton<IMcpConnectionManager>(static sp => sp.GetRequiredService<McpConnectionManager>());

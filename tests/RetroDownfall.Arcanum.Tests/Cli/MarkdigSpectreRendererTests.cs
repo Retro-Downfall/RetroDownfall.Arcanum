@@ -113,6 +113,25 @@ public sealed class MarkdigSpectreRendererTests
 
     }
 
+    [Fact]
+    public void Render_oversized_markdown_is_truncated_with_notice()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        // > the 256 KiB render cap: the renderer must truncate before parsing/rendering.
+        string markdown = new('a', (256 * 1024) + 5000);
+
+        IRenderable renderable = renderer.Render(markdown);
+
+        TestConsole console = new();
+
+        console.Write(renderable);
+
+        Assert.Contains("output truncated for display", console.Output, StringComparison.Ordinal);
+
+    }
+
     private static MarkdigSpectreRenderer CreateRenderer()
     {
 

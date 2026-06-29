@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -22,7 +23,7 @@ internal static class ProviderTestEndpoints
     {
         apiGroup.MapPost(
             "/providers/test",
-            async (ProviderTestRequest? body, HttpContext ctx) =>
+            async (ProviderTestRequest? body, HttpContext ctx, ILoggerFactory loggerFactory) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -56,7 +57,10 @@ internal static class ProviderTestEndpoints
                             traceId));
                 }
 
-                ProviderTestResult result = await ProbeProviderAsync(body, ctx.RequestAborted).ConfigureAwait(false);
+                ProviderTestResult result = await ProbeProviderAsync(
+                    body,
+                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.TheForge.ProviderTest"),
+                    ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.Ok(
                     ApiResponse<ProviderTestResult>.FromResult(Result<ProviderTestResult>.Success(result), traceId));
@@ -68,6 +72,7 @@ internal static class ProviderTestEndpoints
 
     private static async Task<ProviderTestResult> ProbeProviderAsync(
         ProviderTestRequest request,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         string baseUrl = request.Endpoint.Trim().TrimEnd('/');
@@ -127,13 +132,27 @@ internal static class ProviderTestEndpoints
         {
             stopwatch.Stop();
 
-            return new ProviderTestResult(false, stopwatch.ElapsedMilliseconds, [], ex.Message);
+            // W3.5: keep the detail (which can carry internal hostnames/paths) in the server log;
+            // return a generic message to the client, matching the sanitized llama-pull posture.
+            logger.LogDebug(ex, "Provider probe to {Endpoint} failed with a connection error.", request.Endpoint);
+
+            return new ProviderTestResult(
+                false,
+                stopwatch.ElapsedMilliseconds,
+                [],
+                "The provider probe failed (connection, DNS, or TLS error). See server logs for detail.");
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
 
-            return new ProviderTestResult(false, stopwatch.ElapsedMilliseconds, [], ex.Message);
+            logger.LogWarning(ex, "Provider probe to {Endpoint} failed unexpectedly.", request.Endpoint);
+
+            return new ProviderTestResult(
+                false,
+                stopwatch.ElapsedMilliseconds,
+                [],
+                "The provider probe failed. See server logs for detail.");
         }
     }
 

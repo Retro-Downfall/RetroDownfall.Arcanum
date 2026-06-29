@@ -61,7 +61,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](DESIGN
 - Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`).
 - Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over plaintext HTTP.
-- In-process file/dir tools enforce **path containment + symlink resolution** and **handle-based revalidation** (pre-open path identity vs opened fd dev/ino) for read/write tools; MCP `RequestTimeoutSeconds` must be ≥ `ExecuteCommandTimeoutSeconds`; workspace `mcp.json` servers are registered only after operator trust; `execute_command` uses `ArgumentList` (no shell); outbound URLs pass an SSRF guard with **DNS-rebind IP pinning** on untrusted egress (`LlamaModelDownload`, `CommLinkWebhook`); errors return **sanitized public envelopes** (detail stays in logs).
+- In-process file/dir tools enforce **path containment + symlink resolution** and **handle-based revalidation** (pre-open path identity vs opened fd dev/ino) for read/write tools; MCP `RequestTimeoutSeconds` must be ≥ `ExecuteCommandTimeoutSeconds`; workspace `mcp.json` servers are registered only after operator trust; `execute_command` uses `ArgumentList` (no shell); outbound URLs pass an SSRF guard with **DNS-rebind IP pinning** on untrusted egress (`LlamaModelDownload`, `CommLinkWebhook`, `McpHttp`); errors return **sanitized public envelopes** (detail stays in logs).
 
 ### 6. Strict Content Security Policy on every web surface
 
@@ -277,7 +277,7 @@ Settings bind under the `Arcanum` object in **`arcanum.json`**, living in the pe
 export ARCANUM_Arcanum__Providers__1__ApiKey='your-key-here'
 ```
 
-`DefaultModel`/`FastModel` must match a `models` entry on some provider (case-insensitive, Ollama-style `:latest` matching). OpenAI-compatible `endpoint`s usually include `/v1`. **MCP servers** are wired via `~/.config/arcanum/mcp.json` (`mcpServers` schema); workspace-local `mcp.json` is merged only after `POST /api/mcp/trust-workspace`. See [DESIGN.md §3.4](DESIGN.md#34-configuration-reference-arcanumsettings) and the MCP host limits there.
+`DefaultModel`/`FastModel` must match a `models` entry on some provider (case-insensitive, Ollama-style `:latest` matching). OpenAI-compatible `endpoint`s usually include `/v1`. **MCP servers** are wired via `~/.config/arcanum/mcp.json` (`mcpServers` schema) over **stdio** (`command`/`args`, with an optional `inheritEnv` allowlist for `npx`-style launches) or **Streamable HTTP** (`type: "http"` or a bare `url`, SSRF-guarded and `https`-by-default); workspace-local `mcp.json` is merged only after `POST /api/mcp/trust-workspace`. See [DESIGN.md §3.4](DESIGN.md#34-configuration-reference-arcanumsettings) and the MCP host limits there.
 
 ---
 

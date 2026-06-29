@@ -157,6 +157,8 @@ public static class ConclaveLineage
 
     }
 
+    private const int LineagePageSize = 1_000;
+
     public static async Task<int> CountDescendantsOfRootAsync(
         IApprenticeRepository repository,
         Guid rootApprenticeId,
@@ -164,23 +166,26 @@ public static class ConclaveLineage
         CancellationToken cancellationToken = default)
     {
 
-        ListPageResult<Apprentice> page = await repository
-            .ListAsync(campaignId: null, status: null, limit: 10_000, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
+        // W3.6: page the full apprentice set into an in-memory parent map (id -> parentId). This
+        // (a) counts descendants beyond the first page — the old single ListAsync(limit: 10_000)
+        // ignored HasMore, so the maxDescendantsPerRoot guard could be silently bypassed past
+        // 10k apprentices — and (b) walks ancestry in memory instead of issuing one GetByIdAsync
+        // per node per level, removing the O(items × depth) DB round-trips.
+        Dictionary<Guid, Guid?> parentById = await LoadParentMapAsync(repository, cancellationToken).ConfigureAwait(false);
 
         int count = 0;
 
-        foreach (Apprentice apprentice in page.Items)
+        foreach (Guid id in parentById.Keys)
         {
 
-            if (apprentice.Id == rootApprenticeId)
+            if (id == rootApprenticeId)
             {
 
                 continue;
 
             }
 
-            if (await IsDescendantOfAsync(repository, apprentice.Id, rootApprenticeId, cancellationToken).ConfigureAwait(false))
+            if (IsDescendantInMap(parentById, id, rootApprenticeId))
             {
 
                 count++;
@@ -200,11 +205,47 @@ public static class ConclaveLineage
 
     }
 
-    private static async Task<bool> IsDescendantOfAsync(
+    private static async Task<Dictionary<Guid, Guid?>> LoadParentMapAsync(
         IApprenticeRepository repository,
-        Guid apprenticeId,
-        Guid rootApprenticeId,
         CancellationToken cancellationToken)
+    {
+
+        Dictionary<Guid, Guid?> parentById = [];
+
+        DateTimeOffset? cursor = null;
+
+        while (true)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            ListPageResult<Apprentice> page = await repository
+                .ListAsync(campaignId: null, status: null, limit: LineagePageSize, beforeUpdatedAt: cursor, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (Apprentice apprentice in page.Items)
+            {
+
+                parentById[apprentice.Id] = apprentice.ParentApprenticeId;
+
+            }
+
+            if (!page.HasMore || page.NextBeforeUpdatedAt is not { } next || next == cursor)
+            {
+
+                break;
+
+            }
+
+            cursor = next;
+
+        }
+
+        return parentById;
+
+    }
+
+    private static bool IsDescendantInMap(Dictionary<Guid, Guid?> parentById, Guid apprenticeId, Guid rootApprenticeId)
     {
 
         HashSet<Guid> visited = [];
@@ -228,16 +269,7 @@ public static class ConclaveLineage
 
             }
 
-            Apprentice? node = await repository.GetByIdAsync(id, cancellationToken).ConfigureAwait(false);
-
-            if (node is null)
-            {
-
-                return false;
-
-            }
-
-            current = ResolveParentId(node);
+            current = parentById.TryGetValue(id, out Guid? parent) ? parent : null;
 
         }
 

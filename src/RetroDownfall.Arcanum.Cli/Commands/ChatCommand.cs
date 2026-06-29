@@ -1360,7 +1360,7 @@ public sealed class ChatCommand(
             {
                 IChronosyncEngine chronosync = chronosyncScope.ServiceProvider.GetRequiredService<IChronosyncEngine>();
 
-                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot).ConfigureAwait(false);
+                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot, perTurnCts.Token).ConfigureAwait(false);
             }
 
             Guid? sessionId = cliSession.GetLastSessionId();

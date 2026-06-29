@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Configuration;
 
@@ -145,6 +146,64 @@ public sealed class ConfigurationRedactorTests
         ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(request, current);
 
         Assert.Equal("http://127.0.0.1:11434", merged.Providers![0].Endpoint);
+    }
+
+    [Fact]
+    public void ValidateNoResidualMask_NewProviderWithMaskedApiKey_Fails()
+    {
+        // A redacted GET round-tripped with a NEW provider would otherwise persist "***" as the key.
+        ArcanumSettings merged = new()
+        {
+            Providers = [new ProviderSettings { Name = "brand-new", ApiKey = "***", Endpoint = "https://api.example.com" }],
+        };
+
+        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
+    }
+
+    [Fact]
+    public void ValidateNoResidualMask_NewModelMapUrlMasked_Fails()
+    {
+        ArcanumSettings merged = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "p",
+                    ApiKey = "real",
+                    Endpoint = "https://x",
+                    LlamaCpp = new ProviderLlamaCppSettings
+                    {
+                        ModelMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["m"] = "***" },
+                    },
+                },
+            ],
+        };
+
+        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
+    }
+
+    [Fact]
+    public void ValidateNoResidualMask_ExistingProviderRoundTrip_Succeeds()
+    {
+        ArcanumSettings current = new()
+        {
+            Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-live", Endpoint = "https://api.openai.com/v1" }],
+        };
+
+        ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(ConfigurationRedactor.Redact(current), current);
+
+        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
+
+        Assert.True(result.IsSuccess);
     }
 
 }

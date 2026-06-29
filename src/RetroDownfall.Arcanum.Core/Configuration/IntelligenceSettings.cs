@@ -70,6 +70,8 @@ public sealed record IntelligenceSettings
 
     public int MaxStatelessMessages { get; init; } = 100;
 
+    public int MaxContentPartsPerMessage { get; init; } = 64;
+
     public int MaxPingPromptChars { get; init; } = 32_768;
 
     public int MaxPlanSteps { get; init; } = 30;

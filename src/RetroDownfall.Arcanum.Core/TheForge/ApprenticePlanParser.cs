@@ -6,12 +6,41 @@ namespace RetroDownfall.Arcanum.Core.TheForge;
 public static class ApprenticePlanParser
 {
 
+    // W3.6: cap raw plan text before parsing so a runaway LLM response cannot force an unbounded
+    // JSON parse/allocation. Generous relative to MaxPlanSteps × per-step size.
+    public const int MaxResponseChars = 256 * 1024;
+
     public static List<PlanStep> ParsePlan(string responseText, int maxSteps = 200)
     {
 
+        ArgumentNullException.ThrowIfNull(responseText);
+
+        if (responseText.Length > MaxResponseChars)
+        {
+
+            throw new InvalidOperationException(
+                $"Plan generation response is {responseText.Length} characters; the maximum allowed is {MaxResponseChars}.");
+
+        }
+
         string trimmed = StripMarkdownFences(responseText.Trim());
 
-        List<PlanStep>? steps = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
+        List<PlanStep>? steps;
+
+        try
+        {
+
+            steps = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
+
+        }
+        catch (JsonException ex)
+        {
+
+            // W3.6: surface malformed plan JSON as a domain error (consistent with the empty/oversize
+            // cases and the sibling TryParseRevisedPlan), not a raw JsonException for callers to know to catch.
+            throw new InvalidOperationException("Plan generation returned malformed JSON.", ex);
+
+        }
 
         if (steps is null || steps.Count == 0)
         {

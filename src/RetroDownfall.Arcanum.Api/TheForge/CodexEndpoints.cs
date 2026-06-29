@@ -214,7 +214,10 @@ internal static class CodexEndpoints
         string traceId,
         CancellationToken cancellationToken)
     {
-        long maxBytes = ArcanumSettingClamps.CodexMaxSizeBytes(settings.Value.Codex.MaxSizeBytes);
+        // W3.5: use the EFFECTIVE codex cap (min of the codex cap and Workspaces:MaxFileReadSizeBytes)
+        // so the write bound matches the read path — otherwise PUT could accept content the codex
+        // GET / inference read path then refuses.
+        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
 
         int contentByteCount = Encoding.UTF8.GetByteCount(content);
 

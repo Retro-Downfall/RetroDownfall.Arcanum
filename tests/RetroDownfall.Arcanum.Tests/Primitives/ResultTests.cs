@@ -1,3 +1,4 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Primitives;
@@ -70,6 +71,24 @@ public sealed class ResultTests
         Assert.True(result.IsFailure);
 
         Assert.Throws<InvalidOperationException>(() => result.Value);
+
+    }
+
+    [Fact]
+    public void GenericFailure_SerializesWithoutThrowing_ValueIsIgnored()
+    {
+
+        Result<int> result = Result<int>.Failure(new Error("Test.Failed", "Nope."));
+
+        // W3.6: [JsonIgnore] on Value means a stray direct serialization no longer invokes the
+        // throwing getter and turns a domain failure into an unhandled serialization exception.
+        string json = JsonSerializer.Serialize(result);
+
+        Assert.False(string.IsNullOrEmpty(json));
+
+        Assert.DoesNotContain("\"Value\"", json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("\"IsSuccess\":false", json, StringComparison.OrdinalIgnoreCase);
 
     }
 

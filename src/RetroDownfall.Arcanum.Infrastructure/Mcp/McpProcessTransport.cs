@@ -46,6 +46,8 @@ internal sealed class McpProcessTransport : IMcpTransport
 
     private readonly bool _stripUserEnvironment;
 
+    private readonly IReadOnlySet<string>? _inheritEnvironmentAllowlist;
+
     private readonly string? _workingDirectory;
 
     private readonly McpJsonSerializerContext _json;
@@ -103,7 +105,8 @@ internal sealed class McpProcessTransport : IMcpTransport
         IReadOnlyList<string>? argumentList = null,
         IReadOnlyDictionary<string, string>? environment = null,
         string? workingDirectory = null,
-        bool stripUserEnvironment = false)
+        bool stripUserEnvironment = false,
+        IReadOnlySet<string>? inheritEnvironmentAllowlist = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
 
@@ -125,6 +128,8 @@ internal sealed class McpProcessTransport : IMcpTransport
         _environment = environment;
 
         _stripUserEnvironment = stripUserEnvironment;
+
+        _inheritEnvironmentAllowlist = inheritEnvironmentAllowlist;
 
         _workingDirectory = workingDirectory;
 
@@ -194,7 +199,8 @@ internal sealed class McpProcessTransport : IMcpTransport
 
         IReadOnlyDictionary<string, string>? scrubbedEnvironment = McpSecurityLimits.ScrubProcessEnvironment(
             _environment,
-            _stripUserEnvironment);
+            _stripUserEnvironment,
+            _inheritEnvironmentAllowlist);
 
         if (_stripUserEnvironment)
         {

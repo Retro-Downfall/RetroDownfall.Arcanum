@@ -50,7 +50,7 @@ internal sealed class ManagedMcpServerEntry
 
     public McpServerState State { get; set; } = McpServerState.Stopped;
 
-    public McpClient? Client { get; set; }
+    public IMcpClient? Client { get; set; }
 
     public string[] Tools { get; set; } = [];
 
@@ -76,4 +76,4 @@ internal sealed class ManagedMcpServerEntry
 /// <summary>
 /// Tool row bound to a managed server client.
 /// </summary>
-internal readonly record struct LoadedMcpToolRow(McpBridgeTool Tool, McpServerConfig Config, McpClient Client);
+internal readonly record struct LoadedMcpToolRow(McpBridgeTool Tool, McpServerConfig Config, IMcpClient Client);

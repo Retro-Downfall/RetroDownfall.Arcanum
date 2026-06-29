@@ -12,11 +12,20 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 {
 
+    // W4.1: cap the markdown size before parsing/rendering so a pathologically large assistant
+    // response cannot drive an unbounded Markdig parse + Spectre render allocation.
+    private const int MaxRenderChars = 256 * 1024;
+
     public IRenderable Render(string markdown)
     {
         if (string.IsNullOrEmpty(markdown))
         {
             return new Text(string.Empty);
+        }
+
+        if (markdown.Length > MaxRenderChars)
+        {
+            markdown = markdown[..MaxRenderChars] + "\n\n_[output truncated for display]_";
         }
 
         MarkdownDocument doc;

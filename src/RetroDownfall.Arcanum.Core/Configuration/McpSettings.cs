@@ -22,4 +22,19 @@ public sealed record McpSettings
 
     public int MaxJsonRpcLineBytes { get; init; } = 2_228_224;
 
+    /// <summary>
+    /// Timeout (seconds) for the named <c>HttpClient("McpHttp")</c> used by the Streamable HTTP
+    /// transport (headers phase; the per-request JSON-RPC timeout governs streamed bodies).
+    /// Default 120; clamp 10&#8211;600.
+    /// </summary>
+    public int HttpRequestTimeoutSeconds { get; init; } = 120;
+
+    /// <summary>
+    /// Hosts permitted over plaintext <c>http</c> for Streamable HTTP MCP servers (e.g.
+    /// <c>["localhost"]</c> for a trusted dev gateway). Default empty: remote HTTP servers must use
+    /// <c>https</c>. SSRF protection (loopback / private / link-local blocking via
+    /// <c>OutboundUrlGuard</c>) still applies regardless of this list.
+    /// </summary>
+    public string[] AllowedHttpHosts { get; init; } = [];
+
 }

@@ -38,6 +38,21 @@ public sealed class LlamaStartCommand(ArcanumApiClient apiClient, IThemePalette 
             return 1;
         }
 
+        // W4.1: validate the optional --port / --gpu-layers flags client-side.
+        if (settings.Port is int port && (port < 1 || port > 65535))
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--port must be between 1 and 65535.")));
+
+            return 1;
+        }
+
+        if (settings.GpuLayers is int gpuLayers && gpuLayers < -1)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--gpu-layers must be -1 (auto/all) or a non-negative integer.")));
+
+            return 1;
+        }
+
         Result<LlamaServerInfo> result = await apiClient
             .StartLlamaServerAsync(settings.CacheKey, settings.GpuLayers, settings.Port, cancellationToken)
             .ConfigureAwait(false);

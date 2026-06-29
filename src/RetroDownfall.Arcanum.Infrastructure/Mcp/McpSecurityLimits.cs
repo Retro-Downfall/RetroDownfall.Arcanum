@@ -120,13 +120,15 @@ internal static class McpSecurityLimits
 
     public static IReadOnlyDictionary<string, string>? ScrubProcessEnvironment(
         IReadOnlyDictionary<string, string>? source,
-        bool stripUserEnvironment)
+        bool stripUserEnvironment,
+        IReadOnlySet<string>? inheritAllowlist = null,
+        Func<string, string?>? hostEnvironmentReader = null)
     {
 
         if (stripUserEnvironment)
         {
 
-            return BuildChildProcessEnvironment(source);
+            return BuildChildProcessEnvironment(source, inheritAllowlist, hostEnvironmentReader);
 
         }
 
@@ -137,52 +139,87 @@ internal static class McpSecurityLimits
 
         }
 
-        Dictionary<string, string> scrubbed = BuildChildProcessEnvironment(source);
+        Dictionary<string, string> scrubbed = BuildChildProcessEnvironment(source, inheritAllowlist, hostEnvironmentReader);
 
         return scrubbed.Count == 0 ? null : scrubbed;
 
     }
 
     /// <summary>
-    /// Builds the explicit environment block for an MCP child process (blocked keys removed).
+    /// Builds the explicit environment block for an MCP child process. Blocked keys are removed
+    /// unless the caller explicitly opted in via <paramref name="inheritAllowlist"/>; allowlisted
+    /// names absent from <paramref name="source"/> are inherited from the host process (via
+    /// <paramref name="hostEnvironmentReader"/>, defaulting to <see cref="Environment.GetEnvironmentVariable(string)"/>).
+    /// Values from <paramref name="source"/> always win over inherited host values.
     /// </summary>
     public static Dictionary<string, string> BuildChildProcessEnvironment(
-        IReadOnlyDictionary<string, string>? source)
+        IReadOnlyDictionary<string, string>? source,
+        IReadOnlySet<string>? inheritAllowlist = null,
+        Func<string, string?>? hostEnvironmentReader = null)
     {
 
         Dictionary<string, string> result = new(StringComparer.Ordinal);
 
-        if (source is null || source.Count == 0)
+        if (source is not null)
         {
 
-            return result;
+            foreach (KeyValuePair<string, string> kv in source)
+            {
+
+                if (string.IsNullOrEmpty(kv.Key))
+                {
+
+                    continue;
+
+                }
+
+                if (IsBlockedEnvironmentVariable(kv.Key) && !IsInheritAllowed(kv.Key, inheritAllowlist))
+                {
+
+                    continue;
+
+                }
+
+                result[kv.Key] = kv.Value;
+
+            }
 
         }
 
-        foreach (KeyValuePair<string, string> kv in source)
+        if (inheritAllowlist is { Count: > 0 })
         {
 
-            if (string.IsNullOrEmpty(kv.Key))
+            Func<string, string?> reader = hostEnvironmentReader ?? Environment.GetEnvironmentVariable;
+
+            foreach (string name in inheritAllowlist)
             {
 
-                continue;
+                if (string.IsNullOrEmpty(name) || result.ContainsKey(name))
+                {
+
+                    continue;
+
+                }
+
+                string? value = reader(name);
+
+                if (!string.IsNullOrEmpty(value))
+                {
+
+                    result[name] = value;
+
+                }
 
             }
-
-            if (IsBlockedEnvironmentVariable(kv.Key))
-            {
-
-                continue;
-
-            }
-
-            result[kv.Key] = kv.Value;
 
         }
 
         return result;
 
     }
+
+    private static bool IsInheritAllowed(string key, IReadOnlySet<string>? inheritAllowlist) =>
+        inheritAllowlist is not null && inheritAllowlist.Contains(key);
 
     public static bool IsBlockedEnvironmentVariable(string key)
     {

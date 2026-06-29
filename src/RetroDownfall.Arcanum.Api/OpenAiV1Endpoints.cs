@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -25,6 +26,10 @@ internal static class OpenAiV1Endpoints
     private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
 
     private static readonly byte[] SseDone = "data: [DONE]\n\n"u8.ToArray();
+
+    // W3.5: interleave SSE keep-alive comments during idle gaps (slow provider, multi-round tool
+    // loops) so reverse proxies / load balancers do not idle-timeout an otherwise-healthy stream.
+    private static readonly TimeSpan StreamKeepAliveInterval = TimeSpan.FromSeconds(15);
 
     private static readonly long ProcessStartUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
@@ -177,6 +182,40 @@ internal static class OpenAiV1Endpoints
                     code: "invalid_value",
                     param: $"messages[{i}].role",
                     statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            // W3.5: bound the multimodal parts array and reject unknown part types up front (the
+            // mapper otherwise silently drops unsupported parts, and a huge parts array allocates
+            // heavily before content-length checks apply).
+            if (m.Content?.Parts is { } parts)
+            {
+                int maxParts = ArcanumSettingClamps.MaxContentPartsPerMessage(
+                    (settings.Value.Intelligence ?? new IntelligenceSettings()).MaxContentPartsPerMessage);
+
+                if (parts.Length > maxParts)
+                {
+                    return JsonError(
+                        $"messages[{i}].content has {parts.Length} parts; the maximum is {maxParts}.",
+                        "invalid_request_error",
+                        code: "invalid_value",
+                        param: $"messages[{i}].content",
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
+                for (int j = 0; j < parts.Length; j++)
+                {
+                    OpenAiContentPart part = parts[j];
+
+                    if (part is not null && !IsSupportedContentPartType(part.Type))
+                    {
+                        return JsonError(
+                            $"messages[{i}].content[{j}].type '{part.Type}' is not supported; expected 'text' or 'image_url'.",
+                            "invalid_request_error",
+                            code: "invalid_value",
+                            param: $"messages[{i}].content[{j}].type",
+                            statusCode: StatusCodes.Status400BadRequest);
+                    }
+                }
             }
         }
 
@@ -365,8 +404,40 @@ internal static class OpenAiV1Endpoints
         {
             await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
 
-            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(ping, ct).ConfigureAwait(false))
+            // Pump the hub stream manually so idle gaps can be filled with SSE keep-alive comments.
+            // A single in-flight MoveNextAsync is raced against a keep-alive delay; the delay is
+            // cancelled the moment an event arrives so no timer lingers (the same MoveNextAsync task
+            // is kept across keep-alive cycles — re-issuing MoveNextAsync while one is pending would
+            // be an invalid concurrent enumeration).
+            await using IAsyncEnumerator<IntelligenceEvent> enumerator =
+                intelligence.StreamPromptAsync(ping, ct).GetAsyncEnumerator(ct);
+
+            Task<bool> move = enumerator.MoveNextAsync().AsTask();
+
+            while (true)
             {
+                using CancellationTokenSource delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+                Task keepAliveDelay = Task.Delay(StreamKeepAliveInterval, delayCts.Token);
+
+                Task completed = await Task.WhenAny(move, keepAliveDelay).ConfigureAwait(false);
+
+                if (completed == keepAliveDelay)
+                {
+                    await SseStreamWriter.WriteKeepAliveAsync(httpContext, ct).ConfigureAwait(false);
+
+                    continue;
+                }
+
+                delayCts.Cancel();
+
+                if (!await move.ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                IntelligenceEvent ev = enumerator.Current;
+
                 switch (ev.Type)
                 {
                     case IntelligenceEventType.Token when !string.IsNullOrEmpty(ev.Data):
@@ -405,6 +476,8 @@ internal static class OpenAiV1Endpoints
                     default:
                         break;
                 }
+
+                move = enumerator.MoveNextAsync().AsTask();
             }
         }
         catch (OperationCanceledException)
@@ -774,6 +847,10 @@ internal static class OpenAiV1Endpoints
             "Ollama.ListModels" => "Could not reach Ollama to list local models.",
             _ => "Inference failed. See server logs for details.",
         };
+
+    private static bool IsSupportedContentPartType(string? type) =>
+        string.Equals(type, "text", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "image_url", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsDefaultToolChoice(JsonElement toolChoice)
     {

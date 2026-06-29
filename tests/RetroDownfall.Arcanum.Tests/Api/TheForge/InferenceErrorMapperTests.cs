@@ -17,6 +17,7 @@ public sealed class InferenceErrorMapperTests
     [InlineData("Ollama.ListModels", StatusCodes.Status404NotFound)]
     [InlineData("Spell.NotFound", StatusCodes.Status404NotFound)]
     [InlineData("Prompt.NotFound", StatusCodes.Status404NotFound)]
+    [InlineData("Campaign.NotFound", StatusCodes.Status404NotFound)]
     [InlineData("Spell.PathNotAllowed", StatusCodes.Status403Forbidden)]
     [InlineData("Hub.Error", StatusCodes.Status500InternalServerError)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]

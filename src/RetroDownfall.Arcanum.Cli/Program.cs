@@ -28,6 +28,7 @@ internal static class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(StatusCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DaemonJobsCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DoctorCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DoctorCommand.Settings))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(KeyShowCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonInitiativeCommand.Settings))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DaemonInitiativeCommand))]

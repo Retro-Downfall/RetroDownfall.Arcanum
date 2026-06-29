@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RetroDownfall.Arcanum.Core.Primitives;
 
 public class Result
@@ -19,6 +21,7 @@ public class Result
 
     public bool IsSuccess { get; }
 
+    [JsonIgnore]
     public bool IsFailure => !IsSuccess;
 
     public Error Error { get; }
@@ -44,6 +47,10 @@ public sealed class Result<T> : Result
         _value = default;
     }
 
+    // W3.6: never serialize Value directly. On the failure path the getter throws, so a stray
+    // JsonSerializer.Serialize(result) would turn a domain failure into an unhandled serialization
+    // exception. Callers persist results via ApiResponse<T>, which reads IsSuccess/Error only.
+    [JsonIgnore]
     public T Value => IsSuccess
         ? _value!
         : throw new InvalidOperationException("Cannot access Value on a failed result.");

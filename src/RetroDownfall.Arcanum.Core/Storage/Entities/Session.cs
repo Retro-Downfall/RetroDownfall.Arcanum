@@ -28,7 +28,11 @@ public sealed class Session
 
     public ICollection<Entry> Entries { get; set; } = new List<Entry>();
 
-    public Session Clone()
+    /// <summary>
+    /// W4.1: copies the scalar header fields only — <see cref="Entries"/> is intentionally reset to an
+    /// empty collection (not cloned). Named <c>CloneHeader</c> so callers do not expect a deep copy.
+    /// </summary>
+    public Session CloneHeader()
     {
 
         return new Session

@@ -61,10 +61,28 @@ public sealed class ApprenticePlanParserTests
     }
 
     [Fact]
-    public void ParsePlan_InvalidJson_Throws()
+    public void ParsePlan_InvalidJson_ThrowsInvalidOperationNotJsonException()
     {
 
-        Assert.Throws<System.Text.Json.JsonException>(() => ApprenticePlanParser.ParsePlan("not-json"));
+        // W3.6: malformed plan JSON surfaces as a domain InvalidOperationException (consistent with
+        // the empty/oversize cases and TryParseRevisedPlan), not a raw JsonException for callers to catch.
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => ApprenticePlanParser.ParsePlan("not-json"));
+
+        Assert.Contains("malformed JSON", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public void ParsePlan_OversizedInput_ThrowsBeforeParsing()
+    {
+
+        string oversized = new('x', ApprenticePlanParser.MaxResponseChars + 1);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => ApprenticePlanParser.ParsePlan(oversized));
+
+        Assert.Contains("maximum allowed", ex.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 

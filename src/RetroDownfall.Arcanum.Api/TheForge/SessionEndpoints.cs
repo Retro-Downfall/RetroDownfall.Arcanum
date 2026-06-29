@@ -595,7 +595,7 @@ internal static class SessionEndpoints
     {
         Session? session = await repo.GetByIdAsync(id, ct).ConfigureAwait(false);
 
-        return session?.Clone();
+        return session?.CloneHeader();
     }
 
     private static async Task WriteEntrySseAsync(HttpContext httpContext, Entry entry, CancellationToken cancellationToken)

@@ -33,6 +33,13 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly IReadOnlyList<string> _scriptsRootsFull;
 
+    /// <summary>
+    /// The normalized full <c>scripts/</c> roots this tool will resolve against (the active spell plus
+    /// any Arcane Resonance dependencies). Exposed so the Sanctum preflight can validate every candidate
+    /// root, not just the active spell's.
+    /// </summary>
+    internal IReadOnlyList<string> ScriptRoots => _scriptsRootsFull;
+
     private readonly TimeSpan _executeTimeout;
 
     private readonly int _executeTimeoutSeconds;
@@ -144,6 +151,16 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         if (!ToolHelpers.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
         {
             return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
+        }
+
+        // W3.5: allow-list the documented interpreter-wrapped script types. Without this, an
+        // unknown extension (e.g. a shipped .exe or extensionless binary in an imported spell's
+        // scripts/ dir) fell through to being launched directly as a process image.
+        string scriptExtension = Path.GetExtension(candidate);
+
+        if (!IsAllowedScriptExtension(scriptExtension))
+        {
+            return $"run_spell_script: unsupported script type '{scriptExtension}'. Allowed extensions: .py, .js, .sh, .ps1.";
         }
 
         _ = TryGetStringArgument(arguments, "arguments", out string? extraArgs);
@@ -473,13 +490,25 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         }
         else
         {
-            psi.FileName = scriptFullPath;
-
-            AppendTokenizedArguments(psi.ArgumentList, argumentsLine);
+            // W3.5: defense-in-depth — callers allow-list the extension first, so an unknown type
+            // must never reach here and be launched directly as a process image.
+            throw new InvalidOperationException(
+                $"run_spell_script: unsupported script extension '{ext}'.");
         }
 
         return psi;
     }
+
+    private static readonly HashSet<string> AllowedScriptExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".py",
+        ".js",
+        ".sh",
+        ".ps1",
+    };
+
+    private static bool IsAllowedScriptExtension(string extension) =>
+        AllowedScriptExtensions.Contains(extension);
 
     private static void AppendTokenizedArguments(ICollection<string> argumentList, string? argumentsLine)
     {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -72,6 +73,32 @@ public static class ApiBootstrapper
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+            // W3.5: emit the uniform ApiResponse envelope on rejection (explicit JsonTypeInfo, AOT-safe)
+            // instead of a bare 429 with no body, matching every other /api and /v1 route.
+            options.OnRejected = static async (context, cancellationToken) =>
+            {
+                HttpContext http = context.HttpContext;
+
+                if (http.Response.HasStarted)
+                {
+                    return;
+                }
+
+                http.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+                string traceId = Activity.Current?.Id ?? http.TraceIdentifier;
+
+                Result<string> rejected = Result<string>.Failure(
+                    new Error("RateLimit.TooManyRequests", "Too many requests; please slow down and retry."));
+
+                ApiResponse<string> envelope = ApiResponse<string>.FromResult(rejected, traceId);
+
+                await http.Response.WriteAsJsonAsync(
+                    envelope,
+                    ArcanumJsonContext.Default.ApiResponseString,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            };
 
             options.AddPolicy(ArcanumRateLimiterPolicyName, ctx =>
             {

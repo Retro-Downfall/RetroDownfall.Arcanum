@@ -21,7 +21,9 @@ public sealed record SanctumConfig
     public IReadOnlyList<string> AllowedPaths
     {
 
-        get => _allowedPaths;
+        // W3.6: return a non-downcastable read-only view so a consumer cannot cast back to
+        // List<string> and mutate the sandbox allow-list after construction.
+        get => _allowedPaths.AsReadOnly();
 
         init => _allowedPaths = new List<string>(value);
 
@@ -34,7 +36,7 @@ public sealed record SanctumConfig
     public IReadOnlyList<string> AllowedDomains
     {
 
-        get => _allowedDomains;
+        get => _allowedDomains.AsReadOnly();
 
         init => _allowedDomains = new List<string>(value);
 
@@ -47,7 +49,7 @@ public sealed record SanctumConfig
     public IReadOnlyList<string> DisabledTools
     {
 
-        get => _disabledTools;
+        get => _disabledTools.AsReadOnly();
 
         init => _disabledTools = new List<string>(value);
 

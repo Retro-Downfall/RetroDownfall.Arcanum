@@ -1,11 +1,15 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Configuration;
 
 internal static class ConfigurationRedactor
 {
+
+    private const string MaskSentinel = "***";
+
     public static ArcanumSettings Redact(ArcanumSettings settings)
     {
         ProviderSettings[] providers = settings.Providers ?? [];
@@ -53,6 +57,65 @@ internal static class ConfigurationRedactor
         };
 
         return Clone(request) with { Providers = mergedProviders, CommLink = mergedCommLink };
+    }
+
+    // W3.5: after MergeApiKeys, any field still equal to the mask sentinel "***" is a residual the
+    // merge could not restore — it can only come from a NEW provider (absent from current) or a NEW
+    // model-map key, where the round-tripped redacted GET value would otherwise be persisted as the
+    // literal "***" (a silent auth/config footgun). Reject those so the operator supplies real values.
+    public static Result ValidateNoResidualMask(ArcanumSettings merged)
+    {
+
+        ProviderSettings[] providers = merged.Providers ?? [];
+
+        foreach (ProviderSettings provider in providers)
+        {
+
+            if (provider.ApiKey == MaskSentinel)
+            {
+
+                return Result.Failure(new Error(
+                    "Config.UnresolvedMask",
+                    $"Provider '{provider.Name}' has a masked apiKey ('{MaskSentinel}'); supply the real key when adding a new provider."));
+
+            }
+
+            if (provider.Endpoint == MaskSentinel)
+            {
+
+                return Result.Failure(new Error(
+                    "Config.UnresolvedMask",
+                    $"Provider '{provider.Name}' has a masked endpoint ('{MaskSentinel}'); supply the real endpoint when adding a new provider."));
+
+            }
+
+            Dictionary<string, string>? modelMap = provider.LlamaCpp?.ModelMap;
+
+            if (modelMap is null)
+            {
+
+                continue;
+
+            }
+
+            foreach (KeyValuePair<string, string> entry in modelMap)
+            {
+
+                if (entry.Value == MaskSentinel)
+                {
+
+                    return Result.Failure(new Error(
+                        "Config.UnresolvedMask",
+                        $"Provider '{provider.Name}' model-map entry '{entry.Key}' has a masked url ('{MaskSentinel}'); supply the real url."));
+
+                }
+
+            }
+
+        }
+
+        return Result.Success();
+
     }
 
     private static ArcanumSettings Clone(ArcanumSettings source)

@@ -111,4 +111,9 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(CastSendingParams))]
 [JsonSerializable(typeof(CastSendingResultWire))]
 [JsonSerializable(typeof(McpCancelledParams))]
+[JsonSerializable(typeof(McpInputRequiredResult))]
+[JsonSerializable(typeof(McpInputRequest))]
+[JsonSerializable(typeof(McpInputRequest[]))]
+[JsonSerializable(typeof(McpInputResponse))]
+[JsonSerializable(typeof(McpInputResponse[]))]
 public partial class McpJsonSerializerContext : JsonSerializerContext;

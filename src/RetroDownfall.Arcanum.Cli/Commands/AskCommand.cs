@@ -96,7 +96,7 @@ public sealed class AskCommand(
             {
                 IChronosyncEngine chronosync = chronosyncScope.ServiceProvider.GetRequiredService<IChronosyncEngine>();
 
-                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot).ConfigureAwait(false);
+                chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot, linked.Token).ConfigureAwait(false);
             }
 
             Guid? sessionId = null;
@@ -204,8 +204,11 @@ public sealed class AskCommand(
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
+            // W4.1: return 130 (SIGINT) only on an actual user/host cancellation. A cancellation
+            // from another source (e.g. a transient client timeout surfacing as OCE) falls through
+            // to the generic handler and reports a normal error (exit 1).
             return 130;
         }
         catch (Exception ex)

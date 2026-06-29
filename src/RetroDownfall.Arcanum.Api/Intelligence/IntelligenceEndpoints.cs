@@ -68,12 +68,14 @@ internal static class IntelligenceEndpoints
             {
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
+                // W3.5: map the error code to a status (Campaign.NotFound -> 404) instead of a flat
+                // 400, matching /prompts/{id}/execute.
                 return Results.Json(
                     ApiResponse<PromptResponseDto>.FromResult(
                         Result<PromptResponseDto>.Failure(resolvedRequest.Error),
                         badTraceId),
                     ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                    statusCode: StatusCodes.Status400BadRequest);
+                    statusCode: InferenceErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code));
             }
 
             Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(resolvedRequest.Value, cancellationToken).ConfigureAwait(false);
@@ -90,9 +92,11 @@ internal static class IntelligenceEndpoints
 
             ApiResponse<PromptResponseDto> response = ApiResponse<PromptResponseDto>.FromResult(envelopeResult, traceId);
 
+            // W3.5: route inference failures through the shared mapper (404/403/400/503/500) rather
+            // than a hardcoded 500, matching /prompts/{id}/execute.
             return turn.IsSuccess
                 ? Results.Ok(response)
-                : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: StatusCodes.Status500InternalServerError);
+                : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: InferenceErrorMapper.ResolveStatusCode(turn.Error.Code));
         })
         .WithName("PostIntelligencePing")
         .WithLargeRequestBody();

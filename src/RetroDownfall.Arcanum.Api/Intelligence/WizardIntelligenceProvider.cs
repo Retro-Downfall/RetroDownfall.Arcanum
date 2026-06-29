@@ -91,6 +91,12 @@ public sealed class WizardIntelligenceProvider(
 
         public IReadOnlyList<AITool> InferenceTools { get; init; } = [];
 
+        /// <summary>
+        /// Full <c>scripts/</c> roots the spell-script tool will resolve against (active spell + resonant
+        /// dependencies). The Sanctum preflight validates every candidate root, not just the active spell's.
+        /// </summary>
+        public IReadOnlyList<string> SpellScriptRoots { get; init; } = [];
+
     }
 
     public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
@@ -413,7 +419,10 @@ public sealed class WizardIntelligenceProvider(
                 if (!assistantEntryFinalized)
                 {
 
-                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, callerToken)
+                    // W3.5: clean up with CancellationToken.None — callerToken is already cancelled
+                    // here, so passing it would make the discard/finalize itself throw OCE before it
+                    // ran, leaving an orphaned in-flight assistant row on caller disconnect.
+                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, CancellationToken.None)
                         .ConfigureAwait(false);
 
                 }
@@ -443,7 +452,9 @@ public sealed class WizardIntelligenceProvider(
 
                 if (!assistantEntryFinalized)
                 {
-                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, inferenceToken)
+                    // W3.5: non-cancellable cleanup so a cancelled inferenceToken cannot abort the
+                    // discard and orphan the in-flight assistant row.
+                    await ResolveInterruptedAssistantEntryAsync(assistantEntryId, null, CancellationToken.None)
                         .ConfigureAwait(false);
                 }
 
@@ -996,10 +1007,13 @@ public sealed class WizardIntelligenceProvider(
         {
             if (!assistantEntryFinalized)
             {
+                // W3.5: cleanup must use CancellationToken.None, not the (often already-cancelled)
+                // inferenceToken — otherwise ResolveInterruptedAssistantEntryAsync rethrows OCE here
+                // and the terminal Error event below is never emitted to the client.
                 await ResolveInterruptedAssistantEntryAsync(
                     assistantEntryId,
                     streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                    inferenceToken).ConfigureAwait(false);
+                    CancellationToken.None).ConfigureAwait(false);
 
                 assistantEntryFinalized = true;
             }
@@ -1231,6 +1245,12 @@ public sealed class WizardIntelligenceProvider(
             ? FilterToolsForUnattended(inferenceTools)
             : inferenceTools;
 
+        // W3.5: capture every spell-script root (active spell + resonant dependencies) so the Sanctum
+        // preflight validates each candidate path the tool may resolve, not just the active spell's.
+        IReadOnlyList<string> spellScriptRoots = toolSet
+            .OfType<ArcanumSpellScriptTool>()
+            .FirstOrDefault()?.ScriptRoots ?? [];
+
         return new TurnContext
         {
             Campaign = campaign,
@@ -1240,6 +1260,7 @@ public sealed class WizardIntelligenceProvider(
             SanctumEnabled = sanctumEnabled,
             SanctumMode = sanctumMode,
             InferenceTools = inferenceTools,
+            SpellScriptRoots = spellScriptRoots,
         };
     }
 
@@ -2638,6 +2659,7 @@ public sealed class WizardIntelligenceProvider(
             toolName,
             workspaceRoot,
             activeSpell,
+            turnContext.SpellScriptRoots,
             argsRoot,
             cancellationToken).ConfigureAwait(false);
 
@@ -2654,6 +2676,7 @@ public sealed class WizardIntelligenceProvider(
         string toolName,
         string workspaceRoot,
         ParsedSpell? activeSpell,
+        IReadOnlyList<string> spellScriptRoots,
         JsonElement argsRoot,
         CancellationToken cancellationToken)
     {
@@ -2725,7 +2748,11 @@ public sealed class WizardIntelligenceProvider(
 
             case "run_spell_script":
             {
-                if (activeSpell is null)
+                // W3.5: validate the script path under EVERY candidate root the tool will resolve
+                // against (active spell + Arcane Resonance dependencies), not just the active spell's
+                // scripts root — a script that exists only under a resonant dependency was previously
+                // executed without Sanctum pre-validating its path.
+                if (spellScriptRoots.Count == 0)
                 {
                     break;
                 }
@@ -2738,44 +2765,34 @@ public sealed class WizardIntelligenceProvider(
 
                 scriptName = scriptName.Trim();
 
-                if (!string.Equals(Path.GetFileName(scriptName), scriptName, StringComparison.Ordinal))
+                bool isPlainFileName = string.Equals(Path.GetFileName(scriptName), scriptName, StringComparison.Ordinal);
+
+                foreach (string scriptsRoot in spellScriptRoots)
                 {
-                    string scriptsRoot = Path.Combine(activeSpell.DirectoryPath, "scripts");
+                    string candidate = Path.GetFullPath(Path.Combine(scriptsRoot, scriptName));
 
-                    string invalidCandidate = Path.GetFullPath(Path.Combine(scriptsRoot, scriptName));
-
-                    SanctumResult invalidResult = await sanctumGuard
-                        .ValidatePathAsync(campaignId, invalidCandidate, "script path", toolName, cancellationToken)
+                    SanctumResult scriptResult = await sanctumGuard
+                        .ValidatePathAsync(campaignId, candidate, "script path", toolName, cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (!invalidResult.Allowed)
+                    if (!scriptResult.Allowed)
                     {
-                        return invalidResult;
+                        return scriptResult;
                     }
 
-                    break;
-                }
+                    if (!isPlainFileName)
+                    {
+                        continue;
+                    }
 
-                string scriptsDirectory = Path.Combine(activeSpell.DirectoryPath, "scripts");
+                    SanctumResult scriptsRootResult = await sanctumGuard
+                        .ValidatePathAsync(campaignId, scriptsRoot, "working directory", toolName, cancellationToken)
+                        .ConfigureAwait(false);
 
-                string scriptPath = Path.GetFullPath(Path.Combine(scriptsDirectory, scriptName));
-
-                SanctumResult scriptResult = await sanctumGuard
-                    .ValidatePathAsync(campaignId, scriptPath, "script path", toolName, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!scriptResult.Allowed)
-                {
-                    return scriptResult;
-                }
-
-                SanctumResult scriptsRootResult = await sanctumGuard
-                    .ValidatePathAsync(campaignId, scriptsDirectory, "working directory", toolName, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!scriptsRootResult.Allowed)
-                {
-                    return scriptsRootResult;
+                    if (!scriptsRootResult.Allowed)
+                    {
+                        return scriptsRootResult;
+                    }
                 }
 
                 break;
@@ -3135,18 +3152,17 @@ public sealed class WizardIntelligenceProvider(
     private static string BuildInferenceFailureMessage(ChatClientLease lease)
     {
 
-        string endpoint = string.IsNullOrWhiteSpace(lease.Provider.Endpoint)
-            ? "(default endpoint)"
-            : lease.Provider.Endpoint.Trim();
-
+        // W3.5: do NOT embed lease.Provider.Endpoint — this message surfaces to clients via the
+        // native /api inference envelopes and the raw endpoint URL can leak internal hostnames/paths.
+        // The operator-chosen provider name is retained; endpoint detail stays in server logs.
         if (lease.IsOllama)
         {
 
-            return $"Ollama provider '{lease.Provider.Name}' at {endpoint} is unreachable. Ensure Ollama is running and the endpoint is correct.";
+            return $"Ollama provider '{lease.Provider.Name}' is unreachable. Ensure Ollama is running and the configured endpoint is correct.";
 
         }
 
-        return $"Provider '{lease.Provider.Name}' at {endpoint} is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
+        return $"Provider '{lease.Provider.Name}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
 
     }
 

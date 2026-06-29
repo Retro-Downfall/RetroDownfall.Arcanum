@@ -46,6 +46,7 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
             pacer,
             new FakeEventBus(),
             new UntrustedWorkspaceStore(),
+            new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings));
 
         return Task.CompletedTask;

@@ -1,3 +1,4 @@
+using System.Text;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -24,6 +25,17 @@ public static class PingRequestBoundsValidator
 
         }
 
+        // W3.6: AdditionalSystemPrompt is injected verbatim into the system prompt by
+        // SystemPromptBuilder; bound it like the prompt so it cannot grow the context unbounded.
+        if (!string.IsNullOrEmpty(request.AdditionalSystemPrompt) && request.AdditionalSystemPrompt.Length > maxPromptChars)
+        {
+
+            return Result.Failure(new Error(
+                "Validation.AdditionalSystemPromptTooLong",
+                $"AdditionalSystemPrompt exceeds the maximum length ({maxPromptChars} characters)."));
+
+        }
+
         List<CoreChatMessage>? stateless = request.StatelessMessages;
 
         if (stateless is { Count: > 0 })
@@ -47,14 +59,18 @@ public static class PingRequestBoundsValidator
 
                 CoreChatMessage message = stateless[i];
 
-                int contentChars = message.Content?.Length ?? 0;
+                // W3.6: measure the full UTF-8 byte size against the byte-named budget (was a UTF-16
+                // char count, which let multibyte content run ~3-4x over) and include tool-call
+                // arguments + multimodal content parts so an empty-Content message with a large
+                // ToolCalls/ContentParts payload can no longer bypass the cap.
+                long messageBytes = MeasureMessageBytes(message);
 
-                if (contentChars > maxEntryBytes)
+                if (messageBytes > maxEntryBytes)
                 {
 
                     return Result.Failure(new Error(
                         "Validation.StatelessMessageTooLong",
-                        $"StatelessMessages[{i}].content exceeds the maximum length ({maxEntryBytes} characters)."));
+                        $"StatelessMessages[{i}] content exceeds the maximum size ({maxEntryBytes} bytes, UTF-8)."));
 
                 }
 
@@ -66,10 +82,48 @@ public static class PingRequestBoundsValidator
 
     }
 
+    private static long MeasureMessageBytes(CoreChatMessage message)
+    {
+
+        long bytes = Utf8Bytes(message.Content);
+
+        if (message.ToolCalls is { Count: > 0 } toolCalls)
+        {
+
+            foreach (CoreToolCall toolCall in toolCalls)
+            {
+
+                bytes += Utf8Bytes(toolCall.Name) + Utf8Bytes(toolCall.ArgumentsJson);
+
+            }
+
+        }
+
+        if (message.ContentParts is { Count: > 0 } parts)
+        {
+
+            foreach (CoreContentPart part in parts)
+            {
+
+                bytes += Utf8Bytes(part.Text) + Utf8Bytes(part.ImageUrl);
+
+            }
+
+        }
+
+        return bytes;
+
+    }
+
+    private static long Utf8Bytes(string? value) =>
+        string.IsNullOrEmpty(value) ? 0L : Encoding.UTF8.GetByteCount(value);
+
     public static Result ValidateOpenApiMessageCount(int messageCount, ArcanumSettings settings)
     {
 
-        int maxMessages = ArcanumSettingClamps.MaxOpenApiMessages(settings.Intelligence.MaxOpenApiMessages);
+        IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
+
+        int maxMessages = ArcanumSettingClamps.MaxOpenApiMessages(intelligence.MaxOpenApiMessages);
 
         if (messageCount > maxMessages)
         {
