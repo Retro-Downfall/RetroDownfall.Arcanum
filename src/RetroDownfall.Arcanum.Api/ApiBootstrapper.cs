@@ -285,6 +285,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<PromptRenderer>();
 
+        services.AddScoped<ToolExecutionPipeline>();
+
         services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();
 
         services.AddScoped<IProvingGroundsArbiter, ProvingGroundsArbiter>();

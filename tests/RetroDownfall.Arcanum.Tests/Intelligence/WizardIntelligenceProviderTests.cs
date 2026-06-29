@@ -1893,10 +1893,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             mcp,
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
-            ward,
             campaignRepository,
-            sanctumGuard,
-            new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance));
+            new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
+            new ToolExecutionPipeline(
+                new TestOptionsSnapshot<ArcanumSettings>(settings),
+                ward,
+                sanctumGuard,
+                NullLogger<ToolExecutionPipeline>.Instance));
     }
 
     private static PingRequest BaseRequest() =>

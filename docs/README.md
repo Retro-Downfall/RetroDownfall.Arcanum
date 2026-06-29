@@ -45,7 +45,7 @@ Arcanum exposes a maximum-parity **OpenAI Chat Completions** surface so existing
 
 Inference flows through one hub behind a single `IChatClient` abstraction. See [DESIGN.md §10](DESIGN.md#10-intelligence-pipeline).
 
-- **`WizardIntelligenceProvider`** (Api) implements **`IArcanumIntelligenceProvider`** (Core); **`IChatClientFactory`** builds a per-turn `IChatClient` per provider kind.
+- **`WizardIntelligenceProvider`** (Api) implements **`IArcanumIntelligenceProvider`** (Core) and delegates ward/Sanctum tool invocation to **`ToolExecutionPipeline`**; **`IChatClientFactory`** builds a per-turn `IChatClient` per provider kind.
 - **Providers (`AiProviderKind`):** `Ollama` (OllamaSharp), `OpenAICompatible` (`Microsoft.Extensions.AI.OpenAI` — DeepSeek, Groq, GitHub Models, LM Studio, …), and `LlamaCppServer` (local GGUF via spawned `llama-server`, fully managed lifecycle + GGUF cache).
 - **No hard-coded model names.** `ProviderResolver` maps a requested/default model to a provider+model. Everything is configured under `Arcanum:Providers`.
 - The engine adds agentic **MCP tool loops**, **semantic spell routing**, **read-time context compression**, **wards** (approval gates), and **Sanctum** (sandboxing) on top of raw inference.
@@ -94,7 +94,7 @@ Any change to architecture, contracts, configuration, persistence, MCP surfaces,
 |---------|------|------|-----|
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`, `LlamaCppJsonContext`) | `IsAotCompatible` |
 | **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), workspace scanning, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link, GGUF cache + `llama-server` manager | `IsTrimmable` + `PublishAot` (analysis signal) |
-| **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
+| **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Single shipping executable | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` (the native image) |
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
 | **`tests/RetroDownfall.Arcanum.Tests`** | xUnit test suite (not shipped) | MCP, security, config, workspace policy, SQLCipher Grimoire, and API-host integration tests | — |
