@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -160,60 +161,50 @@ internal static class SandboxedFileIo
 
         string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
 
+        // The bare temp+flush+rename mechanics (and temp cleanup on failure) are shared via
+        // AtomicFile.ReplaceAsync; this wrapper keeps the sandbox revalidations interleaved around
+        // the write and rename. The write callback intentionally leaves the stream open so the
+        // helper owns its lifetime and performs the durability flush.
+        FileHandleIdentity expectedIdentity = default;
+
         try
         {
 
-            await using (FileStream tempStream = new(
+            bool replaced = await AtomicFile.ReplaceAsync(
+                absolutePath,
                 tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
-            {
+                async (stream, ct) =>
+                {
 
-                await using StreamWriter writer = new(tempStream);
+                    await using StreamWriter writer = new(stream, encoding: null, bufferSize: -1, leaveOpen: true);
 
-                await writer.WriteAsync(content.AsMemory(), cancellationToken).ConfigureAwait(false);
+                    await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
 
-                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    await writer.FlushAsync(ct).ConfigureAwait(false);
 
-                await tempStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken,
+                // W3.4 Group C #7: revalidate the destination path lexically, then capture the temp
+                // file's identity BEFORE the move. The move preserves the inode on the same
+                // filesystem (temp is created in the destination's parent dir), so the destination's
+                // post-move identity must match this. A mismatch means the destination was swapped
+                // (e.g. to a symlink) between the lexical revalidation and the move — a TOCTOU
+                // sandbox escape, which fails the replace closed (temp is removed, destination kept).
+                beforeReplace: () =>
+                    ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, absolutePath)
+                        && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
+                // W3.4 Group C #7: post-move handle-identity check, mirroring the read path. Open
+                // the destination and verify its handle identity matches the temp file's pre-move
+                // identity. TryRevalidateOpenedHandle also re-checks the opened path is under the
+                // workspace (resolving symlinks), so a swapped destination is rejected here even if
+                // the move followed a symlink (platform-dependent).
+                afterReplace: () =>
+                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _)).ConfigureAwait(false);
 
-            }
-
-            if (!ToolHelpers.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
+            if (!replaced)
             {
 
                 return (false, ToolError(PathEscapesSandboxMessage));
-
-            }
-
-            // W3.4 Group C #7: capture the temp file's identity BEFORE the move. The move
-            // preserves the inode on the same filesystem (temp is created in the destination's
-            // parent dir), so the destination's post-move identity must match this. A mismatch
-            // means the destination was swapped (e.g. to a symlink) between the lexical
-            // revalidation above and the move — a TOCTOU sandbox escape.
-            if (!FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out FileHandleIdentity expectedIdentity))
-            {
-
-                return (false, ToolError(PathEscapesSandboxMessage));
-
-            }
-
-            File.Move(tempPath, absolutePath, overwrite: true);
-
-            tempPath = string.Empty;
-
-            // W3.4 Group C #7: post-move handle-identity check, mirroring the read path. Open
-            // the destination and verify its handle identity matches the temp file's pre-move
-            // identity. TryRevalidateOpenedHandle also re-checks the opened path is under the
-            // workspace (resolving symlinks), so a swapped destination is rejected here even
-            // if the move followed a symlink (platform-dependent).
-            if (!TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out McpToolsCallResultWire? moveError))
-            {
-
-                return (false, moveError);
 
             }
 
@@ -230,28 +221,6 @@ internal static class SandboxedFileIo
         {
 
             return (false, ToolError("An I/O error occurred writing. See server logs."));
-
-        }
-        finally
-        {
-
-            if (!string.IsNullOrEmpty(tempPath) && File.Exists(tempPath))
-            {
-
-                try
-                {
-
-                    File.Delete(tempPath);
-
-                }
-                catch (IOException)
-                {
-
-                    // Best effort cleanup.
-
-                }
-
-            }
 
         }
 
