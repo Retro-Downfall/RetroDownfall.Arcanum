@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -1986,277 +1987,112 @@ internal sealed class ArcanumInternalToolServer
             psi.ArgumentList.Add(token);
         }
 
-        RemoveArcanumSecretVariables(psi.Environment);
+        long totalOutputCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(_settings.ToolOutputCapBytes);
 
-        using Process process = new();
+        CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            totalOutputCapBytes,
+            _executeCommandTimeout,
+            cancellationToken).ConfigureAwait(false);
 
-        process.StartInfo = psi;
-
-        using CancellationTokenSource timeoutCts = new(_executeCommandTimeout);
-
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
-        CancellationToken waitToken = linked.Token;
-
-        try
+        switch (runResult.Outcome)
         {
-            if (!process.Start())
-            {
+            case CappedChildProcessOutcome.IoErrorOnStart:
+
+                _logger?.LogError(runResult.FaultException, "execute_command: I/O error starting process.");
+
                 return ToolError("execute_command: failed to start the process.");
-            }
-        }
-        catch (IOException ex)
-        {
-            _logger?.LogError(ex, "execute_command: I/O error starting process.");
 
-            return ToolError("execute_command: failed to start the process.");
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "execute_command: access denied starting process.");
+            case CappedChildProcessOutcome.AccessDeniedOnStart:
 
-            return ToolError("execute_command: access denied starting the process.");
-        }
-        catch (OperationCanceledException)
-        {
-            return ToolError("execute_command: canceled before start completed.");
-        }
-        catch (InvalidOperationException ex)
-        {
-            _logger?.LogError(ex, "execute_command: could not start process.");
+                _logger?.LogError(runResult.FaultException, "execute_command: access denied starting process.");
 
-            return ToolError("execute_command: failed to start the process.");
-        }
-        catch (Win32Exception ex)
-        {
-            _logger?.LogError(ex, "execute_command: could not start process.");
+                return ToolError("execute_command: access denied starting the process.");
 
-            return ToolError("execute_command: failed to start the process.");
-        }
+            case CappedChildProcessOutcome.CanceledBeforeStart:
 
-        CancellationTokenRegistration killRegistration = waitToken.Register(
-            static state => TryKillProcessEntireTree((Process)state!),
-            process);
+                return ToolError("execute_command: canceled before start completed.");
 
-        long perStreamCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(_settings.ToolOutputCapBytes) / 2L;
+            case CappedChildProcessOutcome.FailedToStart:
 
-        if (perStreamCapBytes < 1024L)
-        {
-            perStreamCapBytes = 1024L;
-        }
+                _logger?.LogError(runResult.FaultException, "execute_command: could not start process.");
 
-        try
-        {
-            Task<CappedOutput> stdoutTask = ReadStreamCappedAsync(process.StandardOutput, perStreamCapBytes, waitToken);
+                return ToolError("execute_command: failed to start the process.");
 
-            Task<CappedOutput> stderrTask = ReadStreamCappedAsync(process.StandardError, perStreamCapBytes, waitToken);
+            case CappedChildProcessOutcome.TimedOut:
 
-            try
-            {
-                await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                TryKillProcessEntireTree(process);
+                return ToolError(
+                    $"execute_command: the command timed out after {_executeCommandTimeoutSeconds} seconds.");
 
-                await ObserveStreamReadTasksAsync(stdoutTask, stderrTask).ConfigureAwait(false);
+            case CappedChildProcessOutcome.Canceled when cancellationToken.IsCancellationRequested:
 
-                if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    return ToolError(
-                        $"execute_command: the command timed out after {_executeCommandTimeoutSeconds} seconds.");
-                }
+                return ToolError("execute_command: canceled.");
 
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return ToolError("execute_command: canceled.");
-                }
+            case CappedChildProcessOutcome.Canceled:
 
                 return ToolError("execute_command: canceled or timed out.");
-            }
 
-            CappedOutput stdout;
+            case CappedChildProcessOutcome.IoErrorReadingOutput:
 
-            CappedOutput stderr;
-
-            try
-            {
-                stdout = await stdoutTask.ConfigureAwait(false);
-
-                stderr = await stderrTask.ConfigureAwait(false);
-            }
-            catch (IOException ex)
-            {
-                _logger?.LogError(ex, "execute_command: I/O error reading process output.");
+                _logger?.LogError(runResult.FaultException, "execute_command: I/O error reading process output.");
 
                 return ToolError("execute_command: failed to read process output.");
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                _logger?.LogError(ex, "execute_command: access denied reading process output.");
+
+            case CappedChildProcessOutcome.AccessDeniedReadingOutput:
+
+                _logger?.LogError(runResult.FaultException, "execute_command: access denied reading process output.");
 
                 return ToolError("execute_command: access denied reading process output.");
-            }
-            catch (OperationCanceledException)
-            {
+
+            case CappedChildProcessOutcome.CanceledWhileReadingOutput:
+
                 return ToolError("execute_command: canceled while reading output.");
-            }
 
-            StringBuilder text = new();
-
-            text.AppendLine("--- stdout ---");
-
-            text.AppendLine(stdout.Text);
-
-            if (stdout.Truncated)
-            {
-                text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
-            }
-
-            text.AppendLine("--- stderr ---");
-
-            text.AppendLine(stderr.Text);
-
-            if (stderr.Truncated)
-            {
-                text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
-            }
-
-            text.Append("--- exit code ---\n");
-
-            text.Append(process.ExitCode);
-
-            return new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire { Text = text.ToString() },
-                ],
-                IsError = false,
-            };
-        }
-        finally
-        {
-            await killRegistration.DisposeAsync().ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Removes every <c>ARCANUM_</c>-prefixed variable from a child-process environment so the
-    /// provider API keys that reach Arcanum via the <c>ARCANUM_</c> configuration env-var prefix
-    /// (see <see cref="ConfigurationBootstrapper"/>) cannot leak to commands spawned by
-    /// <c>execute_command</c>. Every other variable (PATH, HOME, ...) is preserved so arbitrary
-    /// commands still resolve and run.
-    /// </summary>
-    internal static void RemoveArcanumSecretVariables(IDictionary<string, string?> environment)
-    {
-
-        ArgumentNullException.ThrowIfNull(environment);
-
-        string[] keys = environment.Keys.ToArray();
-
-        foreach (string key in keys)
-        {
-
-            if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
-            {
-
-                environment.Remove(key);
-
-            }
-
-        }
-
-    }
-
-    private static async Task ObserveStreamReadTasksAsync(
-        Task<CappedOutput> stdoutTask,
-        Task<CappedOutput> stderrTask)
-    {
-        try
-        {
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
-    private readonly record struct CappedOutput(string Text, bool Truncated);
-
-    private static async Task<CappedOutput> ReadStreamCappedAsync(
-        StreamReader reader,
-        long maxBytes,
-        CancellationToken cancellationToken)
-    {
-        StringBuilder builder = new();
-
-        char[] buffer = new char[4096];
-
-        long approximateBytes = 0L;
-
-        bool truncated = false;
-
-        while (true)
-        {
-            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
-
-            if (read <= 0)
-            {
-                break;
-            }
-
-            long encodedSize = Encoding.UTF8.GetByteCount(buffer, 0, read);
-
-            if (approximateBytes + encodedSize > maxBytes)
-            {
-                long remaining = maxBytes - approximateBytes;
-
-                if (remaining > 0)
-                {
-                    int safeChars = ChooseSafeCharCount(buffer, read, remaining);
-
-                    builder.Append(buffer, 0, safeChars);
-                }
-
-                truncated = true;
+            case CappedChildProcessOutcome.Completed:
 
                 break;
-            }
 
-            builder.Append(buffer, 0, read);
+            default:
 
-            approximateBytes += encodedSize;
+                return ToolError("execute_command: failed to start the process.");
+
         }
 
-        return new CappedOutput(builder.ToString(), truncated);
-    }
+        long perStreamCapBytes = runResult.PerStreamCapBytes;
 
-    private static int ChooseSafeCharCount(char[] buffer, int charCount, long remainingBytes)
-    {
-        long running = 0L;
+        StringBuilder text = new();
 
-        for (int i = 0; i < charCount; i++)
+        text.AppendLine("--- stdout ---");
+
+        text.AppendLine(runResult.Stdout.Text);
+
+        if (runResult.Stdout.Truncated)
         {
-            int charByteSize = Encoding.UTF8.GetByteCount(buffer, i, 1);
-
-            if (running + charByteSize > remainingBytes)
-            {
-                return i;
-            }
-
-            running += charByteSize;
+            text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
         }
 
-        return charCount;
+        text.AppendLine("--- stderr ---");
+
+        text.AppendLine(runResult.Stderr.Text);
+
+        if (runResult.Stderr.Truncated)
+        {
+            text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
+        }
+
+        text.Append("--- exit code ---\n");
+
+        text.Append(runResult.ExitCode);
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = text.ToString() },
+            ],
+            IsError = false,
+        };
     }
 
     private static IReadOnlyList<string> ResolveCommandArgumentTokens(string[]? argumentList, string? argumentsString)
@@ -2326,33 +2162,6 @@ internal sealed class ArcanumInternalToolServer
         }
 
         return tokens;
-    }
-
-    private static void TryKillProcessEntireTree(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (Win32Exception)
-        {
-        }
-        catch (NotSupportedException)
-        {
-            try
-            {
-                process.Kill();
-            }
-            catch (Exception)
-            {
-            }
-        }
     }
 
     private static McpToolsCallResultWire PrefixToolError(string toolName, McpToolsCallResultWire error)

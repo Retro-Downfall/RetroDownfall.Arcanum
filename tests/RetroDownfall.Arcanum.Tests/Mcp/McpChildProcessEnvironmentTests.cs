@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -59,7 +60,7 @@ public sealed class McpChildProcessEnvironmentTests
             ["HOME"] = "/home/user",
         };
 
-        ArcanumInternalToolServer.RemoveArcanumSecretVariables(environment);
+        ChildProcessEnvironmentScrubber.RemoveArcanumSecretVariables(environment);
 
         Assert.False(environment.ContainsKey("ARCANUM_Arcanum__Providers__0__ApiKey"));
 

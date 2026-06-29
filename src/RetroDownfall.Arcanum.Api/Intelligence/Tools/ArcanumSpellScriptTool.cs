@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -167,144 +168,112 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         ProcessStartInfo psi = BuildProcessStartInfo(scriptsRootFull, candidate, extraArgs);
 
-        using Process process = new();
-
-        process.StartInfo = psi;
-
-        using CancellationTokenSource timeoutCts = new(_executeTimeout);
-
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
-        CancellationToken waitToken = linked.Token;
-
         try
         {
+
             if (!File.Exists(candidate))
             {
+
                 return $"run_spell_script: script not found: '{scriptName}'.";
+
             }
 
             if (!ToolHelpers.RevalidatePathBeforeIo(scriptsRootFull, candidate))
             {
+
                 return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
+
             }
 
-            if (!process.Start())
-            {
-                return "run_spell_script: failed to start the process.";
-            }
-        }
-        catch (IOException)
-        {
-            return "run_spell_script: failed to start the script process.";
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return "run_spell_script: failed to start the script process.";
         }
         catch (OperationCanceledException)
         {
+
             return "run_spell_script: canceled before start completed.";
-        }
-        catch (InvalidOperationException)
-        {
-            return "run_spell_script: failed to start the script process.";
-        }
-        catch (Win32Exception)
-        {
-            return "run_spell_script: failed to start the script process.";
+
         }
 
-        CancellationTokenRegistration killRegistration = waitToken.Register(
-            static state => TryKillProcessEntireTree((Process)state!),
-            process);
+        CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            _toolOutputCapBytes,
+            _executeTimeout,
+            cancellationToken).ConfigureAwait(false);
 
-        long perStreamCap = _toolOutputCapBytes / 2L;
-
-        if (perStreamCap < 1024L)
+        switch (runResult.Outcome)
         {
-            perStreamCap = 1024L;
-        }
 
-        try
-        {
-            Task<CappedOutput> stdoutTask = ReadStreamCappedAsync(process.StandardOutput, perStreamCap, waitToken);
+            case CappedChildProcessOutcome.IoErrorOnStart:
 
-            Task<CappedOutput> stderrTask = ReadStreamCappedAsync(process.StandardError, perStreamCap, waitToken);
+            case CappedChildProcessOutcome.AccessDeniedOnStart:
 
-            try
-            {
-                await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                TryKillProcessEntireTree(process);
+            case CappedChildProcessOutcome.FailedToStart:
 
-                await ObserveStreamReadTasksAsync(stdoutTask, stderrTask).ConfigureAwait(false);
+                return "run_spell_script: failed to start the script process.";
 
-                if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    return $"run_spell_script: the command timed out after {_executeTimeoutSeconds} seconds.";
-                }
+            case CappedChildProcessOutcome.CanceledBeforeStart:
+
+                return "run_spell_script: canceled before start completed.";
+
+            case CappedChildProcessOutcome.TimedOut:
+
+                return $"run_spell_script: the command timed out after {_executeTimeoutSeconds} seconds.";
+
+            case CappedChildProcessOutcome.Canceled:
 
                 return "run_spell_script: canceled.";
-            }
 
-            CappedOutput stdout;
+            case CappedChildProcessOutcome.IoErrorReadingOutput:
 
-            CappedOutput stderr;
+            case CappedChildProcessOutcome.AccessDeniedReadingOutput:
 
-            try
-            {
-                stdout = await stdoutTask.ConfigureAwait(false);
-
-                stderr = await stderrTask.ConfigureAwait(false);
-            }
-            catch (IOException)
-            {
                 return "run_spell_script: failed to read process output.";
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return "run_spell_script: failed to read process output.";
-            }
-            catch (OperationCanceledException)
-            {
+
+            case CappedChildProcessOutcome.CanceledWhileReadingOutput:
+
                 return "run_spell_script: canceled while reading output.";
-            }
 
-            var text = new StringBuilder();
+            case CappedChildProcessOutcome.Completed:
 
-            text.AppendLine("--- stdout ---");
+                break;
 
-            text.AppendLine(stdout.Text);
+            default:
 
-            if (stdout.Truncated)
-            {
-                text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
-            }
+                return "run_spell_script: failed to start the script process.";
 
-            text.AppendLine("--- stderr ---");
-
-            text.AppendLine(stderr.Text);
-
-            if (stderr.Truncated)
-            {
-                text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
-            }
-
-            text.Append("--- exit code ---\n");
-
-            text.Append(process.ExitCode);
-
-            return text.ToString();
         }
-        finally
+
+        long perStreamCap = runResult.PerStreamCapBytes;
+
+        var text = new StringBuilder();
+
+        text.AppendLine("--- stdout ---");
+
+        text.AppendLine(runResult.Stdout.Text);
+
+        if (runResult.Stdout.Truncated)
         {
-            await killRegistration.DisposeAsync().ConfigureAwait(false);
+
+            text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
+
         }
+
+        text.AppendLine("--- stderr ---");
+
+        text.AppendLine(runResult.Stderr.Text);
+
+        if (runResult.Stderr.Truncated)
+        {
+
+            text.AppendLine($"[truncated: exceeded {perStreamCap} bytes]");
+
+        }
+
+        text.Append("--- exit code ---\n");
+
+        text.Append(runResult.ExitCode);
+
+        return text.ToString();
     }
 
     private List<(string Root, string Candidate)> FindScriptMatches(string scriptName)
@@ -343,94 +312,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         }
 
         return matches;
-    }
-
-    private static async Task ObserveStreamReadTasksAsync(
-        Task<CappedOutput> stdoutTask,
-        Task<CappedOutput> stderrTask)
-    {
-        try
-        {
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
-    private readonly record struct CappedOutput(string Text, bool Truncated);
-
-    private static async Task<CappedOutput> ReadStreamCappedAsync(
-        StreamReader reader,
-        long maxBytes,
-        CancellationToken cancellationToken)
-    {
-        StringBuilder builder = new();
-
-        char[] buffer = new char[4096];
-
-        long approximateBytes = 0L;
-
-        bool truncated = false;
-
-        while (true)
-        {
-            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
-
-            if (read <= 0)
-            {
-                break;
-            }
-
-            long encodedSize = Encoding.UTF8.GetByteCount(buffer, 0, read);
-
-            if (approximateBytes + encodedSize > maxBytes)
-            {
-                long remaining = maxBytes - approximateBytes;
-
-                if (remaining > 0)
-                {
-                    int safeChars = ChooseSafeCharCount(buffer, read, remaining);
-
-                    builder.Append(buffer, 0, safeChars);
-                }
-
-                truncated = true;
-
-                break;
-            }
-
-            builder.Append(buffer, 0, read);
-
-            approximateBytes += encodedSize;
-        }
-
-        return new CappedOutput(builder.ToString(), truncated);
-    }
-
-    private static int ChooseSafeCharCount(char[] buffer, int charCount, long remainingBytes)
-    {
-        long running = 0L;
-
-        for (int i = 0; i < charCount; i++)
-        {
-            int charByteSize = Encoding.UTF8.GetByteCount(buffer, i, 1);
-
-            if (running + charByteSize > remainingBytes)
-            {
-                return i;
-            }
-
-            running += charByteSize;
-        }
-
-        return charCount;
     }
 
     private static ProcessStartInfo BuildProcessStartInfo(string scriptsRootFull, string scriptFullPath, string? argumentsLine)
@@ -614,32 +495,5 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             : StringComparison.Ordinal;
 
         return candidateFullPath.Equals(normalizedRoot, cmp) || candidateFullPath.StartsWith(prefix, cmp);
-    }
-
-    private static void TryKillProcessEntireTree(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (Win32Exception)
-        {
-        }
-        catch (NotSupportedException)
-        {
-            try
-            {
-                process.Kill();
-            }
-            catch (Exception)
-            {
-            }
-        }
     }
 }
