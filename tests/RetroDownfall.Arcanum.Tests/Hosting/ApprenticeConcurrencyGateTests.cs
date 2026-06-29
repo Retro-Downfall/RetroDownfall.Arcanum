@@ -11,19 +11,23 @@ public sealed class ApprenticeConcurrencyGateTests
 
         ApprenticeConcurrencyGate gate = new();
 
-        Assert.True(gate.TryAcquire(2));
+        Assert.True(gate.TryAcquire(2, out IDisposable? first));
 
-        Assert.True(gate.TryAcquire(2));
+        Assert.True(gate.TryAcquire(2, out IDisposable? second));
 
-        Assert.False(gate.TryAcquire(2));
+        Assert.False(gate.TryAcquire(2, out _));
+
+        Assert.Equal(2, gate.RunningCount);
+
+        first!.Dispose();
+
+        Assert.True(gate.TryAcquire(2, out IDisposable? third));
 
         Assert.Equal(2, gate.RunningCount);
 
-        gate.Release();
+        second!.Dispose();
 
-        Assert.True(gate.TryAcquire(2));
-
-        Assert.Equal(2, gate.RunningCount);
+        third!.Dispose();
 
     }
 
@@ -37,15 +41,26 @@ public sealed class ApprenticeConcurrencyGateTests
 
         const int attempts = 50;
 
+        List<IDisposable> leases = [];
+
+        object leasesLock = new();
+
         int acquired = 0;
 
         Parallel.For(0, attempts, _ =>
         {
 
-            if (gate.TryAcquire(max))
+            if (gate.TryAcquire(max, out IDisposable? lease))
             {
 
                 Interlocked.Increment(ref acquired);
+
+                lock (leasesLock)
+                {
+
+                    leases.Add(lease!);
+
+                }
 
             }
 
@@ -55,10 +70,10 @@ public sealed class ApprenticeConcurrencyGateTests
 
         Assert.Equal(acquired, gate.RunningCount);
 
-        for (int i = 0; i < acquired; i++)
+        foreach (IDisposable lease in leases)
         {
 
-            gate.Release();
+            lease.Dispose();
 
         }
 

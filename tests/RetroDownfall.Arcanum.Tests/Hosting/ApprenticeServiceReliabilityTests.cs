@@ -75,7 +75,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         // Pre-fill the concurrency gate so the intervene resume cannot acquire a slot.
 
-        GetConcurrencyGate(service).TryAcquire(1);
+        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out _));
 
         Result<string> result = await service
             .InterveneAsync(escalade, "Resume the quest.", resume: true, CancellationToken.None)
@@ -147,7 +147,7 @@ public sealed class ApprenticeServiceReliabilityTests
         // Pre-fill the concurrency gate and the pending queue so the resumable
         // apprentice hits the PendingQueueFull branch of TryAcquireExecutionSlot.
 
-        GetConcurrencyGate(service).TryAcquire(1);
+        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out _));
 
         GetPendingStarts(service).Enqueue(Guid.NewGuid());
 
@@ -217,7 +217,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         // Pre-fill the gate so StartAsync cannot acquire a slot and enqueues instead.
 
-        GetConcurrencyGate(service).TryAcquire(1);
+        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out _));
 
         _ = await service.StartAsync(apprenticeId, CancellationToken.None);
 
@@ -289,7 +289,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         ApprenticeService service = CreateService(repo, settings, logger);
 
-        GetConcurrencyGate(service).TryAcquire(1);
+        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out _));
 
         Result<string> result = await service.StartAsync(apprenticeId, CancellationToken.None);
 

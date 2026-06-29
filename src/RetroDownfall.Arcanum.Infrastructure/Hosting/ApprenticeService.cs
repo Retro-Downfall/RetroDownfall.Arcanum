@@ -39,6 +39,8 @@ internal sealed class ApprenticeService(
 
     private readonly ApprenticeConcurrencyGate _concurrencyGate = new();
 
+    private readonly ConcurrentDictionary<Guid, IDisposable> _executionLeases = new();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -613,8 +615,10 @@ internal sealed class ApprenticeService(
 
         int maxConcurrent = ArcanumSettingClamps.MaxConcurrentApprentices(settings.MaxConcurrentApprentices);
 
-        if (_concurrencyGate.TryAcquire(maxConcurrent))
+        if (_concurrencyGate.TryAcquire(maxConcurrent, out IDisposable? lease))
         {
+
+            _executionLeases[apprenticeId] = lease!;
 
             return true;
 
@@ -706,7 +710,10 @@ internal sealed class ApprenticeService(
             cts.Dispose();
         }
 
-        _concurrencyGate.Release();
+        if (_executionLeases.TryRemove(apprenticeId, out IDisposable? lease))
+        {
+            lease.Dispose();
+        }
 
         TryDequeuePendingStart();
     }

@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 public sealed class SseConnectionGate
 {
 
-    private int _activeConnections;
+    private readonly AdmissionGate _gate = new();
 
     private readonly IOptionsMonitor<ArcanumSettings> _settings;
 
@@ -23,12 +23,8 @@ public sealed class SseConnectionGate
         int maxConnections = ArcanumSettingClamps.MaxSseConnections(
             _settings.CurrentValue.EventBus?.MaxSseConnections ?? new EventBusSettings().MaxSseConnections);
 
-        int active = Interlocked.Increment(ref _activeConnections);
-
-        if (active > maxConnections)
+        if (!_gate.TryEnter(maxConnections, out IDisposable? innerLease))
         {
-
-            Interlocked.Decrement(ref _activeConnections);
 
             lease = null;
 
@@ -36,16 +32,9 @@ public sealed class SseConnectionGate
 
         }
 
-        lease = new SseConnectionLease(this);
+        lease = new SseConnectionLease(innerLease!);
 
         return true;
-
-    }
-
-    internal void Release()
-    {
-
-        Interlocked.Decrement(ref _activeConnections);
 
     }
 
@@ -54,14 +43,14 @@ public sealed class SseConnectionGate
 public sealed class SseConnectionLease : IDisposable
 {
 
-    private readonly SseConnectionGate _gate;
+    private readonly IDisposable _innerLease;
 
     private int _disposed;
 
-    internal SseConnectionLease(SseConnectionGate gate)
+    internal SseConnectionLease(IDisposable innerLease)
     {
 
-        _gate = gate;
+        _innerLease = innerLease;
 
     }
 
@@ -71,7 +60,7 @@ public sealed class SseConnectionLease : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
 
-            _gate.Release();
+            _innerLease.Dispose();
 
         }
 
