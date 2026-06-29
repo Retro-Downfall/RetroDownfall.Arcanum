@@ -48,17 +48,17 @@ Severity here = **design leverage**, not defect risk (Waves 1–5 already closed
   - **Fix:** `Core/Primitives/ErrorCodes.cs` constants for any code used in >1 layer, grouped by a short taxonomy comment (Validation / NotFound / Capacity / Timeout / Suppressed / Hub). Replace literals incrementally; document "suppressed outcomes are expected, not 5xx."
   - **Risk:** Low (string→const). Sets up W6.8.
 
-- [ ] **W6.3 — Unify inference pre-flight: `ping-stream` through `InferenceErrorMapper`** *(quick win)*
+- [x] **W6.3 — Unify inference pre-flight: `ping-stream` through `InferenceErrorMapper`** *(quick win)* ✅ *done — `ping-stream` resolve failures now map via `InferenceErrorMapper.ResolveStatusCode` (Campaign.NotFound→404) instead of a flat 400, matching buffered `ping`.*
   - **Closes:** `/intelligence/ping` maps resolve failures via `InferenceErrorMapper`, but `/intelligence/ping-stream` hardcodes **400** for the *same* `Campaign.NotFound` resolve failure (`IntelligenceEndpoints.cs:237-246`) — a surface incoherence the CLI streaming client sees.
   - **Fix:** shared pre-flight helper (validate → resolve → map status via `InferenceErrorMapper`) before `InferenceExecuteWriter` / NDJSON start; both ping endpoints call it.
   - **Risk:** Low. Small, localized.
 
-- [ ] **W6.4 — `AddArcanumCliClientStack()` (stop serve/CLI DI drift)**
+- [x] **W6.4 — `AddArcanumCliClientStack()` (stop serve/CLI DI drift)** ✅ *done — Infrastructure-owned `AddArcanumCliClientStack()` composes Data Protection + `IApiKeyDigestCache` + `ISecretStore` + CLI Grimoire; `CliApplicationFactory` calls it instead of hand-listing the four registrations.*
   - **Closes:** `CliApplicationFactory` hand-maintains a parallel registration list (DataProtection, `IApiKeyDigestCache`, `ISecretStore`, grimoire-for-cli) that already drifted once (DX5). Any new `DataProtectionSecretStore` prerequisite must be remembered in two places.
   - **Fix:** Infrastructure-owned `AddArcanumCliClientStack()` composing the minimal shared subset; `CliApplicationFactory` only adds UX/commands. Keep the CLI's intentional `AddDbContext` (vs API's pooled) as a documented parameter.
   - **Risk:** Low. DI-only; existing CLI factory tests + a command-resolution smoke test cover it.
 
-- [ ] **W6.5 — Move multimodal bounds into `PingRequestBoundsValidator` (Core)**
+- [x] **W6.5 — Move multimodal bounds into `PingRequestBoundsValidator` (Core)** ✅ *done — `MaxContentPartsPerMessage` is enforced per stateless message in the Core validator (`Validation.TooManyContentParts`), so `/intelligence/*` shares the cap `/v1` already had.*
   - **Closes:** part-count cap + unsupported-part rejection live only on `/v1` (`OpenAiV1Endpoints.cs:187-217`); a native `/intelligence/*` client sending huge `ContentParts` still allocates heavily.
   - **Fix:** move the `MaxContentPartsPerMessage`/type checks into `PingRequestBoundsValidator` so both surfaces share them; keep OpenAI-specific role/param validation in `/v1`.
   - **Risk:** Low.

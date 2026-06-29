@@ -54,10 +54,24 @@ public static class PingRequestBoundsValidator
 
             int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(sessions.MaxEntryContentBytes);
 
+            int maxContentParts = ArcanumSettingClamps.MaxContentPartsPerMessage(intelligence.MaxContentPartsPerMessage);
+
             for (int i = 0; i < stateless.Count; i++)
             {
 
                 CoreChatMessage message = stateless[i];
+
+                // W6.5: bound multimodal content-part count on the native stateless path too (the
+                // /v1 surface already rejects this pre-mapping); a huge content[] can no longer enter
+                // via /intelligence/ping(-stream).
+                if (message.ContentParts is { Count: > 0 } messageParts && messageParts.Count > maxContentParts)
+                {
+
+                    return Result.Failure(new Error(
+                        "Validation.TooManyContentParts",
+                        $"StatelessMessages[{i}] exceeds the maximum content parts ({maxContentParts})."));
+
+                }
 
                 // W3.6: measure the full UTF-8 byte size against the byte-named budget (was a UTF-16
                 // char count, which let multibyte content run ~3-4x over) and include tool-call

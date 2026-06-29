@@ -163,6 +163,40 @@ public sealed class PingRequestBoundsValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsTooManyContentPartsPerMessage()
+    {
+
+        // W6.5: the per-message content-part cap (previously only enforced on /v1) now also bounds
+        // the native stateless path.
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { MaxContentPartsPerMessage = 2 },
+        };
+
+        PingRequest request = new(
+            Prompt: string.Empty,
+            StatelessMessages:
+            [
+                new CoreChatMessage(
+                    "user",
+                    string.Empty,
+                    ContentParts:
+                    [
+                        new CoreContentPart("text", "a", null, null),
+                        new CoreContentPart("text", "b", null, null),
+                        new CoreContentPart("text", "c", null, null),
+                    ]),
+            ]);
+
+        Result result = PingRequestBoundsValidator.Validate(request, settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Validation.TooManyContentParts", result.Error.Code);
+
+    }
+
+    [Fact]
     public void ValidateOpenApiMessageCount_NullIntelligence_DoesNotThrow()
     {
 

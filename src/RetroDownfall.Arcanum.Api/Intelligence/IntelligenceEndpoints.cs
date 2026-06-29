@@ -238,7 +238,10 @@ internal static class IntelligenceEndpoints
             {
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-                httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+                // W6.3: map the resolve failure through the shared mapper (Campaign.NotFound -> 404)
+                // so ping-stream matches the buffered /intelligence/ping status semantics instead of
+                // a flat 400.
+                httpContext.Response.StatusCode = InferenceErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code);
 
                 await httpContext.Response.WriteAsJsonAsync(
                     ApiResponse<string>.FromResult(Result<string>.Failure(resolvedRequest.Error), badTraceId),

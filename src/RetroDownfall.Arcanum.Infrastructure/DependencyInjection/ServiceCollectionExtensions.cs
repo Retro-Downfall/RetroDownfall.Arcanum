@@ -100,6 +100,27 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// W6.4: the minimal secret/grimoire stack the CLI shares with the API host — Data Protection,
+    /// the API-key digest cache, the Data-Protection-backed secret store, and the CLI Grimoire. Owned
+    /// here (next to <see cref="AddArcanumInfrastructure"/>) so the CLI wiring cannot silently drift
+    /// out of sync with the host (see DX5).
+    /// </summary>
+    public static IServiceCollection AddArcanumCliClientStack(this IServiceCollection services)
+    {
+        services.AddDataProtection()
+            .SetApplicationName("ArcanumCore")
+            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
+        services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
+
+        services.AddArcanumGrimoireForCli();
+
+        return services;
+    }
+
+    /// <summary>
     /// Registers daemon job registry, execution history, runner, config-backed <see cref="IDaemonJob"/> instances, and the Unseen Servant scheduler.
     /// </summary>
     public static IServiceCollection AddArcanumDaemonServices(this IServiceCollection services, IConfiguration configuration)
