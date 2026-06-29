@@ -287,6 +287,8 @@ public static class ApiBootstrapper
 
         services.AddScoped<GrimoireTurnWriter>();
 
+        services.AddScoped<InferenceContextBuilder>();
+
         services.AddScoped<ToolExecutionPipeline>();
 
         services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();

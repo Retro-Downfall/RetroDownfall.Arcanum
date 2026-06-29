@@ -1891,8 +1891,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             NullLogger<WizardIntelligenceProvider>.Instance,
             grimoire,
             mcp,
-            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
-            new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
             campaignRepository,
             new ToolExecutionPipeline(
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
@@ -1902,7 +1900,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new GrimoireTurnWriter(
                 grimoire,
                 new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
-                NullLogger<GrimoireTurnWriter>.Instance));
+                NullLogger<GrimoireTurnWriter>.Instance),
+            new InferenceContextBuilder(
+                grimoire,
+                new TestOptionsSnapshot<ArcanumSettings>(settings),
+                NullLogger<InferenceContextBuilder>.Instance,
+                new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
+                new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)));
     }
 
     private static PingRequest BaseRequest() =>
