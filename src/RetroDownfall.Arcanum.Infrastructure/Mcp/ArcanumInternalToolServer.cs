@@ -207,6 +207,8 @@ internal sealed partial class ArcanumInternalToolServer
 
         _executeCommandToolDescription =
             $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout or cooperative cancel). Optional workingDirectory is relative to the workspace root.";
+
+        _toolHandlers = BuildToolHandlerRegistry();
     }
 
     /// <summary>
@@ -549,24 +551,14 @@ internal sealed partial class ArcanumInternalToolServer
 
         CancellationToken toolToken = toolScope.Token;
 
-        McpToolsCallResultWire result = call.Name switch
+        if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
         {
-            "read_file_chunk" => await ExecuteReadFileChunkAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "replace_text_block" => await ExecuteReplaceTextBlockAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "write_file" => await ExecuteWriteFileAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "list_directory" => await ExecuteListDirectoryAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "execute_command" => await ExecuteCommandAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "adjust_initiative" => await ExecuteAdjustInitiativeAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "use_commlink" => await ExecuteUseCommlinkAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "petition_dungeon_master" => await ExecutePetitionDungeonMasterAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "cast_sending" => await ExecuteCastSendingAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "ask_human" => await ExecuteAskHumanAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "read_lore" => await ExecuteReadLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "scribe_lore" => await ExecuteScribeLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "delete_lore" => await ExecuteDeleteLoreAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            "search_archives" => await ExecuteSearchArchivesAsync(call.Arguments, toolToken).ConfigureAwait(false),
-            _ => ToolError($"Unknown tool: {call.Name}"),
-        };
+
+            return BuildToolsCallResponse(rpcId, ToolError($"Unknown tool: {call.Name}"));
+
+        }
+
+        McpToolsCallResultWire result = await handler(call.Arguments, toolToken).ConfigureAwait(false);
 
         return BuildToolsCallResponse(rpcId, result);
     }

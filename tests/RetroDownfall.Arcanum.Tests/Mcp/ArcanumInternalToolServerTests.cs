@@ -93,6 +93,54 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsList_names_match_registered_handlers_when_all_features_enabled()
+    {
+
+        IntelligenceSettings allFeatures = new()
+        {
+
+            EnableLoreSystem = true,
+
+            EnableArchiveSearch = true,
+
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: allFeatures,
+            conclaveEnabled: true);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        HashSet<string> listedNames = tools.Tools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
+
+        HashSet<string> registeredNames = session.Server.RegisteredToolHandlerNamesForTests
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Equal(registeredNames, listedNames);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_unknown_tool_returns_expected_error()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonElement arguments = JsonDocument.Parse("{}").RootElement;
+
+        McpToolsCallResultWire result = await session.CallToolAsync("nonexistent_tool_xyz", arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Equal("Unknown tool: nonexistent_tool_xyz", result.Content![0].Text);
+
+    }
+
+    [Fact]
     public async Task ToolsCall_list_directory_lists_workspace_entries()
     {
 
@@ -664,7 +712,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         bool configureWorkspace = true,
         IntelligenceSettings? intelligenceSettings = null,
         long maxFileReadSizeBytes = 1024 * 1024,
-        int maxJsonRpcLineBytes = 2_097_152)
+        int maxJsonRpcLineBytes = 2_097_152,
+        bool conclaveEnabled = false)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -697,7 +746,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             listDirectoryMaxPaths: 64,
             intelligenceSettings: settings,
             maxFileReadSizeBytes: maxFileReadSizeBytes,
-            conclaveEnabled: false,
+            conclaveEnabled: conclaveEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance);
 
@@ -707,7 +756,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         await transport.StartAsync();
 
-        return new TestMcpSession(transport, serverTask, cts);
+        return new TestMcpSession(transport, server, serverTask, cts);
 
     }
 
@@ -727,9 +776,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     private sealed class TestMcpSession(
         InProcessMcpTransport transport,
+        ArcanumInternalToolServer server,
         Task serverTask,
         CancellationTokenSource lifetime) : IAsyncDisposable
     {
+
+        public ArcanumInternalToolServer Server => server;
 
         private int _nextId;
 
