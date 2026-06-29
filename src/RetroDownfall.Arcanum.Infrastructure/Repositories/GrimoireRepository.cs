@@ -437,23 +437,25 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        // Anchor the load window at the summary watermark: always load every entry
-        // after LastSummarizedMessageAt (so read-time compression can never silently
-        // drop un-summarized middle messages) plus at least the most-recent
-        // maxMessages, bounded so a long thread is never fully materialized.
-        int take = maxMessages;
+        DateTime? watermark = session.LastSummarizedMessageAt;
 
-        if (session.LastSummarizedMessageAt is { } watermark)
+        int afterWatermarkCount = 0;
+
+        if (watermark is { } watermarkValue)
         {
 
-            int afterWatermark = await CountEntriesAfterAsync(
+            afterWatermarkCount = await CountEntriesAfterAsync(
                 id,
-                new DateTimeOffset(watermark, TimeSpan.Zero),
+                new DateTimeOffset(watermarkValue, TimeSpan.Zero),
                 cancellationToken).ConfigureAwait(false);
 
-            take = Math.Max(maxMessages, afterWatermark);
-
         }
+
+        int take = EntryWindowPolicy.ResolveTake(
+            EntryWindowPolicy.EntryWindowKind.WatermarkAware,
+            maxMessages,
+            hasWatermark: watermark is not null,
+            afterWatermarkCount: afterWatermarkCount);
 
         List<Entry> recent = await EntryTemporalQueries
             .LoadRecentDescending(_db, id, take)
@@ -492,8 +494,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
+        int take = EntryWindowPolicy.ResolveTake(
+            EntryWindowPolicy.EntryWindowKind.MaxMessagesOnly,
+            maxMessages);
+
         List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescending(_db, sessionId, maxMessages)
+            .LoadRecentDescending(_db, sessionId, take)
             .AsNoTracking()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -522,7 +528,10 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
             _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
 
-        int clampedTake = Math.Clamp(takeLast, 1, maxMessages);
+        int clampedTake = EntryWindowPolicy.ResolveTake(
+            EntryWindowPolicy.EntryWindowKind.ClampedTakeLast,
+            maxMessages,
+            requestedTake: takeLast);
 
         List<Entry> recent = await EntryTemporalQueries
             .LoadRecentDescending(_db, sessionId, clampedTake)

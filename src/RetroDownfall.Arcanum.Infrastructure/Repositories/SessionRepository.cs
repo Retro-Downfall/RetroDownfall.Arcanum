@@ -377,7 +377,10 @@ public sealed class SessionRepository(
 
     public async Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default)
     {
-        int clampedTake = Math.Max(1, takeLast);
+        int clampedTake = EntryWindowPolicy.ResolveTake(
+            EntryWindowPolicy.EntryWindowKind.RawTakeLast,
+            maxMessages: 0,
+            requestedTake: takeLast);
 
         List<Entry> recentDescending = await EntryTemporalQueries
             .LoadRecentDescending(db, sessionId, clampedTake)
