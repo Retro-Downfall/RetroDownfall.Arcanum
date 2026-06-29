@@ -76,21 +76,11 @@ public sealed partial class McpConnectionManager
 
     private void FinalizeGlobalState(List<LoadedMcpToolRow> tagged)
     {
-        Dictionary<string, LoadedMcpToolRow> byName = new(StringComparer.Ordinal);
+        McpToolMerger.GlobalDedupResult deduped = McpToolMerger.DedupeGlobalTaggedTools(tagged);
 
-        List<AITool> surface = [];
+        _globalFirstByToolName = deduped.FirstByToolName;
 
-        foreach (LoadedMcpToolRow row in tagged)
-        {
-            if (byName.TryAdd(row.Tool.Name, row))
-            {
-                surface.Add(row.Tool);
-            }
-        }
-
-        _globalFirstByToolName = byName;
-
-        _globalSurfaceTools = surface;
+        _globalSurfaceTools = deduped.SurfaceTools;
 
         _globalInitialized = true;
     }
