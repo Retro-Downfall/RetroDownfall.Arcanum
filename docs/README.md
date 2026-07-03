@@ -98,6 +98,8 @@ Any change to architecture, contracts, configuration, persistence, MCP surfaces,
 | **`Cli`** | Single shipping executable | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` (the native image) |
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
 | **`tests/RetroDownfall.Arcanum.Tests`** | xUnit test suite (not shipped) | MCP, security, config, workspace policy, SQLCipher Grimoire, and API-host integration tests | — |
+| **`tests/RetroDownfall.Compendium.Ux.Tests`** | Compendium smoke tests (not shipped) | Round-trip read/write of `arcanum.json` with DataProtection key interop | — |
+| **`Compendium.Ux`** | Desktop configuration editor (MAUI) | Visual editor for `arcanum.json`; metadata-driven (`SettingDescriptor` table) so every setting has a description, validated range, and correct control (dropdown for enums, live swatch for CLI theme colors); reuses Core models; dynamic system light/dark theming; `dp:v1:` secret interop | — |
 
 **Key entry points to know:** `ApiBootstrapper.AddArcanumApiServices` / `MapArcanumEndpoints` (wire everything), `AddArcanumInfrastructure` (Infrastructure DI), `WizardIntelligenceProvider.StreamPromptAsync` (the inference loop), `Cli/Program.cs` (command registration).
 
@@ -114,9 +116,11 @@ src/
   RetroDownfall.Arcanum.Api/             # endpoints, intelligence hub, /v1, security filter
     ProvingGrounds/                      # trial/inquisitor endpoint wiring
   RetroDownfall.Arcanum.Cli/             # the `arcanum` executable (Spectre commands)
+  RetroDownfall.Compendium.Ux/            # desktop `arcanum.json` editor (MAUI)
   RetroDownfall.Arcanum.Api.DevHost/     # debug-only host
 tests/
   RetroDownfall.Arcanum.Tests/           # xUnit tests (MCP, security, config, workspace policy, SQLCipher Grimoire)
+  RetroDownfall.Compendium.Ux.Tests/     # Compendium round-trip smoke tests
 docs/                                    # all project documentation lives here
   README.md                              # this agent orientation document
   DESIGN.md                              # authoritative deep reference
@@ -236,6 +240,8 @@ Breaking or client-visible HTTP contract fixes (document here when no `CHANGELOG
 ## Configuration
 
 Settings bind under the `Arcanum` object in **`arcanum.json`**, living in the per-user config dir (created on first run): `~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows. Override any key with env vars using the **`ARCANUM_`** prefix and `__` for nesting (use env vars for secrets — e.g. `ARCANUM_Arcanum__Providers__1__ApiKey`). Every numeric setting has a runtime clamp in `ArcanumSettingClamps`. On `arcanum serve` startup the configuration is validated **before serving**, and the host aborts with a clear logged message (not a crash) when settings are semantically invalid — an unknown default/fast model, an MCP timeout / JSON-RPC ordering conflict, a llama port range that overflows 65535, or a missing/relative allow-list root.
+
+> **Compendium** — a .NET 10 MAUI desktop editor for `arcanum.json` is available at `src/RetroDownfall.Compendium.Ux`. It reuses Core models, supports System Light/Dark modes, and interoperates with Arcanum's DataProtection-encrypted provider keys. See [`docs/COMPENDIUM.md`](COMPENDIUM.md).
 
 **The full key reference (types, defaults, clamps) is [DESIGN.md §3.4](DESIGN.md#34-configuration-reference-arcanumsettings).** Sections at a glance:
 
@@ -406,3 +412,4 @@ When unsure about a contract, clamp, or lifecycle detail, **read the linked DESI
 ## Further reading
 
 - **[`DESIGN.md`](DESIGN.md)** — the authoritative deep reference. Quick links: [§3.4 Configuration](DESIGN.md#34-configuration-reference-arcanumsettings) · [§4 Projects](DESIGN.md#4-project-model-and-dependency-graph) · [§8 HTTP/JSON design](DESIGN.md#8-http-json-and-minimal-api-design-api-project) · [§9 Native AOT](DESIGN.md#9-native-aot-and-trimming) · [§10 Intelligence pipeline](DESIGN.md#10-intelligence-pipeline) · [§11 Security](DESIGN.md#11-local-api-security) · [§17 Glossary](DESIGN.md#17-glossary) · [§19 The Forge](DESIGN.md#19-the-forge--campaign-spell-metadata-and-prompt-registry)
+- **[`COMPENDIUM.md`](COMPENDIUM.md)** — desktop `arcanum.json` editor: project layout, theming, secret interop, and build/run instructions

@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8" ?>
+
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.LlamaCppPage"
+             Title="LlamaCpp">
+
+    <ScrollView>
+
+        <VerticalStackLayout Padding="24"
+                             Spacing="16">
+
+            <Label Text="LlamaCpp"
+                   FontSize="24"
+                   FontAttributes="Bold" />
+
+            <controls:LabeledEntry Label="Server executable path"
+                                   Description="Absolute or relative path to the llama-server executable. When null, search PATH (and llama-server.exe on Windows)."
+                                   Key="llamaCpp.serverExecutablePath"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding LlamaCpp.ServerExecutablePath, Mode=TwoWay}"
+                                   Placeholder="/usr/local/bin/llama-server" />
+
+            <controls:LabeledStepper Label="GPU layers"
+                                     Description="GPU layers to offload. 0 = CPU only. -1 = sentinel for offload all (mapped to 999 on the command line)."
+                                     Key="llamaCpp.gpuLayers"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.GpuLayers, Mode=TwoWay}"
+                                     Minimum="-1"
+                                     Maximum="1024"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Context size"
+                                     Description="Context size passed as --ctx-size."
+                                     Key="llamaCpp.contextSize"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.ContextSize, Mode=TwoWay}"
+                                     Minimum="256"
+                                     Maximum="1048576"
+                                     Increment="256" />
+
+            <controls:LabeledStepper Label="Port start"
+                                     Description="First port to try when auto-selecting a listen port for a spawned llama-server."
+                                     Key="llamaCpp.portStart"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.PortStart, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="65535"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Port range"
+                                     Description="Number of consecutive ports to try from PortStart. PortStart + PortRange - 1 must not exceed 65535."
+                                     Key="llamaCpp.portRange"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.PortRange, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="65535"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max concurrent requests"
+                                     Description="Maximum concurrent inference requests per running llama-server."
+                                     Key="llamaCpp.maxConcurrentRequests"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.MaxConcurrentRequests, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="256"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Health probe timeout (s)"
+                                     Description="Timeout for GET /health probes during server startup."
+                                     Key="llamaCpp.healthProbeTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.HealthProbeTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Start timeout (s)"
+                                     Description="Maximum wait for a spawned server to become healthy."
+                                     Key="llamaCpp.startTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.StartTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Shutdown timeout (s)"
+                                     Description="Grace period before Kill(entireProcessTree: true) on shutdown."
+                                     Key="llamaCpp.shutdownTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.ShutdownTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:ChipsEditor Label="Additional arguments"
+                                  Description="Extra arguments appended to the llama-server command line (one per line/item)."
+                                  Text="{Binding LlamaCpp.AdditionalArguments, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max cached models"
+                                     Description="Maximum cached GGUF entries before LRU eviction."
+                                     Key="llamaCpp.maxCachedModels"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.MaxCachedModels, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Model download timeout (s)"
+                                     Description="Timeout for the named HttpClient(LlamaModelDownload) used to fetch GGUF files."
+                                     Key="llamaCpp.modelDownloadTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.ModelDownloadTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="60"
+                                     Maximum="86400"
+                                     Increment="60" />
+
+            <controls:LabeledStepper Label="Model download max (bytes)"
+                                     Description="Maximum bytes accepted for a single GGUF download. Default 50 GiB."
+                                     Key="llamaCpp.modelDownloadMaxBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding LlamaCpp.ModelDownloadMaxBytes, Mode=TwoWay}"
+                                     Minimum="1048576"
+                                     Maximum="214748364800"
+                                     Increment="1073741824" />
+
+            <controls:LabeledToggle Label="Require model hash"
+                                    Description="When true (default), GGUF downloads without a matching SHA-256 are rejected. Set false to allow unverified pulls."
+                                    IsOn="{Binding LlamaCpp.RequireModelHash, Mode=TwoWay}" />
+
+            <controls:LabeledEntry Label="Model SHA-256 map"
+                                   Description="Optional lowercase SHA-256 hex digests keyed by model cache key for download verification."
+                                   Key="llamaCpp.modelSha256Map"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding LlamaCpp.ModelSha256Map, Mode=TwoWay}"
+                                   Placeholder="phi3=abcdef..." />
+
+        </VerticalStackLayout>
+
+    </ScrollView>
+
+</ContentPage>

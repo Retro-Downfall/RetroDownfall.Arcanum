@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Logging;
 
 namespace RetroDownfall.Arcanum.Core.Serialization;
 
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(ArcanumConfigurationFile))]
 [JsonSerializable(typeof(ArcanumSettings))]
 [JsonSerializable(typeof(HostSettings))]

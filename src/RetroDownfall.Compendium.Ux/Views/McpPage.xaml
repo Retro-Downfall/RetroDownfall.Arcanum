@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8" ?>
+
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.McpPage"
+             Title="MCP">
+
+    <ScrollView>
+
+        <VerticalStackLayout Padding="24"
+                             Spacing="16">
+
+            <Label Text="MCP"
+                   FontSize="24"
+                   FontAttributes="Bold" />
+
+            <controls:LabeledStepper Label="Max servers"
+                                     Description="Maximum concurrently registered MCP servers."
+                                     Key="mcp.maxServers"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.MaxServers, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="500"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Request timeout (s)"
+                                     Description="Per-request JSON-RPC timeout for MCP tool calls. Must be &gt;= Intelligence.ExecuteCommandTimeoutSeconds."
+                                     Key="mcp.requestTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.RequestTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:LabeledToggle Label="Bootstrap blocks startup"
+                                    Description="When true, the host waits for all bootstrap MCP servers to be ready before serving traffic."
+                                    IsOn="{Binding Mcp.BootstrapBlocksStartup, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max tools per server"
+                                     Description="Maximum tools accepted from a single MCP server during tools/list."
+                                     Key="mcp.maxToolsPerServer"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.MaxToolsPerServer, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="2048"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max tools per list page"
+                                     Description="Maximum tools accepted in a single tools/list page response."
+                                     Key="mcp.maxToolsPerListPage"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.MaxToolsPerListPage, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="256"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max pagination pages"
+                                     Description="Maximum pages fetched during a tools/list pagination walk."
+                                     Key="mcp.maxPaginationPages"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.MaxPaginationPages, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="256"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max tools total (bytes)"
+                                     Description="Maximum total bytes of tool schema JSON accepted across all servers."
+                                     Key="mcp.maxToolsTotalBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.MaxToolsTotalBytes, Mode=TwoWay}"
+                                     Minimum="65536"
+                                     Maximum="16777216"
+                                     Increment="65536" />
+
+            <controls:LabeledStepper Label="Max JSON-RPC line (bytes)"
+                                     Description="Maximum single-line JSON-RPC frame size. Must be large enough for Intelligence.ToolOutputCapBytes after envelope and escaping."
+                                     Key="mcp.maxJsonRpcLineBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.MaxJsonRpcLineBytes, Mode=TwoWay}"
+                                     Minimum="65536"
+                                     Maximum="8388608"
+                                     Increment="65536" />
+
+            <controls:LabeledStepper Label="HTTP request timeout (s)"
+                                     Description="Timeout for the named HttpClient(McpHttp) used by the Streamable HTTP transport (headers phase)."
+                                     Key="mcp.httpRequestTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Mcp.HttpRequestTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="10"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:ChipsEditor Label="Allowed HTTP hosts"
+                                  Description="Hosts permitted over plaintext http for Streamable HTTP MCP servers (e.g. localhost for a trusted dev gateway). Remote HTTP servers must use https."
+                                  Text="{Binding Mcp.AllowedHttpHosts, Mode=TwoWay}" />
+
+        </VerticalStackLayout>
+
+    </ScrollView>
+
+</ContentPage>

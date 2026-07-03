@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8" ?>
+
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:local="clr-namespace:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.ChipsEditor">
+
+    <VerticalStackLayout Spacing="4">
+
+        <Label x:Name="LabelControl"
+               FontAttributes="Bold" />
+
+        <Label x:Name="DescriptionControl"
+               FontSize="12"
+               TextColor="{AppThemeBinding Light={StaticResource LightMuted}, Dark={StaticResource DarkMuted}}" />
+
+        <FlexLayout x:Name="ChipsContainer"
+                    Direction="Row"
+                    Wrap="Wrap"
+                    AlignItems="Center"
+                    JustifyContent="Start" />
+
+        <HorizontalStackLayout Spacing="8">
+
+            <Entry x:Name="NewItemEntry"
+                   Placeholder="Add value..."
+                   HorizontalOptions="FillAndExpand"
+                   Completed="OnAddCompleted" />
+
+            <Button Text="Add"
+                    Clicked="OnAddClicked" />
+
+        </HorizontalStackLayout>
+
+    </VerticalStackLayout>
+
+</ContentView>

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8" ?>
+
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.HostPage"
+             Title="General / Host">
+
+    <ScrollView>
+
+        <VerticalStackLayout Padding="24"
+                             Spacing="16">
+
+            <Label Text="Host"
+                   FontSize="24"
+                   FontAttributes="Bold" />
+
+            <controls:LabeledStepper Label="Port"
+                                     Description="Kestrel listen port."
+                                     Key="host.port"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.Port, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="65535"
+                                     Increment="1" />
+
+            <controls:LabeledToggle Label="Listen on all interfaces"
+                                    Description="When true, Kestrel binds to all network interfaces instead of loopback. The ARCANUM_HOST_ANY env var is still honored as an override."
+                                    IsOn="{Binding Host.ListenAny, Mode=TwoWay}" />
+
+            <controls:LabeledToggle Label="Enable Scalar UI"
+                                    Description="When true, mounts the Scalar interactive API documentation UI at /api/scalar. The UI ships with inline JavaScript and CSS that conflict with strict CSP; default false."
+                                    IsOn="{Binding Host.EnableScalarUi, Mode=TwoWay}" />
+
+            <controls:ChipsEditor Label="CORS allowed origins"
+                                  Description="Allowed origins for CORS. Use [*] to allow any origin (browser callers can read responses with the API key)."
+                                  Text="{Binding Host.CorsAllowedOrigins, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max request body bytes"
+                                     Description="Kestrel MaxRequestBodySize in bytes. Default 10 MiB; clamped 256 KiB - 1 GiB."
+                                     Key="host.maxRequestBodyBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.MaxRequestBodyBytes, Mode=TwoWay}"
+                                     Minimum="262144"
+                                     Maximum="1073741824"
+                                     Increment="1048576" />
+
+            <controls:LabeledEntry Label="Default workspace path"
+                                   Description="Optional default workspace root for spell management and other workspace-scoped API routes. Prefer absolute paths."
+                                   Key="host.workspace"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.Workspace, Mode=TwoWay}"
+                                   Placeholder="/home/me/projects" />
+
+            <controls:LabeledEntry Label="System fingerprint"
+                                   Description="Optional stable identifier surfaced as system_fingerprint on OpenAI-shaped /v1/chat/completions responses. When null, the API derives one from the assembly version."
+                                   Key="host.systemFingerprint"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.SystemFingerprint, Mode=TwoWay}"
+                                   Placeholder="arcanum-0.1.0-beta" />
+
+            <controls:LabeledStepper Label="Retained log file count"
+                                     Description="Number of rolling log files kept on disk before oldest are pruned."
+                                     Key="host.retainedLogFileCount"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RetainedLogFileCount, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="366"
+                                     Increment="1" />
+
+            <controls:LabeledToggle Label="Enable enterprise telemetry"
+                                    Description="When true, emits structured telemetry events to configured sinks."
+                                    IsOn="{Binding Host.EnableEnterpriseTelemetry, Mode=TwoWay}" />
+
+            <Label Text="Rate limiting"
+                   FontSize="18"
+                   FontAttributes="Bold" />
+
+            <controls:LabeledToggle Label="Enabled"
+                                    Description="When true, applies a fixed-window limiter to /api and /v1 endpoint groups, partitioned by API key (or IP when no key header is present)."
+                                    IsOn="{Binding Host.RateLimitEnabled, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Permit limit"
+                                     Description="Maximum requests permitted per window per partition. Default 120."
+                                     Key="host.rateLimit.permitLimit"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RateLimitPermitLimit, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="1000000"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Window seconds"
+                                     Description="Window size in seconds for the fixed-window limiter. Default 60."
+                                     Key="host.rateLimit.windowSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RateLimitWindowSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="86400"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Queue limit"
+                                     Description="Maximum queued requests per partition (served once the window resets). Default 0: excess requests are rejected with HTTP 429."
+                                     Key="host.rateLimit.queueLimit"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RateLimitQueueLimit, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="1000000"
+                                     Increment="1" />
+
+        </VerticalStackLayout>
+
+    </ScrollView>
+
+</ContentPage>

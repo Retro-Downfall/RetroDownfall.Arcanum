@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Storage;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed record ServerSettings
@@ -7,8 +9,7 @@ public sealed record ServerSettings
 
     private static string DefaultPidFilePath =>
         Path.Combine(
-            global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.UserProfile),
-            ".arcanum",
+            ArcanumPaths.GrimoireDirectory,
             "arcanum.pid");
 
 }

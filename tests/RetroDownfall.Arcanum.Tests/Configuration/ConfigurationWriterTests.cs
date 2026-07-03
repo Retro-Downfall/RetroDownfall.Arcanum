@@ -109,6 +109,40 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task WriteAsync_emits_indented_json_with_default_values()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "openai", ApiKey = "sk-test" },
+            ],
+        };
+
+        Result result = await writer.WriteAsync(settings, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        string json = await File.ReadAllTextAsync(configPath);
+
+        Assert.Contains('\n', json);
+
+        Assert.Contains("\"host\":", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"port\": 5001", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"server\":", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"pidFilePath\":", json, StringComparison.Ordinal);
+
+    }
+
     private static ConfigurationWriter CreateWriter()
     {
 

@@ -9,11 +9,16 @@
   <Folder Name="/docs/">
     <File Path="docs\DESIGN.md" />
     <File Path="docs\README.md" />
+    <File Path="docs\COMPENDIUM.md" />
   </Folder>
 
   <Project Path="src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj" />
 
   <Project Path="src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj" />
 
+  <Project Path="src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj" />
+
   <Project Path="tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj" />
+
+  <Project Path="tests/RetroDownfall.Compendium.Ux.Tests/RetroDownfall.Compendium.Ux.Tests.csproj" />
 </Solution>
