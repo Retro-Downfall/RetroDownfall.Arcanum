@@ -58,6 +58,8 @@ public sealed class DiWiringSmokeTests
 
         Assert.NotNull(services.GetRequiredService<IMcpConnectionManager>());
 
+        Assert.NotNull(services.GetRequiredService<ISanctumBreachRepository>());
+
     }
 
 }

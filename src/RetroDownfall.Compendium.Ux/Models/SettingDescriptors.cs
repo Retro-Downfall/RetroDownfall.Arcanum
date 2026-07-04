@@ -37,6 +37,12 @@ public static class SettingDescriptors
 
         new("host.rateLimit.queueLimit", ConfigSection.Host, "Rate limit queue limit", "Maximum queued requests per partition (served once the window resets). Default 0: excess requests are rejected with HTTP 429.", SettingKind.Int, 0, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.RateLimitQueueLimit)),
 
+        // ===== Host — Metrics =====
+
+        new("metrics.enabled", ConfigSection.Host, "Enable metrics endpoint", "When true (default), GET /metrics renders Prometheus text format; when false, the endpoint returns 404.", SettingKind.Bool),
+
+        new("metrics.requireApiKey", ConfigSection.Host, "Require API key for metrics", "When true, /metrics is mapped behind ApiKeyEndpointFilter instead of as a standalone unauthenticated route. Forced to effectively true whenever the host binds to all interfaces.", SettingKind.Bool),
+
         // ===== Server =====
 
         new("server.pidFilePath", ConfigSection.Server, "PID file path", "Path to the arcanum.pid file written by `arcanum serve`. Defaults to ~/.config/arcanum/arcanum.pid.", SettingKind.Path, Placeholder: "~/.config/arcanum/arcanum.pid"),
@@ -281,6 +287,8 @@ public static class SettingDescriptors
 
         new("eventBus.maxSseConnections", ConfigSection.Storage, "Max SSE connections", "Maximum concurrent SSE connections across all event streams; excess requests get 503 Api.TooManyConnections.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxSseConnections)),
 
+        new("eventBus.maxSseConnectionsPerType", ConfigSection.Storage, "Max SSE connections per type", "Maximum concurrent SSE connections per event-type family (daemon, MCP, logs, session, Chronicle); guarantees a fair share of the global pool so one stream family cannot starve the others.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.SseConnectionsPerType)),
+
         // ===== Storage — Logs =====
 
         new("logs.ringBufferCapacity", ConfigSection.Storage, "Ring buffer capacity", "Capacity of the in-memory log ring buffer. Read once at construction; changes require a restart.", SettingKind.Int, 1000, 100_000, 1000, ClampName: nameof(ArcanumSettingClamps.LogRingBufferCapacity)),
@@ -292,6 +300,12 @@ public static class SettingDescriptors
         new("workspaces.maxFileReadSizeBytes", ConfigSection.Storage, "Max file read (bytes)", "Maximum byte size of a single workspace file read via the API.", SettingKind.Long, 1024, 10_485_760, 1024, ClampName: nameof(ArcanumSettingClamps.MaxFileReadSizeBytes)),
 
         new("workspaces.listDirectoryMaxDepth", ConfigSection.Storage, "List directory max depth", "Maximum directory depth for recursive workspace file listing.", SettingKind.Int, 1, 256, 1, ClampName: nameof(ArcanumSettingClamps.ListDirectoryMaxDepth)),
+
+        new("workspaces.enableFileWrite", ConfigSection.Storage, "Enable file write", "Master toggle for the workspace file write/modify/delete API (PUT/PATCH/DELETE .../files, POST .../files/directory). When false (default), every write/modify/delete endpoint returns 403 Workspace.FileWriteDisabled without performing any I/O.", SettingKind.Bool),
+
+        new("workspaces.maxFileWriteSizeBytes", ConfigSection.Storage, "Max file write (bytes)", "Maximum byte size of file content accepted by PUT /api/workspaces/{id}/files/contents (and the newString on PATCH .../files/contents).", SettingKind.Long, 1024, 10_485_760, 1024, ClampName: nameof(ArcanumSettingClamps.MaxFileWriteSizeBytes)),
+
+        new("workspaces.maxReplaceTextBlockBytes", ConfigSection.Storage, "Max replace text block (bytes)", "Maximum combined byte size of oldString + newString on PATCH /api/workspaces/{id}/files/contents.", SettingKind.Long, 1024, 4_194_304, 1024, ClampName: nameof(ArcanumSettingClamps.MaxReplaceTextBlockBytes)),
 
         // ===== Forge — Perception =====
 
@@ -378,6 +392,56 @@ public static class SettingDescriptors
         new("cli.themeColors.dark.error", ConfigSection.Cli, "Dark — error", "Error message color for the Dark CLI theme.", SettingKind.Color, Placeholder: "#FF6B6B"),
 
         new("cli.themeColors.dark.muted", ConfigSection.Cli, "Dark — muted", "Muted/secondary text color for the Dark CLI theme.", SettingKind.Color, Placeholder: "#7A6B90"),
+
+        // ===== Resilience =====
+
+        new("resilience.enabled", ConfigSection.Resilience, "Enabled", "When true, health probing runs and fallback resolution is active. When false (default), behavior is unchanged.", SettingKind.Bool),
+
+        new("resilience.healthProbeIntervalSeconds", ConfigSection.Resilience, "Health probe interval (s)", "Interval between health probes for providers currently considered healthy.", SettingKind.Int, 5, 600, 1, ClampName: nameof(ArcanumSettingClamps.HealthProbeIntervalSeconds)),
+
+        new("resilience.healthRecoveryProbeIntervalSeconds", ConfigSection.Resilience, "Health recovery probe interval (s)", "Slower interval between health probes for providers currently marked unhealthy, to avoid hammering a down provider.", SettingKind.Int, 5, 3_600, 1, ClampName: nameof(ArcanumSettingClamps.HealthRecoveryProbeIntervalSeconds)),
+
+        new("resilience.healthFailureThreshold", ConfigSection.Resilience, "Health failure threshold", "Consecutive failures before a provider is marked Unhealthy and excluded from fallback candidates.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.HealthFailureThreshold)),
+
+        new("resilience.maxFallbackAttempts", ConfigSection.Resilience, "Max fallback attempts", "Maximum number of candidate providers to try per inference turn before giving up.", SettingKind.Int, 1, 10, 1, ClampName: nameof(ArcanumSettingClamps.MaxFallbackAttempts)),
+
+        new("resilience.healthProbeTimeoutSeconds", ConfigSection.Resilience, "Health probe timeout (s)", "HTTP timeout for each individual health probe call.", SettingKind.Int, 1, 30, 1, ClampName: nameof(ArcanumSettingClamps.HealthProbeTimeoutSeconds)),
+
+        // ===== Intelligence — Embeddings & RAG =====
+        // RAG Phase 1 — The Weave & Divination. Arcanum:Embeddings is the technical config key
+        // (operators search for "embeddings"); the domain metaphor is documented per-row below and in
+        // DESIGN.md §21. Phase 1 ships only these foundation fields + the four phase feature flags —
+        // the nested Saga:*/Codebase:* sub-records described for later phases are added when those
+        // phases land, so this list stays in exact sync with ArcanumSettings.Embeddings (see
+        // SettingDescriptorCoverageTests).
+
+        new("embeddings.enabled", ConfigSection.Intelligence, "Embeddings enabled", "Master toggle for The Weave (Arcanum's embedding and vector substrate) and Divination (semantic search). When false (default), every RAG code path is unchanged from pre-RAG behavior.", SettingKind.Bool),
+
+        new("embeddings.provider", ConfigSection.Intelligence, "Embeddings provider", "Provider name (from Arcanum:Providers) used to imprint text into The Weave. Required when Enabled is true.", SettingKind.String, Placeholder: "local"),
+
+        new("embeddings.model", ConfigSection.Intelligence, "Embeddings model", "Embedding model name advertised by the configured provider (e.g. nomic-embed-text, text-embedding-3-small). Required when Enabled is true.", SettingKind.String, Placeholder: "nomic-embed-text"),
+
+        new("embeddings.dimensions", ConfigSection.Intelligence, "Embeddings dimensions", "Expected imprinted vector dimension; must match the model's output. Used for the vec0 acceleration table schema. Changing this after data exists requires an operator-triggered re-index.", SettingKind.Int, 64, 4096, 8, ClampName: nameof(ArcanumSettingClamps.EmbeddingsDimensions)),
+
+        new("embeddings.batchSize", ConfigSection.Intelligence, "Embeddings batch size", "Maximum texts imprinted per embedding API call.", SettingKind.Int, 1, 256, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsBatchSize)),
+
+        new("embeddings.chunkSizeChars", ConfigSection.Intelligence, "Embeddings chunk size (chars)", "Maximum characters per chunk when imprinting long documents.", SettingKind.Int, 128, 8192, 64, ClampName: nameof(ArcanumSettingClamps.EmbeddingsChunkSizeChars)),
+
+        new("embeddings.chunkOverlapChars", ConfigSection.Intelligence, "Embeddings chunk overlap (chars)", "Overlap in characters between adjacent chunks; improves Divination at chunk boundaries.", SettingKind.Int, 0, 1024, 16, ClampName: nameof(ArcanumSettingClamps.EmbeddingsChunkOverlapChars)),
+
+        new("embeddings.similarityThreshold", ConfigSection.Intelligence, "Embeddings similarity threshold", "Minimum cosine similarity for a Divination result to be included.", SettingKind.Float, 0, 1, 0.05, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSimilarityThreshold)),
+
+        new("embeddings.maxResults", ConfigSection.Intelligence, "Embeddings max results", "Default maximum results per Divination call. Individual features may override.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsMaxResults)),
+
+        new("embeddings.requestTimeoutSeconds", ConfigSection.Intelligence, "Embeddings request timeout (s)", "Timeout for a single embedding API call.", SettingKind.Int, 5, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsRequestTimeoutSeconds)),
+
+        new("embeddings.sessionSearchEnabled", ConfigSection.Intelligence, "Session search enabled", "Phase 2 feature flag: session semantic search (Divination over the Grimoire). Requires Embeddings enabled to also be true.", SettingKind.Bool),
+
+        new("embeddings.codebaseRetrievalEnabled", ConfigSection.Intelligence, "Codebase retrieval enabled", "Phase 3 feature flag: semantic codebase retrieval. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+
+        new("embeddings.sagaEnabled", ConfigSection.Intelligence, "Saga enabled", "Phase 4 feature flag: Saga, Arcanum's long-term associative memory. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+
+        new("embeddings.semanticSpellRoutingEnabled", ConfigSection.Intelligence, "Semantic spell routing enabled", "Phase 5 feature flag: embedding-based spell routing pre-filter. When false (default), the existing LLM-based SemanticRouter is used unchanged. Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
     ];
 

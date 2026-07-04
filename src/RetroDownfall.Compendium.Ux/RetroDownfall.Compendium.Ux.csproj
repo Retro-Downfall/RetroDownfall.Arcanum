@@ -78,6 +78,15 @@
 
     <MauiCss Remove="Resources\Styles\*.xaml" />
 
+    <!-- MAUI's SDK also tracks compiled XAML pages under the MauiXaml item (consumed by the XamlC compiler
+         task, distinct from the EmbeddedResource item removed above). Without also removing it here, XamlC
+         still tries to statically validate these pages against their code-behind for this plain net10.0
+         library TFM — where that code-behind (Views\**\*.xaml.cs, removed above) isn't compiled — so every
+         custom bindable property looks "missing" and Release builds fail with XC0009/XC0002. -->
+    <MauiXaml Remove="App.xaml" />
+
+    <MauiXaml Remove="Views\**\*.xaml" />
+
   </ItemGroup>
 
   <PropertyGroup>

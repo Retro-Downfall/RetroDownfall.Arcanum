@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -50,6 +51,28 @@ internal sealed class UnseenServantJobTracker : IUnseenServantJobTracker
     /// <inheritdoc />
     public string? GetLastResult(UnseenServantJob job) =>
         _records.TryGetValue(JobTrackingKey(job), out JobRecord record) ? record.LastResult : null;
+
+    /// <inheritdoc />
+    public Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default)
+    {
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        foreach (UnseenServantWatermark watermark in watermarks)
+        {
+
+            bool isOverdue = watermark.EffectiveIntervalMinutes > 0
+                && watermark.LastRunAt.AddMinutes(watermark.EffectiveIntervalMinutes) < now;
+
+            _records[watermark.JobKey] = isOverdue
+                ? new JobRecord(now, "Skipped (host was down)")
+                : new JobRecord(watermark.LastRunAt, "Restored from Grimoire");
+
+        }
+
+        return Task.CompletedTask;
+
+    }
 
     internal static string JobTrackingKey(UnseenServantJob job) =>
         $"{job.Name}\0{job.TargetSpell}";

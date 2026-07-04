@@ -1,5 +1,5 @@
 using System.Text;
-using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;

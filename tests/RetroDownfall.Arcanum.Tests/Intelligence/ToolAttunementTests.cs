@@ -1,5 +1,5 @@
 using Microsoft.Extensions.AI;
-using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 

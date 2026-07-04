@@ -300,6 +300,136 @@ internal static class CampaignEndpoints
             })
         .WithName("DeleteCampaign");
 
+        apiGroup.MapGet(
+            "/campaigns/{id:guid}/spells",
+            async (
+                Guid id,
+                string? q,
+                string? tag,
+                string? tool,
+                ICampaignRepository repo,
+                ISpellRepository spellRepo,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (campaign is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellSummary[]>.FromResult(
+                            Result<SpellSummary[]>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellSummaryArray,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                SpellSearchQuery query = new(q, tag, tool, Source: null, CampaignId: id, Workspace: campaign.Path, Campaigns: []);
+
+                SpellSummary[] results = await spellRepo.SearchAsync(query, ctx.RequestAborted).ConfigureAwait(false);
+
+                return Results.Ok(
+                    ApiResponse<SpellSummary[]>.FromResult(Result<SpellSummary[]>.Success(results), traceId));
+            })
+        .WithName("GetCampaignSpells");
+
+        apiGroup.MapGet(
+            "/campaigns/{id:guid}/prompts",
+            async (
+                Guid id,
+                string? q,
+                string? tag,
+                ICampaignRepository repo,
+                IPromptRepository promptRepo,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (campaign is null)
+                {
+                    return Results.Json(
+                        ApiResponse<ListPageResult<PromptSummaryDto>>.FromResult(
+                            Result<ListPageResult<PromptSummaryDto>>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                ListPageResult<Prompt> page = await promptRepo
+                    .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                IEnumerable<PromptSummaryDto> filtered = page.Items.Select(PromptMapping.ToSummaryDto);
+
+                if (!string.IsNullOrWhiteSpace(q))
+                {
+                    string term = q.Trim();
+
+                    filtered = filtered.Where(p =>
+                        p.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+                        || (p.Description?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
+                        || p.Tags.Any(t => t.Contains(term, StringComparison.OrdinalIgnoreCase)));
+                }
+
+                if (!string.IsNullOrWhiteSpace(tag))
+                {
+                    filtered = filtered.Where(p => p.Tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)));
+                }
+
+                PromptSummaryDto[] result = filtered.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+
+                ListPageResult<PromptSummaryDto> response = new(result, false);
+
+                return Results.Ok(
+                    ApiResponse<ListPageResult<PromptSummaryDto>>.FromResult(
+                        Result<ListPageResult<PromptSummaryDto>>.Success(response),
+                        traceId));
+            })
+        .WithName("GetCampaignPrompts");
+
+        apiGroup.MapGet(
+            "/campaigns/{id:guid}/sessions",
+            async (
+                Guid id,
+                string? status,
+                string? search,
+                int? limit,
+                DateTimeOffset? beforeUpdatedAt,
+                ICampaignRepository repo,
+                ISessionRepository sessionRepo,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (campaign is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionQueryResult>.FromResult(
+                            Result<SessionQueryResult>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionQueryResult,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                SessionQueryRequest request = new(
+                    CampaignId: id,
+                    Status: status,
+                    Search: search,
+                    Limit: limit,
+                    BeforeUpdatedAt: beforeUpdatedAt);
+
+                SessionQueryResult result = await sessionRepo.QueryAsync(request, ctx.RequestAborted).ConfigureAwait(false);
+
+                return Results.Ok(
+                    ApiResponse<SessionQueryResult>.FromResult(Result<SessionQueryResult>.Success(result), traceId));
+            })
+        .WithName("GetCampaignSessions");
+
         apiGroup.MapPost(
             "/campaigns/{id:guid}/export",
             async (Guid id, ICampaignRepository repo, IPromptRepository promptRepo, ISpellRepository spellRepo, HttpContext ctx) =>

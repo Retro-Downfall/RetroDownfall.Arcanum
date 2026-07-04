@@ -36,6 +36,16 @@ public sealed class ArcanumSettingsClampStartupLogger(
             eventBus.HeartbeatSeconds,
             ArcanumSettingClamps.EventBusHeartbeatSeconds(eventBus.HeartbeatSeconds));
 
+        LogIfClamped(
+            "Arcanum:EventBus:MaxSseConnections",
+            eventBus.MaxSseConnections,
+            ArcanumSettingClamps.MaxSseConnections(eventBus.MaxSseConnections));
+
+        LogIfClamped(
+            "Arcanum:EventBus:MaxSseConnectionsPerType",
+            eventBus.MaxSseConnectionsPerType,
+            ArcanumSettingClamps.SseConnectionsPerType(eventBus.MaxSseConnectionsPerType));
+
         IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
 
         LogIfClamped(

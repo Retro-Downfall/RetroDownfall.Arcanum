@@ -1,0 +1,203 @@
+using System.Net;
+using System.Text.Json;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
+
+namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
+
+[Collection("ApiHost")]
+public sealed class ModelsProvidersEndpointTests
+{
+
+    private readonly ArcanumWebApplicationFactory _factory;
+
+    public ModelsProvidersEndpointTests(ArcanumWebApplicationFactory factory)
+    {
+
+        _factory = factory;
+
+    }
+
+    [SkippableFact]
+    public async Task GetModels_returns_all_configured_models()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<ModelInfoDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.True(body!.IsSuccess);
+
+        Assert.Contains(body.Data!, m => m.Model == "mistral:latest" && m.ProviderName == "test");
+
+    }
+
+    [SkippableFact]
+    public async Task GetModels_redacts_endpoint()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<ModelInfoDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.All(body!.Data!, m => Assert.Equal("***", m.Endpoint));
+
+    }
+
+    [SkippableFact]
+    public async Task GetProviders_returns_provider_list()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/providers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<ProviderInfoDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseProviderInfoDtoArray);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.Contains(body!.Data!, p => p.Name == "test");
+
+    }
+
+    [SkippableFact]
+    public async Task GetProviders_redacts_apikey()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/providers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<ProviderInfoDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseProviderInfoDtoArray);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.All(body!.Data!, p => Assert.Equal("***", p.Endpoint));
+
+    }
+
+    [SkippableFact]
+    public async Task GetProviders_includes_llamacpp_modelmap_flag()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ProviderSettings llamaProvider = new()
+        {
+            Name = "local-llama",
+            Type = AiProviderKind.LlamaCppServer,
+            Endpoint = "http://localhost:9000",
+            Models = ["local-model"],
+            LlamaCpp = new ProviderLlamaCppSettings
+            {
+                ModelMap = new Dictionary<string, string> { ["local-model"] = "https://example.test/model.gguf" },
+            },
+        };
+
+        // Use a dedicated, isolated factory (own tempHome + Grimoire DB) rather than overriding the
+        // shared "ApiHost" collection fixture, which would re-seed the same on-disk DB file the shared
+        // host already has open and collide on file access.
+        await using ArcanumWebApplicationFactory isolatedFactory = new();
+
+        await using WebApplicationFactory<Program> scoped = isolatedFactory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+
+                services.RemoveAll<IOptionsMonitor<ArcanumSettings>>();
+
+                services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(sp =>
+                {
+
+                    ArcanumSettings built = sp.GetRequiredService<IOptionsFactory<ArcanumSettings>>().Create(Options.DefaultName);
+
+                    ArcanumSettings patched = built with
+                    {
+                        DefaultModel = "local-model",
+                        Providers = [llamaProvider],
+                        Spells = built.Spells with { AllowedWorkspaceRoots = [isolatedFactory.TempHome] },
+                        Campaigns = built.Campaigns with { AllowedRoots = [isolatedFactory.TempHome] },
+                        Host = built.Host with { Workspace = isolatedFactory.TempHome },
+                    };
+
+                    return new TestOptionsMonitor<ArcanumSettings>(patched);
+
+                });
+
+                services.RemoveAll<IOptions<ArcanumSettings>>();
+
+                services.AddSingleton<IOptions<ArcanumSettings>>(sp =>
+                    Options.Create(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue));
+
+                services.RemoveAll<IOptionsSnapshot<ArcanumSettings>>();
+
+                services.AddSingleton<IOptionsSnapshot<ArcanumSettings>>(sp =>
+                    new TestOptionsSnapshot<ArcanumSettings>(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue));
+
+            });
+        });
+
+        HttpClient client = scoped.CreateClient();
+
+        client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, ArcanumWebApplicationFactory.TestApiKey);
+
+        HttpResponseMessage response = await client.GetAsync("/api/providers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<ProviderInfoDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseProviderInfoDtoArray);
+
+        Assert.NotNull(body?.Data);
+
+        ProviderInfoDto? llama = body!.Data!.FirstOrDefault(p => p.Name == "local-llama");
+
+        Assert.NotNull(llama);
+
+        Assert.True(llama!.HasLlamaCppModelMap);
+
+    }
+
+}

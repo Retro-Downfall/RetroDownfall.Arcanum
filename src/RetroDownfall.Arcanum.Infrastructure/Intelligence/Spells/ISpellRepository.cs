@@ -25,4 +25,12 @@ public interface ISpellRepository
 
     Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct);
 
+    Task<Result<SpellSummary>> CloneAsync(string name, string? workingDirectory, CloneSpellRequest request, CancellationToken ct);
+
+    Task<Result<SpellVersionDto>> CreateVersionAsync(string name, string? workingDirectory, CreateSpellVersionRequest request, CancellationToken ct);
+
+    Task<Result<SpellVersionDto>> UpdateVersionAsync(string name, string version, string? workingDirectory, UpdateSpellVersionRequest request, CancellationToken ct);
+
+    Task<Result<SpellVersionDto>> ActivateVersionAsync(string name, string version, string? workingDirectory, CancellationToken ct);
+
 }

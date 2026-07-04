@@ -55,6 +55,12 @@ public sealed record ArcanumSettings
 
     public PromptSettings Prompts { get; init; } = new();
 
+    public ResilienceSettings Resilience { get; init; } = new();
+
+    public MetricsSettings Metrics { get; init; } = new();
+
+    public EmbeddingSettings Embeddings { get; init; } = new();
+
 }
 
 

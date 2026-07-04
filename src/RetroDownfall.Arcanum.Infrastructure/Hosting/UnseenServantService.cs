@@ -1,11 +1,13 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -19,11 +21,15 @@ internal sealed class UnseenServantService(
     IUnseenServantPacer pacer,
     IUnseenServantJobTracker jobTracker,
     IDaemonRunner daemonRunner,
-    ILogger<UnseenServantService> logger) : BackgroundService
+    ILogger<UnseenServantService> logger,
+    IServiceScopeFactory scopeFactory) : BackgroundService
 {
     /// <summary>
-    /// Phase 1: last completion timestamps are process-local only. After a host restart, every enabled job
-    /// has no entry in the tracker and is treated as due once startup jitter elapses (no persisted watermark).
+    /// Startup jitter watermark, intentionally NOT persisted — regenerated fresh every process start
+    /// to spread first-tick load. Last-run watermarks are persisted to the Grimoire via
+    /// <see cref="IUnseenServantJobTracker.HydrateAsync"/>/<see cref="IUnseenServantWatermarkStore"/>
+    /// (see docs/persistence.md), so a hydrated job's <see cref="IUnseenServantJobTracker.GetLastRunAt"/>
+    /// is non-null and this jitter path is skipped for it.
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTimeOffset> _firstDispatchAfterUtc = new(StringComparer.Ordinal);
 
@@ -36,6 +42,8 @@ internal sealed class UnseenServantService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
+
+        await HydrateWatermarksAsync(stoppingToken).ConfigureAwait(false);
 
         using PeriodicTimer timer = new(TimeSpan.FromMinutes(1));
 
@@ -59,6 +67,28 @@ internal sealed class UnseenServantService(
                 logger.LogError(ex, "Unseen Servant scheduler tick failed; continuing.");
             }
         }
+    }
+
+    private async Task HydrateWatermarksAsync(CancellationToken stoppingToken)
+    {
+
+        try
+        {
+            using IServiceScope scope = scopeFactory.CreateScope();
+
+            IUnseenServantWatermarkStore store = scope.ServiceProvider.GetRequiredService<IUnseenServantWatermarkStore>();
+
+            IReadOnlyList<UnseenServantWatermark> watermarks = await store.GetAllAsync(stoppingToken).ConfigureAwait(false);
+
+            await jobTracker.HydrateAsync(watermarks, stoppingToken).ConfigureAwait(false);
+
+            await pacer.HydrateAsync(watermarks, stoppingToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to hydrate Unseen Servant watermarks from Grimoire; falling back to in-memory mode.");
+        }
+
     }
 
     private void DispatchDueJobs(CancellationToken stoppingToken)
@@ -220,6 +250,8 @@ internal sealed class UnseenServantService(
             if (result.IsSuccess)
             {
                 jobTracker.RecordCompletion(job, success: true, resultSummary: "Success");
+
+                await PersistWatermarkAsync(job, key, stoppingToken).ConfigureAwait(false);
             }
             else if (result.Error.Code != "Daemon.Cancelled")
             {
@@ -243,6 +275,24 @@ internal sealed class UnseenServantService(
         {
             _ = _runningJobs.TryRemove(key, out _);
         }
+    }
+
+    private async Task PersistWatermarkAsync(UnseenServantJob job, string key, CancellationToken stoppingToken)
+    {
+
+        try
+        {
+            using IServiceScope scope = scopeFactory.CreateScope();
+
+            IUnseenServantWatermarkStore store = scope.ServiceProvider.GetRequiredService<IUnseenServantWatermarkStore>();
+
+            await store.SaveAsync(key, DateTimeOffset.UtcNow, pacer.GetEffectiveInterval(job), stoppingToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to persist Unseen Servant watermark for job {JobName}.", job.Name);
+        }
+
     }
 
 }

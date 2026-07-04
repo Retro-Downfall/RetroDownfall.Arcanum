@@ -38,6 +38,13 @@
 
     <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
 
+    <!-- Xcode 15+'s new ld64 can crash on large Native AOT object files with
+         "Assertion failed: (_addend == uniqueIndex && "too many large addends")"
+         (a confirmed Apple/dotnet toolchain bug, tracked at dotnet/runtime#119380).
+         The CLI's growing command surface (Phase 2 CLI parity) crosses that threshold
+         on some hosts; force the classic linker as the documented workaround. -->
+    <LinkerArg Include="-ld_classic" />
+
   </ItemGroup>
 
   <ItemGroup>

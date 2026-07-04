@@ -3,6 +3,14 @@ using Microsoft.Data.Sqlite;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
+/// <summary>
+/// Metrics: <c>arcanum_grimoire_operation_duration_seconds</c> (catalog, low priority for the initial
+/// <c>/metrics</c> implementation) would most naturally wrap this retry loop or individual repository
+/// methods — every Grimoire write already funnels through <see cref="ExecuteAsync{T}"/>, so a single
+/// <c>Stopwatch</c> + <c>ArcanumMetrics.GrimoireOperationDuration.Record(...)</c> pair here would cover
+/// the whole repository layer without touching each call site. Not implemented yet — deliberately
+/// deferred since it needs an <c>operation</c> label the retry loop does not currently have.
+/// </summary>
 internal static class SqliteBusyRetry
 {
 

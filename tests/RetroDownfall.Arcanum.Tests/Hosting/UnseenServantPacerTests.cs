@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -25,7 +27,7 @@ public sealed class UnseenServantPacerTests
             },
         };
 
-        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(settings));
+        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(settings), CreateScopeFactory(), NullLogger<UnseenServantPacer>.Instance);
 
         pacer.SetDynamicInterval("watch", intervalMinutes: 99999);
 
@@ -42,18 +44,58 @@ public sealed class UnseenServantPacerTests
     }
 
     [Fact]
-    public void GetEffectiveInterval_prefers_override_by_job_name()
+    public void GetEffectiveInterval_prefers_composite_override()
     {
 
         FakeEventBus bus = new();
 
-        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        ArcanumSettings settings = new()
+        {
+            Daemon = new DaemonSettings
+            {
+                Jobs =
+                [
+                    new UnseenServantJob { Name = "scout", TargetSpell = "look" },
+                ],
+            },
+        };
+
+        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(settings), CreateScopeFactory(), NullLogger<UnseenServantPacer>.Instance);
 
         pacer.SetDynamicInterval("scout", intervalMinutes: 15);
 
         UnseenServantJob job = new() { Name = "scout", IntervalMinutes = 60, TargetSpell = "look" };
 
         Assert.Equal(15, pacer.GetEffectiveInterval(job));
+
+    }
+
+    [Fact]
+    public void SetDynamicInterval_is_a_no_op_for_a_job_not_in_configuration()
+    {
+
+        FakeEventBus bus = new();
+
+        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), CreateScopeFactory(), NullLogger<UnseenServantPacer>.Instance);
+
+        pacer.SetDynamicInterval("unconfigured", intervalMinutes: 15);
+
+        UnseenServantJob job = new() { Name = "unconfigured", IntervalMinutes = 60, TargetSpell = "look" };
+
+        Assert.Equal(60, pacer.GetEffectiveInterval(job));
+
+        Assert.Empty(bus.Published);
+
+    }
+
+    private static IServiceScopeFactory CreateScopeFactory()
+    {
+
+        ServiceCollection services = new();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        return provider.GetRequiredService<IServiceScopeFactory>();
 
     }
 

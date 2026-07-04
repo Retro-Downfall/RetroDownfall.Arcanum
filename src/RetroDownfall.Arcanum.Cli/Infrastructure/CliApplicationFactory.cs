@@ -4,10 +4,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Commands.Configuration;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
 using RetroDownfall.Arcanum.Cli.Commands.Llama;
 using RetroDownfall.Arcanum.Cli.Commands.Lore;
+using RetroDownfall.Arcanum.Cli.Commands.ProvingGrounds;
 using RetroDownfall.Arcanum.Cli.Commands.TheForge;
+using RetroDownfall.Arcanum.Cli.Commands.Wards;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -144,19 +147,123 @@ internal static class CliApplicationFactory
 
         services.AddTransient<LlamaStatusCommand>();
 
-        services.AddTransient<CampaignCommand>();
+        services.AddTransient<CampaignListCommand>();
+
+        services.AddTransient<CampaignGetCommand>();
+
+        services.AddTransient<CampaignCreateCommand>();
+
+        services.AddTransient<CampaignUpdateCommand>();
+
+        services.AddTransient<CampaignDeleteCommand>();
+
+        services.AddTransient<CampaignExportCommand>();
+
+        services.AddTransient<CampaignImportCommand>();
+
+        services.AddTransient<CampaignCodexGetCommand>();
+
+        services.AddTransient<CampaignCodexPutCommand>();
+
+        services.AddTransient<CampaignCodexDeleteCommand>();
+
+        services.AddTransient<CampaignSpellsCommand>();
+
+        services.AddTransient<CampaignPromptsCommand>();
+
+        services.AddTransient<CampaignSessionsCommand>();
+
+        services.AddTransient<SpellListCommand>();
+
+        services.AddTransient<SpellGetCommand>();
+
+        services.AddTransient<SpellCreateCommand>();
+
+        services.AddTransient<SpellUpdateCommand>();
+
+        services.AddTransient<SpellDeleteCommand>();
 
         services.AddTransient<SpellSearchCommand>();
 
+        services.AddTransient<SpellValidateCommand>();
+
+        services.AddTransient<SpellExecuteCommand>();
+
+        services.AddTransient<SpellVersionsCommand>();
+
+        services.AddTransient<SpellExportCommand>();
+
+        services.AddTransient<SpellImportCommand>();
+
+        services.AddTransient<SpellCastCommand>();
+
+        services.AddTransient<SpellCloneCommand>();
+
+        services.AddTransient<SpellVersionCreateCommand>();
+
+        services.AddTransient<SpellVersionUpdateCommand>();
+
+        services.AddTransient<SpellVersionActivateCommand>();
+
+        services.AddTransient<PromptListCommand>();
+
+        services.AddTransient<PromptGetCommand>();
+
+        services.AddTransient<PromptVersionsCommand>();
+
+        services.AddTransient<PromptCreateCommand>();
+
+        services.AddTransient<PromptUpdateCommand>();
+
+        services.AddTransient<PromptDeleteCommand>();
+
         services.AddTransient<PromptRenderCommand>();
 
-        services.AddTransient<ApprenticeCommand>();
+        services.AddTransient<PromptTestCommand>();
+
+        services.AddTransient<PromptExecuteCommand>();
+
+        services.AddTransient<PromptExportCommand>();
+
+        services.AddTransient<PromptImportCommand>();
+
+        services.AddTransient<PromptCloneCommand>();
+
+        services.AddTransient<WardListCommand>();
+
+        services.AddTransient<WardGetCommand>();
+
+        services.AddTransient<WardResolveCommand>();
+
+        services.AddTransient<TrialRunCommand>();
+
+        services.AddTransient<ApprenticeListCommand>();
+
+        services.AddTransient<ApprenticeGetCommand>();
 
         services.AddTransient<ApprenticeCreateCommand>();
 
+        services.AddTransient<ApprenticeDeleteCommand>();
+
         services.AddTransient<ApprenticeStartCommand>();
 
+        services.AddTransient<ApprenticePauseCommand>();
+
+        services.AddTransient<ApprenticeResumeCommand>();
+
+        services.AddTransient<ApprenticeCancelCommand>();
+
+        services.AddTransient<ApprenticeReweaveCommand>();
+
+        services.AddTransient<ApprenticeInterveneCommand>();
+
+        services.AddTransient<ApprenticeCastCommand>();
+
         services.AddTransient<ApprenticeChronicleCommand>();
+
+        services.AddTransient<ModelListCommand>();
+
+        services.AddTransient<ProviderListCommand>();
 
     }
 
@@ -264,40 +371,231 @@ internal static class CliApplicationFactory
                 .WithDescription("List running servers and cached models.");
         });
 
-        config.AddCommand<CampaignCommand>("campaign")
-            .WithDescription("Print the /api/campaigns route table (The Forge stub; requires arcanum serve for HTTP calls).");
+        config.AddBranch("campaign", campaign =>
+        {
+            campaign.SetDescription("The Forge campaign registry (requires arcanum serve).");
+
+            campaign.AddCommand<CampaignListCommand>("list")
+                .WithDescription("List registered campaigns (GET /api/campaigns).");
+
+            campaign.AddCommand<CampaignGetCommand>("get")
+                .WithDescription("Show campaign detail (GET /api/campaigns/{id}).");
+
+            campaign.AddCommand<CampaignCreateCommand>("create")
+                .WithDescription("Register a new campaign (POST /api/campaigns).");
+
+            campaign.AddCommand<CampaignUpdateCommand>("update")
+                .WithDescription("Update a campaign (PUT /api/campaigns/{id}).");
+
+            campaign.AddCommand<CampaignDeleteCommand>("delete")
+                .WithDescription("Remove a campaign (DELETE /api/campaigns/{id}).");
+
+            campaign.AddCommand<CampaignExportCommand>("export")
+                .WithDescription("Export a campaign's spells and prompts as JSON (POST /api/campaigns/{id}/export).");
+
+            campaign.AddCommand<CampaignImportCommand>("import")
+                .WithDescription("Import spells and prompts into a campaign (POST /api/campaigns/{id}/import).");
+
+            campaign.AddBranch("codex", codex =>
+            {
+                codex.SetDescription("Manage the campaign's CODEX.md scratchpad.");
+
+                codex.AddCommand<CampaignCodexGetCommand>("get")
+                    .WithDescription("Print CODEX.md (GET /api/campaigns/{id}/codex).");
+
+                codex.AddCommand<CampaignCodexPutCommand>("put")
+                    .WithDescription("Write CODEX.md from a file (PUT /api/campaigns/{id}/codex).");
+
+                codex.AddCommand<CampaignCodexDeleteCommand>("delete")
+                    .WithDescription("Delete CODEX.md (DELETE /api/campaigns/{id}/codex).");
+            });
+
+            campaign.AddCommand<CampaignSpellsCommand>("spells")
+                .WithDescription("List spells scoped to a campaign, shadowing built-ins (GET /api/campaigns/{id}/spells).");
+
+            campaign.AddCommand<CampaignPromptsCommand>("prompts")
+                .WithDescription("List prompts scoped to a campaign (GET /api/campaigns/{id}/prompts).");
+
+            campaign.AddCommand<CampaignSessionsCommand>("sessions")
+                .WithDescription("List sessions scoped to a campaign (GET /api/campaigns/{id}/sessions).");
+        });
 
         config.AddBranch("spell", spell =>
         {
-            spell.SetDescription("The Forge spell utilities (stubs).");
+            spell.SetDescription("The Forge spell utilities (requires arcanum serve).");
+
+            spell.AddCommand<SpellListCommand>("list")
+                .WithDescription("List spells (GET /api/spells).");
+
+            spell.AddCommand<SpellGetCommand>("get")
+                .WithDescription("Show spell detail (GET /api/spells/{name}).");
+
+            spell.AddCommand<SpellCreateCommand>("create")
+                .WithDescription("Create a spell (POST /api/spells).");
+
+            spell.AddCommand<SpellUpdateCommand>("update")
+                .WithDescription("Update a spell (PUT /api/spells/{name}).");
+
+            spell.AddCommand<SpellDeleteCommand>("delete")
+                .WithDescription("Delete a spell (DELETE /api/spells/{name}).");
 
             spell.AddCommand<SpellSearchCommand>("search")
-                .WithDescription("Print the /api/spells/search route table and related The Forge spell routes.");
+                .WithDescription("Search spells by query/tag/tool/source (GET /api/spells/search).");
+
+            spell.AddCommand<SpellValidateCommand>("validate")
+                .WithDescription("Validate a spell's frontmatter and dependencies (POST /api/spells/{name}/validate).");
+
+            spell.AddCommand<SpellExecuteCommand>("execute")
+                .WithDescription("Execute a spell and print the assistant response (POST /api/spells/{name}/execute).");
+
+            spell.AddCommand<SpellVersionsCommand>("versions")
+                .WithDescription("List spell versions (GET /api/spells/{name}/versions).");
+
+            spell.AddCommand<SpellExportCommand>("export")
+                .WithDescription("Export a spell as portable JSON (POST /api/spells/{name}/export).");
+
+            spell.AddCommand<SpellImportCommand>("import")
+                .WithDescription("Import a spell from portable JSON (POST /api/spells/import).");
+
+            spell.AddCommand<SpellCastCommand>("cast")
+                .WithDescription("Dry-run preview of a spell's assembled system prompt \u2014 no inference tokens consumed (POST /api/spells/{name}/cast).");
+
+            spell.AddCommand<SpellCloneCommand>("clone")
+                .WithDescription("Clone a spell to a new name (POST /api/spells/{name}/clone).");
+
+            spell.AddBranch("version", version =>
+            {
+                version.SetDescription("Manage named spell file versions (SPELL.v{label}.md sidecar files).");
+
+                version.AddCommand<SpellVersionCreateCommand>("create")
+                    .WithDescription("Create a new spell version (POST /api/spells/{name}/versions).");
+
+                version.AddCommand<SpellVersionUpdateCommand>("update")
+                    .WithDescription("Update an existing spell version's body (PUT /api/spells/{name}/versions/{version}).");
+
+                version.AddCommand<SpellVersionActivateCommand>("activate")
+                    .WithDescription("Activate a spell version, swapping it into SPELL.md (POST /api/spells/{name}/versions/{version}/activate).");
+            });
         });
 
         config.AddBranch("prompt", prompt =>
         {
-            prompt.SetDescription("The Forge prompt utilities (stubs).");
+            prompt.SetDescription("The Forge prompt utilities (requires arcanum serve).");
+
+            prompt.AddCommand<PromptListCommand>("list")
+                .WithDescription("List prompts (GET /api/prompts).");
+
+            prompt.AddCommand<PromptGetCommand>("get")
+                .WithDescription("Show prompt detail (GET /api/prompts/{id}).");
+
+            prompt.AddCommand<PromptVersionsCommand>("versions")
+                .WithDescription("List versions of a prompt by name (GET /api/prompts/by-name/{name}/versions).");
+
+            prompt.AddCommand<PromptCreateCommand>("create")
+                .WithDescription("Create a prompt (POST /api/prompts).");
+
+            prompt.AddCommand<PromptUpdateCommand>("update")
+                .WithDescription("Update a prompt (PUT /api/prompts/{id}).");
+
+            prompt.AddCommand<PromptDeleteCommand>("delete")
+                .WithDescription("Delete a prompt (DELETE /api/prompts/{id}).");
 
             prompt.AddCommand<PromptRenderCommand>("render")
-                .WithDescription("Print the /api/prompts/{id}/render route table and related prompt routes.");
+                .WithDescription("Render a prompt template with parameters (POST /api/prompts/{id}/render).");
+
+            prompt.AddCommand<PromptTestCommand>("test")
+                .WithDescription("Assemble the system prompt without LLM cost (POST /api/prompts/{id}/test).");
+
+            prompt.AddCommand<PromptExecuteCommand>("execute")
+                .WithDescription("Render and run session-backed inference (POST /api/prompts/{id}/execute).");
+
+            prompt.AddCommand<PromptExportCommand>("export")
+                .WithDescription("Export a prompt as portable JSON (POST /api/prompts/{id}/export).");
+
+            prompt.AddCommand<PromptImportCommand>("import")
+                .WithDescription("Import a prompt from portable JSON (POST /api/prompts/import).");
+
+            prompt.AddCommand<PromptCloneCommand>("clone")
+                .WithDescription("Clone a prompt to a new name/version (POST /api/prompts/{id}/clone).");
+        });
+
+        config.AddBranch("ward", ward =>
+        {
+            ward.SetDescription("Ward approval gates for Forbidden Arts (requires arcanum serve).");
+
+            ward.AddCommand<WardListCommand>("list")
+                .WithDescription("List active wards (GET /api/wards).");
+
+            ward.AddCommand<WardGetCommand>("get")
+                .WithDescription("Show ward detail (GET /api/wards/{id}).");
+
+            ward.AddCommand<WardResolveCommand>("resolve")
+                .WithDescription("Allow or deny a ward (POST /api/wards/{id}).");
+        });
+
+        config.AddBranch("trial", trial =>
+        {
+            trial.SetDescription("The Proving Grounds: run Trials against spells, prompts, or Apprentice goals (requires arcanum serve).");
+
+            trial.AddCommand<TrialRunCommand>("run")
+                .WithDescription("Run a Trial with Inquisitors (POST /api/proving-grounds/trials/run).");
         });
 
         config.AddBranch("apprentice", apprentice =>
         {
-            apprentice.SetDescription("The Forge Apprentice orchestration (stubs).");
+            apprentice.SetDescription("The Forge Apprentice orchestration (requires arcanum serve).");
 
-            apprentice.AddCommand<ApprenticeCommand>("list")
-                .WithDescription("Print all /api/apprentices routes.");
+            apprentice.AddCommand<ApprenticeListCommand>("list")
+                .WithDescription("List Apprentices (GET /api/apprentices).");
+
+            apprentice.AddCommand<ApprenticeGetCommand>("get")
+                .WithDescription("Show Apprentice detail (GET /api/apprentices/{id}).");
 
             apprentice.AddCommand<ApprenticeCreateCommand>("create")
-                .WithDescription("Print POST /api/apprentices route table.");
+                .WithDescription("Create an Apprentice (POST /api/apprentices).");
+
+            apprentice.AddCommand<ApprenticeDeleteCommand>("delete")
+                .WithDescription("Delete a terminal Apprentice (DELETE /api/apprentices/{id}).");
 
             apprentice.AddCommand<ApprenticeStartCommand>("start")
-                .WithDescription("Print POST /api/apprentices/{id}/start route table.");
+                .WithDescription("Start plan generation and execution (POST /api/apprentices/{id}/start).");
+
+            apprentice.AddCommand<ApprenticePauseCommand>("pause")
+                .WithDescription("Pause at the next step boundary (POST /api/apprentices/{id}/pause).");
+
+            apprentice.AddCommand<ApprenticeResumeCommand>("resume")
+                .WithDescription("Resume from checkpoint (POST /api/apprentices/{id}/resume).");
+
+            apprentice.AddCommand<ApprenticeCancelCommand>("cancel")
+                .WithDescription("Cancel execution (POST /api/apprentices/{id}/cancel).");
+
+            apprentice.AddCommand<ApprenticeReweaveCommand>("reweave")
+                .WithDescription("Replace the remaining plan steps (POST /api/apprentices/{id}/reweave).");
+
+            apprentice.AddCommand<ApprenticeInterveneCommand>("intervene")
+                .WithDescription("Provide Divine Intervention guidance to an escalated Apprentice (POST /api/apprentices/{id}/intervene).");
+
+            apprentice.AddCommand<ApprenticeCastCommand>("cast")
+                .WithDescription("Delegate a child Apprentice via The Conclave (POST /api/apprentices/{id}/cast).");
 
             apprentice.AddCommand<ApprenticeChronicleCommand>("chronicle")
-                .WithDescription("Print GET /api/apprentices/{id}/chronicle route table.");
+                .WithDescription("Stream live Apprentice events (GET /api/apprentices/{id}/chronicle, SSE).");
+        });
+
+        config.AddBranch("model", model =>
+        {
+            model.SetDescription("Native model listing across configured providers (requires arcanum serve).");
+
+            model.AddCommand<ModelListCommand>("list")
+                .WithDescription("List configured models across all providers (GET /api/models).");
+        });
+
+        config.AddBranch("provider", provider =>
+        {
+            provider.SetDescription("Native provider listing and configuration summary (requires arcanum serve).");
+
+            provider.AddCommand<ProviderListCommand>("list")
+                .WithDescription("List configured providers with redacted secrets (GET /api/providers).");
         });
 
     }

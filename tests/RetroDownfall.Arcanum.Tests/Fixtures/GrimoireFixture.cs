@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 using SQLitePCL;
 
@@ -212,6 +213,18 @@ public sealed class GrimoireFixture : IDisposable
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        // RAG Phase 1 — The Weave: mirrors GrimoireDatabaseBootstrapper.EnsureInitializedAsync, which
+        // runs WeaveSchemaInitializer right after Grimoire's own migrations. Always creates
+        // entry_embeddings (the BLOB source of truth), independent of whether sqlite-vec is available,
+        // so DivinationServiceTests (managed-fallback path) and any future writer test have a real
+        // table to work against instead of each test standing up its own ad hoc schema.
+        await WeaveSchemaInitializer.EnsureSchemaAsync(
+            connection,
+            configuredDimensions: new ArcanumSettings().Embeddings.Dimensions,
+            availability: new WeaveIndexAvailability(),
+            logger: null,
+            cancellationToken).ConfigureAwait(false);
 
         await using SqliteCommand checkpoint = connection.CreateCommand();
 

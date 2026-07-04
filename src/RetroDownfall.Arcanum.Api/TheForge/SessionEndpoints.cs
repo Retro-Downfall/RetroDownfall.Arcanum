@@ -403,10 +403,10 @@ internal static class SessionEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                if (!sseGate.TryAcquire(SseEventTypes.Session, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
 
-                    return SseConnectionResults.TooManyConnections(httpContext);
+                    return SseConnectionResults.FromDenial(httpContext, denial);
 
                 }
 

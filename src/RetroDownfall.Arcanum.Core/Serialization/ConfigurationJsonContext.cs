@@ -44,6 +44,9 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(ProvingGroundsSettings))]
 [JsonSerializable(typeof(McpSettings))]
 [JsonSerializable(typeof(PromptSettings))]
+[JsonSerializable(typeof(MetricsSettings))]
+[JsonSerializable(typeof(ResilienceSettings))]
+[JsonSerializable(typeof(EmbeddingSettings))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(string[]))]
 

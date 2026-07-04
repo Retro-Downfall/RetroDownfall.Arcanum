@@ -71,6 +71,8 @@ app.UseArcanumCors();
 
 app.UseArcanumRateLimiter();
 
+app.UseArcanumMetrics();
+
 app.MapArcanumEndpoints();
 
 Console.Error.WriteLine($"Arcanum DevHost listening on http://localhost:{listenPort}");

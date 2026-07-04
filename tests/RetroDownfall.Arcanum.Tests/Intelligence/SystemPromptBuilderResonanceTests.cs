@@ -1,4 +1,4 @@
-using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 

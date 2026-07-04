@@ -381,10 +381,10 @@ internal static class ApprenticeEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                if (!sseGate.TryAcquire(SseEventTypes.Chronicle, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
 
-                    return SseConnectionResults.TooManyConnections(httpContext);
+                    return SseConnectionResults.FromDenial(httpContext, denial);
 
                 }
 

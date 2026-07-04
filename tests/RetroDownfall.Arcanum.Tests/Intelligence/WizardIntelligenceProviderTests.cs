@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -2114,7 +2115,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 NullLogger<InferenceContextBuilder>.Instance,
                 new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
-                new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)));
+                new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
+            sanctumGuard,
+            new ProcessResourceLimiter());
     }
 
     private static PingRequest BaseRequest() =>
@@ -2620,6 +2623,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
+        public Task<ChatClientLease> ResolveClientAsync(ProviderSettings resolvedProvider, string resolvedModel, CancellationToken cancellationToken) =>
+            ResolveClientAsync(resolvedModel, cancellationToken);
+
     }
 
     private sealed class FakeOllamaApiClient : IOllamaApiClient
@@ -2750,12 +2756,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(lease);
         }
 
+        public Task<ChatClientLease> ResolveClientAsync(ProviderSettings resolvedProvider, string resolvedModel, CancellationToken cancellationToken) =>
+            ResolveClientAsync(resolvedModel, cancellationToken);
+
     }
 
     private sealed class ThrowingChatClientFactory : IChatClientFactory
     {
 
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("No AI model could be resolved.");
+
+        public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("No AI model could be resolved.");
 
     }
@@ -3044,11 +3056,17 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 ? ToolValidator(campaignId, toolName, ct)
                 : Task.FromResult(new SanctumResult { Allowed = true });
 
-        public Task<IReadOnlyList<SanctumBreach>> GetBreachesAsync(string campaignId, int limit = 100, CancellationToken ct = default) =>
-            Task.FromResult<IReadOnlyList<SanctumBreach>>([]);
-
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
+
+        public Task RecordResourceLimitBreachAsync(
+            string? workspaceRoot,
+            string toolName,
+            Core.Platform.ResourceLimitKind resource,
+            string limitValue,
+            string? actualValue,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
 
     }
 

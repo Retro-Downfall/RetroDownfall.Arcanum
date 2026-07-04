@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -10,10 +11,13 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Pattern;
+using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
@@ -24,11 +28,16 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Pattern;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
@@ -188,10 +197,12 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
         services.AddSingleton<IWard, WardGate>();
-        services.AddSingleton<SanctumBreachStore>();
         services.AddScoped<ISanctumGuard, SanctumGuard>();
+        services.AddSingleton<IProcessResourceLimiter, ProcessResourceLimiter>();
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
+        services.AddSingleton<WeaveIndexAvailability>();
+        services.AddScoped<IDivinationService, DivinationService>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
 
         services.AddHostedService<ArcanumSettingsClampStartupLogger>();
@@ -199,6 +210,10 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ArcanumSecurityStartupChecks>();
 
         services.AddDbContextPool<ArcanumDbContext>(_ => { }, poolSize: 32);
+
+        services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();
+
+        services.AddScoped<ISanctumBreachRepository, SanctumBreachRepository>();
 
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
@@ -218,7 +233,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
         services.AddSingleton<InMemoryEventBus>();
         services.AddSingleton<IEventBus>(static sp => sp.GetRequiredService<InMemoryEventBus>());
+        services.AddSingleton<SseConnectionCounter>();
         services.AddSingleton<SseConnectionGate>();
+        services.AddSingleton<PrometheusMetricsExporter>();
 
         services.AddHttpClient(
             WebhookCommLinkDispatcher.HttpClientName,
@@ -278,7 +295,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IFileSystemBrowser, PhysicalFileSystemBrowser>();
 
+        services.AddScoped<IFileSystemWriter, PhysicalFileSystemWriter>();
+
         services.AddSingleton<ISpellRepository, SpellRepository>();
+
+        services.AddSingleton<ISpellCastPreviewService, SpellCastPreviewService>();
 
         services.AddHttpClient(
             TheReliquary.HttpClientName,
@@ -300,6 +321,46 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ILlamaServerManager>(static sp => sp.GetRequiredService<LlamaServerManager>());
 
         services.AddHostedService<LlamaServerLifecycleHostedService>();
+
+        services.AddArcanumResilience();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the provider resilience layer: the in-memory health tracker, the connectivity probe,
+    /// the periodic probe scheduler, and a dedicated <c>"ProviderHealthProbe"</c> named <see cref="HttpClient"/>
+    /// (short timeout, no connection pooling — never reuses the long-lived inference clients). The probe
+    /// scheduler is always registered but idles when <c>Arcanum:Resilience:Enabled</c> is <c>false</c>
+    /// (the default), so this is a no-op on the hot path until an operator opts in.
+    /// </summary>
+    private static IServiceCollection AddArcanumResilience(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IProviderHealthTracker, ProviderHealthTracker>();
+
+        services.TryAddSingleton<IProviderHealthProbe, ProviderHealthProbe>();
+
+        services.AddHttpClient(
+            ProviderHealthProbe.HttpClientName,
+            (sp, client) =>
+            {
+                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+                int timeoutSeconds = ArcanumSettingClamps.HealthProbeTimeoutSeconds(
+                    opts.CurrentValue.Resilience?.HealthProbeTimeoutSeconds ?? new ResilienceSettings().HealthProbeTimeoutSeconds);
+
+                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () =>
+            {
+                SocketsHttpHandler handler = OutboundUrlGuard.CreateProviderEgressHandler();
+
+                handler.PooledConnectionLifetime = TimeSpan.Zero;
+
+                return handler;
+            });
+
+        services.AddHostedService<ProviderHealthProbeService>();
 
         return services;
     }

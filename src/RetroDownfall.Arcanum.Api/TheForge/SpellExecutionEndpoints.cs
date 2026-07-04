@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -13,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -29,7 +29,7 @@ internal static partial class SpellExecutionEndpoints
             async (
                 string name,
                 string? workspace,
-                int? version,
+                string? version,
                 SpellExecuteRequest? body,
                 ISpellRepository repo,
                 SpellWorkspaceResolver workspaceResolver,
@@ -139,7 +139,7 @@ internal static partial class SpellExecutionEndpoints
             async (
                 string name,
                 string? workspace,
-                int? version,
+                string? version,
                 SpellExecuteRequest? body,
                 ISpellRepository repo,
                 SpellWorkspaceResolver workspaceResolver,
@@ -310,35 +310,281 @@ internal static partial class SpellExecutionEndpoints
 
                 long maxFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
 
+                string? activeVersionLabel = spell.ActiveVersion;
+
                 string unversionedPath = Path.Combine(spellDir, "SPELL.md");
 
                 if (File.Exists(unversionedPath))
                 {
-                    versions.Add(await BuildSpellVersionDtoAsync(0, unversionedPath, maxFileSizeBytes, ctx.RequestAborted).ConfigureAwait(false));
+                    versions.Add(await BuildSpellVersionDtoAsync(
+                        activeVersionLabel ?? "(active)",
+                        isActive: true,
+                        unversionedPath,
+                        maxFileSizeBytes,
+                        ctx.RequestAborted).ConfigureAwait(false));
                 }
 
                 foreach (string versionFile in Directory.EnumerateFiles(spellDir, "SPELL.v*.md"))
                 {
                     string fileName = Path.GetFileName(versionFile);
 
-                    Match match = VersionFileRegex().Match(fileName);
-
-                    if (!match.Success || !int.TryParse(match.Groups[1].Value, out int versionNumber) || versionNumber < 1)
+                    if (!SpellVersionPathPolicy.TryParseLabelFromFileName(fileName, out string label))
                     {
                         continue;
                     }
 
-                    versions.Add(await BuildSpellVersionDtoAsync(versionNumber, versionFile, maxFileSizeBytes, ctx.RequestAborted).ConfigureAwait(false));
+                    versions.Add(await BuildSpellVersionDtoAsync(
+                        label,
+                        isActive: false,
+                        versionFile,
+                        maxFileSizeBytes,
+                        ctx.RequestAborted).ConfigureAwait(false));
                 }
 
                 SpellVersionDto[] sorted = versions
-                    .OrderByDescending(v => v.Version)
+                    .OrderByDescending(v => v.IsActive)
+                    .ThenByDescending(v => v.CreatedAt)
                     .ToArray();
 
                 return Results.Ok(
                     ApiResponse<SpellVersionDto[]>.FromResult(Result<SpellVersionDto[]>.Success(sorted), traceId));
             })
         .WithName("Spell_ListVersions");
+
+        apiGroup.MapPost(
+            "/spells/{name}/versions",
+            async (
+                string name,
+                CreateSpellVersionRequest? request,
+                ISpellRepository repo,
+                SpellWorkspaceResolver workspaceResolver,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || string.IsNullOrWhiteSpace(request.Version) || string.IsNullOrWhiteSpace(request.Body))
+                {
+                    return Results.BadRequest(
+                        ApiResponse<SpellVersionDto>.FromResult(
+                            Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "version and body are required.")),
+                            traceId));
+                }
+
+                Result<string> workspaceRequired = workspaceResolver.ResolveRequired(request.Workspace);
+
+                IResult? workspaceFailure = SpellApiResults.MapRequiredWorkspaceFailure<SpellVersionDto>(
+                    workspaceRequired,
+                    traceId,
+                    ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+                    out string resolvedWorkspace);
+
+                if (workspaceFailure is not null)
+                {
+                    return workspaceFailure;
+                }
+
+                Result<SpellVersionDto> result = await repo
+                    .CreateVersionAsync(name, resolvedWorkspace, request, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellVersionDto>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                return Results.Created(
+                    $"/api/spells/{name}/versions/{Uri.EscapeDataString(result.Value.Version)}",
+                    ApiResponse<SpellVersionDto>.FromResult(result, traceId));
+            })
+        .WithName("Spell_CreateVersion");
+
+        apiGroup.MapPut(
+            "/spells/{name}/versions/{version}",
+            async (
+                string name,
+                string version,
+                UpdateSpellVersionRequest? request,
+                ISpellRepository repo,
+                SpellWorkspaceResolver workspaceResolver,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || string.IsNullOrWhiteSpace(request.Body))
+                {
+                    return Results.BadRequest(
+                        ApiResponse<SpellVersionDto>.FromResult(
+                            Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "body is required.")),
+                            traceId));
+                }
+
+                Result<string> workspaceRequired = workspaceResolver.ResolveRequired(request.Workspace);
+
+                IResult? workspaceFailure = SpellApiResults.MapRequiredWorkspaceFailure<SpellVersionDto>(
+                    workspaceRequired,
+                    traceId,
+                    ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+                    out string resolvedWorkspace);
+
+                if (workspaceFailure is not null)
+                {
+                    return workspaceFailure;
+                }
+
+                Result<SpellVersionDto> result = await repo
+                    .UpdateVersionAsync(name, Uri.UnescapeDataString(version), resolvedWorkspace, request, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellVersionDto>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                return Results.Ok(ApiResponse<SpellVersionDto>.FromResult(result, traceId));
+            })
+        .WithName("Spell_UpdateVersion");
+
+        apiGroup.MapPost(
+            "/spells/{name}/versions/{version}/activate",
+            async (
+                string name,
+                string version,
+                ActivateSpellVersionRequest? request,
+                ISpellRepository repo,
+                SpellWorkspaceResolver workspaceResolver,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Result<string> workspaceRequired = workspaceResolver.ResolveRequired(request?.Workspace);
+
+                IResult? workspaceFailure = SpellApiResults.MapRequiredWorkspaceFailure<SpellVersionDto>(
+                    workspaceRequired,
+                    traceId,
+                    ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+                    out string resolvedWorkspace);
+
+                if (workspaceFailure is not null)
+                {
+                    return workspaceFailure;
+                }
+
+                Result<SpellVersionDto> result = await repo
+                    .ActivateVersionAsync(name, Uri.UnescapeDataString(version), resolvedWorkspace, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellVersionDto>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                return Results.Ok(ApiResponse<SpellVersionDto>.FromResult(result, traceId));
+            })
+        .WithName("Spell_ActivateVersion");
+
+        apiGroup.MapPost(
+            "/spells/{name}/clone",
+            async (
+                string name,
+                CloneSpellRequest? request,
+                ISpellRepository repo,
+                SpellWorkspaceResolver workspaceResolver,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || string.IsNullOrWhiteSpace(request.NewName))
+                {
+                    return Results.BadRequest(
+                        ApiResponse<SpellSummary>.FromResult(
+                            Result<SpellSummary>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "newName is required.")),
+                            traceId));
+                }
+
+                Result<string> workspaceRequired = workspaceResolver.ResolveRequired(request.Workspace);
+
+                IResult? workspaceFailure = SpellApiResults.MapRequiredWorkspaceFailure<SpellSummary>(
+                    workspaceRequired,
+                    traceId,
+                    ArcanumJsonContext.Default.ApiResponseSpellSummary,
+                    out string resolvedWorkspace);
+
+                if (workspaceFailure is not null)
+                {
+                    return workspaceFailure;
+                }
+
+                Result<SpellSummary> result = await repo
+                    .CloneAsync(name, resolvedWorkspace, request, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellSummary>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellSummary,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                return Results.Created(
+                    $"/api/spells/{Uri.EscapeDataString(result.Value.Name)}",
+                    ApiResponse<SpellSummary>.FromResult(result, traceId));
+            })
+        .WithName("Spell_Clone");
+
+        apiGroup.MapPost(
+            "/spells/{name}/cast",
+            async (
+                string name,
+                SpellCastRequest? request,
+                ISpellCastPreviewService castPreview,
+                SpellWorkspaceResolver workspaceResolver,
+                ICampaignRepository campaignRepository,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                SpellCastRequest effectiveRequest = request ?? new SpellCastRequest();
+
+                Result<string?> workspaceResult = await ExecuteWorkspaceResolver
+                    .ResolveAsync(null, effectiveRequest.Workspace, effectiveRequest.CampaignId, workspaceResolver, campaignRepository, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                IResult? workspaceFailure = SpellApiResults.MapOptionalWorkspaceFailure<SpellCastResult>(
+                    workspaceResult,
+                    traceId,
+                    ArcanumJsonContext.Default.ApiResponseSpellCastResult,
+                    out string? resolvedWorkspace);
+
+                if (workspaceFailure is not null)
+                {
+                    return workspaceFailure;
+                }
+
+                Result<SpellCastResult> result = await castPreview
+                    .CastAsync(name, resolvedWorkspace, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellCastResult>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellCastResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                return Results.Ok(ApiResponse<SpellCastResult>.FromResult(result, traceId));
+            })
+        .WithName("Spell_Cast");
 
         return apiGroup;
     }
@@ -348,50 +594,43 @@ internal static partial class SpellExecutionEndpoints
         string spellName,
         SpellDetail spell,
         string workingDirectory,
-        int? version)
+        string? version)
     {
         string? overrideSpellPath = null;
 
         string? overrideSpellName = spellName;
 
-        if (version is int requestedVersion)
+        if (!string.IsNullOrWhiteSpace(version))
         {
-            if (requestedVersion < 0)
+            string label = version.Trim();
+
+            if (!SpellVersionPathPolicy.IsValidLabel(label))
             {
                 return Result<PingRequest>.Failure(
-                    new Error("Spell.InvalidVersion", "Version must be zero or a positive integer."));
+                    new Error(ErrorCodes.Spell.InvalidVersion, $"Invalid version label \"{label}\" \u2014 alphanumeric and dots only."));
             }
 
-            if (requestedVersion == 0)
+            string? spellDir = string.IsNullOrWhiteSpace(spell.FilePath)
+                ? null
+                : Path.GetDirectoryName(spell.FilePath);
+
+            if (string.IsNullOrWhiteSpace(spellDir))
             {
-                overrideSpellName = spellName;
-
-                overrideSpellPath = null;
+                return Result<PingRequest>.Failure(
+                    new Error(ErrorCodes.Spell.InvalidVersion, "Cannot resolve the spell directory for the requested version."));
             }
-            else
+
+            string versionPath = Path.Combine(spellDir, SpellVersionPathPolicy.BuildVersionFileName(label));
+
+            if (!File.Exists(versionPath))
             {
-                string? spellDir = string.IsNullOrWhiteSpace(spell.FilePath)
-                    ? null
-                    : Path.GetDirectoryName(spell.FilePath);
-
-                if (string.IsNullOrWhiteSpace(spellDir))
-                {
-                    return Result<PingRequest>.Failure(
-                        new Error("Spell.InvalidVersion", "Cannot resolve the spell directory for the requested version."));
-                }
-
-                string versionPath = Path.Combine(spellDir, $"SPELL.v{requestedVersion}.md");
-
-                if (!File.Exists(versionPath))
-                {
-                    return Result<PingRequest>.Failure(
-                        new Error("Spell.InvalidVersion", $"Spell version {requestedVersion} does not exist."));
-                }
-
-                overrideSpellPath = versionPath;
-
-                overrideSpellName = null;
+                return Result<PingRequest>.Failure(
+                    new Error(ErrorCodes.Spell.InvalidVersion, $"Spell version \"{label}\" does not exist."));
             }
+
+            overrideSpellPath = versionPath;
+
+            overrideSpellName = null;
         }
 
         PingRequest ping = new(
@@ -417,7 +656,8 @@ internal static partial class SpellExecutionEndpoints
     }
 
     private static async Task<SpellVersionDto> BuildSpellVersionDtoAsync(
-        int version,
+        string version,
+        bool isActive,
         string filePath,
         long maxFileSizeBytes,
         CancellationToken cancellationToken)
@@ -437,16 +677,11 @@ internal static partial class SpellExecutionEndpoints
             createdAt = DateTimeOffset.UtcNow;
         }
 
-        string? description = null;
-
         ParsedSpell? parsed = await SpellScanner.LoadFullAsync(filePath, cancellationToken, maxFileSizeBytes).ConfigureAwait(false);
 
-        description = string.IsNullOrWhiteSpace(parsed?.Description) ? null : parsed.Description;
+        string? description = string.IsNullOrWhiteSpace(parsed?.Description) ? null : parsed.Description;
 
-        return new SpellVersionDto(version, createdAt, description);
+        return new SpellVersionDto(version, isActive, createdAt, description);
     }
-
-    [GeneratedRegex(@"^SPELL\.v(\d+)\.md$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex VersionFileRegex();
 
 }

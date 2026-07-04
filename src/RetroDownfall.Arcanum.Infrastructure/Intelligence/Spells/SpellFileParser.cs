@@ -226,6 +226,41 @@ internal static class SpellFileParser
             body: existing.Body);
     }
 
+    /// <summary>
+    /// Formats a spell file using <paramref name="existing"/>'s frontmatter fields with the given
+    /// <paramref name="body"/> substituted. Used for version create/update (preserving frontmatter
+    /// while replacing body content).
+    /// </summary>
+    public static string FormatWithBody(ParsedSpell existing, string body) =>
+        Format(
+            existing.Name,
+            existing.Description,
+            existing.Tags,
+            existing.SystemPrompt,
+            existing.Template,
+            existing.Model,
+            existing.Provider,
+            existing.Tools,
+            existing.RequiredMcpServers,
+            body);
+
+    /// <summary>
+    /// Formats a spell file using <paramref name="existing"/>'s frontmatter and body, with the
+    /// <c>name</c> field rewritten to <paramref name="newName"/>. Used for spell clone.
+    /// </summary>
+    public static string FormatRenamed(ParsedSpell existing, string newName) =>
+        Format(
+            newName,
+            existing.Description,
+            existing.Tags,
+            existing.SystemPrompt,
+            existing.Template,
+            existing.Model,
+            existing.Provider,
+            existing.Tools,
+            existing.RequiredMcpServers,
+            existing.Body);
+
     private static string Format(
         string name,
         string? description,

@@ -3,11 +3,13 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
@@ -106,8 +108,10 @@ internal static class SanctumEndpoints
             async (
                 Guid campaignId,
                 int? limit,
+                DateTimeOffset? before,
+                string? tool,
                 ICampaignRepository repo,
-                ISanctumGuard sanctumGuard,
+                ISanctumBreachRepository breachRepository,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -117,30 +121,53 @@ internal static class SanctumEndpoints
                 if (campaign is null)
                 {
                     return Results.Json(
-                        ApiResponse<SanctumBreach[]>.FromResult(
-                            Result<SanctumBreach[]>.Failure(new Error(ErrorCodes.Campaign.NotFound, "Campaign was not found.")),
+                        ApiResponse<SanctumBreachQueryResult>.FromResult(
+                            Result<SanctumBreachQueryResult>.Failure(new Error(ErrorCodes.Campaign.NotFound, "Campaign was not found.")),
                             traceId),
-                        ArcanumJsonContext.Default.ApiResponseSanctumBreachArray,
+                        ArcanumJsonContext.Default.ApiResponseSanctumBreachQueryResult,
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
                 int queryLimit = ArcanumSettingClamps.SanctumBreachQueryLimit(limit ?? 100);
 
-                IReadOnlyList<SanctumBreach> breaches = await sanctumGuard
-                    .GetBreachesAsync(campaignId.ToString(), queryLimit, ctx.RequestAborted)
+                // Fetch one extra row to detect whether more history exists beyond this page.
+                IReadOnlyList<SanctumBreachRecord> records = await breachRepository
+                    .QueryAsync(campaignId.ToString(), queryLimit + 1, before, tool, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                SanctumBreach[] payload = breaches.ToArray();
+                bool hasMore = records.Count > queryLimit;
+
+                SanctumBreachDto[] items = records
+                    .Take(queryLimit)
+                    .Select(ToBreachDto)
+                    .ToArray();
+
+                SanctumBreachQueryResult payload = new(items, hasMore);
 
                 return Results.Ok(
-                    ApiResponse<SanctumBreach[]>.FromResult(
-                        Result<SanctumBreach[]>.Success(payload),
+                    ApiResponse<SanctumBreachQueryResult>.FromResult(
+                        Result<SanctumBreachQueryResult>.Success(payload),
                         traceId));
             })
         .WithName("GetCampaignSanctumBreaches");
 
         return apiGroup;
     }
+
+    private static SanctumBreachDto ToBreachDto(SanctumBreachRecord record) =>
+        new(
+            record.Id,
+            record.OccurredAt,
+            record.ToolName,
+            record.BreachType,
+            record.Description,
+            SanctumPathRedactor.Redact(record.Details?.RequestedPath),
+            SanctumPathRedactor.Redact(record.Details?.ResolvedPath),
+            SanctumPathRedactor.Redact(record.Details?.WorkspaceRoot),
+            record.Details?.RequestedUrl,
+            record.Details?.ToolArguments,
+            record.Details?.LimitValue,
+            record.Details?.ActualValue);
 
     private static Result<SanctumConfig> ValidateAndClampSanctumConfig(SanctumConfig request)
     {
@@ -173,7 +200,11 @@ internal static class SanctumEndpoints
             ProcessTimeoutSeconds = ArcanumSettingClamps.SanctumProcessTimeoutSeconds(limits.ProcessTimeoutSeconds),
         };
 
-        SanctumConfig clamped = request with { ResourceLimits = clampedLimits };
+        SanctumConfig clamped = request with
+        {
+            ResourceLimits = clampedLimits,
+            MaxBreachCount = ArcanumSettingClamps.SanctumMaxBreachCount(request.MaxBreachCount),
+        };
 
         return Result<SanctumConfig>.Success(clamped);
     }

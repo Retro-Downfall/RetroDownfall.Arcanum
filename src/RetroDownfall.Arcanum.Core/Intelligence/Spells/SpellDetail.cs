@@ -20,4 +20,5 @@ public sealed record SpellDetail(
     JsonDocument? InputSchema = null,
     JsonDocument? OutputSchema = null,
     string[]? DeclaredTools = null,
-    string[]? Dependencies = null);
+    string[]? Dependencies = null,
+    string? ActiveVersion = null);

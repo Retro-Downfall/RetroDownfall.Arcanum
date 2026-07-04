@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
@@ -730,11 +731,17 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 
+        services.AddSingleton<RetroDownfall.Arcanum.Core.Platform.IProcessResourceLimiter, ProcessResourceLimiter>();
+
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         IHumanPromptRegistry humanPrompts = new HumanPromptRegistry();
 
-        IUnseenServantPacer pacer = new UnseenServantPacer(new FakeEventBus(), new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        IUnseenServantPacer pacer = new UnseenServantPacer(
+            new FakeEventBus(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            scopeFactory,
+            NullLogger<UnseenServantPacer>.Instance);
 
         (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
             humanPrompts,
@@ -974,11 +981,17 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         public Task<SanctumResult> ValidateToolAsync(string campaignId, string toolName, CancellationToken ct = default) =>
             Task.FromResult(new SanctumResult { Allowed = true });
 
-        public Task<IReadOnlyList<SanctumBreach>> GetBreachesAsync(string campaignId, int limit = 100, CancellationToken ct = default) =>
-            Task.FromResult<IReadOnlyList<SanctumBreach>>([]);
-
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
+
+        public Task RecordResourceLimitBreachAsync(
+            string? workspaceRoot,
+            string toolName,
+            Core.Platform.ResourceLimitKind resource,
+            string limitValue,
+            string? actualValue,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
 
     }
 

@@ -85,7 +85,7 @@ internal static class PromptImportHelper
         if (existing is not null)
         {
             return Result<PromptSummaryDto>.Failure(
-                new Error("Prompt.DuplicateVersion", "A prompt with this name and version already exists in the target scope."));
+                new Error(ErrorCodes.Prompt.DuplicateVersion, "A prompt with this name and version already exists in the target scope."));
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;

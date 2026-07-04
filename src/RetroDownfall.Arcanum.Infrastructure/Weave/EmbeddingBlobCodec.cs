@@ -1,0 +1,77 @@
+using System.Runtime.InteropServices;
+
+namespace RetroDownfall.Arcanum.Infrastructure.Weave;
+
+/// <summary>
+/// RAG Phase 1 — shared little-endian <c>float32[]</c> &lt;-&gt; <c>BLOB</c> conversion for The Weave's
+/// durable storage tables (for example <c>entry_embeddings.Embedding</c>) and for binding a query
+/// vector to a sqlite-vec <c>MATCH</c> parameter. All realistic Arcanum deployment targets (x64, Arm64)
+/// are little-endian, so no explicit byte-swapping is performed — see DESIGN.md §21.
+/// </summary>
+internal static class EmbeddingBlobCodec
+{
+
+    public static byte[] Encode(ReadOnlySpan<float> vector) =>
+        MemoryMarshal.AsBytes(vector).ToArray();
+
+    public static float[] Decode(byte[] bytes)
+    {
+
+        if (bytes.Length % sizeof(float) != 0)
+        {
+            throw new InvalidOperationException(
+                $"Embedding blob length {bytes.Length} is not a multiple of {sizeof(float)} bytes.");
+
+        }
+
+        float[] result = new float[bytes.Length / sizeof(float)];
+
+        MemoryMarshal.Cast<byte, float>(bytes).CopyTo(result);
+
+        return result;
+
+    }
+
+    /// <summary>
+    /// Cosine similarity in <c>[-1, 1]</c> (imprinted embeddings are typically near-unit vectors, so
+    /// results cluster in <c>[0, 1]</c> in practice). Returns <c>0</c> for mismatched or zero-length
+    /// vectors rather than throwing — the managed fallback path treats that as "no signal", not a
+    /// search failure.
+    /// </summary>
+    public static float CosineSimilarity(ReadOnlySpan<float> a, ReadOnlySpan<float> b)
+    {
+
+        if (a.Length != b.Length || a.Length == 0)
+        {
+            return 0f;
+
+        }
+
+        double dot = 0;
+
+        double normA = 0;
+
+        double normB = 0;
+
+        for (int i = 0; i < a.Length; i++)
+        {
+
+            dot += (double)a[i] * b[i];
+
+            normA += (double)a[i] * a[i];
+
+            normB += (double)b[i] * b[i];
+
+        }
+
+        if (normA <= 0 || normB <= 0)
+        {
+            return 0f;
+
+        }
+
+        return (float)(dot / (Math.Sqrt(normA) * Math.Sqrt(normB)));
+
+    }
+
+}

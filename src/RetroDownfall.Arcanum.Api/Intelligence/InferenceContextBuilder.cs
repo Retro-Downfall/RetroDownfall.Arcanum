@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
+
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;

@@ -59,6 +59,32 @@ internal static class SkillJsonIO
             DateTimeOffset.UtcNow);
     }
 
+    /// <summary>
+    /// Builds the merged <see cref="SkillMetadata"/> for activating a spell version: preserves every
+    /// existing structured field (falling back to the parsed spell's frontmatter when no SKILL.json
+    /// exists yet) and sets <see cref="SkillMetadata.ActiveVersion"/> to the newly activated label.
+    /// Only <c>ActivateSpellVersionAsync</c> calls this — create/update version do not touch the field.
+    /// </summary>
+    public static SkillMetadata SetActiveVersion(ParsedSpell existing, string activeVersionLabel)
+    {
+        SkillMetadata? current = existing.SkillMetadata;
+
+        return new SkillMetadata(
+            existing.Name,
+            current?.Version ?? "1.0.0",
+            current?.Description ?? (string.IsNullOrEmpty(existing.Description) ? null : existing.Description),
+            current?.Tags ?? existing.Tags.ToList(),
+            current?.InputSchema,
+            current?.OutputSchema,
+            current?.DeclaredTools ?? [],
+            current?.Dependencies ?? [],
+            current?.Model ?? existing.Model,
+            current?.Provider ?? existing.Provider,
+            current?.DefaultParameters,
+            DateTimeOffset.UtcNow,
+            activeVersionLabel);
+    }
+
     public static async Task WriteAsync(string spellDirectory, SkillMetadata metadata, CancellationToken ct)
     {
         string path = Path.Combine(spellDirectory, "SKILL.json");

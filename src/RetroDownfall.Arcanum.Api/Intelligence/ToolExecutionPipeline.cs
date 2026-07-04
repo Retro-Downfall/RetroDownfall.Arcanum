@@ -22,6 +22,8 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Core.Telemetry;
+
 using RetroDownfall.Arcanum.Core.TheForge;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -78,7 +80,7 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    public sealed record WardedToolExecutionResult(string ResultText, IReadOnlyList<IntelligenceEvent> WardEvents);
+    public sealed record WardedToolExecutionResult(string ResultText, IReadOnlyList<IntelligenceEvent> WardEvents, bool Denied = false);
 
     public sealed record ProcessedToolCall(
         string CallId,
@@ -140,6 +142,22 @@ public sealed class ToolExecutionPipeline(
 
     }
 
+    /// <summary>
+    /// Records <c>arcanum_tool_invocations_total</c>. <paramref name="outcome"/> is one of
+    /// <c>success</c>, <c>denied</c> (ward or Sanctum blocked the call), or <c>error</c> (the tool
+    /// invocation itself threw). The configured MCP/local tool set is finite, so <paramref name="toolName"/>
+    /// is a bounded label value by construction.
+    /// </summary>
+    private static void RecordToolInvocationMetric(string toolName, string outcome)
+    {
+
+        ArcanumMetrics.ToolInvocationsTotal.Add(
+            1,
+            new KeyValuePair<string, object?>("tool_name", toolName),
+            new KeyValuePair<string, object?>("outcome", outcome));
+
+    }
+
     public static void AppendToolExchangeToMessages(
         List<MeAiChatMessage> chatMessages,
         FunctionCallContent fcc,
@@ -194,6 +212,8 @@ public sealed class ToolExecutionPipeline(
                     cancellationToken)
                     .ConfigureAwait(false);
 
+                RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
+
             }
             catch (OperationCanceledException)
             {
@@ -208,22 +228,48 @@ public sealed class ToolExecutionPipeline(
 
                 wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessageForGrimoire, []);
 
+                RecordToolInvocationMetric(toolName, "error");
+
             }
 
         }
         else
         {
 
-            wardedExecution = await ExecuteToolCallWithWardAsync(
-                fcc,
-                request,
-                chatOptions,
-                activeSpell,
-                sessionId,
-                turnContext,
-                argsSnapshot,
-                cancellationToken)
-                .ConfigureAwait(false);
+            // Unlike the streaming branch above, the buffered path does not suppress invocation
+            // failures — an exception here still propagates to the caller unchanged. This try/catch
+            // exists solely to record the "error" outcome symmetrically before rethrowing.
+            try
+            {
+
+                wardedExecution = await ExecuteToolCallWithWardAsync(
+                    fcc,
+                    request,
+                    chatOptions,
+                    activeSpell,
+                    sessionId,
+                    turnContext,
+                    argsSnapshot,
+                    cancellationToken)
+                    .ConfigureAwait(false);
+
+                RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                throw;
+
+            }
+            catch (Exception)
+            {
+
+                RecordToolInvocationMetric(toolName, "error");
+
+                throw;
+
+            }
 
         }
 
@@ -474,14 +520,14 @@ public sealed class ToolExecutionPipeline(
             && wardSettings.AutoDenyInUnattendedMode)
         {
 
-            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), []);
+            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), [], Denied: true);
 
         }
 
         if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
         {
 
-            string directResult = await InvokeToolCallWithSanctumAsync(
+            (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
                 fcc,
                 activeSpell,
                 chatOptions,
@@ -489,7 +535,7 @@ public sealed class ToolExecutionPipeline(
                 argsSnapshot,
                 cancellationToken).ConfigureAwait(false);
 
-            return new WardedToolExecutionResult(directResult, []);
+            return new WardedToolExecutionResult(directResult, [], directDenied);
 
         }
 
@@ -559,11 +605,11 @@ public sealed class ToolExecutionPipeline(
                 ? TimeoutDenyMessage(resolution.Reason)
                 : OperatorDenyMessage(resolution.Reason);
 
-            return new WardedToolExecutionResult(denialMessage, wardEvents);
+            return new WardedToolExecutionResult(denialMessage, wardEvents, Denied: true);
 
         }
 
-        string allowedResult = await InvokeToolCallWithSanctumAsync(
+        (string allowedResult, bool allowedDenied) = await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
             chatOptions,
@@ -571,11 +617,17 @@ public sealed class ToolExecutionPipeline(
             argsSnapshot,
             cancellationToken).ConfigureAwait(false);
 
-        return new WardedToolExecutionResult(allowedResult, wardEvents);
+        return new WardedToolExecutionResult(allowedResult, wardEvents, allowedDenied);
 
     }
 
-    private async Task<string> InvokeToolCallWithSanctumAsync(
+    /// <summary>
+    /// Returns the tool result text plus whether Sanctum blocked the call (<c>Denied: true</c>) — the
+    /// caller's <see cref="WardedToolExecutionResult.Denied"/> flag (and, ultimately,
+    /// <c>arcanum_tool_invocations_total{outcome="denied"}</c>) depends on this, since a Sanctum-strict
+    /// block returns a synthetic result string with no corresponding <see cref="IntelligenceEvent"/>.
+    /// </summary>
+    private async Task<(string ResultText, bool Denied)> InvokeToolCallWithSanctumAsync(
         FunctionCallContent fcc,
         ParsedSpell? activeSpell,
         ChatOptions chatOptions,
@@ -594,11 +646,13 @@ public sealed class ToolExecutionPipeline(
         if (!outcome.Result.Allowed && outcome.Enabled && outcome.Mode == SanctumMode.Strict)
         {
 
-            return SanctumDenialMessage(outcome.Result);
+            return (SanctumDenialMessage(outcome.Result), true);
 
         }
 
-        return await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+        string resultText = await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+
+        return (resultText, false);
 
     }
 

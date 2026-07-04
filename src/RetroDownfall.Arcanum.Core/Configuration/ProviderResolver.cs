@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Resilience;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
@@ -137,6 +139,141 @@ public static class ProviderResolver
                 resolvedModel = model;
 
                 return true;
+            }
+
+        }
+
+        return false;
+
+    }
+
+    /// <summary>
+    /// Resolves the model and returns every configured provider that advertises it, in configured
+    /// (array-index) order. Backward compatible: when <paramref name="health"/> is <c>null</c>, returns
+    /// at most one candidate — the same provider <see cref="TryResolveProviderForModel"/> would pick.
+    /// When <paramref name="health"/> is supplied, providers reported unhealthy are excluded from the
+    /// result; if that would leave zero candidates, the first match is returned anyway so the operator
+    /// observes the real inference error rather than a spurious "no providers" failure.
+    /// </summary>
+    public static IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> ResolveCandidates(
+        ArcanumSettings settings,
+        string? model,
+        IProviderHealthTracker? health = null)
+    {
+
+        ProviderSettings[] providers = settings.Providers ?? [];
+
+        string? needle = !string.IsNullOrWhiteSpace(model)
+            ? model.Trim()
+            : !string.IsNullOrWhiteSpace(settings.DefaultModel)
+                ? settings.DefaultModel.Trim()
+                : null;
+
+        List<(ProviderSettings Provider, string CanonicalModelId)> matches = needle is not null
+            ? CollectAllMatchingProviders(providers, needle)
+            : CollectFirstProviderDefaultModel(providers);
+
+        if (matches.Count == 0)
+        {
+            return [];
+        }
+
+        if (health is null)
+        {
+            return [matches[0]];
+        }
+
+        List<(ProviderSettings Provider, string CanonicalModelId)> healthyMatches = [];
+
+        foreach ((ProviderSettings Provider, string CanonicalModelId) candidate in matches)
+        {
+            if (health.IsHealthy(candidate.Provider.Name))
+            {
+                healthyMatches.Add(candidate);
+            }
+
+        }
+
+        return healthyMatches.Count > 0 ? healthyMatches : [matches[0]];
+
+    }
+
+    private static List<(ProviderSettings Provider, string CanonicalModelId)> CollectAllMatchingProviders(
+        ProviderSettings[] providers,
+        string needle)
+    {
+
+        List<(ProviderSettings Provider, string CanonicalModelId)> matches = [];
+
+        for (int pi = 0; pi < providers.Length; pi++)
+        {
+            ProviderSettings p = providers[pi];
+
+            foreach (string configured in EnumerateAdvertisedModels(p))
+            {
+                if (ModelNameMatches(configured, needle))
+                {
+                    matches.Add((p, configured));
+
+                    break;
+
+                }
+
+            }
+
+        }
+
+        return matches;
+
+    }
+
+    private static List<(ProviderSettings Provider, string CanonicalModelId)> CollectFirstProviderDefaultModel(
+        ProviderSettings[] providers)
+    {
+
+        List<(ProviderSettings Provider, string CanonicalModelId)> matches = [];
+
+        if (providers.Length == 0)
+        {
+            return matches;
+        }
+
+        foreach (string model in EnumerateAdvertisedModels(providers[0]))
+        {
+            matches.Add((providers[0], model));
+
+            break;
+
+        }
+
+        return matches;
+
+    }
+
+    /// <summary>
+    /// Resolves a configured provider by its exact (case-insensitive) <see cref="ProviderSettings.Name"/>.
+    /// Used by the Weave embedding generator factory and by <see cref="ConfigurationValidator"/> to
+    /// validate <c>Arcanum:Embeddings:Provider</c> — unlike <see cref="TryResolveProviderForModel"/>,
+    /// this looks up by provider name, not by advertised model id.
+    /// </summary>
+    public static bool TryResolveProviderByName(
+        ArcanumSettings settings,
+        string providerName,
+        out ProviderSettings? provider)
+    {
+
+        provider = null;
+
+        ProviderSettings[] providers = settings.Providers ?? [];
+
+        for (int i = 0; i < providers.Length; i++)
+        {
+            if (string.Equals(providers[i].Name, providerName, StringComparison.OrdinalIgnoreCase))
+            {
+                provider = providers[i];
+
+                return true;
+
             }
 
         }

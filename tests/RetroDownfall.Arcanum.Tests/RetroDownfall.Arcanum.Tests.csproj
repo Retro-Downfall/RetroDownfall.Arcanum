@@ -68,4 +68,15 @@
 
   </ItemGroup>
 
+  <!--
+    Resource-limit kill scenarios spawn Unix shell/Python scripts and assert POSIX signal-kill
+    behavior (SIGXCPU/SIGKILL via setrlimit/cgroups v2); there is no equivalent on Windows, so the
+    whole file is excluded from compilation there rather than skipped at test-discovery time.
+  -->
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+
+    <Compile Remove="Tools\ProcessRunnerResourceLimitTests.cs" />
+
+  </ItemGroup>
+
 </Project>

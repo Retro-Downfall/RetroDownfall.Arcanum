@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -22,6 +23,7 @@ using RetroDownfall.Arcanum.Api.Perception;
 using RetroDownfall.Arcanum.Api.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Spells;
+using RetroDownfall.Arcanum.Api.Telemetry;
 using RetroDownfall.Arcanum.Api.Workspaces;
 using RetroDownfall.Arcanum.Api.LlamaCpp;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -38,7 +40,9 @@ using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
@@ -48,6 +52,7 @@ using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -156,6 +161,22 @@ public static class ApiBootstrapper
             StringComparison.OrdinalIgnoreCase);
 
         return ArcanumEnvironment.IsRateLimitEnabled(explicitlyEnabled, ReadConfiguredListenAny(configuration));
+    }
+
+    /// <summary>
+    /// Effective <c>/metrics</c> auth gate. <c>Arcanum:Metrics:RequireApiKey</c> opts in explicitly; an
+    /// all-interfaces bind (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>) forces the gate on
+    /// regardless of that setting — the same zero-trust downgrade pattern applied to CORS wildcards
+    /// (<see cref="AddArcanumApiServices"/>) and the rate limiter (<see cref="IsRateLimitEnabled"/>).
+    /// </summary>
+    private static bool IsMetricsRequireApiKeyEffective(IConfiguration configuration)
+    {
+        bool explicitlyRequired = string.Equals(
+            configuration["Arcanum:Metrics:RequireApiKey"]?.Trim(),
+            bool.TrueString,
+            StringComparison.OrdinalIgnoreCase);
+
+        return explicitlyRequired || ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration));
     }
 
     private static string[] ReadCorsAllowedOriginsFromConfiguration(IConfiguration configuration)
@@ -277,6 +298,10 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
+        services.AddSingleton<IEmbeddingGeneratorFactory, EmbeddingGeneratorFactory>();
+
+        services.AddSingleton<IWeaveService, WeaveService>();
+
         services.AddSingleton<InferenceTokenizerResolver>();
 
         services.AddSingleton<ManaPreflight>();
@@ -334,6 +359,42 @@ public static class ApiBootstrapper
         }
     }
 
+    /// <summary>
+    /// Records <c>arcanum_http_requests_total</c> for every request. Uses the matched route pattern
+    /// (for example <c>/api/sessions/{id}/stream</c>), not the raw request path, to keep the
+    /// <c>endpoint</c> label bounded — a raw URL would leak unbounded identifiers (session ids, etc.) as
+    /// label values. Requests to <c>/metrics</c> itself are skipped so a Prometheus scraper cannot create
+    /// a self-referential feedback loop (every scrape incrementing the very counter it just read).
+    /// </summary>
+    public static void UseArcanumMetrics(this WebApplication app)
+    {
+        app.Use(async (HttpContext context, Func<Task> next) =>
+        {
+
+            if (context.Request.Path.StartsWithSegments("/metrics"))
+            {
+
+                await next().ConfigureAwait(false);
+
+                return;
+
+            }
+
+            await next().ConfigureAwait(false);
+
+            string routeLabel = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
+                ?? context.Request.Path.Value
+                ?? "unknown";
+
+            ArcanumMetrics.HttpRequestsTotal.Add(
+                1,
+                new KeyValuePair<string, object?>("endpoint", routeLabel),
+                new KeyValuePair<string, object?>("method", context.Request.Method),
+                new KeyValuePair<string, object?>("status_code", context.Response.StatusCode.ToString(CultureInfo.InvariantCulture)));
+
+        });
+    }
+
     public static void MapArcanumEndpoints(this WebApplication app)
     {
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
@@ -354,6 +415,18 @@ public static class ApiBootstrapper
         if (rateLimitEnabled)
         {
             apiGroup = apiGroup.RequireRateLimiting(ArcanumRateLimiterPolicyName);
+        }
+
+        // /metrics lives outside /api and /v1 by default so Prometheus scrapers work without custom
+        // headers; it is force-routed onto apiGroup instead (inheriting ApiKeyEndpointFilter and any
+        // active rate limiter) when Arcanum:Metrics:RequireApiKey is set or the host binds all interfaces.
+        if (IsMetricsRequireApiKeyEffective(app.Configuration))
+        {
+            apiGroup.MapMetricsEndpoint();
+        }
+        else
+        {
+            app.MapMetricsEndpoint();
         }
 
         apiGroup.MapOpenApi();

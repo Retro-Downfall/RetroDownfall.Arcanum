@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
@@ -49,12 +51,26 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly ILogger? _logger;
 
+    /// <summary>
+    /// Null when this tool is constructed without Sanctum/DI context (e.g. direct unit-test
+    /// construction). In that case OS-level resource-limit enforcement is skipped for this tool
+    /// instance rather than applying an unconfigured default (see <see cref="RetroDownfall.Arcanum.Infrastructure.ProcessExecution.CappedChildProcessRunner"/>).
+    /// </summary>
+    private readonly ISanctumGuard? _sanctumGuard;
+
+    private readonly IProcessResourceLimiter? _resourceLimiter;
+
+    private readonly string? _campaignWorkspaceRoot;
+
     public ArcanumSpellScriptTool(
         IReadOnlyList<string> scriptsDirectoryPaths,
         TimeSpan executeTimeout,
         int executeTimeoutSecondsForDisplay,
         long toolOutputCapBytes = 1L * 1024L * 1024L,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        ISanctumGuard? sanctumGuard = null,
+        IProcessResourceLimiter? resourceLimiter = null,
+        string? campaignWorkspaceRoot = null)
     {
         _executeTimeout = executeTimeout;
 
@@ -63,6 +79,12 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         _toolOutputCapBytes = toolOutputCapBytes < 2048L ? 2048L : toolOutputCapBytes;
 
         _logger = logger;
+
+        _sanctumGuard = sanctumGuard;
+
+        _resourceLimiter = resourceLimiter;
+
+        _campaignWorkspaceRoot = campaignWorkspaceRoot;
 
         var roots = new List<string>(scriptsDirectoryPaths.Count);
 
@@ -95,8 +117,19 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         TimeSpan executeTimeout,
         int executeTimeoutSecondsForDisplay,
         long toolOutputCapBytes = 1L * 1024L * 1024L,
-        ILogger? logger = null)
-        : this([scriptsDirectoryPath], executeTimeout, executeTimeoutSecondsForDisplay, toolOutputCapBytes, logger)
+        ILogger? logger = null,
+        ISanctumGuard? sanctumGuard = null,
+        IProcessResourceLimiter? resourceLimiter = null,
+        string? campaignWorkspaceRoot = null)
+        : this(
+            [scriptsDirectoryPath],
+            executeTimeout,
+            executeTimeoutSecondsForDisplay,
+            toolOutputCapBytes,
+            logger,
+            sanctumGuard,
+            resourceLimiter,
+            campaignWorkspaceRoot)
     {
     }
 
@@ -193,15 +226,45 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         }
 
+        ResourceLimits? resourceLimits = _sanctumGuard is null
+            ? null
+            : await _sanctumGuard
+                .GetEffectiveResourceLimitsForWorkspaceAsync(_campaignWorkspaceRoot, cancellationToken)
+                .ConfigureAwait(false);
+
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             _toolOutputCapBytes,
             _executeTimeout,
+            resourceLimits,
+            _resourceLimiter,
             cancellationToken).ConfigureAwait(false);
 
         switch (runResult.Outcome)
         {
+
+            case CappedChildProcessOutcome.ResourceLimitApplyFailed:
+
+                _logger?.LogError(
+                    "run_spell_script: failed to apply Sanctum resource limits: {Error}",
+                    runResult.ResourceLimitApplyError);
+
+                return "run_spell_script: the invocation was blocked because OS-level resource limits could not be applied.";
+
+            case CappedChildProcessOutcome.ResourceLimitExceeded when _sanctumGuard is not null:
+
+                return await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
+                    _sanctumGuard,
+                    _campaignWorkspaceRoot,
+                    ToolName,
+                    resourceLimits ?? new ResourceLimits(),
+                    runResult.ExceededResource,
+                    cancellationToken).ConfigureAwait(false);
+
+            case CappedChildProcessOutcome.ResourceLimitExceeded:
+
+                return "run_spell_script: execution blocked after exceeding an OS-enforced resource limit.";
 
             case CappedChildProcessOutcome.IoErrorOnStart:
 

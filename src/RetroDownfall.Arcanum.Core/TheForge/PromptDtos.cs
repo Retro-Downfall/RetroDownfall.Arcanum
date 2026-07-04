@@ -98,3 +98,8 @@ public sealed record PromptExportDto(
 public sealed record PromptImportRequest(
     PromptExportDto Payload,
     Guid? CampaignId);
+
+public sealed record ClonePromptRequest(
+    string NewName,
+    string NewVersion,
+    Guid? CampaignId = null);

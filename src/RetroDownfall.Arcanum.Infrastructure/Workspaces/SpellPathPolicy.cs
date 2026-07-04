@@ -35,7 +35,7 @@ internal static partial class SpellPathPolicy
         if (!SpellFileNameRegex().IsMatch(fileName))
         {
             return Result<string>.Failure(
-                new Error(ErrorCodes.Spell.PathNotAllowed, "Override spell path must reference SPELL.md or SPELL.v{N}.md."));
+                new Error(ErrorCodes.Spell.PathNotAllowed, "Override spell path must reference SPELL.md or SPELL.v{label}.md."));
         }
 
         if (!IsUnderKnownSpellRoot(fullPath, spellWorkspaceRoot))
@@ -80,7 +80,7 @@ internal static partial class SpellPathPolicy
         return false;
     }
 
-    [GeneratedRegex(@"^SPELL(\.v\d+)?\.md$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^SPELL(\.v[A-Za-z0-9.]+)?\.md$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SpellFileNameRegex();
 
 }

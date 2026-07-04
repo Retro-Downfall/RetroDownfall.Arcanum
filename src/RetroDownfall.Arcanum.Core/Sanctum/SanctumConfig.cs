@@ -5,7 +5,10 @@ namespace RetroDownfall.Arcanum.Core.Sanctum;
 /// </summary>
 /// <remarks>
 /// <see cref="ResourceLimits.MaxFileWriteMb"/> is enforced at runtime on in-process file-write tools.
-/// Process/memory limits remain deferred to phase 2 (container backend).
+/// <see cref="ResourceLimits.MaxCpuSeconds"/>, <see cref="ResourceLimits.MaxMemoryMb"/>, and
+/// <see cref="ResourceLimits.MaxFileDescriptors"/> are enforced at the OS level (setrlimit / cgroups v2)
+/// on child processes spawned by <c>execute_command</c> and <c>run_spell_script</c> via
+/// <c>Platform.IProcessResourceLimiter</c>. Container/VM isolation remains deferred to phase 2.
 /// </remarks>
 public sealed record SanctumConfig
 {
@@ -55,6 +58,14 @@ public sealed record SanctumConfig
 
     }
 
+    /// <summary>
+    /// Per-campaign retention limit for persisted Sanctum breach rows (Grimoire-backed). Clamped via
+    /// <see cref="Configuration.ArcanumSettingClamps.SanctumMaxBreachCount"/>. Distinct from the API
+    /// query limit (<see cref="Configuration.ArcanumSettingClamps.SanctumBreachQueryLimit"/>), which
+    /// bounds a single request's page size rather than total stored history.
+    /// </summary>
+    public int MaxBreachCount { get; init; } = 1000;
+
 }
 
 public enum SanctumMode
@@ -87,5 +98,14 @@ public sealed record ResourceLimits
     public int MaxFileWriteMb { get; init; } = 100;
 
     public int ProcessTimeoutSeconds { get; init; } = 300;
+
+    /// <summary>Maximum CPU time in seconds per tool invocation, enforced at the OS level. 0 = unlimited.</summary>
+    public int MaxCpuSeconds { get; init; } = 30;
+
+    /// <summary>Maximum resident memory in megabytes per tool invocation, enforced at the OS level. 0 = unlimited.</summary>
+    public int MaxMemoryMb { get; init; } = 512;
+
+    /// <summary>Maximum open file descriptors per tool invocation, enforced at the OS level. 0 = unlimited.</summary>
+    public int MaxFileDescriptors { get; init; } = 256;
 
 }

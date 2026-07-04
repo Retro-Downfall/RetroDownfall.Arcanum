@@ -20,6 +20,19 @@ public sealed record EventBusSettings
     /// </summary>
     public int HeartbeatSeconds { get; init; } = 30;
 
-    public int MaxSseConnections { get; init; } = 20;
+    /// <summary>
+    /// Global cap on concurrent SSE connections across all event streams. Must be at least
+    /// <see cref="MaxSseConnectionsPerType"/> for the per-type cap to have any effect (see
+    /// <see cref="Configuration.ConfigurationValidator"/>).
+    /// </summary>
+    public int MaxSseConnections { get; init; } = 50;
+
+    /// <summary>
+    /// Per-event-type cap on concurrent SSE connections, enforced in addition to the global
+    /// <see cref="MaxSseConnections"/> cap. Guarantees a fair share of the global pool to each
+    /// stream family (daemon, MCP, logs, session, Chronicle) so a single greedy client cannot
+    /// starve the others.
+    /// </summary>
+    public int MaxSseConnectionsPerType { get; init; } = 20;
 
 }

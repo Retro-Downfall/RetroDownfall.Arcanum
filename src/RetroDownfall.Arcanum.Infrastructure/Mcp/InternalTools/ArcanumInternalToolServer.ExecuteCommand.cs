@@ -1,10 +1,14 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -97,15 +101,48 @@ internal sealed partial class ArcanumInternalToolServer
 
         long totalOutputCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(_settings.ToolOutputCapBytes);
 
+        await using AsyncServiceScope resourceScope = _scopeFactory.CreateAsyncScope();
+
+        ISanctumGuard sanctumGuard = resourceScope.ServiceProvider.GetRequiredService<ISanctumGuard>();
+
+        IProcessResourceLimiter resourceLimiter = resourceScope.ServiceProvider.GetRequiredService<IProcessResourceLimiter>();
+
+        ResourceLimits resourceLimits = await sanctumGuard
+            .GetEffectiveResourceLimitsForWorkspaceAsync(_workspaceRoot, cancellationToken)
+            .ConfigureAwait(false);
+
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
             totalOutputCapBytes,
             _executeCommandTimeout,
+            resourceLimits,
+            resourceLimiter,
             cancellationToken).ConfigureAwait(false);
 
         switch (runResult.Outcome)
         {
+            case CappedChildProcessOutcome.ResourceLimitApplyFailed:
+
+                _logger?.LogError(
+                    "execute_command: failed to apply Sanctum resource limits: {Error}",
+                    runResult.ResourceLimitApplyError);
+
+                return ToolError(
+                    "execute_command: the invocation was blocked because OS-level resource limits could not be applied.");
+
+            case CappedChildProcessOutcome.ResourceLimitExceeded:
+
+                string denialMessage = await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
+                    sanctumGuard,
+                    _workspaceRoot,
+                    "execute_command",
+                    resourceLimits,
+                    runResult.ExceededResource,
+                    cancellationToken).ConfigureAwait(false);
+
+                return ToolError(denialMessage);
+
             case CappedChildProcessOutcome.IoErrorOnStart:
 
                 _logger?.LogError(runResult.FaultException, "execute_command: I/O error starting process.");

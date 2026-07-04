@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.TheForge;
@@ -209,7 +210,7 @@ internal static class WorkspaceEndpoints
             async (
                 string id,
                 string? relativePath,
-                bool recursive,
+                bool? recursive,
                 string? searchPattern,
                 IWorkspaceRegistry registry,
                 IFileSystemBrowser browser,
@@ -232,7 +233,7 @@ internal static class WorkspaceEndpoints
                 }
 
                 Result<FileListResult> result = await browser
-                    .ListAsync(workspace, relativePath, recursive, searchPattern, ctx.RequestAborted)
+                    .ListAsync(workspace, relativePath, recursive ?? false, searchPattern, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return result.IsSuccess
@@ -319,6 +320,237 @@ internal static class WorkspaceEndpoints
                             traceId));
             })
         .WithName("ReadWorkspaceFileContents");
+
+        apiGroup.MapPut(
+            "/workspaces/{id}/files/contents",
+            async (
+                string id,
+                string relativePath,
+                IWorkspaceRegistry registry,
+                IFileSystemWriter writer,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                // Read the body before any early return: the request body must be fully consumed
+                // before writing a response, or the connection cannot safely complete the response
+                // (mirrors the existing UpdateWorkspace PUT, which reads its body before checking
+                // whether the target resource exists).
+                FileWriteRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.FileWriteRequest,
+                    static httpContext => ApiRequestJson.InvalidBodyResult<FileWriteResult>(
+                        httpContext,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseFileWriteResult),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
+
+                if (request is null)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<FileWriteResult>.FromResult(
+                            Result<FileWriteResult>.Failure(
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+                }
+
+                WorkspaceInfo? workspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (workspace is null)
+                {
+                    return Results.Json(
+                        ApiResponse<FileWriteResult>.FromResult(
+                            Result<FileWriteResult>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileWriteResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
+                }
+
+                Result<FileWriteResult> result = await writer
+                    .WriteFileAsync(workspace, relativePath, request.Content, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return result.IsSuccess
+                    ? Results.Ok(ApiResponse<FileWriteResult>.FromResult(result, traceId))
+                    : Results.Json(
+                        ApiResponse<FileWriteResult>.FromResult(
+                            Result<FileWriteResult>.Failure(result.Error),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileWriteResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+            })
+        .WithName("WriteWorkspaceFileContents")
+        .WithLargeRequestBody();
+
+        apiGroup.MapPatch(
+            "/workspaces/{id}/files/contents",
+            async (
+                string id,
+                string relativePath,
+                IWorkspaceRegistry registry,
+                IFileSystemWriter writer,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                // Read the body before any early return — see the matching comment on the PUT endpoint above.
+                TextBlockReplaceRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+                    ctx,
+                    ArcanumJsonContext.Default.TextBlockReplaceRequest,
+                    static httpContext => ApiRequestJson.InvalidBodyResult<TextBlockReplaceResult>(
+                        httpContext,
+                        ApiRequestJson.MalformedJsonMessage,
+                        ArcanumJsonContext.Default.ApiResponseTextBlockReplaceResult),
+                    ctx.RequestAborted).ConfigureAwait(false);
+
+                if (jsonError is not null)
+                {
+                    return jsonError;
+                }
+
+                if (request is null)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<TextBlockReplaceResult>.FromResult(
+                            Result<TextBlockReplaceResult>.Failure(
+                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
+                            traceId));
+                }
+
+                WorkspaceInfo? workspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (workspace is null)
+                {
+                    return Results.Json(
+                        ApiResponse<TextBlockReplaceResult>.FromResult(
+                            Result<TextBlockReplaceResult>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseTextBlockReplaceResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
+                }
+
+                Result<TextBlockReplaceResult> result = await writer
+                    .ReplaceTextBlockAsync(
+                        workspace,
+                        relativePath,
+                        request.OldString,
+                        request.NewString,
+                        request.ExpectedReplacements,
+                        ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return result.IsSuccess
+                    ? Results.Ok(ApiResponse<TextBlockReplaceResult>.FromResult(result, traceId))
+                    : Results.Json(
+                        ApiResponse<TextBlockReplaceResult>.FromResult(
+                            Result<TextBlockReplaceResult>.Failure(result.Error),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseTextBlockReplaceResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+            })
+        .WithName("ReplaceWorkspaceFileTextBlock")
+        .WithLargeRequestBody();
+
+        apiGroup.MapDelete(
+            "/workspaces/{id}/files",
+            async (
+                string id,
+                string relativePath,
+                bool? recursive,
+                IWorkspaceRegistry registry,
+                IFileSystemWriter writer,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                WorkspaceInfo? workspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (workspace is null)
+                {
+                    return Results.Json(
+                        ApiResponse<FileDeleteResult>.FromResult(
+                            Result<FileDeleteResult>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileDeleteResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
+                }
+
+                Result<FileDeleteResult> result = await writer
+                    .DeleteAsync(workspace, relativePath, recursive ?? false, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return result.IsSuccess
+                    ? Results.Ok(ApiResponse<FileDeleteResult>.FromResult(result, traceId))
+                    : Results.Json(
+                        ApiResponse<FileDeleteResult>.FromResult(
+                            Result<FileDeleteResult>.Failure(result.Error),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileDeleteResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+            })
+        .WithName("DeleteWorkspaceFile");
+
+        apiGroup.MapPost(
+            "/workspaces/{id}/files/directory",
+            async (
+                string id,
+                string relativePath,
+                IWorkspaceRegistry registry,
+                IFileSystemWriter writer,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                WorkspaceInfo? workspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (workspace is null)
+                {
+                    return Results.Json(
+                        ApiResponse<DirectoryCreateResult>.FromResult(
+                            Result<DirectoryCreateResult>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseDirectoryCreateResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
+                }
+
+                Result<DirectoryCreateResult> result = await writer
+                    .CreateDirectoryAsync(workspace, relativePath, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return result.IsSuccess
+                    ? Results.Json(
+                        ApiResponse<DirectoryCreateResult>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseDirectoryCreateResult,
+                        statusCode: StatusCodes.Status201Created)
+                    : Results.Json(
+                        ApiResponse<DirectoryCreateResult>.FromResult(
+                            Result<DirectoryCreateResult>.Failure(result.Error),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseDirectoryCreateResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+            })
+        .WithName("CreateWorkspaceDirectory");
 
         return apiGroup;
     }

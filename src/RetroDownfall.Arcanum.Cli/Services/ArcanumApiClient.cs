@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -6,13 +7,18 @@ using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Wards;
+using RetroDownfall.Arcanum.Core.Workspaces;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -120,7 +126,8 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         MediaTypeHeaderValue? contentType,
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
         Func<HttpResponseMessage, byte[], ApiResponse<T>?, Result<T>> mapResponse,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string httpClientName = RequestHttpClientName)
     {
         string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
@@ -129,7 +136,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             return Result<T>.Failure(MissingApiKeyError);
         }
 
-        HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
+        HttpClient client = httpClientFactory.CreateClient(httpClientName);
 
         using HttpRequestMessage request = new(method, relativePath);
 
@@ -180,7 +187,8 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         MediaTypeHeaderValue? contentType,
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
         Func<ApiResponse<T>, Result<T>> mapSuccess,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string httpClientName = RequestHttpClientName)
     {
         return await SendRequestAsync(
             method,
@@ -216,7 +224,8 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
                 return Result<T>.Failure(new Error("Api.HttpError", fallback));
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            httpClientName).ConfigureAwait(false);
     }
 
     private async Task<Result<T>> SendRequestAsync<T>(
@@ -225,7 +234,8 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         byte[]? body,
         MediaTypeHeaderValue? contentType,
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string httpClientName = RequestHttpClientName)
     {
         return await SendRequestAsync(
             method,
@@ -234,7 +244,23 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             contentType,
             responseTypeInfo,
             static envelope => Result<T>.Success(envelope.Data!),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            httpClientName).ConfigureAwait(false);
+    }
+
+    private static string BuildQueryString(string path, params (string Key, string? Value)[] parameters)
+    {
+        List<string> parts = new(parameters.Length);
+
+        foreach ((string key, string? value) in parameters)
+        {
+            if (!string.IsNullOrEmpty(value))
+            {
+                parts.Add($"{key}={Uri.EscapeDataString(value)}");
+            }
+        }
+
+        return parts.Count == 0 ? path : $"{path}?{string.Join('&', parts)}";
     }
 
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
@@ -1412,4 +1438,1157 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    private static Func<HttpResponseMessage, byte[], ApiResponse<bool>?, Result<bool>> NoContentOrEnvelopeError() =>
+        static (response, _, envelope) =>
+        {
+            if ((int)response.StatusCode == 204)
+            {
+                return Result<bool>.Success(true);
+            }
+
+            if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+            {
+                return Result<bool>.Failure(envelope.Error.Value);
+            }
+
+            string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+            return Result<bool>.Failure(new Error("Api.HttpError", fallback));
+        };
+
+    private async Task<Result> DeleteReturningNoContentAsync(string relativePath, CancellationToken cancellationToken)
+    {
+        Result<bool> result = await SendRequestAsync(
+            HttpMethod.Delete,
+            relativePath,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            NoContentOrEnvelopeError(),
+            cancellationToken).ConfigureAwait(false);
+
+        return result.IsSuccess ? Result.Success() : Result.Failure(result.Error);
+    }
+
+    #region Campaign (The Forge)
+
+    public async Task<Result<ListPageResult<CampaignDto>>> GetCampaignsAsync(
+        WorkspaceType? type = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString("api/campaigns", ("type", type?.ToString()));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto,
+            static envelope => Result<ListPageResult<CampaignDto>>.Success(
+                envelope.Data ?? new ListPageResult<CampaignDto>([], false)),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CampaignDto>> GetCampaignAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/campaigns/{id:D}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseCampaignDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CampaignDto>> CreateCampaignAsync(
+        RegisterCampaignRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.RegisterCampaignRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/campaigns",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseCampaignDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CampaignDto>> UpdateCampaignAsync(
+        Guid id,
+        UpdateCampaignRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.UpdateCampaignRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Put,
+            $"api/campaigns/{id:D}",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseCampaignDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result> DeleteCampaignAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await DeleteReturningNoContentAsync($"api/campaigns/{id:D}", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<CampaignExportDto>> ExportCampaignAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/campaigns/{id:D}/export",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CampaignImportResultDto>> ImportCampaignAsync(
+        Guid id,
+        CampaignImportRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CampaignImportRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/campaigns/{id:D}/import",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CodexContentDto>> GetCampaignCodexAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/campaigns/{id:D}/codex",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseCodexContentDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CodexContentDto>> PutCampaignCodexAsync(
+        Guid id,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        CodexPutRequest request = new(content);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CodexPutRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Put,
+            $"api/campaigns/{id:D}/codex",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseCodexContentDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result> DeleteCampaignCodexAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await DeleteReturningNoContentAsync($"api/campaigns/{id:D}/codex", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<SpellSummary[]>> GetCampaignSpellsAsync(
+        Guid campaignId,
+        string? q = null,
+        string? tag = null,
+        string? tool = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            $"api/campaigns/{campaignId:D}/spells",
+            ("q", q),
+            ("tag", tag),
+            ("tool", tool));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellSummaryArray,
+            static envelope => Result<SpellSummary[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<ListPageResult<PromptSummaryDto>>> GetCampaignPromptsAsync(
+        Guid campaignId,
+        string? q = null,
+        string? tag = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            $"api/campaigns/{campaignId:D}/prompts",
+            ("q", q),
+            ("tag", tag));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto,
+            static envelope => Result<ListPageResult<PromptSummaryDto>>.Success(
+                envelope.Data ?? new ListPageResult<PromptSummaryDto>([], false)),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SessionQueryResult>> GetCampaignSessionsAsync(
+        Guid campaignId,
+        string? status = null,
+        string? search = null,
+        int? limit = null,
+        DateTimeOffset? beforeUpdatedAt = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            $"api/campaigns/{campaignId:D}/sessions",
+            ("status", status),
+            ("search", search),
+            ("limit", limit?.ToString(CultureInfo.InvariantCulture)),
+            ("beforeUpdatedAt", beforeUpdatedAt?.ToString("O")));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult,
+            static envelope => Result<SessionQueryResult>.Success(
+                envelope.Data ?? new SessionQueryResult([], null, false)),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region Configuration (Models and Providers)
+
+    public async Task<Result<ModelInfoDto[]>> GetModelsAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            "api/models",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray,
+            static envelope => Result<ModelInfoDto[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<ProviderInfoDto[]>> GetProvidersAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            "api/providers",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseProviderInfoDtoArray,
+            static envelope => Result<ProviderInfoDto[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region Spell (The Forge)
+
+    public async Task<Result<SpellSummary[]>> GetSpellsAsync(
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString("api/spells", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellSummaryArray,
+            static envelope => Result<SpellSummary[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellDetail>> GetSpellAsync(
+        string name,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString($"api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellDetail,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<bool>> CreateSpellAsync(
+        CreateSpellRequest request,
+        string workspace,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CreateSpellRequest);
+
+        string path = BuildQueryString("api/spells", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            path,
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<bool>> UpdateSpellAsync(
+        string name,
+        UpdateSpellRequest request,
+        string workspace,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.UpdateSpellRequest);
+
+        string path = BuildQueryString($"api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Put,
+            path,
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result> DeleteSpellAsync(
+        string name,
+        string workspace,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString($"api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));
+
+        return await DeleteReturningNoContentAsync(path, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellSummary[]>> SearchSpellsAsync(
+        string? q = null,
+        string? tag = null,
+        string? tool = null,
+        SpellSource? source = null,
+        Guid? campaignId = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            "api/spells/search",
+            ("q", q),
+            ("tag", tag),
+            ("tool", tool),
+            ("source", source?.ToString()),
+            ("campaignId", campaignId?.ToString("D")),
+            ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellSummaryArray,
+            static envelope => Result<SpellSummary[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellValidationResultDto>> ValidateSpellAsync(
+        string name,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString($"api/spells/{Uri.EscapeDataString(name)}/validate", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptResponseDto>> ExecuteSpellAsync(
+        string name,
+        SpellExecuteRequest request,
+        string? workspace = null,
+        string? version = null,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.SpellExecuteRequest);
+
+        string path = BuildQueryString(
+            $"api/spells/{Uri.EscapeDataString(name)}/execute",
+            ("workspace", workspace),
+            ("version", version));
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            path,
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellVersionDto[]>> GetSpellVersionsAsync(
+        string name,
+        string? workspace = null,
+        Guid? campaignId = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            $"api/spells/{Uri.EscapeDataString(name)}/versions",
+            ("workspace", workspace),
+            ("campaignId", campaignId?.ToString("D")));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellVersionDtoArray,
+            static envelope => Result<SpellVersionDto[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellExportDto>> ExportSpellAsync(
+        string name,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString($"api/spells/{Uri.EscapeDataString(name)}/export", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellExportDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellSummary>> ImportSpellAsync(
+        SpellImportRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.SpellImportRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/spells/import",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSpellSummary,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellCastResult>> CastSpellAsync(
+        string name,
+        SpellCastRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.SpellCastRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/spells/{Uri.EscapeDataString(name)}/cast",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSpellCastResult,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellSummary>> CloneSpellAsync(
+        string name,
+        CloneSpellRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CloneSpellRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/spells/{Uri.EscapeDataString(name)}/clone",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSpellSummary,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellVersionDto>> CreateSpellVersionAsync(
+        string name,
+        CreateSpellVersionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CreateSpellVersionRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/spells/{Uri.EscapeDataString(name)}/versions",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellVersionDto>> UpdateSpellVersionAsync(
+        string name,
+        string version,
+        UpdateSpellVersionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.UpdateSpellVersionRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Put,
+            $"api/spells/{Uri.EscapeDataString(name)}/versions/{Uri.EscapeDataString(version)}",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellVersionDto>> ActivateSpellVersionAsync(
+        string name,
+        string version,
+        ActivateSpellVersionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ActivateSpellVersionRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/spells/{Uri.EscapeDataString(name)}/versions/{Uri.EscapeDataString(version)}/activate",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region Prompt (The Forge)
+
+    public async Task<Result<ListPageResult<PromptSummaryDto>>> GetPromptsAsync(
+        Guid? campaignId = null,
+        string? q = null,
+        string? tag = null,
+        int? limit = null,
+        int? offset = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            "api/prompts",
+            ("campaignId", campaignId?.ToString("D")),
+            ("q", q),
+            ("tag", tag),
+            ("limit", limit?.ToString(CultureInfo.InvariantCulture)),
+            ("offset", offset?.ToString(CultureInfo.InvariantCulture)));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto,
+            static envelope => Result<ListPageResult<PromptSummaryDto>>.Success(
+                envelope.Data ?? new ListPageResult<PromptSummaryDto>([], false)),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptDetailDto>> GetPromptAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/prompts/{id:D}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptVersionDto[]>> GetPromptVersionsByNameAsync(
+        string name,
+        Guid? campaignId = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            $"api/prompts/by-name/{Uri.EscapeDataString(name)}/versions",
+            ("campaignId", campaignId?.ToString("D")));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponsePromptVersionDtoArray,
+            static envelope => Result<PromptVersionDto[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptDetailDto>> CreatePromptAsync(
+        CreatePromptRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CreatePromptRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/prompts",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptDetailDto>> UpdatePromptAsync(
+        Guid id,
+        UpdatePromptRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.UpdatePromptRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Put,
+            $"api/prompts/{id:D}",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result> DeletePromptAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await DeleteReturningNoContentAsync($"api/prompts/{id:D}", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<PromptRenderResultDto>> RenderPromptAsync(
+        Guid id,
+        Dictionary<string, string>? parameters,
+        CancellationToken cancellationToken = default)
+    {
+        PromptRenderRequest request = new(parameters);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PromptRenderRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/prompts/{id:D}/render",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptRenderResultDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptTestResultDto>> TestPromptAsync(
+        Guid id,
+        TestPromptRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.TestPromptRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/prompts/{id:D}/test",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptTestResultDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptResponseDto>> ExecutePromptAsync(
+        Guid id,
+        PromptExecuteRequest request,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PromptExecuteRequest);
+
+        string path = BuildQueryString($"api/prompts/{id:D}/execute", ("workspace", workspace));
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            path,
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptExportDto>> ExportPromptAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/prompts/{id:D}/export",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponsePromptExportDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptSummaryDto>> ImportPromptAsync(
+        PromptImportRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PromptImportRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/prompts/import",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptSummaryDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptDetailDto>> ClonePromptAsync(
+        Guid id,
+        ClonePromptRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ClonePromptRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/prompts/{id:D}/clone",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region Ward
+
+    public async Task<Result<WardDto[]>> GetWardsAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            "api/wards",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseWardDtoArray,
+            static envelope => Result<WardDto[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<WardDto>> GetWardAsync(string id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/wards/{Uri.EscapeDataString(id)}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseWardDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<WardResolutionDto>> ResolveWardAsync(
+        string id,
+        bool allow,
+        string? reason,
+        CancellationToken cancellationToken = default)
+    {
+        ResolveWardRequest request = new(allow, reason);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ResolveWardRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/wards/{Uri.EscapeDataString(id)}",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseWardResolutionDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region The Proving Grounds
+
+    public async Task<Result<TrialResult>> RunTrialAsync(Trial trial, CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(trial, ArcanumJsonContext.Default.Trial);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/proving-grounds/trials/run",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseTrialResult,
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region Apprentice (The Forge)
+
+    public async Task<Result<ListPageResult<ApprenticeSummaryDto>>> GetApprenticesAsync(
+        Guid? campaignId = null,
+        string? status = null,
+        int? limit = null,
+        DateTimeOffset? beforeUpdatedAt = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            "api/apprentices",
+            ("campaignId", campaignId?.ToString("D")),
+            ("status", status),
+            ("limit", limit?.ToString(CultureInfo.InvariantCulture)),
+            ("beforeUpdatedAt", beforeUpdatedAt?.ToString("O")));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto,
+            static envelope => Result<ListPageResult<ApprenticeSummaryDto>>.Success(
+                envelope.Data ?? new ListPageResult<ApprenticeSummaryDto>([], false)),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<ApprenticeDetailDto>> GetApprenticeAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/apprentices/{id:D}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<ApprenticeDetailDto>> CreateApprenticeAsync(
+        CreateApprenticeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CreateApprenticeRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/apprentices",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result> DeleteApprenticeAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await DeleteReturningNoContentAsync($"api/apprentices/{id:D}", cancellationToken).ConfigureAwait(false);
+
+    private async Task<Result<string>> PostApprenticeLifecycleAsync(
+        Guid id,
+        string action,
+        CancellationToken cancellationToken)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/apprentices/{id:D}/{action}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseString,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<string>> StartApprenticeAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await PostApprenticeLifecycleAsync(id, "start", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<string>> PauseApprenticeAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await PostApprenticeLifecycleAsync(id, "pause", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<string>> ResumeApprenticeAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await PostApprenticeLifecycleAsync(id, "resume", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<string>> CancelApprenticeAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await PostApprenticeLifecycleAsync(id, "cancel", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<ApprenticeDetailDto>> ReweaveApprenticeAsync(
+        Guid id,
+        IReadOnlyList<PlanStep> steps,
+        CancellationToken cancellationToken = default)
+    {
+        ReweaveApprenticeRequest request = new(steps);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ReweaveApprenticeRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/apprentices/{id:D}/reweave",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<string>> IntervereApprenticeAsync(
+        Guid id,
+        string guidance,
+        CancellationToken cancellationToken = default)
+    {
+        InterveneApprenticeRequest request = new(guidance);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.InterveneApprenticeRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/apprentices/{id:D}/intervene",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseString,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<ApprenticeDetailDto>> CastApprenticeAsync(
+        Guid id,
+        string goal,
+        string? name,
+        CancellationToken cancellationToken = default)
+    {
+        CastApprenticeRequest request = new(goal, name);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.CastApprenticeRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/apprentices/{id:D}/cast",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async IAsyncEnumerable<ChronicleFrame> StreamApprenticeChronicleAsync(
+        Guid id,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            yield return new ChronicleFrame(
+                "error",
+                null,
+                "No API key found. Run 'arcanum serve' once to generate and store a key.");
+
+            yield break;
+        }
+
+        HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
+
+        using HttpRequestMessage request = new(HttpMethod.Get, $"api/apprentices/{id:D}/chronicle");
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        HttpResponseMessage? response = null;
+
+        string? sendErrorMessage = null;
+
+        try
+        {
+            response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            sendErrorMessage = "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.";
+        }
+        catch (HttpRequestException)
+        {
+            sendErrorMessage = "API is unreachable. Is 'arcanum serve' running in a background terminal?";
+        }
+
+        if (sendErrorMessage is not null || response is null)
+        {
+            yield return new ChronicleFrame(
+                "error",
+                null,
+                sendErrorMessage ?? "API is unreachable. Is 'arcanum serve' running in a background terminal?");
+
+            yield break;
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+                ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+
+                string message = envelope is { IsSuccess: false, Error: not null }
+                    ? FormatApiError(envelope.Error.Value)
+                    : $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+                yield return new ChronicleFrame("error", null, message);
+
+                yield break;
+            }
+
+            Stream? responseStream = null;
+
+            string? openStreamError = null;
+
+            try
+            {
+                responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                openStreamError = TryMapStreamReadFailure(ex, cancellationToken);
+
+                if (openStreamError is null)
+                {
+                    throw;
+                }
+            }
+
+            if (openStreamError is not null)
+            {
+                yield return new ChronicleFrame("error", null, openStreamError);
+
+                yield break;
+            }
+
+            await using (responseStream!)
+            {
+                using StreamReader lineReader = new(responseStream!, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+
+                while (true)
+                {
+                    string? line = null;
+
+                    string? readError = null;
+
+                    try
+                    {
+                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        readError = TryMapStreamReadFailure(ex, cancellationToken);
+
+                        if (readError is null)
+                        {
+                            throw;
+                        }
+                    }
+
+                    if (readError is not null)
+                    {
+                        yield return new ChronicleFrame("error", null, readError);
+
+                        yield break;
+                    }
+
+                    if (line is null)
+                    {
+                        break;
+                    }
+
+                    if (line.Length == 0 || line[0] == ':')
+                    {
+                        continue;
+                    }
+
+                    if (!line.StartsWith("data:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    string data = line[5..].TrimStart();
+
+                    if (string.Equals(data, "[DONE]", StringComparison.Ordinal))
+                    {
+                        yield break;
+                    }
+
+                    ChronicleFrame? frame = TryParseChronicleFrame(data);
+
+                    if (frame is not null)
+                    {
+                        yield return frame;
+                    }
+                }
+            }
+        }
+    }
+
+    private static readonly string[] ChronicleMessageProperties =
+    [
+        "message",
+        "description",
+        "result",
+        "error",
+        "summary",
+    ];
+
+    private static ChronicleFrame? TryParseChronicleFrame(string json)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+
+            JsonElement root = document.RootElement;
+
+            string type = root.TryGetProperty("type", out JsonElement typeElement) && typeElement.ValueKind == JsonValueKind.String
+                ? typeElement.GetString() ?? "unknown"
+                : "unknown";
+
+            DateTimeOffset? timestamp = root.TryGetProperty("timestamp", out JsonElement timestampElement)
+                && timestampElement.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(
+                    timestampElement.GetString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out DateTimeOffset parsed)
+                    ? parsed
+                    : null;
+
+            string message = type;
+
+            foreach (string propertyName in ChronicleMessageProperties)
+            {
+                if (root.TryGetProperty(propertyName, out JsonElement valueElement)
+                    && valueElement.ValueKind == JsonValueKind.String)
+                {
+                    string? value = valueElement.GetString();
+
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        message = value;
+
+                        break;
+                    }
+                }
+            }
+
+            return new ChronicleFrame(type, timestamp, message);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    #endregion
+
 }
+
+public sealed record ChronicleFrame(string Type, DateTimeOffset? Timestamp, string Message);

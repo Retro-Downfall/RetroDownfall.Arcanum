@@ -149,6 +149,10 @@ public static class ArcanumSettingClamps
 
     public static long MaxFileReadSizeBytes(long value) => Math.Clamp(value, 1024, 10 * 1024 * 1024);
 
+    public static long MaxFileWriteSizeBytes(long value) => Math.Clamp(value, 1024, 10 * 1024 * 1024);
+
+    public static long MaxReplaceTextBlockBytes(long value) => Math.Clamp(value, 1024, 4 * 1024 * 1024);
+
     public static int SessionQueryLimit(int value) => Math.Clamp(value, 1, 10_000);
 
     public static int SessionStreamReplayLimit(int value) => Math.Clamp(value, 1, 10_000);
@@ -213,7 +217,15 @@ public static class ArcanumSettingClamps
 
     public static int SanctumProcessTimeoutSeconds(int value) => Math.Clamp(value, 10, 3600);
 
+    public static int SanctumMaxCpuSeconds(int value) => Math.Clamp(value, 0, 3600);
+
+    public static int SanctumMaxMemoryMb(int value) => Math.Clamp(value, 0, 32_768);
+
+    public static int SanctumMaxFileDescriptors(int value) => Math.Clamp(value, 0, 65_536);
+
     public static int SanctumBreachQueryLimit(int value) => Math.Clamp(value, 1, 1000);
+
+    public static int SanctumMaxBreachCount(int value) => Math.Clamp(value, 100, 100_000);
 
     public static int MaxInquisitorsPerTrial(int value) => Math.Clamp(value, 1, 200);
 
@@ -224,6 +236,8 @@ public static class ArcanumSettingClamps
     public static int MaxActiveWards(int value) => Math.Clamp(value, 1, 500);
 
     public static int MaxSseConnections(int value) => Math.Clamp(value, 1, 100);
+
+    public static int SseConnectionsPerType(int value) => Math.Clamp(value, 1, 50);
 
     public static int MaxEntriesPerSession(int value) => Math.Clamp(value, 100, 1_000_000);
 
@@ -260,6 +274,30 @@ public static class ArcanumSettingClamps
     public static int MaxResonantBytes(int value) => Math.Clamp(value, 4096, 1_048_576);
 
     public static int MaxParameterValueChars(int value) => Math.Clamp(value, 256, 65_536);
+
+    public static int HealthProbeIntervalSeconds(int value) => Math.Clamp(value, 5, 600);
+
+    public static int HealthRecoveryProbeIntervalSeconds(int value) => Math.Clamp(value, 5, 3_600);
+
+    public static int HealthFailureThreshold(int value) => Math.Clamp(value, 1, 100);
+
+    public static int MaxFallbackAttempts(int value) => Math.Clamp(value, 1, 10);
+
+    public static int HealthProbeTimeoutSeconds(int value) => Math.Clamp(value, 1, 30);
+
+    public static int EmbeddingsDimensions(int value) => Math.Clamp(value, 64, 4_096);
+
+    public static int EmbeddingsBatchSize(int value) => Math.Clamp(value, 1, 256);
+
+    public static int EmbeddingsChunkSizeChars(int value) => Math.Clamp(value, 128, 8_192);
+
+    public static int EmbeddingsChunkOverlapChars(int value) => Math.Clamp(value, 0, 1_024);
+
+    public static float EmbeddingsSimilarityThreshold(float value) => Math.Clamp(value, 0f, 1f);
+
+    public static int EmbeddingsMaxResults(int value) => Math.Clamp(value, 1, 50);
+
+    public static int EmbeddingsRequestTimeoutSeconds(int value) => Math.Clamp(value, 5, 300);
 
 }
 

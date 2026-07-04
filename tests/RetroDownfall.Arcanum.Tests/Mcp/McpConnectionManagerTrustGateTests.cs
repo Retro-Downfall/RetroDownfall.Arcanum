@@ -49,7 +49,9 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         IUnseenServantPacer pacer = new UnseenServantPacer(
             new FakeEventBus(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            scopeFactory,
+            NullLogger<UnseenServantPacer>.Instance);
 
         _manager = new McpConnectionManager(
             NullLogger<McpConnectionManager>.Instance,
@@ -116,16 +118,19 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         public Task<SanctumResult> ValidateToolAsync(string campaignId, string toolName, CancellationToken ct = default) =>
             Task.FromResult(new SanctumResult { Allowed = true });
 
-        public Task<IReadOnlyList<SanctumBreach>> GetBreachesAsync(
-            string campaignId,
-            int limit = 100,
-            CancellationToken ct = default) =>
-            Task.FromResult<IReadOnlyList<SanctumBreach>>([]);
-
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
+
+        public Task RecordResourceLimitBreachAsync(
+            string? workspaceRoot,
+            string toolName,
+            Core.Platform.ResourceLimitKind resource,
+            string limitValue,
+            string? actualValue,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
 
     }
 

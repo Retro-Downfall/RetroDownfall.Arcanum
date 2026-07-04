@@ -78,6 +78,14 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     public string TempHome => _tempHome;
 
+    /// <summary>
+    /// Optional hook applied to the patched <see cref="ArcanumSettings"/> before the host starts, letting a
+    /// single test flip an individual setting (e.g. <c>Workspaces.EnableFileWrite</c>) without needing a second
+    /// derived host — building two hosts from the same instance both try to seed the same Grimoire database
+    /// file, which collides. Must be set before the first client/host access.
+    /// </summary>
+    public Func<ArcanumSettings, ArcanumSettings>? SettingsOverride { get; set; }
+
     public HttpClient CreateAuthenticatedClient()
     {
 
@@ -157,7 +165,16 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                     {
                         MaxSseConnections = 1,
                     },
+                    Workspaces = built.Workspaces with
+                    {
+                        EnableFileWrite = true,
+                    },
                 };
+
+                if (SettingsOverride is not null)
+                {
+                    patched = SettingsOverride(patched);
+                }
 
                 return new TestOptionsMonitor<ArcanumSettings>(patched);
 

@@ -14,6 +14,16 @@ public sealed class WardGate : IWard
 
     private const string CapacityReason = "Maximum active wards reached — action was not allowed";
 
+    /// <summary>
+    /// Documented contract value for restart-driven denial. Wards are ephemeral by design: a ward's
+    /// <see cref="System.Threading.Tasks.TaskCompletionSource{TResult}"/> is correlated to one in-flight
+    /// inference turn in one process. <see cref="WardGate"/> is a fresh, empty singleton on every process
+    /// start (there are no active wards to iterate and deny), so no code path sets this value today — it
+    /// exists so future callers/clients have a stable string to compare against if that changes.
+    /// See docs/DESIGN.md §11.14 and docs/persistence.md §7.
+    /// </summary>
+    private const string HostRestartedReason = "Host restarted — ward timed out";
+
     // W3.3 Fix 1: atomic active-ward counter via AdmissionGate. The counter is
     // incremented BEFORE the TryAdd; if it exceeds MaxActiveWards it is rolled back
     // and the acquire is denied. The TryAdd-failure path (duplicate ward id) also

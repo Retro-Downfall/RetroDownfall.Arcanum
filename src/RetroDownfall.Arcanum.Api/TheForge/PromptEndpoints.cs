@@ -3,9 +3,9 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
-using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Spells;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -152,7 +152,7 @@ internal static class PromptEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<PromptDetailDto>.FromResult(
-                            Result<PromptDetailDto>.Failure(new Error("Prompt.DuplicateVersion", "A prompt with this name and version already exists.")),
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.DuplicateVersion, "A prompt with this name and version already exists.")),
                             traceId));
                 }
 
@@ -285,6 +285,79 @@ internal static class PromptEndpoints
                         traceId));
             })
         .WithName("UpdatePrompt")
+        .WithLargeRequestBody();
+
+        apiGroup.MapPost(
+            "/prompts/{id:guid}/clone",
+            async (Guid id, ClonePromptRequest? request, IPromptRepository repo, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (request is null || string.IsNullOrWhiteSpace(request.NewName) || string.IsNullOrWhiteSpace(request.NewVersion))
+                {
+                    return Results.BadRequest(
+                        ApiResponse<PromptDetailDto>.FromResult(
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "newName and newVersion are required.")),
+                            traceId));
+                }
+
+                Prompt? source = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (source is null)
+                {
+                    return Results.Json(
+                        ApiResponse<PromptDetailDto>.FromResult(
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.NotFound, "No prompt exists with that identifier.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                Guid? targetCampaignId = request.CampaignId ?? source.CampaignId;
+
+                Prompt? existing = await repo
+                    .GetByNameAndVersionAsync(request.NewName, request.NewVersion, targetCampaignId, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (existing is not null)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<PromptDetailDto>.FromResult(
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.DuplicateVersion, "A prompt with this name and version already exists in the target scope.")),
+                            traceId));
+                }
+
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+
+                Prompt cloned = new()
+                {
+                    Id = Guid.NewGuid(),
+                    CampaignId = targetCampaignId,
+                    Name = request.NewName.Trim(),
+                    Version = request.NewVersion.Trim(),
+                    Description = source.Description,
+                    Tags = source.Tags,
+                    Template = source.Template,
+                    ParameterSchema = source.ParameterSchema,
+                    DefaultParameters = source.DefaultParameters,
+                    Model = source.Model,
+                    Provider = source.Provider,
+                    Temperature = source.Temperature,
+                    TopP = source.TopP,
+                    MaxOutputTokens = source.MaxOutputTokens,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                };
+
+                await repo.AddAsync(cloned, ctx.RequestAborted).ConfigureAwait(false);
+
+                return Results.Created(
+                    $"/api/prompts/{cloned.Id}",
+                    ApiResponse<PromptDetailDto>.FromResult(
+                        Result<PromptDetailDto>.Success(PromptMapping.ToDetailDto(cloned)),
+                        traceId));
+            })
+        .WithName("ClonePrompt")
         .WithLargeRequestBody();
 
         apiGroup.MapDelete(

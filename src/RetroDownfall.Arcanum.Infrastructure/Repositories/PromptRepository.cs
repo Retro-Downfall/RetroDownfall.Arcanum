@@ -78,26 +78,33 @@ public sealed class PromptRepository : IPromptRepository
 
         int skip = Math.Max(0, offset);
 
-        List<Prompt> page = await _db.Prompts
+        // W: composite server-side ORDER BY (Name, UpdatedAt) combined with Skip/Take triggers
+        // "SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses" from the
+        // EF Core Sqlite provider's paging translator. Sort and page client-side instead; prompt tables
+        // are workspace-scoped and small, so this is not a performance concern.
+        List<Prompt> matched = await _db.Prompts
             .AsNoTracking()
             .Where(p => p.CampaignId == campaignId)
-            .OrderBy(p => p.Name)
-            .ThenByDescending(p => p.UpdatedAt)
-            .Skip(skip)
-            .Take(pageSize + 1)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        bool hasMore = page.Count > pageSize;
+        Prompt[] ordered = matched
+            .OrderBy(p => p.Name, StringComparer.Ordinal)
+            .ThenByDescending(p => p.UpdatedAt)
+            .ToArray();
+
+        Prompt[] page = ordered.Skip(skip).Take(pageSize + 1).ToArray();
+
+        bool hasMore = page.Length > pageSize;
 
         if (hasMore)
         {
-            page = page.Take(pageSize).ToList();
+            page = page.Take(pageSize).ToArray();
         }
 
         int? nextOffset = hasMore ? skip + pageSize : null;
 
-        return new ListPageResult<Prompt>(page.ToArray(), hasMore, nextOffset);
+        return new ListPageResult<Prompt>(page, hasMore, nextOffset);
     }
 
     public async Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)

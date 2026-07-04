@@ -111,7 +111,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (nameError is not null)
         {
-            return Result.Failure(new Error("Spell.InvalidName", nameError));
+            return Result.Failure(new Error(ErrorCodes.Spell.InvalidName, nameError));
         }
 
         string trimmedName = request.Name.Trim();
@@ -250,7 +250,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             if (FindBuiltinByName(allSpells, trimmedName) is not null)
             {
-                return Result.Failure(new Error("Spell.BuiltinReadOnly", "Built-in spells cannot be modified."));
+                return Result.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Built-in spells cannot be modified."));
             }
 
             return Result.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
@@ -325,7 +325,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             if (FindBuiltinByName(allSpells, trimmedName) is not null)
             {
-                return Result.Failure(new Error("Spell.BuiltinReadOnly", "Built-in spells cannot be deleted."));
+                return Result.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Built-in spells cannot be deleted."));
             }
 
             return Result.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
@@ -583,7 +583,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (existing is not null && existing.Source != SpellSource.Builtin)
         {
-            return Result<SpellSummary>.Failure(new Error("Spell.NameCollision", "A spell with that name already exists in the target workspace."));
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.NameCollision, "A spell with that name already exists in the target workspace."));
         }
 
         CreateSpellRequest create = new(
@@ -614,6 +614,336 @@ internal sealed partial class SpellRepository : ISpellRepository
         return createResult;
     }
 
+    public async Task<Result<SpellSummary>> CloneAsync(string name, string? workingDirectory, CloneSpellRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to clone spells."));
+        }
+
+        string? newNameError = ValidateName(request.NewName);
+
+        if (newNameError is not null)
+        {
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.InvalidName, newNameError));
+        }
+
+        string trimmedNewName = request.NewName.Trim();
+
+        string workspaceRoot = workingDirectory.Trim();
+
+        string spellsRoot = Path.Combine(workspaceRoot, "spells");
+
+        string spellDir = Path.Combine(spellsRoot, trimmedNewName);
+
+        if (IsUnderGlobalSpellsDirectory(spellDir))
+        {
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Cannot clone into the built-in spells directory."));
+        }
+
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+        ParsedSpell? source = FindByName(allSpells, name.Trim());
+
+        if (source is null)
+        {
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name in the resolved workspace."));
+        }
+
+        if (FindByName(allSpells, trimmedNewName) is not null)
+        {
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.NameCollision, $"Spell \"{trimmedNewName}\" already exists in this workspace."));
+        }
+
+        string content = SpellFileParser.FormatRenamed(source, trimmedNewName);
+
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        string? stagingDir = null;
+
+        try
+        {
+            Directory.CreateDirectory(spellsRoot);
+
+            stagingDir = Path.Combine(spellsRoot, $".staging-{Guid.NewGuid():N}");
+
+            Directory.CreateDirectory(stagingDir);
+
+            await File.WriteAllTextAsync(Path.Combine(stagingDir, "SPELL.md"), content, ct).ConfigureAwait(false);
+
+            if (source.SkillMetadata is not null)
+            {
+                SkillMetadata clonedMetadata = source.SkillMetadata with { Name = trimmedNewName, ActiveVersion = null };
+
+                await SkillJsonIO.WriteAsync(stagingDir, clonedMetadata, ct).ConfigureAwait(false);
+            }
+
+            if (Directory.Exists(spellDir))
+            {
+                return Result<SpellSummary>.Failure(
+                    new Error(ErrorCodes.Spell.NameCollision, $"Spell \"{trimmedNewName}\" already exists in this workspace."));
+            }
+
+            Directory.Move(stagingDir, spellDir);
+
+            stagingDir = null;
+
+            SpellSummary[] list = await ListAsync(workspaceRoot, ct).ConfigureAwait(false);
+
+            SpellSummary? summary = list.FirstOrDefault(s => string.Equals(s.Name, trimmedNewName, StringComparison.OrdinalIgnoreCase));
+
+            if (summary is null)
+            {
+                return Result<SpellSummary>.Failure(new Error("Spell.ImportFailed", "Spell was cloned but could not be listed."));
+            }
+
+            return Result<SpellSummary>.Success(summary);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to clone spell {SourceName} to {NewName} in {Workspace}", name, trimmedNewName, workspaceRoot);
+
+            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", ex.Message));
+        }
+        finally
+        {
+            TryDeleteStagingDirectory(stagingDir);
+        }
+    }
+
+    public async Task<Result<SpellVersionDto>> CreateVersionAsync(string name, string? workingDirectory, CreateSpellVersionRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to create spell versions."));
+        }
+
+        if (!SpellVersionPathPolicy.IsValidLabel(request.Version))
+        {
+            return Result<SpellVersionDto>.Failure(
+                new Error(ErrorCodes.Spell.InvalidVersion, $"Invalid version label \"{request.Version}\" \u2014 alphanumeric and dots only."));
+        }
+
+        string label = request.Version.Trim();
+
+        string workspaceRoot = workingDirectory.Trim();
+
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+        string trimmedName = name.Trim();
+
+        ParsedSpell? workspaceSpell = FindWorkspaceSpell(allSpells, trimmedName, workingDirectory);
+
+        if (workspaceSpell is null)
+        {
+            if (FindBuiltinByName(allSpells, trimmedName) is not null)
+            {
+                return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Built-in spells cannot have versions written."));
+            }
+
+            return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
+        }
+
+        string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
+
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        try
+        {
+            if (File.Exists(versionPath))
+            {
+                return Result<SpellVersionDto>.Failure(
+                    new Error(ErrorCodes.Spell.DuplicateVersion, $"Version \"{label}\" already exists for spell \"{trimmedName}\"."));
+            }
+
+            string content = SpellFileParser.FormatWithBody(workspaceSpell, request.Body);
+
+            await SpellAtomicFile.WriteAllTextAsync(versionPath, content, ct).ConfigureAwait(false);
+
+            DateTimeOffset createdAt = File.GetLastWriteTimeUtc(versionPath);
+
+            return Result<SpellVersionDto>.Success(new SpellVersionDto(label, false, createdAt, workspaceSpell.Description));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
+
+            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
+        }
+    }
+
+    public async Task<Result<SpellVersionDto>> UpdateVersionAsync(string name, string version, string? workingDirectory, UpdateSpellVersionRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to update spell versions."));
+        }
+
+        if (!SpellVersionPathPolicy.IsValidLabel(version))
+        {
+            return Result<SpellVersionDto>.Failure(
+                new Error(ErrorCodes.Spell.InvalidVersion, $"Invalid version label \"{version}\" \u2014 alphanumeric and dots only."));
+        }
+
+        string label = version.Trim();
+
+        string workspaceRoot = workingDirectory.Trim();
+
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+        string trimmedName = name.Trim();
+
+        ParsedSpell? workspaceSpell = FindWorkspaceSpell(allSpells, trimmedName, workingDirectory);
+
+        if (workspaceSpell is null)
+        {
+            if (FindBuiltinByName(allSpells, trimmedName) is not null)
+            {
+                return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Built-in spells cannot have versions written."));
+            }
+
+            return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
+        }
+
+        string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
+
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        try
+        {
+            if (!File.Exists(versionPath))
+            {
+                return Result<SpellVersionDto>.Failure(
+                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" does not exist for spell \"{trimmedName}\"."));
+            }
+
+            string content = SpellFileParser.FormatWithBody(workspaceSpell, request.Body);
+
+            await SpellAtomicFile.WriteAllTextAsync(versionPath, content, ct).ConfigureAwait(false);
+
+            DateTimeOffset createdAt = File.GetLastWriteTimeUtc(versionPath);
+
+            return Result<SpellVersionDto>.Success(new SpellVersionDto(label, false, createdAt, workspaceSpell.Description));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to update version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
+
+            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
+        }
+    }
+
+    public async Task<Result<SpellVersionDto>> ActivateVersionAsync(string name, string version, string? workingDirectory, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.NoWorkspace, "A workspace directory is required to activate spell versions."));
+        }
+
+        if (!SpellVersionPathPolicy.IsValidLabel(version))
+        {
+            return Result<SpellVersionDto>.Failure(
+                new Error(ErrorCodes.Spell.InvalidVersion, $"Invalid version label \"{version}\" \u2014 alphanumeric and dots only."));
+        }
+
+        string label = version.Trim();
+
+        string workspaceRoot = workingDirectory.Trim();
+
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+        string trimmedName = name.Trim();
+
+        ParsedSpell? workspaceSpell = FindWorkspaceSpell(allSpells, trimmedName, workingDirectory);
+
+        if (workspaceSpell is null)
+        {
+            if (FindBuiltinByName(allSpells, trimmedName) is not null)
+            {
+                return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Built-in spells cannot have versions activated."));
+            }
+
+            return Result<SpellVersionDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
+        }
+
+        string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
+
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        try
+        {
+            if (!File.Exists(versionPath))
+            {
+                return Result<SpellVersionDto>.Failure(
+                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" does not exist for spell \"{trimmedName}\"."));
+            }
+
+            string? recordedActiveVersion = workspaceSpell.SkillMetadata?.ActiveVersion;
+
+            string previousLabel = recordedActiveVersion
+                ?? (File.Exists(Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName("0")))
+                    ? DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture)
+                    : "0");
+
+            string previousBackupPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(previousLabel));
+
+            await SpellAtomicFile.WriteAllTextAsync(previousBackupPath, workspaceSpell.FullContent, ct).ConfigureAwait(false);
+
+            string newActiveContent = await File.ReadAllTextAsync(versionPath, ct).ConfigureAwait(false);
+
+            await SpellAtomicFile.WriteAllTextAsync(workspaceSpell.FilePath, newActiveContent, ct).ConfigureAwait(false);
+
+            SkillMetadata updatedMetadata = SkillJsonIO.SetActiveVersion(workspaceSpell, label);
+
+            await SkillJsonIO.WriteAsync(workspaceSpell.DirectoryPath, updatedMetadata, ct).ConfigureAwait(false);
+
+            DateTimeOffset activatedAt = File.GetLastWriteTimeUtc(workspaceSpell.FilePath);
+
+            return Result<SpellVersionDto>.Success(new SpellVersionDto(label, true, activatedAt, workspaceSpell.Description, previousLabel));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to activate version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
+
+            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
+        }
+    }
+
+    private static bool IsUnderGlobalSpellsDirectory(string candidateDir)
+    {
+        string globalRoot;
+
+        try
+        {
+            globalRoot = Path.GetFullPath(ArcanumPaths.GlobalSpellsDirectory);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        string fullCandidate;
+
+        try
+        {
+            fullCandidate = Path.GetFullPath(candidateDir);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        char sep = Path.DirectorySeparatorChar;
+
+        string prefix = globalRoot.TrimEnd(sep) + sep;
+
+        StringComparison cmp = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        return fullCandidate.Equals(globalRoot, cmp) || fullCandidate.StartsWith(prefix, cmp);
+    }
+
     private async Task<Result<SpellSummary>> ImportCreateStagedAsync(
         string workspace,
         CreateSpellRequest create,
@@ -626,7 +956,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (nameError is not null)
         {
-            return Result<SpellSummary>.Failure(new Error("Spell.InvalidName", nameError));
+            return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.InvalidName, nameError));
         }
 
         string workspaceRoot = workspace.Trim();
@@ -707,7 +1037,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             if (Directory.Exists(spellDir))
             {
                 return Result<SpellSummary>.Failure(
-                    new Error("Spell.NameCollision", "A spell with that name already exists in the target workspace."));
+                    new Error(ErrorCodes.Spell.NameCollision, "A spell with that name already exists in the target workspace."));
             }
 
             Directory.Move(stagingDir, spellDir);
@@ -847,7 +1177,8 @@ internal sealed partial class SpellRepository : ISpellRepository
             meta?.InputSchema,
             meta?.OutputSchema,
             meta?.DeclaredTools?.ToArray(),
-            meta?.Dependencies?.ToArray());
+            meta?.Dependencies?.ToArray(),
+            meta?.ActiveVersion);
     }
 
     internal static bool IsBuiltinSpell(ParsedSpell spell)

@@ -43,6 +43,23 @@ public sealed class AskCommand(
             return flagsExit == 0 ? 1 : flagsExit;
         }
 
+        Guid? campaignId = null;
+
+        if (!string.IsNullOrWhiteSpace(settings.Campaign))
+        {
+
+            if (!Guid.TryParse(settings.Campaign, out Guid parsedCampaignId))
+            {
+                AnsiConsole.MarkupLine(
+                    palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
+
+                return 1;
+            }
+
+            campaignId = parsedCampaignId;
+
+        }
+
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
@@ -125,7 +142,8 @@ public sealed class AskCommand(
                 Seed: flags.Seed,
                 ResponseFormat: flags.ResponseFormat,
                 PresencePenalty: flags.PresencePenalty,
-                FrequencyPenalty: flags.FrequencyPenalty);
+                FrequencyPenalty: flags.FrequencyPenalty,
+                CampaignId: campaignId);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
@@ -301,6 +319,10 @@ public sealed class AskCommand(
         [CommandOption("--unattended")]
         [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
         public bool Unattended { get; set; }
+
+        [CommandOption("-c|--campaign <ID>")]
+        [Description("Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).")]
+        public string? Campaign { get; init; }
 
         [CommandOption("--temperature <VALUE>")]
         [Description("Sampling temperature 0\u20132 (lower = more deterministic).")]

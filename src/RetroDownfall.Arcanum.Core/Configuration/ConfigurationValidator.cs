@@ -1,8 +1,9 @@
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-public sealed class ConfigurationValidator
+public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logger = null)
 {
 
     public Result Validate(ArcanumSettings settings)
@@ -136,6 +137,12 @@ public sealed class ConfigurationValidator
 
         ValidateHostWorkspace((settings.Host ?? new HostSettings()).Workspace, "host.workspace", errors);
 
+        ValidateResilience(settings, errors);
+
+        ValidateEventBus(settings);
+
+        ValidateEmbeddings(settings, errors);
+
         if (errors.Count > 0)
         {
 
@@ -147,6 +154,178 @@ public sealed class ConfigurationValidator
         }
 
         return Result.Success();
+
+    }
+
+    private void ValidateResilience(ArcanumSettings settings, List<ConfigurationValidationError> errors)
+    {
+
+        ResilienceSettings resilience = settings.Resilience ?? new ResilienceSettings();
+
+        if (!resilience.Enabled)
+        {
+            return;
+        }
+
+        if (resilience.HealthProbeIntervalSeconds != ArcanumSettingClamps.HealthProbeIntervalSeconds(resilience.HealthProbeIntervalSeconds))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "resilience.healthProbeIntervalSeconds",
+                $"Resilience.HealthProbeIntervalSeconds ({resilience.HealthProbeIntervalSeconds}) must be within the 5-600 clamp range."));
+
+        }
+
+        if (resilience.HealthRecoveryProbeIntervalSeconds != ArcanumSettingClamps.HealthRecoveryProbeIntervalSeconds(resilience.HealthRecoveryProbeIntervalSeconds))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "resilience.healthRecoveryProbeIntervalSeconds",
+                $"Resilience.HealthRecoveryProbeIntervalSeconds ({resilience.HealthRecoveryProbeIntervalSeconds}) must be within the 5-3,600 clamp range."));
+
+        }
+
+        if (resilience.HealthFailureThreshold != ArcanumSettingClamps.HealthFailureThreshold(resilience.HealthFailureThreshold))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "resilience.healthFailureThreshold",
+                $"Resilience.HealthFailureThreshold ({resilience.HealthFailureThreshold}) must be within the 1-100 clamp range."));
+
+        }
+
+        if (resilience.MaxFallbackAttempts != ArcanumSettingClamps.MaxFallbackAttempts(resilience.MaxFallbackAttempts))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "resilience.maxFallbackAttempts",
+                $"Resilience.MaxFallbackAttempts ({resilience.MaxFallbackAttempts}) must be within the 1-10 clamp range."));
+
+        }
+
+        if (resilience.HealthProbeTimeoutSeconds != ArcanumSettingClamps.HealthProbeTimeoutSeconds(resilience.HealthProbeTimeoutSeconds))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "resilience.healthProbeTimeoutSeconds",
+                $"Resilience.HealthProbeTimeoutSeconds ({resilience.HealthProbeTimeoutSeconds}) must be within the 1-30 clamp range."));
+
+        }
+
+        if ((settings.Providers ?? []).Length == 0)
+        {
+
+            // Not a failure — providers can be added later via hot-reload. Operators should still see
+            // a signal that resilience is enabled with nothing to probe yet.
+            logger?.LogWarning(
+                "Arcanum:Resilience:Enabled is true but Arcanum:Providers is empty. The probe scheduler will idle until providers are configured.");
+
+        }
+
+    }
+
+    private void ValidateEventBus(ArcanumSettings settings)
+    {
+
+        EventBusSettings eventBus = settings.EventBus ?? new EventBusSettings();
+
+        int maxConnections = ArcanumSettingClamps.MaxSseConnections(eventBus.MaxSseConnections);
+
+        int perTypeLimit = ArcanumSettingClamps.SseConnectionsPerType(eventBus.MaxSseConnectionsPerType);
+
+        if (maxConnections > 0 && perTypeLimit > maxConnections)
+        {
+
+            // Not a failure — the global cap triggers first and remains safe, but the per-type
+            // cap can never engage, which likely does not match operator intent.
+            logger?.LogWarning(
+                "Arcanum:EventBus:MaxSseConnectionsPerType ({PerTypeLimit}) exceeds Arcanum:EventBus:MaxSseConnections ({MaxConnections}); the global cap will always trigger first, making the per-type cap meaningless.",
+                perTypeLimit,
+                maxConnections);
+
+        }
+
+    }
+
+    /// <summary>
+    /// RAG Phase 1 — The Weave &amp; Divination. When <c>Arcanum:Embeddings:Enabled</c> is <c>true</c>,
+    /// <c>Provider</c> must reference an existing provider name and <c>Model</c> must be non-empty.
+    /// Every per-feature flag (Phase 2 <c>SessionSearchEnabled</c>, Phase 3
+    /// <c>CodebaseRetrievalEnabled</c>, Phase 4 <c>SagaEnabled</c>, Phase 5
+    /// <c>SemanticSpellRoutingEnabled</c>) requires <c>Enabled</c> to also be <c>true</c> — a flag
+    /// cannot be on while the shared embedding foundation is off.
+    /// </summary>
+    private static void ValidateEmbeddings(ArcanumSettings settings, List<ConfigurationValidationError> errors)
+    {
+
+        EmbeddingSettings embeddings = settings.Embeddings ?? new EmbeddingSettings();
+
+        if (embeddings.Enabled)
+        {
+
+            if (string.IsNullOrWhiteSpace(embeddings.Provider))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    "embeddings.provider",
+                    "Arcanum:Embeddings:Provider is required when Arcanum:Embeddings:Enabled is true."));
+
+            }
+            else if (!ProviderResolver.TryResolveProviderByName(settings, embeddings.Provider, out _))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    "embeddings.provider",
+                    $"Arcanum:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider."));
+
+            }
+
+            if (string.IsNullOrWhiteSpace(embeddings.Model))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    "embeddings.model",
+                    "Arcanum:Embeddings:Model is required when Arcanum:Embeddings:Enabled is true."));
+
+            }
+
+        }
+
+        if (embeddings.SessionSearchEnabled && !embeddings.Enabled)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "embeddings.sessionSearchEnabled",
+                "Arcanum:Embeddings:SessionSearchEnabled requires Arcanum:Embeddings:Enabled to be true."));
+
+        }
+
+        if (embeddings.CodebaseRetrievalEnabled && !embeddings.Enabled)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "embeddings.codebaseRetrievalEnabled",
+                "Arcanum:Embeddings:CodebaseRetrievalEnabled requires Arcanum:Embeddings:Enabled to be true."));
+
+        }
+
+        if (embeddings.SagaEnabled && !embeddings.Enabled)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "embeddings.sagaEnabled",
+                "Arcanum:Embeddings:SagaEnabled requires Arcanum:Embeddings:Enabled to be true."));
+
+        }
+
+        if (embeddings.SemanticSpellRoutingEnabled && !embeddings.Enabled)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "embeddings.semanticSpellRoutingEnabled",
+                "Arcanum:Embeddings:SemanticSpellRoutingEnabled requires Arcanum:Embeddings:Enabled to be true."));
+
+        }
 
     }
 

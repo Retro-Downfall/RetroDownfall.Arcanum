@@ -36,6 +36,11 @@
 
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
 
+    <!-- Pins the transitive Microsoft.OpenApi dependency (2.0.0, pulled in by Microsoft.AspNetCore.OpenApi
+         10.0.8) past GHSA-v5pm-xwqc-g5wc (circular schema references can terminate the process); patched in
+         2.7.5+. Remove once Microsoft.AspNetCore.OpenApi itself references a patched version. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
+
     <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
 
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />

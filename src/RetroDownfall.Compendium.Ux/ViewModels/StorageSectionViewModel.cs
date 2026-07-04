@@ -27,6 +27,8 @@ public sealed partial class StorageSectionViewModel : ObservableObject
 
     [ObservableProperty] private int _eventBusMaxSseConnections;
 
+    [ObservableProperty] private int _eventBusMaxSseConnectionsPerType;
+
     [ObservableProperty] private int _logsRingBufferCapacity;
 
     [ObservableProperty] private LogLevel _logsMinLevelInBuffer;
@@ -83,6 +85,8 @@ public sealed partial class StorageSectionViewModel : ObservableObject
 
         EventBusMaxSseConnections = eventBus.MaxSseConnections;
 
+        EventBusMaxSseConnectionsPerType = eventBus.MaxSseConnectionsPerType;
+
         LogsRingBufferCapacity = logs.RingBufferCapacity;
 
         LogsMinLevelInBuffer = logs.MinLevelInBuffer;
@@ -125,6 +129,8 @@ public sealed partial class StorageSectionViewModel : ObservableObject
         HeartbeatSeconds = EventBusHeartbeatSeconds,
 
         MaxSseConnections = EventBusMaxSseConnections,
+
+        MaxSseConnectionsPerType = EventBusMaxSseConnectionsPerType,
 
     };
 

@@ -131,6 +131,32 @@ public static class ErrorCodes
 
         public const string PathNotAllowed = "Workspace.PathNotAllowed";
 
+        public const string AccessDenied = "Workspace.AccessDenied";
+
+        public const string FileNotFound = "Workspace.FileNotFound";
+
+        public const string FileTooLarge = "Workspace.FileTooLarge";
+
+        public const string SymbolicLinkEscape = "Workspace.SymbolicLinkEscape";
+
+        public const string PathTraversal = "Workspace.PathTraversal";
+
+        public const string FileWriteDisabled = "Workspace.FileWriteDisabled";
+
+        public const string WriteFailed = "Workspace.WriteFailed";
+
+        public const string DeleteFailed = "Workspace.DeleteFailed";
+
+        public const string DirectoryNotEmpty = "Workspace.DirectoryNotEmpty";
+
+        public const string ReplacementNotFound = "Workspace.ReplacementNotFound";
+
+        public const string ReplacementAmbiguous = "Workspace.ReplacementAmbiguous";
+
+        public const string PathIsDirectory = "Workspace.PathIsDirectory";
+
+        public const string PathIsFile = "Workspace.PathIsFile";
+
     }
 
     /// <summary>Spell — workspace spell files and execution.</summary>
@@ -145,6 +171,16 @@ public static class ErrorCodes
 
         public const string InvalidWorkspace = "Spell.InvalidWorkspace";
 
+        public const string InvalidName = "Spell.InvalidName";
+
+        public const string NameCollision = "Spell.NameCollision";
+
+        public const string BuiltinReadOnly = "Spell.BuiltinReadOnly";
+
+        public const string DuplicateVersion = "Spell.DuplicateVersion";
+
+        public const string InvalidVersion = "Spell.InvalidVersion";
+
     }
 
     /// <summary>Prompt — named prompt templates.</summary>
@@ -154,6 +190,12 @@ public static class ErrorCodes
         public const string NotFound = "Prompt.NotFound";
 
         public const string CodexPathNotContained = "Prompt.CodexPathNotContained";
+
+        public const string DuplicateVersion = "Prompt.DuplicateVersion";
+
+        public const string InvalidName = "Prompt.InvalidName";
+
+        public const string InvalidVersion = "Prompt.InvalidVersion";
 
     }
 
@@ -232,6 +274,16 @@ public static class ErrorCodes
         public const string MissingApiKey = "Security.MissingApiKey";
 
         public const string BlockedOutboundUrl = "Security.BlockedOutboundUrl";
+
+    }
+
+    /// <summary>Embeddings — The Weave (embedding substrate) and Divination (semantic search).</summary>
+    public static class Embeddings
+    {
+
+        public const string ProviderUnavailable = "Embeddings.ProviderUnavailable";
+
+        public const string FeatureDisabled = "Embeddings.FeatureDisabled";
 
     }
 

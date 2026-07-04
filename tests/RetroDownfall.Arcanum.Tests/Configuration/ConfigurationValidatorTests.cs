@@ -779,4 +779,148 @@ public sealed class ConfigurationValidatorTests
 
     }
 
+    [Fact]
+    public void Validate_EmbeddingsDisabled_ReturnsSuccess_WithNoProviderOrModel()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = new EmbeddingSettings { Enabled = false },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_EmbeddingsEnabledWithoutProvider_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = new EmbeddingSettings { Enabled = true, Model = "nomic-embed-text" },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "embeddings.provider");
+
+    }
+
+    [Fact]
+    public void Validate_EmbeddingsEnabledWithoutModel_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "ollama" },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "embeddings.model");
+
+    }
+
+    [Fact]
+    public void Validate_EmbeddingsEnabledWithUnknownProvider_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "does-not-exist", Model = "nomic-embed-text" },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "embeddings.provider");
+
+        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("does-not-exist", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public void Validate_EmbeddingsEnabledWithValidProviderAndModel_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "ollama", Model = "nomic-embed-text" },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Theory]
+    [InlineData(nameof(EmbeddingSettings.SessionSearchEnabled), "embeddings.sessionSearchEnabled")]
+    [InlineData(nameof(EmbeddingSettings.CodebaseRetrievalEnabled), "embeddings.codebaseRetrievalEnabled")]
+    [InlineData(nameof(EmbeddingSettings.SagaEnabled), "embeddings.sagaEnabled")]
+    [InlineData(nameof(EmbeddingSettings.SemanticSpellRoutingEnabled), "embeddings.semanticSpellRoutingEnabled")]
+    public void Validate_FeatureFlagEnabledWithoutEmbeddingsEnabled_ReturnsFailure(string flagName, string expectedPointer)
+    {
+
+        EmbeddingSettings embeddings = flagName switch
+        {
+            nameof(EmbeddingSettings.SessionSearchEnabled) => new EmbeddingSettings { SessionSearchEnabled = true },
+            nameof(EmbeddingSettings.CodebaseRetrievalEnabled) => new EmbeddingSettings { CodebaseRetrievalEnabled = true },
+            nameof(EmbeddingSettings.SagaEnabled) => new EmbeddingSettings { SagaEnabled = true },
+            nameof(EmbeddingSettings.SemanticSpellRoutingEnabled) => new EmbeddingSettings { SemanticSpellRoutingEnabled = true },
+            _ => throw new ArgumentOutOfRangeException(nameof(flagName)),
+        };
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = embeddings,
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, e => e.Pointer == expectedPointer);
+
+    }
+
+    [Fact]
+    public void Validate_AllFeatureFlagsEnabledWithEmbeddingsEnabled_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Embeddings = new EmbeddingSettings
+            {
+                Enabled = true,
+                Provider = "ollama",
+                Model = "nomic-embed-text",
+                SessionSearchEnabled = true,
+                CodebaseRetrievalEnabled = true,
+                SagaEnabled = true,
+                SemanticSpellRoutingEnabled = true,
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
 }

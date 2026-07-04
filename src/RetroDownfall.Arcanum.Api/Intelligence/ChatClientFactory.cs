@@ -19,6 +19,14 @@ public interface IChatClientFactory
 
     Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Builds a lease for an explicit (provider, model) pair, bypassing <see cref="ProviderResolver"/>
+    /// selection. Used by the resilience fallback loop in <c>WizardIntelligenceProvider</c> to target a
+    /// specific fallback candidate after the first candidate fails connectivity. Dispatches to the same
+    /// per-kind lease construction as <see cref="ResolveClientAsync(string?, CancellationToken)"/>.
+    /// </summary>
+    Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken);
+
 }
 
 /// <summary>
@@ -67,15 +75,18 @@ public sealed class ChatClientFactory(
 
         }
 
-        return provider.Type switch
+        return await ResolveClientAsync(provider, resolvedModel, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken) =>
+        provider.Type switch
         {
             AiProviderKind.Ollama => CreateOllamaLease(provider, resolvedModel),
             AiProviderKind.OpenAICompatible => CreateOpenAiCompatibleLease(provider, resolvedModel),
             AiProviderKind.LlamaCppServer => await CreateLlamaCppLeaseAsync(provider, resolvedModel, cancellationToken).ConfigureAwait(false),
             _ => throw new InvalidOperationException($"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'."),
         };
-
-    }
 
     private ChatClientLease CreateOllamaLease(ProviderSettings provider, string resolvedModel)
     {

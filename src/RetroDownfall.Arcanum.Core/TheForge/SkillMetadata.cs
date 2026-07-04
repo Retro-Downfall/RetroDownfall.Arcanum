@@ -14,4 +14,5 @@ public sealed record SkillMetadata(
     string? Model,
     string? Provider,
     Dictionary<string, double>? DefaultParameters,
-    DateTimeOffset? LastModified);
+    DateTimeOffset? LastModified,
+    string? ActiveVersion = null);

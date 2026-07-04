@@ -17,23 +17,25 @@ public sealed class SseConnectionGateTests
             EventBus = new EventBusSettings { MaxSseConnections = 2 },
         };
 
-        SseConnectionGate gate = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+        SseConnectionGate gate = new(new SseConnectionCounter(), new TestOptionsMonitor<ArcanumSettings>(settings));
 
-        Assert.True(gate.TryAcquire(out SseConnectionLease? first));
+        Assert.True(gate.TryAcquire("Test", out SseConnectionLease? first, out _));
 
         Assert.NotNull(first);
 
-        Assert.True(gate.TryAcquire(out SseConnectionLease? second));
+        Assert.True(gate.TryAcquire("Test", out SseConnectionLease? second, out _));
 
         Assert.NotNull(second);
 
-        Assert.False(gate.TryAcquire(out SseConnectionLease? third));
+        Assert.False(gate.TryAcquire("Test", out SseConnectionLease? third, out SseConnectionDenial denial));
 
         Assert.Null(third);
 
+        Assert.Equal(SseDenialReason.Global, denial.Reason);
+
         first!.Dispose();
 
-        Assert.True(gate.TryAcquire(out SseConnectionLease? afterRelease));
+        Assert.True(gate.TryAcquire("Test", out SseConnectionLease? afterRelease, out _));
 
         Assert.NotNull(afterRelease);
 

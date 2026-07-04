@@ -1,6 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Intelligence.Spells;
 
 public sealed record SpellVersionDto(
-    int Version,
+    string Version,
+    bool IsActive,
     DateTimeOffset CreatedAt,
-    string? Description);
+    string? Description,
+    string? PreviousVersion = null);

@@ -62,10 +62,10 @@ internal static class EventEndpoints
             async (HttpContext httpContext, IEventBus eventBus, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
             {
 
-                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                if (!sseGate.TryAcquire(SseEventTypes.Daemon, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
 
-                    return SseConnectionResults.TooManyConnections(httpContext);
+                    return SseConnectionResults.FromDenial(httpContext, denial);
 
                 }
 
@@ -125,10 +125,10 @@ internal static class EventEndpoints
             async (HttpContext httpContext, IEventBus eventBus, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
             {
 
-                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                if (!sseGate.TryAcquire(SseEventTypes.Mcp, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
 
-                    return SseConnectionResults.TooManyConnections(httpContext);
+                    return SseConnectionResults.FromDenial(httpContext, denial);
 
                 }
 
@@ -188,10 +188,10 @@ internal static class EventEndpoints
             async (HttpContext httpContext, ILogQueryService query, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
             {
 
-                if (!sseGate.TryAcquire(out SseConnectionLease? sseLease))
+                if (!sseGate.TryAcquire(SseEventTypes.Logs, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
 
-                    return SseConnectionResults.TooManyConnections(httpContext);
+                    return SseConnectionResults.FromDenial(httpContext, denial);
 
                 }
 

@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Sanctum;
 
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
@@ -27,6 +29,12 @@ internal enum CappedChildProcessOutcome
 
     CanceledWhileReadingOutput,
 
+    /// <summary>OS-level resource limits could not be applied to <see cref="ProcessStartInfo"/> before start; the process was never started.</summary>
+    ResourceLimitApplyFailed,
+
+    /// <summary>The process was killed by the kernel for exceeding an OS-enforced resource limit (CPU time or memory).</summary>
+    ResourceLimitExceeded,
+
 }
 
 internal readonly record struct CappedStreamOutput(string Text, bool Truncated);
@@ -46,6 +54,12 @@ internal sealed class CappedChildProcessRunResult
 
     internal Exception? FaultException { get; init; }
 
+    /// <summary>Non-sensitive detail when <see cref="Outcome"/> is <see cref="CappedChildProcessOutcome.ResourceLimitApplyFailed"/>.</summary>
+    internal string? ResourceLimitApplyError { get; init; }
+
+    /// <summary>Which resource was exceeded when <see cref="Outcome"/> is <see cref="CappedChildProcessOutcome.ResourceLimitExceeded"/>.</summary>
+    internal ResourceLimitKind? ExceededResource { get; init; }
+
 }
 
 internal static class CappedChildProcessRunner
@@ -56,6 +70,8 @@ internal static class CappedChildProcessRunner
         ChildProcessEnvironmentProfile environmentProfile,
         long totalOutputCapBytes,
         TimeSpan timeout,
+        ResourceLimits? resourceLimits,
+        IProcessResourceLimiter? resourceLimiter,
         CancellationToken cancellationToken)
     {
 
@@ -67,6 +83,32 @@ internal static class CappedChildProcessRunner
         {
 
             perStreamCapBytes = 1024L;
+
+        }
+
+        // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
+        // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
+        // resource-limit enforcement is simply skipped for that invocation rather than applying an
+        // unconfigured default.
+        // Applied before Process.Start() so the rewritten StartInfo (potentially a ulimit shell
+        // prelude — see ProcessResourceLimiter) is what actually gets launched.
+        ProcessResourceLimiterResult limiterResult = resourceLimits is not null && resourceLimiter is not null
+            ? resourceLimiter.Apply(startInfo, resourceLimits)
+            : new ProcessResourceLimiterResult(null, null);
+
+        if (limiterResult.Error is not null)
+        {
+
+            return new CappedChildProcessRunResult
+            {
+
+                Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+
+                PerStreamCapBytes = perStreamCapBytes,
+
+                ResourceLimitApplyError = limiterResult.Error.Message,
+
+            };
 
         }
 
@@ -174,6 +216,10 @@ internal static class CappedChildProcessRunner
 
         }
 
+        // Captured immediately after a successful Start() so cgroup cleanup (if any) always runs
+        // against the actual child pid, regardless of which return path below is taken.
+        int startedPid = process.Id;
+
         CancellationTokenRegistration killRegistration = waitToken.Register(
             static state => TryKillProcessEntireTree((Process)state!),
             process);
@@ -279,18 +325,26 @@ internal static class CappedChildProcessRunner
 
             }
 
+            int exitCode = process.ExitCode;
+
+            ResourceLimitKind? exceededResource = CheckSignalKill(exitCode, resourceLimits);
+
             return new CappedChildProcessRunResult
             {
 
-                Outcome = CappedChildProcessOutcome.Completed,
+                Outcome = exceededResource is not null
+                    ? CappedChildProcessOutcome.ResourceLimitExceeded
+                    : CappedChildProcessOutcome.Completed,
 
                 Stdout = stdout,
 
                 Stderr = stderr,
 
-                ExitCode = process.ExitCode,
+                ExitCode = exitCode,
 
                 PerStreamCapBytes = perStreamCapBytes,
+
+                ExceededResource = exceededResource,
 
             };
 
@@ -300,7 +354,54 @@ internal static class CappedChildProcessRunner
 
             await killRegistration.DisposeAsync().ConfigureAwait(false);
 
+            if (limiterResult.CleanupAsync is not null)
+            {
+
+                await limiterResult.CleanupAsync(startedPid).ConfigureAwait(false);
+
+            }
+
         }
+
+    }
+
+    /// <summary>
+    /// Maps a child process's exit code to the OS-enforced resource limit it indicates was
+    /// exceeded, accounting for both signal-reporting conventions that can occur here: the shell
+    /// (<c>ulimit</c> prelude) convention of <c>128 + signal</c>, and a direct kernel report of the
+    /// negative signal number (observed when the tracked pid is signal-killed directly, e.g. after
+    /// the prelude's <c>exec</c> has replaced the shell's process image with the real target).
+    /// SIGXCPU (24), SIGKILL (9), and SIGSEGV (11) are POSIX-standard and identical on macOS and Linux.
+    /// </summary>
+    /// <remarks>
+    /// Only classifies the exit as a resource-limit breach when the corresponding limit was actually
+    /// configured (&gt; 0) for this invocation — otherwise a script that happens to exit with a
+    /// look-alike code (e.g. <c>exit(137)</c> for its own reasons, or a system-wide, unrelated OOM
+    /// kill while no Sanctum memory cap was set) would be misreported as a Sanctum breach.
+    /// </remarks>
+    private static ResourceLimitKind? CheckSignalKill(int exitCode, ResourceLimits? resourceLimits)
+    {
+
+        if (resourceLimits is null)
+        {
+
+            return null;
+
+        }
+
+        int signal = exitCode switch
+        {
+            < 0 => -exitCode,
+            > 128 => exitCode - 128,
+            _ => 0,
+        };
+
+        return signal switch
+        {
+            24 when resourceLimits.MaxCpuSeconds > 0 => ResourceLimitKind.Cpu,
+            9 or 11 when resourceLimits.MaxMemoryMb > 0 => ResourceLimitKind.Memory,
+            _ => null,
+        };
 
     }
 

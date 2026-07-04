@@ -19,6 +19,8 @@ public sealed class CappedChildProcessRunnerTests
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 65_536,
             timeout: TimeSpan.FromSeconds(30),
+            resourceLimits: null,
+            resourceLimiter: null,
             CancellationToken.None);
 
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
@@ -40,6 +42,8 @@ public sealed class CappedChildProcessRunnerTests
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 2048,
             timeout: TimeSpan.FromSeconds(30),
+            resourceLimits: null,
+            resourceLimiter: null,
             CancellationToken.None);
 
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
@@ -61,6 +65,8 @@ public sealed class CappedChildProcessRunnerTests
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 65_536,
             timeout: TimeSpan.FromMilliseconds(750),
+            resourceLimits: null,
+            resourceLimiter: null,
             CancellationToken.None);
 
         Assert.Equal(CappedChildProcessOutcome.TimedOut, result.Outcome);

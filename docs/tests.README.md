@@ -16,7 +16,7 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 |--------|--------|
 | Line | ≥ 85% |
 | Branch | ≥ 75% |
-| Security-critical types | 100% branch (`ApiKeyEndpointFilter`, `ApiKeyDigestCache`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `SandboxedFileIo`, `SanctumGuard`, `ToolHelpers`, `OutboundUrlGuard`, `WardGate`) |
+| Security-critical types | 100% branch (`ApiKeyEndpointFilter`, `ApiKeyDigestCache`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `SandboxedFileIo`, `SanctumGuard`, `WorkspacePathPolicy`, `OutboundUrlGuard`, `WardGate`) |
 
 Reports are written to `.tmp/coverage/report/index.html`.
 
@@ -43,7 +43,7 @@ xUnit runs **collections in parallel**; tests inside a collection run **serially
 | *(default)* | Pure-logic tests — parallel, no shared process state |
 | `[Collection("Grimoire")]` | SQLCipher template DB; per-test file copies |
 | `[Collection("ApiHost")]` | `ArcanumWebApplicationFactory` — shared WAF, isolated `HOME`, `DisableParallelization` |
-| `[Collection("ToolHelpers")]` | Static path-comparison test seams — `DisableParallelization` |
+| `[Collection("WorkspacePathPolicy")]` | Static path-comparison test seams — `DisableParallelization` |
 
 ### SQLCipher
 

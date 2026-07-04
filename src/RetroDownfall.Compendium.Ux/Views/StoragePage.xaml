@@ -117,6 +117,15 @@
                                      Maximum="100"
                                      Increment="1" />
 
+            <controls:LabeledStepper Label="Max SSE connections per type"
+                                     Description="Maximum concurrent SSE connections per event-type family (daemon, MCP, logs, session, Chronicle); guarantees a fair share of the global pool so one stream family cannot starve the others."
+                                     Key="eventBus.maxSseConnectionsPerType"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Storage.EventBusMaxSseConnectionsPerType, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="50"
+                                     Increment="1" />
+
             <Label Text="Logs"
                    FontSize="18"
                    FontAttributes="Bold" />

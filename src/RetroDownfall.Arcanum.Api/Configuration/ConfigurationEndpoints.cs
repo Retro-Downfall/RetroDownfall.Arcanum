@@ -162,6 +162,67 @@ internal static class ConfigurationEndpoints
         .WithName("ValidateConfiguration")
         .WithLargeRequestBody();
 
+        apiGroup.MapGet("/models", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
+        {
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            List<ModelInfoDto> models = [];
+
+            foreach (ProviderSettings provider in settings.Value.Providers ?? [])
+            {
+                string redactedEndpoint = RedactRequired(provider.Endpoint);
+
+                foreach (string model in provider.Models)
+                {
+                    models.Add(new ModelInfoDto(model, provider.Name, provider.Type.ToString(), redactedEndpoint, provider.ContextWindowLimit));
+                }
+
+                if (provider.Type == AiProviderKind.LlamaCppServer && provider.LlamaCpp?.ModelMap is { Count: > 0 } modelMap)
+                {
+                    foreach (string modelKey in modelMap.Keys)
+                    {
+                        models.Add(new ModelInfoDto(modelKey, provider.Name, provider.Type.ToString(), redactedEndpoint, provider.ContextWindowLimit));
+                    }
+                }
+            }
+
+            ApiResponse<ModelInfoDto[]> response = ApiResponse<ModelInfoDto[]>.FromResult(
+                Result<ModelInfoDto[]>.Success(models.ToArray()),
+                traceId);
+
+            return Results.Ok(response);
+        })
+        .WithName("GetModels");
+
+        apiGroup.MapGet("/providers", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
+        {
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            ProviderInfoDto[] providers = (settings.Value.Providers ?? [])
+                .Select(static p => new ProviderInfoDto(
+                    p.Name,
+                    p.Type.ToString(),
+                    RedactRequired(p.Endpoint),
+                    RedactOptional(p.ApiKey),
+                    p.Models,
+                    p.ContextWindowLimit,
+                    p.LlamaCpp?.ModelMap is { Count: > 0 }))
+                .ToArray();
+
+            ApiResponse<ProviderInfoDto[]> response = ApiResponse<ProviderInfoDto[]>.FromResult(
+                Result<ProviderInfoDto[]>.Success(providers),
+                traceId);
+
+            return Results.Ok(response);
+        })
+        .WithName("GetProviders");
+
         return apiGroup;
     }
+
+    private static string RedactRequired(string value) =>
+        string.IsNullOrEmpty(value) ? value : "***";
+
+    private static string? RedactOptional(string? value) =>
+        string.IsNullOrEmpty(value) ? value : "***";
 }

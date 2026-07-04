@@ -76,6 +76,23 @@ public sealed class ChatCommand(
             return flagsExit == 0 ? 1 : flagsExit;
         }
 
+        Guid? campaignId = null;
+
+        if (!string.IsNullOrWhiteSpace(settings.Campaign))
+        {
+
+            if (!Guid.TryParse(settings.Campaign, out Guid parsedCampaignId))
+            {
+                AnsiConsole.MarkupLine(
+                    themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
+
+                return 1;
+            }
+
+            campaignId = parsedCampaignId;
+
+        }
+
         IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
 
         try
@@ -96,6 +113,7 @@ public sealed class ChatCommand(
         {
             CurrentModel = string.IsNullOrWhiteSpace(settings.Model) ? null : settings.Model.Trim(),
             DisableTools = settings.NoTools,
+            CampaignId = campaignId,
         };
 
         WriteStartupBanner(session, settings, flags);
@@ -808,6 +826,13 @@ public sealed class ChatCommand(
             themePalette.MutedMarkup(Markup.Escape("MCP tools:")),
             themePalette.TextMarkup(Markup.Escape(session.DisableTools ? "disabled (--no-tools)" : "enabled")));
 
+        if (session.CampaignId is { } campaignId)
+        {
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("Campaign:")),
+                themePalette.HighlightMarkup(Markup.Escape(campaignId.ToString("D"))));
+        }
+
         if (settings.Unattended)
         {
             table.AddRow(
@@ -1383,7 +1408,8 @@ public sealed class ChatCommand(
                 Seed: flags.Seed,
                 ResponseFormat: flags.ResponseFormat,
                 PresencePenalty: flags.PresencePenalty,
-                FrequencyPenalty: flags.FrequencyPenalty);
+                FrequencyPenalty: flags.FrequencyPenalty,
+                CampaignId: session.CampaignId);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {
@@ -1652,6 +1678,8 @@ public sealed class ChatCommand(
 
         public ChatCompletionUsage? SessionMana { get; set; }
 
+        public Guid? CampaignId { get; set; }
+
     }
 
     internal static ChatCompletionUsage AccumulateSessionMana(ChatCompletionUsage? running, ChatCompletionUsage round)
@@ -1870,6 +1898,10 @@ public sealed class ChatCommand(
         [CommandOption("--unattended")]
         [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
         public bool Unattended { get; set; }
+
+        [CommandOption("-c|--campaign <ID>")]
+        [Description("Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).")]
+        public string? Campaign { get; init; }
 
         [CommandOption("--temperature <VALUE>")]
         [Description("Sampling temperature 0\u20132 (lower = more deterministic). Applies to every turn.")]

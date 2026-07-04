@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -16,13 +17,17 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -40,7 +45,10 @@ public sealed class WizardIntelligenceProvider(
     ICampaignRepository campaignRepository,
     ToolExecutionPipeline toolExecutionPipeline,
     GrimoireTurnWriter grimoireTurnWriter,
-    InferenceContextBuilder inferenceContextBuilder) : IArcanumIntelligenceProvider
+    InferenceContextBuilder inferenceContextBuilder,
+    ISanctumGuard sanctumGuard,
+    IProcessResourceLimiter processResourceLimiter,
+    IProviderHealthTracker? healthTracker = null) : IArcanumIntelligenceProvider
 {
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
@@ -92,20 +100,142 @@ public sealed class WizardIntelligenceProvider(
 
         CancellationToken inferenceToken = inferenceTimeoutCts.Token;
 
-        ChatClientLease lease;
+        bool resilienceEnabled = settings.Value.Resilience?.Enabled == true && healthTracker is not null;
 
-        try
+        if (!resilienceEnabled)
         {
-            lease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+            ChatClientLease singleLease;
+
+            try
+            {
+                singleLease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex)
+            {
+                logger.LogWarning(ex, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+
+                return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+            }
+
+            using (singleLease)
+            {
+                InferenceAttemptResult single = await AttemptBufferedInferenceAsync(singleLease, request, inferenceToken, callerToken).ConfigureAwait(false);
+
+                return single.Result;
+            }
         }
-        catch (InvalidOperationException ex)
+
+        return await ExecutePromptWithFallbackAsync(request, inferenceToken, callerToken).ConfigureAwait(false);
+    }
+
+    private async Task<Result<PromptTurnResult>> ExecutePromptWithFallbackAsync(
+        PingRequest request,
+        CancellationToken inferenceToken,
+        CancellationToken callerToken)
+    {
+
+        IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
+            ProviderResolver.ResolveCandidates(settings.Value, request.Model, healthTracker);
+
+        if (candidates.Count == 0)
         {
-            logger.LogWarning(ex, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+            logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
 
             return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
         }
 
-        using (lease)
+        int maxAttempts = Math.Min(
+            candidates.Count,
+            ArcanumSettingClamps.MaxFallbackAttempts(
+                settings.Value.Resilience?.MaxFallbackAttempts ?? new ResilienceSettings().MaxFallbackAttempts));
+
+        Result<PromptTurnResult> lastFailure = Result<PromptTurnResult>.Failure(
+            new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+
+        for (int attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex++)
+        {
+            (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
+
+            bool isLastAttempt = attemptIndex == maxAttempts - 1;
+
+            ChatClientLease lease;
+
+            try
+            {
+                lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                healthTracker!.MarkFailed(provider.Name);
+
+                logger.LogWarning(
+                    ex,
+                    "Provider {ProviderName} unavailable while resolving client (fallback attempt {Attempt}/{MaxAttempts}).",
+                    provider.Name,
+                    attemptIndex + 1,
+                    maxAttempts);
+
+                lastFailure = Result<PromptTurnResult>.Failure(new Error(
+                    provider.Type == AiProviderKind.Ollama ? ErrorCodes.Ollama.Error : ErrorCodes.Hub.Error,
+                    BuildInferenceFailureMessage(provider, provider.Type == AiProviderKind.Ollama)));
+
+                if (!IsConnectivityFailure(ex, callerToken) || isLastAttempt)
+                {
+                    return lastFailure;
+                }
+
+                continue;
+            }
+
+            using (lease)
+            {
+                InferenceAttemptResult attempt = await AttemptBufferedInferenceAsync(lease, request, inferenceToken, callerToken).ConfigureAwait(false);
+
+                if (attempt.Result.IsSuccess)
+                {
+                    healthTracker!.MarkHealthy(provider.Name);
+
+                    return attempt.Result;
+                }
+
+                lastFailure = attempt.Result;
+
+                if (!attempt.IsConnectivityFailure || isLastAttempt)
+                {
+                    return lastFailure;
+                }
+
+                healthTracker!.MarkFailed(provider.Name);
+
+                logger.LogWarning(
+                    "Provider {ProviderName} inference failed with a connectivity error (fallback attempt {Attempt}/{MaxAttempts}); trying next candidate.",
+                    provider.Name,
+                    attemptIndex + 1,
+                    maxAttempts);
+
+            }
+
+        }
+
+        return lastFailure;
+
+    }
+
+    private async Task<InferenceAttemptResult> AttemptBufferedInferenceAsync(
+        ChatClientLease lease,
+        PingRequest request,
+        CancellationToken inferenceToken,
+        CancellationToken callerToken)
+    {
+
+        string prompt = request.Prompt;
+
+        Stopwatch inferenceStopwatch = Stopwatch.StartNew();
+
         {
             string targetModel = lease.ResolvedModel;
 
@@ -122,7 +252,7 @@ public sealed class WizardIntelligenceProvider(
 
                 if (ensure.IsFailure)
                 {
-                    return Result<PromptTurnResult>.Failure(ensure.Error);
+                    return new InferenceAttemptResult(Result<PromptTurnResult>.Failure(ensure.Error), IsConnectivityFailure: false);
                 }
             }
 
@@ -171,7 +301,7 @@ public sealed class WizardIntelligenceProvider(
                         .ConfigureAwait(false);
                 }
 
-                return Result<PromptTurnResult>.Failure(routedSpell.Error);
+                return new InferenceAttemptResult(Result<PromptTurnResult>.Failure(routedSpell.Error), IsConnectivityFailure: false);
             }
 
             resolvedSpell = routedSpell.Value;
@@ -258,7 +388,9 @@ public sealed class WizardIntelligenceProvider(
                                 .ConfigureAwait(false);
                         }
 
-                        return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.ToolLoop, "Tool invocation limit reached."));
+                        return new InferenceAttemptResult(
+                            Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.ToolLoop, "Tool invocation limit reached.")),
+                            IsConnectivityFailure: false);
                     }
 
                     foreach (FunctionCallContent fcc in calls)
@@ -308,7 +440,11 @@ public sealed class WizardIntelligenceProvider(
 
                 string finishReason = MapChatFinishReasonToOpenAi(response.FinishReason);
 
-                return Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason));
+                RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, accumulatedUsage);
+
+                return new InferenceAttemptResult(
+                    Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)),
+                    IsConnectivityFailure: false);
             }
             catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
             {
@@ -324,7 +460,9 @@ public sealed class WizardIntelligenceProvider(
 
                 logger.LogWarning("Inference wall-clock timeout exceeded for model {ModelName}.", targetModel);
 
-                return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Timeout, PublicInferenceTimeoutMessage));
+                return new InferenceAttemptResult(
+                    Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Timeout, PublicInferenceTimeoutMessage)),
+                    IsConnectivityFailure: true);
 
             }
             catch (OperationCanceledException)
@@ -374,10 +512,12 @@ public sealed class WizardIntelligenceProvider(
                         .ConfigureAwait(false);
                 }
 
-                return Result<PromptTurnResult>.Failure(
-                    new Error(
-                        lease.IsOllama ? ErrorCodes.Ollama.Error : ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(lease)));
+                return new InferenceAttemptResult(
+                    Result<PromptTurnResult>.Failure(
+                        new Error(
+                            lease.IsOllama ? ErrorCodes.Ollama.Error : ErrorCodes.Hub.Error,
+                            BuildInferenceFailureMessage(lease))),
+                    IsConnectivityFailure: IsConnectivityFailure(ex, callerToken));
             }
         }
         }
@@ -418,33 +558,247 @@ public sealed class WizardIntelligenceProvider(
 
         CancellationToken inferenceToken = inferenceTimeoutCts.Token;
 
-        InvalidOperationException? resolveFailure = null;
+        bool resilienceEnabled = settings.Value.Resilience?.Enabled == true && healthTracker is not null;
 
-        ChatClientLease? leaseOrNull = null;
-
-        try
+        if (!resilienceEnabled)
         {
-            leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+            InvalidOperationException? resolveFailure = null;
+
+            ChatClientLease? leaseOrNull = null;
+
+            try
+            {
+                leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex)
+            {
+                resolveFailure = ex;
+            }
+
+            if (resolveFailure is not null)
+            {
+                logger.LogWarning(resolveFailure, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+
+                yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
+
+                yield break;
+            }
+
+            ChatClientLease singleLease = leaseOrNull!;
+
+            StreamFailureClassification singleClassification = new();
+
+            try
+            {
+                await foreach (IntelligenceEvent evt in StreamCommittedInferenceAsync(singleLease, request, prompt, singleClassification, inferenceToken, callerToken).ConfigureAwait(false))
+                {
+                    yield return evt;
+                }
+            }
+            finally
+            {
+                singleLease.Dispose();
+            }
+
+            yield break;
         }
-        catch (InvalidOperationException ex)
-        {
-            resolveFailure = ex;
-        }
 
-        if (resolveFailure is not null)
+        IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> streamCandidates =
+            ProviderResolver.ResolveCandidates(settings.Value, request.Model, healthTracker);
+
+        if (streamCandidates.Count == 0)
         {
-            logger.LogWarning(resolveFailure, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+            logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
 
             yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
 
             yield break;
         }
 
-        ChatClientLease lease = leaseOrNull!;
+        int streamMaxAttempts = Math.Min(
+            streamCandidates.Count,
+            ArcanumSettingClamps.MaxFallbackAttempts(
+                settings.Value.Resilience?.MaxFallbackAttempts ?? new ResilienceSettings().MaxFallbackAttempts));
+
+        for (int attemptIndex = 0; attemptIndex < streamMaxAttempts; attemptIndex++)
+        {
+            (ProviderSettings candidateProvider, string candidateModel) = streamCandidates[attemptIndex];
+
+            bool isLastAttempt = attemptIndex == streamMaxAttempts - 1;
+
+            ChatClientLease? candidateLease = null;
+
+            Exception? leaseBuildFailure = null;
+
+            try
+            {
+                candidateLease = await chatClientFactory.ResolveClientAsync(candidateProvider, candidateModel, inferenceToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                leaseBuildFailure = ex;
+            }
+
+            if (leaseBuildFailure is not null)
+            {
+                healthTracker!.MarkFailed(candidateProvider.Name);
+
+                bool retryableBuildFailure = IsConnectivityFailure(leaseBuildFailure, callerToken) && !isLastAttempt;
+
+                logger.LogWarning(
+                    leaseBuildFailure,
+                    "Provider {ProviderName} unavailable while resolving streaming client (fallback attempt {Attempt}/{MaxAttempts}).",
+                    candidateProvider.Name,
+                    attemptIndex + 1,
+                    streamMaxAttempts);
+
+                if (retryableBuildFailure)
+                {
+                    continue;
+                }
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    BuildInferenceFailureMessage(candidateProvider, candidateProvider.Type == AiProviderKind.Ollama));
+
+                yield break;
+            }
+
+            ChatClientLease lease = candidateLease!;
+
+            StreamFailureClassification classification = new();
+
+            IAsyncEnumerator<IntelligenceEvent> enumerator = StreamCommittedInferenceAsync(lease, request, prompt, classification, inferenceToken, callerToken).GetAsyncEnumerator();
+
+            Exception? moveNextFailure = null;
+
+            bool hasFirst = false;
+
+            try
+            {
+                hasFirst = await enumerator.MoveNextAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                lease.Dispose();
+
+                throw;
+            }
+            catch (Exception ex)
+            {
+                moveNextFailure = ex;
+            }
+
+            if (moveNextFailure is not null)
+            {
+                healthTracker!.MarkFailed(candidateProvider.Name);
+
+                bool retryableMoveFailure = IsConnectivityFailure(moveNextFailure, callerToken) && !isLastAttempt;
+
+                logger.LogWarning(
+                    moveNextFailure,
+                    "Provider {ProviderName} failed to start streaming (fallback attempt {Attempt}/{MaxAttempts}).",
+                    candidateProvider.Name,
+                    attemptIndex + 1,
+                    streamMaxAttempts);
+
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                lease.Dispose();
+
+                if (retryableMoveFailure)
+                {
+                    continue;
+                }
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    BuildInferenceFailureMessage(candidateProvider, candidateProvider.Type == AiProviderKind.Ollama));
+
+                yield break;
+            }
+
+            if (!hasFirst)
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                lease.Dispose();
+
+                yield break;
+            }
+
+            IntelligenceEvent firstEvent = enumerator.Current;
+
+            bool firstIsRetryableConnectivityError = firstEvent.Type == IntelligenceEventType.Error
+                && classification.IsConnectivityFailure
+                && !isLastAttempt;
+
+            if (firstIsRetryableConnectivityError)
+            {
+                healthTracker!.MarkFailed(candidateProvider.Name);
+
+                logger.LogWarning(
+                    "Provider {ProviderName} streaming connection failed (fallback attempt {Attempt}/{MaxAttempts}); trying next candidate.",
+                    candidateProvider.Name,
+                    attemptIndex + 1,
+                    streamMaxAttempts);
+
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                lease.Dispose();
+
+                continue;
+            }
+
+            healthTracker!.MarkHealthy(candidateProvider.Name);
+
+            try
+            {
+                yield return firstEvent;
+
+                while (await enumerator.MoveNextAsync().ConfigureAwait(false))
+                {
+                    yield return enumerator.Current;
+                }
+            }
+            finally
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+
+                lease.Dispose();
+            }
+
+            yield break;
+        }
+    }
+
+    // CS8425: intentionally no [EnumeratorCancellation] parameter — every caller (StreamPromptAsync)
+    // passes inferenceToken/callerToken as ordinary arguments and drives the enumerator manually via
+    // GetAsyncEnumerator()/MoveNextAsync() rather than `await foreach ... .WithCancellation(...)`.
+    // Attributing a parameter here would let an incidental token passed to GetAsyncEnumerator silently
+    // override the explicit per-candidate inferenceToken, which is not what the fallback loop wants.
+#pragma warning disable CS8425
+    private async IAsyncEnumerable<IntelligenceEvent> StreamCommittedInferenceAsync(
+        ChatClientLease lease,
+        PingRequest request,
+        string prompt,
+        StreamFailureClassification classification,
+        CancellationToken inferenceToken,
+        CancellationToken callerToken)
+#pragma warning restore CS8425
+    {
 
         GrimoireTurnWriter.TurnHandle grimoireTurn = new();
 
         StringBuilder streamAccumulator = new(1024);
+
+        Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
         try
         {
@@ -466,6 +820,8 @@ public sealed class WizardIntelligenceProvider(
 
                 if (localCheck.IsFailure)
                 {
+                    classification.IsConnectivityFailure = true;
+
                     yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicListLocalModelsFailureMessage);
 
                     yield break;
@@ -699,6 +1055,8 @@ public sealed class WizardIntelligenceProvider(
 
                             inferenceError = PublicInferenceTimeoutMessage;
 
+                            classification.IsConnectivityFailure = true;
+
                             break;
 
                         }
@@ -715,6 +1073,8 @@ public sealed class WizardIntelligenceProvider(
                             logger.LogError(ex, "Streaming read failed for model {ModelName}.", targetModel);
 
                             inferenceError = BuildInferenceFailureMessage(lease);
+
+                            classification.IsConnectivityFailure = true;
 
                             break;
                         }
@@ -769,6 +1129,8 @@ public sealed class WizardIntelligenceProvider(
                         inferenceError = null;
 
                         streamingMoveNextFailure = null;
+
+                        classification.IsConnectivityFailure = false;
 
                         streamOuterRestart = true;
                     }
@@ -899,6 +1261,8 @@ public sealed class WizardIntelligenceProvider(
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
+        RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
+
         yield return new IntelligenceEvent(
             IntelligenceEventType.Result,
             "Complete",
@@ -913,8 +1277,6 @@ public sealed class WizardIntelligenceProvider(
                     grimoireTurn,
                     streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null)
                 .ConfigureAwait(false);
-
-            lease.Dispose();
         }
     }
 
@@ -1365,7 +1727,15 @@ public sealed class WizardIntelligenceProvider(
 
             long outputCap = ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.Intelligence.ToolOutputCapBytes);
 
-            tools.Add(new ArcanumSpellScriptTool(scriptRoots, TimeSpan.FromSeconds(sec), sec, outputCap, logger));
+            tools.Add(new ArcanumSpellScriptTool(
+                scriptRoots,
+                TimeSpan.FromSeconds(sec),
+                sec,
+                outputCap,
+                logger,
+                sanctumGuard,
+                processResourceLimiter,
+                workingDirectory));
         }
 
         if (ShouldDisableMcpTools(request))
@@ -1658,6 +2028,50 @@ public sealed class WizardIntelligenceProvider(
         return new ChatCompletionUsage(p, c, p + c);
     }
 
+    /// <summary>
+    /// Records <c>arcanum_inference_duration_seconds</c> and <c>arcanum_inference_tokens_total</c> for a
+    /// completed turn (buffered or streamed). Only called on the success path — a failed/cancelled/retried
+    /// attempt does not represent a completed inference turn for latency purposes.
+    /// </summary>
+    private static void RecordInferenceMetrics(string providerName, string model, TimeSpan elapsed, ChatCompletionUsage? usage)
+    {
+
+        ArcanumMetrics.InferenceDuration.Record(
+            elapsed.TotalSeconds,
+            new KeyValuePair<string, object?>("provider", providerName),
+            new KeyValuePair<string, object?>("model", model));
+
+        if (usage is null)
+        {
+
+            return;
+
+        }
+
+        if (usage.PromptTokens > 0)
+        {
+
+            ArcanumMetrics.InferenceTokensTotal.Add(
+                usage.PromptTokens,
+                new KeyValuePair<string, object?>("provider", providerName),
+                new KeyValuePair<string, object?>("model", model),
+                new KeyValuePair<string, object?>("direction", "prompt"));
+
+        }
+
+        if (usage.CompletionTokens > 0)
+        {
+
+            ArcanumMetrics.InferenceTokensTotal.Add(
+                usage.CompletionTokens,
+                new KeyValuePair<string, object?>("provider", providerName),
+                new KeyValuePair<string, object?>("model", model),
+                new KeyValuePair<string, object?>("direction", "completion"));
+
+        }
+
+    }
+
     private async Task TryIncrementSessionTokensAsync(
         Guid? sessionId,
         ChatCompletionUsage? usage,
@@ -1823,20 +2237,61 @@ public sealed class WizardIntelligenceProvider(
 
     }
 
-    private static string BuildInferenceFailureMessage(ChatClientLease lease)
+    private static string BuildInferenceFailureMessage(ChatClientLease lease) =>
+        BuildInferenceFailureMessage(lease.Provider, lease.IsOllama);
+
+    private static string BuildInferenceFailureMessage(ProviderSettings provider, bool isOllama)
     {
 
-        // W3.5: do NOT embed lease.Provider.Endpoint — this message surfaces to clients via the
+        // W3.5: do NOT embed provider.Endpoint — this message surfaces to clients via the
         // native /api inference envelopes and the raw endpoint URL can leak internal hostnames/paths.
         // The operator-chosen provider name is retained; endpoint detail stays in server logs.
-        if (lease.IsOllama)
+        if (isOllama)
         {
 
-            return $"Ollama provider '{lease.Provider.Name}' is unreachable. Ensure Ollama is running and the configured endpoint is correct.";
+            return $"Ollama provider '{provider.Name}' is unreachable. Ensure Ollama is running and the configured endpoint is correct.";
 
         }
 
-        return $"Provider '{lease.Provider.Name}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
+        return $"Provider '{provider.Name}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
+
+    }
+
+    /// <summary>
+    /// Classifies an exception observed during lease construction or inference as a connectivity
+    /// failure eligible for resilience fallback (retry on the next healthy candidate provider).
+    /// Caller-initiated cancellation (<paramref name="callerToken"/> already cancelled) is never a
+    /// connectivity failure — it propagates immediately and is never retried. Model-not-found, token
+    /// limit, content filter, and tool-loop-limit failures also do not count.
+    /// </summary>
+    private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken)
+    {
+
+        if (ex is HttpRequestException)
+        {
+            return true;
+        }
+
+        if (ex is TaskCanceledException { InnerException: TimeoutException })
+        {
+            return true;
+        }
+
+        if (ex is OperationCanceledException)
+        {
+            return !callerToken.IsCancellationRequested;
+        }
+
+        return ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    private readonly record struct InferenceAttemptResult(Result<PromptTurnResult> Result, bool IsConnectivityFailure);
+
+    private sealed class StreamFailureClassification
+    {
+
+        public bool IsConnectivityFailure { get; set; }
 
     }
 

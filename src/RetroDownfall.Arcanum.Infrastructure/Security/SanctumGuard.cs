@@ -2,8 +2,10 @@ using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
@@ -16,10 +18,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// logged; in <see cref="SanctumMode.Strict"/> mode the application blocks the tool call.
 /// <see cref="ResourceLimits.MaxFileWriteMb"/> is enforced on in-process file-write tools;
 /// runtime process/memory enforcement is deferred to phase 2 (container backend).
+/// Breaches are recorded inline to <see cref="ISanctumBreachRepository"/> (Grimoire-backed):
+/// both this guard and the repository are scoped and share the same <c>ArcanumDbContext</c>, so no
+/// fire-and-forget is needed. Breaches raised for an unparseable/unknown campaign id are logged only
+/// (not persisted), since the table's foreign key requires an existing campaign row.
 /// </remarks>
 public sealed class SanctumGuard(
     ICampaignRepository campaignRepository,
-    SanctumBreachStore breachStore,
+    ISanctumBreachRepository breachRepository,
     ILogger<SanctumGuard> logger) : ISanctumGuard
 {
 
@@ -52,13 +58,15 @@ public sealed class SanctumGuard(
         }
         catch (Exception)
         {
-            return DenyPath(
+            return await DenyPathAsync(
                 campaignId,
                 toolName,
                 requestedPath,
                 null,
                 campaign.Path,
-                "The campaign workspace path could not be resolved.");
+                "The campaign workspace path could not be resolved.",
+                config.MaxBreachCount,
+                ct).ConfigureAwait(false);
         }
 
         string candidateFull;
@@ -69,13 +77,15 @@ public sealed class SanctumGuard(
         }
         catch (Exception)
         {
-            return DenyPath(
+            return await DenyPathAsync(
                 campaignId,
                 toolName,
                 requestedPath,
                 null,
                 workspaceRoot,
-                $"Invalid path for {operationType}.");
+                $"Invalid path for {operationType}.",
+                config.MaxBreachCount,
+                ct).ConfigureAwait(false);
         }
 
         if (IsUnderAllowedRoots(workspaceRoot, candidateFull, config.AllowedPaths))
@@ -83,13 +93,15 @@ public sealed class SanctumGuard(
             return AllowedResult();
         }
 
-        return DenyPath(
+        return await DenyPathAsync(
             campaignId,
             toolName,
             requestedPath,
             candidateFull,
             workspaceRoot,
-            $"Path for {operationType} would leave the campaign workspace.");
+            $"Path for {operationType} would leave the campaign workspace.",
+            config.MaxBreachCount,
+            ct).ConfigureAwait(false);
     }
 
     public async Task<SanctumResult> ValidateNetworkAsync(
@@ -124,13 +136,25 @@ public sealed class SanctumGuard(
 
         if (config.NetworkPolicy == NetworkPolicy.DenyAll)
         {
-            return DenyNetwork(campaignId, toolName, url, "Network egress is denied by this Sanctum.");
+            return await DenyNetworkAsync(
+                campaignId,
+                toolName,
+                url,
+                "Network egress is denied by this Sanctum.",
+                config.MaxBreachCount,
+                ct).ConfigureAwait(false);
         }
 
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            return DenyNetwork(campaignId, toolName, url, "The outbound URL is not a valid HTTP or HTTPS address.");
+            return await DenyNetworkAsync(
+                campaignId,
+                toolName,
+                url,
+                "The outbound URL is not a valid HTTP or HTTPS address.",
+                config.MaxBreachCount,
+                ct).ConfigureAwait(false);
         }
 
         string host = uri.Host;
@@ -140,11 +164,13 @@ public sealed class SanctumGuard(
             return AllowedResult();
         }
 
-        return DenyNetwork(
+        return await DenyNetworkAsync(
             campaignId,
             toolName,
             url,
-            $"Host '{host}' is not in the Sanctum allowed domain list.");
+            $"Host '{host}' is not in the Sanctum allowed domain list.",
+            config.MaxBreachCount,
+            ct).ConfigureAwait(false);
     }
 
     public async Task<SanctumResult> ValidateToolAsync(string campaignId, string toolName, CancellationToken ct = default)
@@ -171,7 +197,7 @@ public sealed class SanctumGuard(
                 "DisabledTool",
                 $"Tool '{toolName}' is disabled in this Sanctum.");
 
-            RecordBreach(breach);
+            await RecordBreachAsync(breach, config.MaxBreachCount, ct).ConfigureAwait(false);
 
             return new SanctumResult
             {
@@ -182,22 +208,6 @@ public sealed class SanctumGuard(
         }
 
         return AllowedResult();
-    }
-
-    public Task<IReadOnlyList<SanctumBreach>> GetBreachesAsync(
-        string campaignId,
-        int limit = 100,
-        CancellationToken ct = default)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        int clamped = Math.Clamp(limit, 1, 1000);
-
-        IReadOnlyList<SanctumBreach> snapshot = breachStore.GetSnapshot(campaignId, clamped);
-
-        SanctumBreach[] redacted = snapshot.Select(RedactBreachForApi).ToArray();
-
-        return Task.FromResult<IReadOnlyList<SanctumBreach>>(redacted);
     }
 
     public async Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(
@@ -223,6 +233,86 @@ public sealed class SanctumGuard(
         return ClampResourceLimits(config.ResourceLimits);
     }
 
+    public async Task RecordResourceLimitBreachAsync(
+        string? workspaceRoot,
+        string toolName,
+        ResourceLimitKind resource,
+        string limitValue,
+        string? actualValue,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            return;
+        }
+
+        Campaign? campaign = await campaignRepository
+            .GetByPathAsync(workspaceRoot.Trim(), ct)
+            .ConfigureAwait(false);
+
+        if (campaign is null)
+        {
+            // No known campaign for this path: breach persistence requires an existing campaign row
+            // (foreign key). Enforcement/denial has already happened by the time this is called;
+            // this is audit-trail only, so a log-only fallback is acceptable here.
+            logger.LogWarning(
+                "Sanctum ResourceLimit breach for tool {ToolName} could not be persisted: workspace path did not resolve to a known campaign.",
+                toolName);
+
+            return;
+        }
+
+        SanctumConfig config = CampaignRepository.GetSanctumConfig(campaign);
+
+        string resourceName = DescribeResource(resource);
+
+        SanctumBreach breach = CreateBreach(
+            campaign.Id.ToString(),
+            toolName,
+            "ResourceLimit",
+            $"Tool '{toolName}' exceeded {resourceName} limit: {actualValue ?? "unknown"} > {limitValue}");
+
+        SanctumBreachRecord record = new(
+            Id: string.Empty,
+            CampaignId: breach.CampaignId,
+            OccurredAt: breach.Timestamp,
+            ToolName: breach.ToolName,
+            BreachType: breach.BreachType,
+            Description: breach.Detail,
+            Details: new SanctumBreachDetails(
+                RequestedPath: null,
+                ResolvedPath: null,
+                WorkspaceRoot: workspaceRoot,
+                RequestedUrl: null,
+                ToolArguments: null,
+                LimitValue: limitValue,
+                ActualValue: actualValue));
+
+        LogBreach(breach);
+
+        try
+        {
+            await breachRepository.RecordAsync(record, config.MaxBreachCount, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Persistence failure must not surface to the model: the denial has already been decided
+            // by the caller. Only the audit trail write is best-effort here.
+            logger.LogError(
+                ex,
+                "Failed to persist Sanctum ResourceLimit breach for campaign {CampaignId}.",
+                breach.CampaignId);
+        }
+    }
+
+    private static string DescribeResource(ResourceLimitKind resource) => resource switch
+    {
+        ResourceLimitKind.Cpu => "CPU time",
+        ResourceLimitKind.Memory => "memory",
+        ResourceLimitKind.FileDescriptors => "open file descriptor",
+        _ => "resource",
+    };
+
     private static ResourceLimits ClampResourceLimits(ResourceLimits limits) =>
         limits with
         {
@@ -230,6 +320,9 @@ public sealed class SanctumGuard(
             MaxProcessCount = ArcanumSettingClamps.SanctumMaxProcessCount(limits.MaxProcessCount),
             MaxFileWriteMb = ArcanumSettingClamps.SanctumMaxFileWriteMb(limits.MaxFileWriteMb),
             ProcessTimeoutSeconds = ArcanumSettingClamps.SanctumProcessTimeoutSeconds(limits.ProcessTimeoutSeconds),
+            MaxCpuSeconds = ArcanumSettingClamps.SanctumMaxCpuSeconds(limits.MaxCpuSeconds),
+            MaxMemoryMb = ArcanumSettingClamps.SanctumMaxMemoryMb(limits.MaxMemoryMb),
+            MaxFileDescriptors = ArcanumSettingClamps.SanctumMaxFileDescriptors(limits.MaxFileDescriptors),
         };
 
     private async Task<(Campaign? Campaign, SanctumConfig? Config)> TryLoadCampaignAndConfigAsync(
@@ -305,7 +398,9 @@ public sealed class SanctumGuard(
             breachType,
             "Invalid campaign identifier.");
 
-        RecordBreach(breach);
+        // Log-only: the campaign id does not resolve to an existing campaign row, so persisting
+        // would violate the SanctumBreaches -> Campaigns foreign key. Enforcement still denies.
+        LogBreach(breach);
 
         return new SanctumResult
         {
@@ -392,27 +487,10 @@ public sealed class SanctumGuard(
     private static SanctumBreach RedactBreachForApi(SanctumBreach breach) =>
         breach with
         {
-            RequestedPath = RedactPath(breach.RequestedPath),
-            ResolvedPath = RedactPath(breach.ResolvedPath),
-            WorkspaceRoot = RedactPath(breach.WorkspaceRoot),
+            RequestedPath = SanctumPathRedactor.Redact(breach.RequestedPath),
+            ResolvedPath = SanctumPathRedactor.Redact(breach.ResolvedPath),
+            WorkspaceRoot = SanctumPathRedactor.Redact(breach.WorkspaceRoot),
         };
-
-    private static string? RedactPath(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return path;
-        }
-
-        try
-        {
-            return Path.GetFileName(path.Trim());
-        }
-        catch (Exception)
-        {
-            return "[redacted]";
-        }
-    }
 
     private static bool IsHostAllowed(string host, IReadOnlyList<string> allowedDomains)
     {
@@ -442,13 +520,15 @@ public sealed class SanctumGuard(
         return false;
     }
 
-    private SanctumResult DenyPath(
+    private async Task<SanctumResult> DenyPathAsync(
         string campaignId,
         string toolName,
         string requestedPath,
         string? resolvedPath,
         string workspaceRoot,
-        string detail)
+        string detail,
+        int maxBreachCount,
+        CancellationToken ct)
     {
         SanctumBreach breach = CreateBreach(
             campaignId,
@@ -459,7 +539,7 @@ public sealed class SanctumGuard(
             resolvedPath,
             workspaceRoot);
 
-        RecordBreach(breach);
+        await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
 
         return new SanctumResult
         {
@@ -469,7 +549,13 @@ public sealed class SanctumGuard(
         };
     }
 
-    private SanctumResult DenyNetwork(string campaignId, string toolName, string url, string detail)
+    private async Task<SanctumResult> DenyNetworkAsync(
+        string campaignId,
+        string toolName,
+        string url,
+        string detail,
+        int maxBreachCount,
+        CancellationToken ct)
     {
         SanctumBreach breach = CreateBreach(
             campaignId,
@@ -478,7 +564,7 @@ public sealed class SanctumGuard(
             detail,
             requestedUrl: url);
 
-        RecordBreach(breach);
+        await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
 
         return new SanctumResult
         {
@@ -488,10 +574,57 @@ public sealed class SanctumGuard(
         };
     }
 
-    private void RecordBreach(SanctumBreach breach)
+    private async Task RecordBreachAsync(SanctumBreach breach, int maxBreachCount, CancellationToken ct)
     {
-        breachStore.Record(breach);
+        LogBreach(breach);
 
+        SanctumBreachRecord record = new(
+            Id: string.Empty,
+            CampaignId: breach.CampaignId,
+            OccurredAt: breach.Timestamp,
+            ToolName: breach.ToolName,
+            BreachType: breach.BreachType,
+            Description: breach.Detail,
+            Details: BuildDetails(breach));
+
+        try
+        {
+            await breachRepository.RecordAsync(record, maxBreachCount, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Persistence failure must not break tool-invocation enforcement: the synthetic
+            // denial has already been decided and is returned regardless of write outcome.
+            logger.LogError(
+                ex,
+                "Failed to persist Sanctum breach {BreachType} for campaign {CampaignId}.",
+                breach.BreachType,
+                breach.CampaignId);
+        }
+    }
+
+    private static SanctumBreachDetails? BuildDetails(SanctumBreach breach)
+    {
+        if (breach.RequestedPath is null
+            && breach.ResolvedPath is null
+            && breach.WorkspaceRoot is null
+            && breach.RequestedUrl is null)
+        {
+            return null;
+        }
+
+        return new SanctumBreachDetails(
+            RequestedPath: breach.RequestedPath,
+            ResolvedPath: breach.ResolvedPath,
+            WorkspaceRoot: breach.WorkspaceRoot,
+            RequestedUrl: breach.RequestedUrl,
+            ToolArguments: null,
+            LimitValue: null,
+            ActualValue: null);
+    }
+
+    private void LogBreach(SanctumBreach breach)
+    {
         logger.LogWarning(
             "Sanctum breach {BreachType} for campaign {CampaignId} tool {ToolName}: {Detail}",
             breach.BreachType,

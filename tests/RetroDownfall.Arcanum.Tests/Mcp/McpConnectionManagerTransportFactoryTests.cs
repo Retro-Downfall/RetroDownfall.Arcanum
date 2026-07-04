@@ -129,7 +129,9 @@ public sealed class McpConnectionManagerTransportFactoryTests
 
         IUnseenServantPacer pacer = new UnseenServantPacer(
             new FakeEventBus(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            scopeFactory,
+            NullLogger<UnseenServantPacer>.Instance);
 
         return new McpConnectionManager(
             NullLogger<McpConnectionManager>.Instance,

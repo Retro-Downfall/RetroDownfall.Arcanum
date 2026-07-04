@@ -147,6 +147,8 @@ public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
 
         app.UseArcanumRateLimiter();
 
+        app.UseArcanumMetrics();
+
         app.MapArcanumEndpoints();
 
         CancellationTokenRegistration stopRegistration = cancellationToken.Register(

@@ -1,10 +1,14 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Serilog;
 using SQLitePCL;
 using System.Security.Cryptography;
@@ -165,6 +169,8 @@ public static class GrimoireDatabaseBootstrapper
 
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(migrationConnection, cancellationToken).ConfigureAwait(false);
 
+        await EnsureWeaveSchemaAsync(migrationConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
+
         await migrationConnection.CloseAsync().ConfigureAwait(false);
 
         if (File.Exists(dbPath))
@@ -180,6 +186,57 @@ public static class GrimoireDatabaseBootstrapper
 
             readiness.MarkReady();
         }
+    }
+
+    /// <summary>
+    /// RAG Phase 1 — creates The Weave's embedding schema (see <see cref="WeaveSchemaInitializer"/>)
+    /// right after Grimoire's own SQL migrations, on the same connection, before it is closed. Never
+    /// fails startup: <see cref="WeaveSchemaInitializer.EnsureSchemaAsync"/> already swallows and logs
+    /// its own failures, and this wrapper adds a second belt-and-suspenders catch around resolving the
+    /// DI-scoped settings/logger/availability singleton themselves.
+    /// </summary>
+    private static async Task EnsureWeaveSchemaAsync(
+        SqliteConnection migrationConnection,
+        IServiceScopeFactory scopeFactory,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            IOptionsMonitor<ArcanumSettings> optionsMonitor =
+                scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+            WeaveIndexAvailability availability = scope.ServiceProvider.GetRequiredService<WeaveIndexAvailability>();
+
+            // WeaveSchemaInitializer is a static class and cannot be an ILogger<T> category, so the
+            // logger is created by name (same effective category a typed ILogger<WeaveSchemaInitializer>
+            // would have produced).
+            Microsoft.Extensions.Logging.ILogger logger = scope.ServiceProvider
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Weave.WeaveSchemaInitializer");
+
+            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+
+            int dimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
+
+            await WeaveSchemaInitializer.EnsureSchemaAsync(
+                migrationConnection,
+                dimensions,
+                availability,
+                logger,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            Log.Warning(ex, "The Weave schema bootstrap could not run; RAG features relying on it will report unavailable until this is resolved.");
+
+        }
+
     }
 
     private static async Task<string> ResolveGrimoirePassphraseAsync(

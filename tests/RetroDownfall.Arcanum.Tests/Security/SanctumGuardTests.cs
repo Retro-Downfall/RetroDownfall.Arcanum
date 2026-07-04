@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -148,7 +149,9 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         try
         {
-            SanctumGuard guard = CreateGuard(repository);
+            FakeSanctumBreachRepository breachRepository = new();
+
+            SanctumGuard guard = CreateGuard(repository, breachRepository);
 
             SanctumResult result = await guard.ValidatePathAsync(
                 campaignId.ToString(),
@@ -162,9 +165,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
             Assert.NotNull(result.Breach);
 
-            IReadOnlyList<SanctumBreach> breaches = await guard.GetBreachesAsync(campaignId.ToString());
-
-            Assert.NotEmpty(breaches);
+            Assert.Single(breachRepository.Records, r => r.CampaignId == campaignId.ToString());
         }
         finally
         {
@@ -665,66 +666,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
-    [SkippableFact]
-    public async Task GetBreachesAsync_RedactsPathWithEmbeddedNull_WhenGetFileNameThrows()
-    {
-
-        Skip.IfNot(OperatingSystem.IsWindows(), "Path.GetFileName throws for embedded null on Windows.");
-
-        Guid campaignId = Guid.NewGuid();
-
-        FakeCampaignRepository repository = new();
-
-        repository.SetCampaign(CreateCampaign(
-            campaignId,
-            _workspace.Root,
-            EnabledPathBoundaryConfig()));
-
-        SanctumGuard guard = CreateGuard(repository);
-
-        await guard.ValidatePathAsync(
-            campaignId.ToString(),
-            "bad\u0000path",
-            "read",
-            "read_file_chunk");
-
-        IReadOnlyList<SanctumBreach> breaches = await guard.GetBreachesAsync(campaignId.ToString(), limit: 10);
-
-        SanctumBreach breach = Assert.Single(breaches);
-
-        Assert.Equal("[redacted]", breach.RequestedPath);
-
-    }
-
-    [Fact]
-    public async Task GetBreachesAsync_RedactsPathFieldsToFileNameOnly()
-    {
-
-        Guid campaignId = Guid.NewGuid();
-
-        FakeCampaignRepository repository = new();
-
-        repository.SetCampaign(CreateCampaign(
-            campaignId,
-            _workspace.Root,
-            EnabledPathBoundaryConfig()));
-
-        SanctumGuard guard = CreateGuard(repository);
-
-        await guard.ValidatePathAsync(
-            campaignId.ToString(),
-            "/outside/secret.txt",
-            "read",
-            "read_file_chunk");
-
-        IReadOnlyList<SanctumBreach> breaches = await guard.GetBreachesAsync(campaignId.ToString(), limit: 10);
-
-        SanctumBreach breach = Assert.Single(breaches);
-
-        Assert.Equal("secret.txt", breach.RequestedPath);
-
-    }
-
     [Fact]
     public async Task ValidateNetworkAsync_InvalidCampaignId_Denies()
     {
@@ -995,37 +936,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetBreachesAsync_ClampsLimitToValidRange()
-    {
-
-        Guid campaignId = Guid.NewGuid();
-
-        FakeCampaignRepository repository = new();
-
-        repository.SetCampaign(CreateCampaign(
-            campaignId,
-            _workspace.Root,
-            EnabledPathBoundaryConfig()));
-
-        SanctumGuard guard = CreateGuard(repository);
-
-        await guard.ValidatePathAsync(
-            campaignId.ToString(),
-            "/outside/secret.txt",
-            "read",
-            "read_file_chunk");
-
-        IReadOnlyList<SanctumBreach> clampedLow = await guard.GetBreachesAsync(campaignId.ToString(), limit: 0);
-
-        Assert.NotEmpty(clampedLow);
-
-        IReadOnlyList<SanctumBreach> clampedHigh = await guard.GetBreachesAsync(campaignId.ToString(), limit: 5000);
-
-        Assert.NotEmpty(clampedHigh);
-
-    }
-
-    [Fact]
     public async Task ValidateNetworkAsync_AllowListSkipsWhitespaceAndMatchesIpLiteral_Allows()
     {
 
@@ -1216,8 +1126,8 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
-    private static SanctumGuard CreateGuard(FakeCampaignRepository repository, SanctumBreachStore? breachStore = null) =>
-        new(repository, breachStore ?? new SanctumBreachStore(), NullLogger<SanctumGuard>.Instance);
+    private static SanctumGuard CreateGuard(FakeCampaignRepository repository, FakeSanctumBreachRepository? breachRepository = null) =>
+        new(repository, breachRepository ?? new FakeSanctumBreachRepository(), NullLogger<SanctumGuard>.Instance);
 
     private static SanctumConfig EnabledPathBoundaryConfig() =>
         new()
@@ -1307,6 +1217,72 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+
+    }
+
+    private sealed class FakeSanctumBreachRepository : ISanctumBreachRepository
+    {
+
+        public List<SanctumBreachRecord> Records { get; } = [];
+
+        public Task RecordAsync(SanctumBreachRecord breach, int maxBreachCount, CancellationToken ct = default)
+        {
+
+            Records.Add(breach with { Id = Guid.NewGuid().ToString("N") });
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task<IReadOnlyList<SanctumBreachRecord>> QueryAsync(
+            string campaignId,
+            int limit,
+            DateTimeOffset? before = null,
+            string? toolName = null,
+            CancellationToken ct = default)
+        {
+
+            IEnumerable<SanctumBreachRecord> query = Records.Where(r => r.CampaignId == campaignId);
+
+            if (before is not null)
+            {
+                query = query.Where(r => r.OccurredAt < before.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(toolName))
+            {
+                query = query.Where(r => r.ToolName == toolName);
+            }
+
+            IReadOnlyList<SanctumBreachRecord> result = query
+                .OrderByDescending(r => r.OccurredAt)
+                .Take(limit)
+                .ToList();
+
+            return Task.FromResult(result);
+
+        }
+
+        public Task<int> GetCountAsync(string campaignId, CancellationToken ct = default) =>
+            Task.FromResult(Records.Count(r => r.CampaignId == campaignId));
+
+        public Task<int> DeleteOldestAsync(string campaignId, int count, CancellationToken ct = default)
+        {
+
+            List<SanctumBreachRecord> toRemove = Records
+                .Where(r => r.CampaignId == campaignId)
+                .OrderBy(r => r.OccurredAt)
+                .Take(count)
+                .ToList();
+
+            foreach (SanctumBreachRecord record in toRemove)
+            {
+                Records.Remove(record);
+            }
+
+            return Task.FromResult(toRemove.Count);
+
+        }
 
     }
 

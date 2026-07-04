@@ -29,6 +29,8 @@ public enum ConfigSection
 
     Cli,
 
+    Resilience,
+
 }
 
 public sealed record SectionDescriptor(
@@ -68,6 +70,8 @@ public static class SectionDescriptors
         new(ConfigSection.ProvingGrounds, "Proving Grounds", "\ue7a6", "Trial validation bounds"),
 
         new(ConfigSection.Cli, "CLI", "\ue7c7", "Terminal client options and theme"),
+
+        new(ConfigSection.Resilience, "Resilience", "\ue7c9", "Provider health probing and fallback"),
 
     ];
 
