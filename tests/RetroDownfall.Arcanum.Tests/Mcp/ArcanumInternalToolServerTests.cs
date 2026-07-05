@@ -4,7 +4,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -109,7 +111,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         await using TestMcpSession session = await CreateSessionAsync(
             intelligenceSettings: allFeatures,
             conclaveEnabled: true,
-            sagaEnabled: true);
+            sagaEnabled: true,
+            a2aClientEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
 
@@ -395,6 +398,58 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    // Net-new coverage for the ModelContextProtocol SDK migration: ArcanumInternalToolServer now
+    // reads inbound notifications/cancelled directly off the wire (replacing the pre-migration
+    // McpRequestCancellationBroker, which correlated ids on the client side before the SDK existed).
+    // This verifies (1) the notification actually cancels the in-flight tool's CancellationToken —
+    // observed via the child process being killed before it can write its sentinel file — (2) the
+    // server returns a graceful error response rather than letting OperationCanceledException
+    // propagate out of RunAsync's read loop, and (3) the server keeps servicing requests afterward.
+    [Fact]
+    public async Task NotificationsCancelled_cancels_in_flight_execute_command_and_server_keeps_running()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        string sentinelPath = Path.Combine(_workspace.Root, "cancel-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveDelayedWriteCommand(sentinelPath);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        (int requestId, Task<JsonRpcResponse> responseTask) = await session
+            .SendRequestFireAndForgetAsync("tools/call", callParams);
+
+        // Give the handler time to register the in-flight call and spawn the child process before
+        // cancelling, so the notification actually races a live call rather than a not-yet-started one.
+        await Task.Delay(300);
+
+        await session.SendCancelNotificationAsync(requestId);
+
+        JsonRpcResponse response = await responseTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(response.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+        Assert.False(File.Exists(sentinelPath), "The child process was not killed before it wrote its sentinel file.");
+
+        JsonRpcResponse followUp = await session.SendRequestAsync("tools/list", null);
+
+        Assert.Null(followUp.Error);
+
+    }
+
     [Fact]
     public async Task ExecuteCommand_without_workspace_is_blocked_before_spawn()
     {
@@ -627,6 +682,148 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsList_DoesNotAdvertiseDispatchSending_WhenDisabled()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: false);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        Assert.DoesNotContain(tools.Tools, static t => t.Name == "dispatch_sending");
+
+    }
+
+    [Fact]
+    public async Task ToolsList_AdvertisesDispatchSending_WhenEnabled()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        Assert.Contains(tools.Tools, static t => t.Name == "dispatch_sending");
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchSending_WhenDisabled_ReturnsToolError()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: false);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new DispatchSendingParams { Goal = "do the thing", AgentUrl = "https://agent.example.test/" },
+            McpJsonSerializerContext.Default.DispatchSendingParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("dispatch_sending", arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Contains("A2A is disabled", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchSending_Success_ReturnsStructuredJsonWithResponseText()
+    {
+
+        FakeA2AClientService fake = new(static (goal, _, agentUrl) =>
+            Result<A2ADispatchResult>.Success(new A2ADispatchResult("remote-task-1", $"answered '{goal}' via {agentUrl}")));
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new DispatchSendingParams { Goal = "do the thing", AgentUrl = "https://agent.example.test/" },
+            McpJsonSerializerContext.Default.DispatchSendingParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("dispatch_sending", arguments);
+
+        Assert.False(result.IsError);
+
+        DispatchSendingResultWire payload = JsonSerializer.Deserialize(
+            result.Content![0].Text!,
+            McpJsonSerializerContext.Default.DispatchSendingResultWire)!;
+
+        Assert.True(payload.Succeeded);
+
+        Assert.Equal("remote-task-1", payload.TaskId);
+
+        Assert.Contains("do the thing", payload.Response, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchSending_PreflightFailure_ReturnsPlainToolError()
+    {
+
+        FakeA2AClientService fake = new(static (_, _, _) =>
+            Result<A2ADispatchResult>.Failure(new Error(ErrorCodes.Sending.MaxTasksReached, "too many in flight")));
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new DispatchSendingParams { Goal = "do the thing", AgentUrl = "https://agent.example.test/" },
+            McpJsonSerializerContext.Default.DispatchSendingParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("dispatch_sending", arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Contains("too many in flight", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchSending_PostDispatchFailure_ReturnsStructuredJsonNotToolError()
+    {
+
+        FakeA2AClientService fake = new(static (_, _, _) =>
+            Result<A2ADispatchResult>.Failure(new Error(ErrorCodes.Sending.AgentUnreachable, "could not connect")));
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new DispatchSendingParams { Goal = "do the thing", AgentUrl = "https://agent.example.test/" },
+            McpJsonSerializerContext.Default.DispatchSendingParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("dispatch_sending", arguments);
+
+        // A dispatch was genuinely attempted (the remote agent just could not be reached), so
+        // ApprenticeService's Chronicle interception still needs a parseable payload here — this must
+        // NOT be a plain IsError=true ToolError like the preflight-rejection case above.
+        Assert.False(result.IsError);
+
+        DispatchSendingResultWire payload = JsonSerializer.Deserialize(
+            result.Content![0].Text!,
+            McpJsonSerializerContext.Default.DispatchSendingResultWire)!;
+
+        Assert.False(payload.Succeeded);
+
+        Assert.Contains("could not connect", payload.Error, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    private sealed class FakeA2AClientService(Func<string, string?, string, Result<A2ADispatchResult>> respond) : IA2AClientService
+    {
+
+        public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
+            string goal,
+            string? name,
+            string agentUrl,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(respond(goal, name, agentUrl));
+
+    }
+
+    [Fact]
     public async Task ToolsCall_read_file_chunk_rejects_invalid_line_range()
     {
 
@@ -716,7 +913,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         long maxFileReadSizeBytes = 1024 * 1024,
         int maxJsonRpcLineBytes = 2_097_152,
         bool conclaveEnabled = false,
-        bool sagaEnabled = false)
+        bool sagaEnabled = false,
+        bool a2aClientEnabled = false,
+        IA2AClientService? a2aClientService = null)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -734,6 +933,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 
         services.AddSingleton<RetroDownfall.Arcanum.Core.Platform.IProcessResourceLimiter, ProcessResourceLimiter>();
+
+        if (a2aClientService is not null)
+        {
+
+            services.AddSingleton(a2aClientService);
+
+        }
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -757,6 +963,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             maxFileReadSizeBytes: maxFileReadSizeBytes,
             conclaveEnabled: conclaveEnabled,
             sagaEnabled: sagaEnabled,
+            a2aClientEnabled: a2aClientEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance);
 
@@ -781,6 +988,20 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         }
 
         return ("/bin/echo", [SentinelToken]);
+
+    }
+
+    private static (string Command, string[] ArgumentList) ResolveDelayedWriteCommand(string sentinelPath)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ("powershell.exe", ["-NoProfile", "-Command", $"Start-Sleep -Seconds 5; Set-Content -Path '{sentinelPath}' -Value done"]);
+
+        }
+
+        return ("/bin/sh", ["-c", $"sleep 5 && echo done > '{sentinelPath}'"]);
 
     }
 
@@ -835,6 +1056,55 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Assert.Equal(McpInboundKind.Response, envelope.Kind);
 
             return envelope.Response!;
+
+        }
+
+        // Writes a request and returns its id immediately without waiting for the response, so the
+        // caller can send a notifications/cancelled for that id while the tool call is still in flight.
+        public async Task<(int Id, Task<JsonRpcResponse> Response)> SendRequestFireAndForgetAsync(
+            string method,
+            JsonElement? parameters)
+        {
+
+            int id = Interlocked.Increment(ref _nextId);
+
+            JsonRpcRequest request = new()
+            {
+                Method = method,
+                Params = parameters,
+                Id = JsonSerializer.SerializeToElement(id, McpJsonSerializerContext.Default.Int32),
+            };
+
+            await transport.WriteRequestAsync(request).ConfigureAwait(false);
+
+            return (id, ReadResponseAsync());
+
+        }
+
+        private async Task<JsonRpcResponse> ReadResponseAsync()
+        {
+
+            McpInboundEnvelope envelope = await transport.InboundReader.ReadAsync().ConfigureAwait(false);
+
+            Assert.Equal(McpInboundKind.Response, envelope.Kind);
+
+            return envelope.Response!;
+
+        }
+
+        public Task SendCancelNotificationAsync(int requestId)
+        {
+
+            JsonElement cancelParams = JsonSerializer.SerializeToElement(new { requestId });
+
+            JsonRpcRequest notification = new()
+            {
+                Method = "notifications/cancelled",
+                Params = cancelParams,
+                Id = null,
+            };
+
+            return transport.WriteRequestAsync(notification);
 
         }
 

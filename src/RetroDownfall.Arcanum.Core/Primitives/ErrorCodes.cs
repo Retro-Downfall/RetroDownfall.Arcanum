@@ -325,4 +325,24 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Sending — A2A (Agent-to-Agent) protocol interoperability surface for The Conclave.</summary>
+    public static class Sending
+    {
+
+        public const string AgentUnreachable = "Sending.AgentUnreachable";
+
+        public const string AgentCardInvalid = "Sending.AgentCardInvalid";
+
+        public const string TaskTimeout = "Sending.TaskTimeout";
+
+        public const string TaskRejected = "Sending.TaskRejected";
+
+        public const string Disabled = "Sending.Disabled";
+
+        public const string AgentNotAllowed = "Sending.AgentNotAllowed";
+
+        public const string MaxTasksReached = "Sending.MaxTasksReached";
+
+    }
+
 }

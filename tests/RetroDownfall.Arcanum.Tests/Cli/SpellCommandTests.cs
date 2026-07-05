@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class SpellCommandTests
 {
 
@@ -27,7 +27,7 @@ public sealed class SpellCommandTests
             new ApiResponse<SpellSummary[]>([summary], true, null),
             ArcanumJsonContext.Default.ApiResponseSpellSummaryArray));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "list", "--workspace", "/tmp/ws"]);
+        CliTestResult result = RunCommand(handler, ["spell", "list", "--workspace", "/tmp/ws"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -64,7 +64,7 @@ public sealed class SpellCommandTests
             new ApiResponse<SpellDetail>(detail, true, null),
             ArcanumJsonContext.Default.ApiResponseSpellDetail));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "get", "greet"]);
+        CliTestResult result = RunCommand(handler, ["spell", "get", "greet"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -80,7 +80,7 @@ public sealed class SpellCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["spell", "delete", "greet"]);
+        CliTestResult result = RunCommand(handler, ["spell", "delete", "greet"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -98,7 +98,7 @@ public sealed class SpellCommandTests
             new ApiResponse<PromptResponseDto>(response, true, null),
             ArcanumJsonContext.Default.ApiResponsePromptResponseDto));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "execute", "greet", "--input", "hi there"]);
+        CliTestResult result = RunCommand(handler, ["spell", "execute", "greet", "--input", "hi there"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -115,6 +115,28 @@ public sealed class SpellCommandTests
     }
 
     [Fact]
+    public void Spell_create_merges_repeated_tag_flags_into_a_single_array()
+    {
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<bool>(true, true, null),
+            ArcanumJsonContext.Default.ApiResponseBoolean));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["spell", "create", "--name", "greet", "--workspace", "/tmp/ws", "--tag", "a", "--tag", "b", "--tag", "c"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        string body = ReadBody(request);
+
+        Assert.Contains("\"tags\":[\"a\",\"b\",\"c\"]", body, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void Spell_search_binds_query_options()
     {
 
@@ -122,7 +144,7 @@ public sealed class SpellCommandTests
             new ApiResponse<SpellSummary[]>([], true, null),
             ArcanumJsonContext.Default.ApiResponseSpellSummaryArray));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "search", "--query", "greet", "--tag", "demo"]);
+        CliTestResult result = RunCommand(handler, ["spell", "search", "--query", "greet", "--tag", "demo"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -136,7 +158,7 @@ public sealed class SpellCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -153,11 +175,7 @@ public sealed class SpellCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

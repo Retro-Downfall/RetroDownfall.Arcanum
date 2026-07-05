@@ -3,22 +3,20 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
+using RetroDownfall.Arcanum.Api.A2A;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Health;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Daemons;
 using RetroDownfall.Arcanum.Api.Mcp;
-using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Perception;
 using RetroDownfall.Arcanum.Api.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.Security;
@@ -29,33 +27,14 @@ using RetroDownfall.Arcanum.Api.LlamaCpp;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
-using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Core.Logging;
-using RetroDownfall.Arcanum.Core.Mcp;
-using RetroDownfall.Arcanum.Core.Pattern;
-using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
-using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
-using RetroDownfall.Arcanum.Core.Workspaces;
-using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
-using RetroDownfall.Arcanum.Infrastructure.Hosting;
-using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
-using RetroDownfall.Arcanum.Infrastructure.Logging;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
-using RetroDownfall.Arcanum.Infrastructure.Security;
-using RetroDownfall.Arcanum.Infrastructure.Telemetry;
-using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
-using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using Scalar.AspNetCore;
 
 namespace RetroDownfall.Arcanum.Api;
@@ -501,6 +480,10 @@ public static class ApiBootstrapper
         apiGroup.MapPromptEndpoints();
 
         apiGroup.MapApprenticeEndpoints();
+
+        ArcanumSettings startupSettings = app.Services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue;
+
+        apiGroup.MapA2AServer(startupSettings);
 
         apiGroup.MapCodexEndpoints();
 

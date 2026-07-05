@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class LoreCommandBindingTests
 {
 
@@ -23,7 +23,7 @@ public sealed class LoreCommandBindingTests
 
         RecordingHandler handler = CreateLoreHandler();
 
-        CommandAppResult result = RunCommand(handler, ["lore", "set", "ward.color", "cobalt"]);
+        CliTestResult result = RunCommand(handler, ["lore", "set", "ward.color", "cobalt"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -47,7 +47,7 @@ public sealed class LoreCommandBindingTests
 
         RecordingHandler handler = CreateLoreHandler();
 
-        CommandAppResult result = RunCommand(handler, ["lore", "get", "ward.color"]);
+        CliTestResult result = RunCommand(handler, ["lore", "get", "ward.color"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -65,7 +65,7 @@ public sealed class LoreCommandBindingTests
 
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
-        CommandAppResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
+        CliTestResult result = RunCommand(handler, ["lore", "delete", "ward.color"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -87,7 +87,7 @@ public sealed class LoreCommandBindingTests
                 true,
                 null)));
 
-        CommandAppResult result = RunCommand(handler, ["daemon", "initiative", "heartbeat", "15"]);
+        CliTestResult result = RunCommand(handler, ["daemon", "initiative", "heartbeat", "15"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -107,7 +107,7 @@ public sealed class LoreCommandBindingTests
 
         RecordingHandler handler = new(_ => CreateBooleanResponse(new ApiResponse<bool>(true, true, null)));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["daemon", "alert", "Disk full", "--title", "Ops", "--severity", "Warning", "--source", "test"]);
 
@@ -137,7 +137,7 @@ public sealed class LoreCommandBindingTests
             true,
             null)));
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -154,11 +154,7 @@ public sealed class LoreCommandBindingTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

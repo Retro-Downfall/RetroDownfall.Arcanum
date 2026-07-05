@@ -10,11 +10,11 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class CampaignCommandTests
 {
 
@@ -30,7 +30,7 @@ public sealed class CampaignCommandTests
             new ApiResponse<ListPageResult<CampaignDto>>(new ListPageResult<CampaignDto>([campaign], false), true, null),
             ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "list"]);
+        CliTestResult result = RunCommand(handler, ["campaign", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -52,7 +52,7 @@ public sealed class CampaignCommandTests
             new ApiResponse<CampaignDto>(campaign, true, null),
             ArcanumJsonContext.Default.ApiResponseCampaignDto));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "get", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "get", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -70,7 +70,7 @@ public sealed class CampaignCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "get", "not-a-guid"]);
+        CliTestResult result = RunCommand(handler, ["campaign", "get", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -89,7 +89,7 @@ public sealed class CampaignCommandTests
             ArcanumJsonContext.Default.ApiResponseCampaignDto,
             HttpStatusCode.Created));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["campaign", "create", "--name", "Demo", "--path", "/tmp/demo"]);
 
@@ -115,7 +115,7 @@ public sealed class CampaignCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -138,7 +138,7 @@ public sealed class CampaignCommandTests
             ArcanumJsonContext.Default.ApiResponseCampaignDto,
             HttpStatusCode.NotFound));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "get", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "get", SampleId.ToString()]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -148,7 +148,7 @@ public sealed class CampaignCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -165,11 +165,7 @@ public sealed class CampaignCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

@@ -220,15 +220,15 @@ public sealed class McpToolMergerTests
 
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
-        public Task<JsonElement> SendRequestAsync(
+        public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(
 
-            string method,
+            string toolName,
 
-            JsonElement? parameters,
+            IReadOnlyDictionary<string, object?> arguments,
 
-            CancellationToken cancellationToken = default,
+            TimeSpan? requestTimeout = null,
 
-            TimeSpan? requestTimeout = null) =>
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(CancellationToken cancellationToken = default) =>

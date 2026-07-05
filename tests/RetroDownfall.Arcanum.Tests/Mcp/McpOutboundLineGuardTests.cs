@@ -27,12 +27,9 @@ public sealed class McpOutboundLineGuardTests
 
         Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
 
-        McpRequestCancellationBroker broker = new();
-
         InProcessMcpTransport transport = new(
             clientToServer.Writer,
             serverToClient.Reader,
-            broker,
             maxJsonRpcLineBytes: 64);
 
         await using (transport)
@@ -69,12 +66,9 @@ public sealed class McpOutboundLineGuardTests
 
         Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
 
-        McpRequestCancellationBroker broker = new();
-
         InProcessMcpTransport transport = new(
             clientToServer.Writer,
             serverToClient.Reader,
-            broker,
             maxJsonRpcLineBytes: 32);
 
         await using (transport)
@@ -110,12 +104,9 @@ public sealed class McpOutboundLineGuardTests
 
         Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
 
-        McpRequestCancellationBroker broker = new();
-
         InProcessMcpTransport transport = new(
             clientToServer.Writer,
             serverToClient.Reader,
-            broker,
             maxJsonRpcLineBytes: 4096);
 
         await using (transport)

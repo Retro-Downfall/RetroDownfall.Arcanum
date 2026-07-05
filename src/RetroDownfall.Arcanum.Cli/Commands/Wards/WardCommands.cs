@@ -1,17 +1,23 @@
-using System.ComponentModel;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Wards;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Wards;
 
-public sealed class WardListCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
+/// <summary>
+/// Ward approval gates for Forbidden Arts (requires arcanum serve).
+/// </summary>
+public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    /// <summary>
+    /// List active wards (GET /api/wards).
+    /// </summary>
+    [Command("list")]
+    public async Task<int> List(CancellationToken cancellationToken)
     {
 
         Result<WardDto[]> result = await apiClient.GetWardsAsync(cancellationToken).ConfigureAwait(false);
@@ -57,16 +63,15 @@ public sealed class WardListCommand(ArcanumApiClient apiClient, IThemePalette th
 
     }
 
-}
-
-public sealed class WardGetCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<WardGetCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Show ward detail (GET /api/wards/{id}).
+    /// </summary>
+    /// <param name="id">Ward ID.</param>
+    [Command("get")]
+    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
     {
 
-        Result<WardDto> result = await apiClient.GetWardAsync(settings.Id, cancellationToken).ConfigureAwait(false);
+        Result<WardDto> result = await apiClient.GetWardAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -121,24 +126,23 @@ public sealed class WardGetCommand(ArcanumApiClient apiClient, IThemePalette the
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Allow or deny a ward (POST /api/wards/{id}).
+    /// </summary>
+    /// <param name="id">Ward ID.</param>
+    /// <param name="allow">Allow the warded tool call to proceed.</param>
+    /// <param name="deny">Deny the warded tool call.</param>
+    /// <param name="reason">Optional reason recorded with the resolution.</param>
+    [Command("resolve")]
+    public async Task<int> Resolve(
+        [Argument] string id,
+        bool allow,
+        bool deny,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public sealed class WardResolveCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<WardResolveCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (settings.Allow == settings.Deny)
+        if (allow == deny)
         {
             AnsiConsole.MarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("Exactly one of --allow or --deny is required.")));
@@ -147,7 +151,7 @@ public sealed class WardResolveCommand(ArcanumApiClient apiClient, IThemePalette
         }
 
         Result<WardResolutionDto> result = await apiClient
-            .ResolveWardAsync(settings.Id, settings.Allow, settings.Reason, cancellationToken)
+            .ResolveWardAsync(id, allow, reason, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -178,26 +182,6 @@ public sealed class WardResolveCommand(ArcanumApiClient apiClient, IThemePalette
             themePalette.HighlightLabelMarkup(Markup.Escape("Ward resolved:"), Markup.Escape($"{resolution.WardId} ({verb})")));
 
         return 0;
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--allow")]
-        [Description("Allow the warded tool call to proceed.")]
-        public bool Allow { get; init; }
-
-        [CommandOption("--deny")]
-        [Description("Deny the warded tool call.")]
-        public bool Deny { get; init; }
-
-        [CommandOption("--reason <TEXT>")]
-        [Description("Optional reason recorded with the resolution.")]
-        public string? Reason { get; init; }
 
     }
 

@@ -72,4 +72,23 @@ public enum ApprenticeEventType
     [JsonStringEnumMemberName("eventsDropped")]
     EventsDropped,
 
+    /// <summary>
+    /// The Archmage Client (<c>dispatch_sending</c>) created an A2A task on a remote agent. Carries the
+    /// remote agent URL and A2A task id in <see cref="ApprenticeEvent.Summary"/>/<see cref="ApprenticeEvent.Result"/>.
+    /// </summary>
+    [JsonStringEnumMemberName("sendingDispatched")]
+    SendingDispatched,
+
+    /// <summary>A status update was received from a remote A2A agent for an in-flight delegated Sending.</summary>
+    [JsonStringEnumMemberName("sendingProgress")]
+    SendingProgress,
+
+    /// <summary>A delegated Sending completed successfully on the remote A2A agent.</summary>
+    [JsonStringEnumMemberName("sendingCompleted")]
+    SendingCompleted,
+
+    /// <summary>A delegated Sending failed, timed out, or was rejected by the remote A2A agent.</summary>
+    [JsonStringEnumMemberName("sendingFailed")]
+    SendingFailed,
+
 }

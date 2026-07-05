@@ -480,6 +480,43 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
+    private static JsonElement BuildDispatchSendingSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "goal",
+                "The goal to delegate to the remote agent. Describe the task clearly and self-containedly.");
+
+            WriteStringProperty(
+                w,
+                "agent_url",
+                "The base URL of a remote A2A-compatible agent. Its Agent Card is discovered from this URL before dispatch.");
+
+            WriteStringProperty(
+                w,
+                "name",
+                "Optional display name for this Sending, used in Chronicle events.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("goal");
+
+            w.WriteStringValue("agent_url");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
     private static JsonElement BuildSchema(Action<Utf8JsonWriter> writeBody)
     {
         ArrayBufferWriter<byte> buffer = new(512);

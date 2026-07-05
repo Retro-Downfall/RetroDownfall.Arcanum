@@ -1,8 +1,11 @@
+using A2A;
+
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
@@ -19,6 +22,7 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
@@ -242,6 +246,16 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPromptRepository, PromptRepository>();
         services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
         services.AddScoped<IConclaveArchmage, ConclaveArchmage>();
+        services.AddHttpClient(A2AClientService.OutboundHttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
+        services.AddSingleton<IA2AClientService, A2AClientService>();
+        services.AddSingleton<ArcanumA2AAgentHandler>();
+        services.AddSingleton(static sp => new A2AServer(
+            sp.GetRequiredService<ArcanumA2AAgentHandler>(),
+            new InMemoryTaskStore(),
+            new ChannelEventNotifier(),
+            sp.GetRequiredService<ILogger<A2AServer>>(),
+            new A2AServerOptions { AutoAppendHistory = true }));
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());

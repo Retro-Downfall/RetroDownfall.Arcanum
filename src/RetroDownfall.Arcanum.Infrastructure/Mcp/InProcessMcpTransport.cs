@@ -10,7 +10,14 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
-/// MCP client transport over paired <see cref="Channel{T}"/> lines (newline-delimited JSON-RPC), in-process with no stdio.
+/// Raw newline-delimited JSON-RPC test harness over paired <see cref="Channel{T}"/> lines, in-process
+/// with no stdio. Production code no longer uses this class to drive
+/// <see cref="ArcanumInternalToolServer"/> — <see cref="ChannelClientTransport"/> (an SDK
+/// <c>IClientTransport</c>) does, via the same channel pair created by
+/// <see cref="CreateServerChannelPair"/>. This class is retained purely as a low-level test seam that
+/// exercises the server's wire protocol directly (raw <see cref="JsonRpcRequest"/> objects and inbound
+/// envelopes) without going through the SDK, since <see cref="ArcanumInternalToolServer"/>'s own framing
+/// is unchanged by the SDK migration.
 /// </summary>
 internal sealed class InProcessMcpTransport : IMcpTransport
 {
@@ -42,12 +49,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
     internal CancellationToken LifetimeCancellation => _lifetimeCts.Token;
 
-    internal McpRequestCancellationBroker RequestCancellation { get; }
-
     internal InProcessMcpTransport(
         ChannelWriter<string> toServer,
         ChannelReader<string> fromServer,
-        McpRequestCancellationBroker requestCancellationBroker,
         int maxJsonRpcLineBytes,
         McpJsonSerializerContext? jsonContext = null,
         ILogger? logger = null)
@@ -55,8 +59,6 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         ArgumentNullException.ThrowIfNull(toServer);
 
         ArgumentNullException.ThrowIfNull(fromServer);
-
-        ArgumentNullException.ThrowIfNull(requestCancellationBroker);
 
         if (maxJsonRpcLineBytes < 1)
         {
@@ -68,8 +70,6 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         _toServer = toServer;
 
         _fromServer = fromServer;
-
-        RequestCancellation = requestCancellationBroker;
 
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
@@ -103,7 +103,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     }
 
     /// <summary>
-    /// Creates a client transport and matching <see cref="ArcanumInternalToolServer"/> sharing bounded line channels.
+    /// Creates a raw test-harness client transport and matching <see cref="ArcanumInternalToolServer"/>
+    /// sharing bounded line channels. Production wiring uses <see cref="CreateServerChannelPair"/> instead
+    /// (see the class remarks).
     /// </summary>
     public static (InProcessMcpTransport Transport, ArcanumInternalToolServer Server) CreatePair(
         IHumanPromptRegistry humanPromptRegistry,
@@ -117,9 +119,96 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         long maxFileReadSizeBytes,
         bool conclaveEnabled,
         bool sagaEnabled,
+        bool a2aClientEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
+    {
+        (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
+            humanPromptRegistry,
+            scopeFactory,
+            pacer,
+            workspaceRootNormalizedOrNull,
+            executeCommandTimeout,
+            executeCommandTimeoutSecondsForDisplay,
+            listDirectoryMaxPaths,
+            intelligenceSettings,
+            maxFileReadSizeBytes,
+            conclaveEnabled,
+            sagaEnabled,
+            a2aClientEnabled,
+            maxJsonRpcLineBytes,
+            logger,
+            jsonContext);
+
+        InProcessMcpTransport transport = new(
+            clientToServer.Writer,
+            serverToClient.Reader,
+            maxJsonRpcLineBytes,
+            jsonContext,
+            logger);
+
+        return (transport, server);
+    }
+
+    /// <summary>
+    /// Creates the raw channel pair and matching <see cref="ArcanumInternalToolServer"/> for production
+    /// wiring: the caller attaches an SDK <c>IClientTransport</c> (<see cref="ChannelClientTransport"/>)
+    /// to <paramref name="server"/>'s <see cref="ChannelWriter{T}"/>/<see cref="ChannelReader{T}"/> pair.
+    /// </summary>
+    public static (ChannelWriter<string> ToServer, ChannelReader<string> FromServer, ArcanumInternalToolServer Server) CreateServerChannelPair(
+        IHumanPromptRegistry humanPromptRegistry,
+        IServiceScopeFactory scopeFactory,
+        IUnseenServantPacer pacer,
+        string? workspaceRootNormalizedOrNull,
+        TimeSpan executeCommandTimeout,
+        int executeCommandTimeoutSecondsForDisplay,
+        int listDirectoryMaxPaths,
+        IntelligenceSettings intelligenceSettings,
+        long maxFileReadSizeBytes,
+        bool conclaveEnabled,
+        bool sagaEnabled,
+        bool a2aClientEnabled,
+        int maxJsonRpcLineBytes,
+        ILogger<ArcanumInternalToolServer>? logger = null,
+        McpJsonSerializerContext? jsonContext = null)
+    {
+        (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
+            humanPromptRegistry,
+            scopeFactory,
+            pacer,
+            workspaceRootNormalizedOrNull,
+            executeCommandTimeout,
+            executeCommandTimeoutSecondsForDisplay,
+            listDirectoryMaxPaths,
+            intelligenceSettings,
+            maxFileReadSizeBytes,
+            conclaveEnabled,
+            sagaEnabled,
+            a2aClientEnabled,
+            maxJsonRpcLineBytes,
+            logger,
+            jsonContext);
+
+        return (clientToServer.Writer, serverToClient.Reader, server);
+    }
+
+    private static (Channel<string> ClientToServer, Channel<string> ServerToClient, ArcanumInternalToolServer Server) BuildChannelsAndServer(
+        IHumanPromptRegistry humanPromptRegistry,
+        IServiceScopeFactory scopeFactory,
+        IUnseenServantPacer pacer,
+        string? workspaceRootNormalizedOrNull,
+        TimeSpan executeCommandTimeout,
+        int executeCommandTimeoutSecondsForDisplay,
+        int listDirectoryMaxPaths,
+        IntelligenceSettings intelligenceSettings,
+        long maxFileReadSizeBytes,
+        bool conclaveEnabled,
+        bool sagaEnabled,
+        bool a2aClientEnabled,
+        int maxJsonRpcLineBytes,
+        ILogger<ArcanumInternalToolServer>? logger,
+        McpJsonSerializerContext? jsonContext)
     {
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
 
@@ -129,26 +218,25 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         ArgumentNullException.ThrowIfNull(intelligenceSettings);
 
-        BoundedChannelOptions lineOptions = new(ChannelCapacity)
+        // clientToServer: single writer (the client transport), single reader (RunAsync's read loop).
+        Channel<string> clientToServer = Channel.CreateBounded<string>(new BoundedChannelOptions(ChannelCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleWriter = true,
             SingleReader = true,
-        };
+        });
 
-        Channel<string> clientToServer = Channel.CreateBounded<string>(lineOptions);
-
-        Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
-
-        McpRequestCancellationBroker requestCancellationBroker = new();
-
-        InProcessMcpTransport transport = new(
-            clientToServer.Writer,
-            serverToClient.Reader,
-            requestCancellationBroker,
-            maxJsonRpcLineBytes,
-            jsonContext,
-            logger);
+        // serverToClient: multiple writers. ArcanumInternalToolServer now dispatches each inbound
+        // line concurrently (see RunAsync) so a notifications/cancelled for an in-flight tools/call
+        // can be read and processed while that call is still running instead of being stuck behind
+        // it in a sequential read loop — so more than one handler can be writing its response here
+        // at the same time. Single reader (the client transport's pump).
+        Channel<string> serverToClient = Channel.CreateBounded<string>(new BoundedChannelOptions(ChannelCapacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleWriter = false,
+            SingleReader = true,
+        });
 
         ArcanumInternalToolServer server = new(
             clientToServer.Reader,
@@ -164,12 +252,12 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             maxFileReadSizeBytes,
             conclaveEnabled,
             sagaEnabled,
-            requestCancellationBroker,
+            a2aClientEnabled,
             maxJsonRpcLineBytes,
             logger,
             jsonContext);
 
-        return (transport, server);
+        return (clientToServer, serverToClient, server);
     }
 
     /// <inheritdoc />

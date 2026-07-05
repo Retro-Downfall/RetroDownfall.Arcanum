@@ -208,6 +208,15 @@ internal static class ChronicleSseWriter
         ApprenticeEventType.ApprenticeEscalated => "apprenticeEscalated",
         ApprenticeEventType.ApprenticeIntervened => "apprenticeIntervened",
         ApprenticeEventType.EventsDropped => "eventsDropped",
+        ApprenticeEventType.SendingDispatched => "sendingDispatched",
+        ApprenticeEventType.SendingProgress => "sendingProgress",
+        ApprenticeEventType.SendingCompleted => "sendingCompleted",
+        ApprenticeEventType.SendingFailed => "sendingFailed",
+        // NOTE: CastSent/SimulacrumStarted/SimulacrumCompleted intentionally fall through to
+        // type.ToString() (PascalCase on the wire) today, inconsistent with every other camelCase
+        // event type above. Left as-is here to avoid an unrelated wire-format break for existing
+        // Chronicle consumers (the CLI chronicle parser reads these exact strings); fix in a
+        // follow-up PR that updates this switch and the CLI parser together.
         _ => type.ToString(),
     };
 

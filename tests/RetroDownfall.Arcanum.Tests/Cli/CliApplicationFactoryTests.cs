@@ -4,10 +4,10 @@ using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("GlobalConsole")]
 public sealed class CliApplicationFactoryTests
 {
 
@@ -21,11 +21,7 @@ public sealed class CliApplicationFactoryTests
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        CommandAppResult result = tester.Run("--help");
+        CliTestResult result = CliTestHarness.Run(services, "--help");
 
         Assert.Equal(0, result.ExitCode);
 
@@ -51,11 +47,7 @@ public sealed class CliApplicationFactoryTests
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        CommandAppResult result = tester.Run("--help");
+        CliTestResult result = CliTestHarness.Run(services, "--help");
 
         Assert.Equal(0, result.ExitCode);
 

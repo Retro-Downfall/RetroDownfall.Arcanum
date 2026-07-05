@@ -287,9 +287,9 @@ public static class InferenceFlagBinder
 }
 
 /// <summary>
-/// Surface that an <c>ask</c> / <c>chat</c> settings record exposes to <see cref="InferenceFlagBinder"/>.
-/// Strings are used so Spectre's reflection-light binder doesn't need to round-trip through the
-/// invariant culture float parsing rules.
+/// Surface that an <c>ask</c> / <c>chat</c> command adapts its method parameters to for
+/// <see cref="InferenceFlagBinder"/>. Strings are used so the binder doesn't need to round-trip
+/// through invariant-culture float parsing rules at the ConsoleAppFramework binding layer.
 /// </summary>
 public interface IInferenceFlagInputs
 {
@@ -311,3 +311,17 @@ public interface IInferenceFlagInputs
     string? FrequencyPenalty { get; }
 
 }
+
+/// <summary>
+/// Adapts the <c>ask</c> / <c>chat</c> command methods' individual inference-flag parameters to
+/// <see cref="IInferenceFlagInputs"/> for <see cref="InferenceFlagBinder.TryParse"/>.
+/// </summary>
+public readonly record struct InferenceFlagInputs(
+    string? Temperature,
+    string? TopP,
+    string? MaxTokens,
+    string? Seed,
+    string[]? Stop,
+    string? ResponseFormat,
+    string? PresencePenalty,
+    string? FrequencyPenalty) : IInferenceFlagInputs;

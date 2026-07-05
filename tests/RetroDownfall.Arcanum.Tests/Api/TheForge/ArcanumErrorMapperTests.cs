@@ -80,6 +80,13 @@ public sealed class ArcanumErrorMapperTests
     // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
     // access-control failures (PathNotAllowed, AccessDenied, etc.) above.
     [InlineData(ErrorCodes.Embeddings.FeatureDisabled, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.Sending.AgentUnreachable, StatusCodes.Status502BadGateway)]
+    [InlineData(ErrorCodes.Sending.AgentCardInvalid, StatusCodes.Status502BadGateway)]
+    [InlineData(ErrorCodes.Sending.TaskTimeout, StatusCodes.Status504GatewayTimeout)]
+    [InlineData(ErrorCodes.Sending.TaskRejected, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Sending.Disabled, StatusCodes.Status403Forbidden)]
+    [InlineData(ErrorCodes.Sending.AgentNotAllowed, StatusCodes.Status403Forbidden)]
+    [InlineData(ErrorCodes.Sending.MaxTasksReached, StatusCodes.Status429TooManyRequests)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {

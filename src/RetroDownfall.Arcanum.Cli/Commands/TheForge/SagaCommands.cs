@@ -1,31 +1,43 @@
 using System.Globalization;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 
 /// <summary>
-/// RAG Phase 4 — <c>arcanum saga list</c>: paginated listing of Saga memories (GET /api/saga).
+/// Saga long-term associative memory (requires arcanum serve).
 /// </summary>
-public sealed class SagaListCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SagaListCommand.Settings>
+public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
     private const int ContentPreviewChars = 80;
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Paginated listing of Saga memories (GET /api/saga).
+    /// </summary>
+    /// <param name="query">Free-text query.</param>
+    /// <param name="session">Filter by session GUID.</param>
+    /// <param name="limit">Maximum number of memories to return.</param>
+    /// <param name="offset">Pagination offset.</param>
+    [Command("list")]
+    public async Task<int> List(
+        string? query = null,
+        string? session = null,
+        int? limit = null,
+        int? offset = null,
+        CancellationToken cancellationToken = default)
     {
 
         Guid? sessionId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.Session))
+        if (!string.IsNullOrWhiteSpace(session))
         {
 
-            if (!CliArgReader.TryParseGuid(settings.Session, out Guid parsedSessionId))
+            if (!CliArgReader.TryParseGuid(session, out Guid parsedSessionId))
             {
 
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
@@ -39,7 +51,7 @@ public sealed class SagaListCommand(ArcanumApiClient apiClient, IThemePalette th
         }
 
         Result<SagaMemoryDto[]> result = await apiClient
-            .SagaListAsync(settings.Query, sessionId, settings.Limit, settings.Offset, cancellationToken)
+            .SagaListAsync(query, sessionId, limit, offset, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -98,37 +110,16 @@ public sealed class SagaListCommand(ArcanumApiClient apiClient, IThemePalette th
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Semantic search over Saga memories (POST /api/saga/divine).
+    /// </summary>
+    /// <param name="query">Search query text.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    [Command("divine")]
+    public async Task<int> Divine([Argument] string query, int? limit = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandOption("--query <QUERY>")]
-        public string? Query { get; init; }
-
-        [CommandOption("--session <SESSION>")]
-        public string? Session { get; init; }
-
-        [CommandOption("--limit <LIMIT>")]
-        public int? Limit { get; init; }
-
-        [CommandOption("--offset <OFFSET>")]
-        public int? Offset { get; init; }
-
-    }
-
-}
-
-/// <summary>
-/// RAG Phase 4 — <c>arcanum saga divine &lt;QUERY&gt;</c>: semantic search over Saga memories
-/// (POST /api/saga/divine).
-/// </summary>
-public sealed class SagaDivineCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SagaDivineCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Query))
+        if (string.IsNullOrWhiteSpace(query))
         {
 
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<QUERY> is required.")));
@@ -137,7 +128,7 @@ public sealed class SagaDivineCommand(ArcanumApiClient apiClient, IThemePalette 
 
         }
 
-        SagaSearchRequest request = new(settings.Query.Trim(), settings.Limit);
+        SagaSearchRequest request = new(query.Trim(), limit);
 
         Result<SagaSearchResult> result = await apiClient.SagaDivineAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -196,31 +187,15 @@ public sealed class SagaDivineCommand(ArcanumApiClient apiClient, IThemePalette 
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Delete a single Saga memory (DELETE /api/saga/{id}).
+    /// </summary>
+    /// <param name="id">Saga memory ID.</param>
+    [Command("delete")]
+    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandArgument(0, "<QUERY>")]
-        public required string Query { get; init; }
-
-        [CommandOption("--limit <LIMIT>")]
-        public int? Limit { get; init; }
-
-    }
-
-}
-
-/// <summary>
-/// RAG Phase 4 — <c>arcanum saga delete &lt;ID&gt;</c>: deletes a single Saga memory
-/// (DELETE /api/saga/{id}).
-/// </summary>
-public sealed class SagaDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SagaDeleteCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        Result result = await apiClient.SagaDeleteAsync(settings.Id, cancellationToken).ConfigureAwait(false);
+        Result result = await apiClient.SagaDeleteAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -231,30 +206,17 @@ public sealed class SagaDeleteCommand(ArcanumApiClient apiClient, IThemePalette 
 
         }
 
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Saga memory '{settings.Id}' was forgotten.")));
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Saga memory '{id}' was forgotten.")));
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-/// <summary>
-/// RAG Phase 4 — <c>arcanum saga stats</c>: aggregate summary of Saga memory storage
-/// (GET /api/saga/stats).
-/// </summary>
-public sealed class SagaStatsCommand(ArcanumApiClient apiClient, IThemePalette themePalette) : AsyncCommand
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    /// <summary>
+    /// Aggregate summary of Saga memory storage (GET /api/saga/stats).
+    /// </summary>
+    [Command("stats")]
+    public async Task<int> Stats(CancellationToken cancellationToken)
     {
 
         Result<SagaStats> result = await apiClient.SagaStatsAsync(cancellationToken).ConfigureAwait(false);

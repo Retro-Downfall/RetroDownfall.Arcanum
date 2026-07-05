@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class SpellCastCommandTests
 {
 
@@ -35,7 +35,7 @@ public sealed class SpellCastCommandTests
             new ApiResponse<SpellCastResult>(cast, true, null),
             ArcanumJsonContext.Default.ApiResponseSpellCastResult));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "cast", "greet", "--workspace", "/tmp/ws"]);
+        CliTestResult result = RunCommand(handler, ["spell", "cast", "greet", "--workspace", "/tmp/ws"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -56,13 +56,13 @@ public sealed class SpellCastCommandTests
             ArcanumJsonContext.Default.ApiResponseSpellCastResult,
             HttpStatusCode.NotFound));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "cast", "missing", "--workspace", "/tmp/ws"]);
+        CliTestResult result = RunCommand(handler, ["spell", "cast", "missing", "--workspace", "/tmp/ws"]);
 
         Assert.Equal(1, result.ExitCode);
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -79,11 +79,7 @@ public sealed class SpellCastCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class PromptCloneCommandTests
 {
 
@@ -46,7 +46,7 @@ public sealed class PromptCloneCommandTests
             ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
             HttpStatusCode.Created));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["prompt", "clone", SampleId.ToString(), "--new-name", "cloned-prompt", "--new-version", "2.0.0"]);
 
@@ -66,7 +66,7 @@ public sealed class PromptCloneCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "clone", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["prompt", "clone", SampleId.ToString()]);
 
         Assert.NotEqual(0, result.ExitCode);
 
@@ -78,7 +78,7 @@ public sealed class PromptCloneCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "clone", "not-a-guid", "--new-name", "x", "--new-version", "1.0.0"]);
+        CliTestResult result = RunCommand(handler, ["prompt", "clone", "not-a-guid", "--new-name", "x", "--new-version", "1.0.0"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -86,7 +86,7 @@ public sealed class PromptCloneCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -103,11 +103,7 @@ public sealed class PromptCloneCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

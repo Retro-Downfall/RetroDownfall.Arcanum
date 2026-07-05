@@ -1,5 +1,5 @@
-using System.ComponentModel;
 using System.Text.Json;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -8,7 +8,6 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 
@@ -50,14 +49,21 @@ internal static class SpellCommandSupport
 
 }
 
-public sealed class SpellListCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellListCommand.Settings>
+/// <summary>
+/// The Forge spell utilities (requires arcanum serve).
+/// </summary>
+public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// List spells (GET /api/spells).
+    /// </summary>
+    /// <param name="workspace">Workspace root to scope the search (defaults to the host's default workspace).</param>
+    [Command("list")]
+    public async Task<int> List(string? workspace = null, CancellationToken cancellationToken = default)
     {
 
-        Result<SpellSummary[]> result = await apiClient.GetSpellsAsync(settings.Workspace, cancellationToken).ConfigureAwait(false);
+        Result<SpellSummary[]> result = await apiClient.GetSpellsAsync(workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -72,25 +78,16 @@ public sealed class SpellListCommand(ArcanumApiClient apiClient, IThemePalette t
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Show spell detail (GET /api/spells/{name}).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the lookup.</param>
+    [Command("get")]
+    public async Task<int> Get([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandOption("--workspace <PATH>")]
-        [Description("Workspace root to scope the search (defaults to the host's default workspace).")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellGetCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellGetCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        Result<SpellDetail> result = await apiClient.GetSpellAsync(settings.Name, settings.Workspace, cancellationToken).ConfigureAwait(false);
+        Result<SpellDetail> result = await apiClient.GetSpellAsync(name, workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -160,44 +157,46 @@ public sealed class SpellGetCommand(ArcanumApiClient apiClient, IThemePalette th
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Create a spell (POST /api/spells).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to create the spell in.</param>
+    /// <param name="description">Spell description.</param>
+    /// <param name="body">Spell body: inline text, or @filename to read from a file.</param>
+    /// <param name="tag">Tag; pass multiple times for several tags.</param>
+    /// <param name="declaredTool">Restrict the spell's MCP toolset to these tools (writes SKILL.json); pass multiple times for several tools.</param>
+    /// <param name="dependency">Resonant spell dependency name (writes SKILL.json); pass multiple times for several dependencies.</param>
+    [Command("create")]
+    public async Task<int> Create(
+        string? name = null,
+        string? workspace = null,
+        string? description = null,
+        string? body = null,
+        string[]? tag = null,
+        string[]? declaredTool = null,
+        string[]? dependency = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellCreateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellCreateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Name))
+        if (string.IsNullOrWhiteSpace(name))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Workspace))
+        if (string.IsNullOrWhiteSpace(workspace))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
             return 1;
         }
 
-        string body = string.Empty;
+        string resolvedBody = string.Empty;
 
-        if (!string.IsNullOrEmpty(settings.Body)
-            && !CliArgReader.TryReadInlineOrFile(settings.Body, out body, out string? bodyError))
+        if (!string.IsNullOrEmpty(body)
+            && !CliArgReader.TryReadInlineOrFile(body, out resolvedBody, out string? bodyError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
 
@@ -205,20 +204,20 @@ public sealed class SpellCreateCommand(ArcanumApiClient apiClient, IThemePalette
         }
 
         CreateSpellRequest request = new(
-            settings.Name.Trim(),
-            settings.Description,
-            settings.Tags ?? [],
+            name.Trim(),
+            description,
+            tag ?? [],
             SystemPrompt: null,
             Template: null,
             Model: null,
             Provider: null,
             Tools: [],
             RequiredMcpServers: [],
-            Body: string.IsNullOrEmpty(body) ? null : body,
-            DeclaredTools: settings.DeclaredTools,
-            Dependencies: settings.Dependencies);
+            Body: string.IsNullOrEmpty(resolvedBody) ? null : resolvedBody,
+            DeclaredTools: declaredTool,
+            Dependencies: dependency);
 
-        Result<bool> result = await apiClient.CreateSpellAsync(request, settings.Workspace, cancellationToken).ConfigureAwait(false);
+        Result<bool> result = await apiClient.CreateSpellAsync(request, workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -228,51 +227,29 @@ public sealed class SpellCreateCommand(ArcanumApiClient apiClient, IThemePalette
         }
 
         AnsiConsole.MarkupLine(
-            themePalette.HighlightLabelMarkup(Markup.Escape("Spell created:"), Markup.Escape(settings.Name.Trim())));
+            themePalette.HighlightLabelMarkup(Markup.Escape("Spell created:"), Markup.Escape(name.Trim())));
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Update a spell (PUT /api/spells/{name}).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the update.</param>
+    /// <param name="description">Spell description.</param>
+    /// <param name="tag">Tag; pass multiple times for several tags.</param>
+    [Command("update")]
+    public async Task<int> Update(
+        [Argument] string name,
+        string? workspace = null,
+        string? description = null,
+        string[]? tag = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandOption("--name <NAME>")]
-        public string? Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-        [CommandOption("--description <TEXT>")]
-        public string? Description { get; init; }
-
-        [CommandOption("--body <TEXT_OR_FILE>")]
-        [Description("Spell body: inline text, or @filename to read from a file.")]
-        public string? Body { get; init; }
-
-        [CommandOption("--tag <TAG>")]
-        public string[]? Tags { get; init; }
-
-        [CommandOption("--declared-tool <TOOL>")]
-        [Description("Restrict the spell's MCP toolset to these tools (writes SKILL.json).")]
-        public string[]? DeclaredTools { get; init; }
-
-        [CommandOption("--dependency <SPELL_NAME>")]
-        [Description("Resonant spell dependency name (writes SKILL.json).")]
-        public string[]? Dependencies { get; init; }
-
-    }
-
-}
-
-public sealed class SpellUpdateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellUpdateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Workspace))
+        if (string.IsNullOrWhiteSpace(workspace))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
@@ -280,8 +257,8 @@ public sealed class SpellUpdateCommand(ArcanumApiClient apiClient, IThemePalette
         }
 
         UpdateSpellRequest request = new(
-            settings.Description,
-            settings.Tags,
+            description,
+            tag,
             SystemPrompt: null,
             Template: null,
             Model: null,
@@ -289,7 +266,7 @@ public sealed class SpellUpdateCommand(ArcanumApiClient apiClient, IThemePalette
             Tools: null,
             RequiredMcpServers: null);
 
-        Result<bool> result = await apiClient.UpdateSpellAsync(settings.Name, request, settings.Workspace, cancellationToken).ConfigureAwait(false);
+        Result<bool> result = await apiClient.UpdateSpellAsync(name, request, workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -298,46 +275,29 @@ public sealed class SpellUpdateCommand(ArcanumApiClient apiClient, IThemePalette
             return 1;
         }
 
-        AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape("Spell updated:"), Markup.Escape(settings.Name)));
+        AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape("Spell updated:"), Markup.Escape(name)));
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Delete a spell (DELETE /api/spells/{name}).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the deletion.</param>
+    [Command("delete")]
+    public async Task<int> Delete([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-        [CommandOption("--description <TEXT>")]
-        public string? Description { get; init; }
-
-        [CommandOption("--tag <TAG>")]
-        public string[]? Tags { get; init; }
-
-    }
-
-}
-
-public sealed class SpellDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellDeleteCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Workspace))
+        if (string.IsNullOrWhiteSpace(workspace))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--workspace is required.")));
 
             return 1;
         }
 
-        Result result = await apiClient.DeleteSpellAsync(settings.Name, settings.Workspace, cancellationToken).ConfigureAwait(false);
+        Result result = await apiClient.DeleteSpellAsync(name, workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -352,32 +312,30 @@ public sealed class SpellDeleteCommand(ArcanumApiClient apiClient, IThemePalette
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Search spells by query/tag/tool/source (GET /api/spells/search).
+    /// </summary>
+    /// <param name="query">-q, Free-text query.</param>
+    /// <param name="tag">Filter by tag.</param>
+    /// <param name="tool">Filter by declared tool.</param>
+    /// <param name="source">Filter by source: builtin, workspace, campaign.</param>
+    /// <param name="workspace">Workspace root to scope the search.</param>
+    [Command("search")]
+    public async Task<int> Search(
+        string? query = null,
+        string? tag = null,
+        string? tool = null,
+        string? source = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
+        SpellSource? parsedSource = null;
 
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellSearchCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellSearchCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        SpellSource? source = null;
-
-        if (!string.IsNullOrWhiteSpace(settings.Source))
+        if (!string.IsNullOrWhiteSpace(source))
         {
 
-            source = settings.Source.Trim().ToLowerInvariant() switch
+            parsedSource = source.Trim().ToLowerInvariant() switch
             {
                 "builtin" => SpellSource.Builtin,
                 "workspace" => SpellSource.Workspace,
@@ -385,7 +343,7 @@ public sealed class SpellSearchCommand(ArcanumApiClient apiClient, IThemePalette
                 _ => (SpellSource?)null,
             };
 
-            if (source is null)
+            if (parsedSource is null)
             {
                 AnsiConsole.MarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--source must be one of: builtin, workspace, campaign.")));
@@ -396,7 +354,7 @@ public sealed class SpellSearchCommand(ArcanumApiClient apiClient, IThemePalette
         }
 
         Result<SpellSummary[]> result = await apiClient
-            .SearchSpellsAsync(settings.Query, settings.Tag, settings.Tool, source, null, settings.Workspace, cancellationToken)
+            .SearchSpellsAsync(query, tag, tool, parsedSource, null, workspace, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -412,38 +370,17 @@ public sealed class SpellSearchCommand(ArcanumApiClient apiClient, IThemePalette
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandOption("-q|--query <QUERY>")]
-        public string? Query { get; init; }
-
-        [CommandOption("--tag <TAG>")]
-        public string? Tag { get; init; }
-
-        [CommandOption("--tool <TOOL>")]
-        public string? Tool { get; init; }
-
-        [CommandOption("--source <SOURCE>")]
-        [Description("Filter by source: builtin, workspace, campaign.")]
-        public string? Source { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellValidateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellValidateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Validate a spell's frontmatter and dependencies (POST /api/spells/{name}/validate).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the validation.</param>
+    [Command("validate")]
+    public async Task<int> Validate([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
         Result<SpellValidationResultDto> result = await apiClient
-            .ValidateSpellAsync(settings.Name, settings.Workspace, cancellationToken)
+            .ValidateSpellAsync(name, workspace, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -489,7 +426,7 @@ public sealed class SpellValidateCommand(ArcanumApiClient apiClient, IThemePalet
 
         Panel panel = new(table)
         {
-            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Validate: {settings.Name}"))),
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Validate: {name}"))),
             Border = BoxBorder.Rounded,
             BorderStyle = validation.IsValid ? themePalette.HighlightStyle() : themePalette.ErrorStyle(),
         };
@@ -500,44 +437,40 @@ public sealed class SpellValidateCommand(ArcanumApiClient apiClient, IThemePalet
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Execute a spell and print the assistant response (POST /api/spells/{name}/execute).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the execution.</param>
+    /// <param name="version">Spell version label to execute.</param>
+    /// <param name="input">Input text for the spell: inline text, or @filename to read from a file.</param>
+    [Command("execute")]
+    public async Task<int> Execute(
+        [Argument] string name,
+        string? workspace = null,
+        string? version = null,
+        string? input = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellExecuteCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellExecuteCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrEmpty(settings.Input))
+        if (string.IsNullOrEmpty(input))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--input is required.")));
 
             return 1;
         }
 
-        if (!CliArgReader.TryReadInlineOrFile(settings.Input, out string input, out string? inputError))
+        if (!CliArgReader.TryReadInlineOrFile(input, out string resolvedInput, out string? inputError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(inputError!)));
 
             return 1;
         }
 
-        SpellExecuteRequest request = new(input);
+        SpellExecuteRequest request = new(resolvedInput);
 
         Result<PromptResponseDto> result = await apiClient
-            .ExecuteSpellAsync(settings.Name, request, settings.Workspace, settings.Version, cancellationToken)
+            .ExecuteSpellAsync(name, request, workspace, version, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -553,35 +486,17 @@ public sealed class SpellExecuteCommand(ArcanumApiClient apiClient, IThemePalett
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-        [CommandOption("--version <LABEL>")]
-        public string? Version { get; init; }
-
-        [CommandOption("--input <TEXT_OR_FILE>")]
-        [Description("Input text for the spell: inline text, or @filename to read from a file.")]
-        public string? Input { get; init; }
-
-    }
-
-}
-
-public sealed class SpellVersionsCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellVersionsCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// List spell versions (GET /api/spells/{name}/versions).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the lookup.</param>
+    [Command("versions")]
+    public async Task<int> Versions([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
         Result<SpellVersionDto[]> result = await apiClient
-            .GetSpellVersionsAsync(settings.Name, settings.Workspace, null, cancellationToken)
+            .GetSpellVersionsAsync(name, workspace, null, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -617,28 +532,22 @@ public sealed class SpellVersionsCommand(ArcanumApiClient apiClient, IThemePalet
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellExportCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellExportCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Export a spell as portable JSON (POST /api/spells/{name}/export).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the export.</param>
+    /// <param name="output">Write exported JSON to this file instead of stdout.</param>
+    [Command("export")]
+    public async Task<int> Export(
+        [Argument] string name,
+        string? workspace = null,
+        string? output = null,
+        CancellationToken cancellationToken = default)
     {
 
         Result<SpellExportDto> result = await apiClient
-            .ExportSpellAsync(settings.Name, settings.Workspace, cancellationToken)
+            .ExportSpellAsync(name, workspace, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -652,46 +561,32 @@ public sealed class SpellExportCommand(ArcanumApiClient apiClient, IThemePalette
             result.Value,
             RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.SpellExportDto);
 
-        if (string.IsNullOrWhiteSpace(settings.Output))
+        if (string.IsNullOrWhiteSpace(output))
         {
             await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
         }
         else
         {
-            await File.WriteAllTextAsync(settings.Output, json, cancellationToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
 
             AnsiConsole.MarkupLine(
-                themePalette.HighlightLabelMarkup(Markup.Escape("Spell exported to:"), Markup.Escape(settings.Output)));
+                themePalette.HighlightLabelMarkup(Markup.Escape("Spell exported to:"), Markup.Escape(output)));
         }
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Import a spell from portable JSON (POST /api/spells/import).
+    /// </summary>
+    /// <param name="file">Path to a spell export JSON file.</param>
+    /// <param name="workspace">Workspace root to import into.</param>
+    [Command("import")]
+    public async Task<int> Import(string? file = null, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-        [CommandOption("--output <FILE>")]
-        public string? Output { get; init; }
-
-    }
-
-}
-
-public sealed class SpellImportCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellImportCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.File))
+        if (string.IsNullOrWhiteSpace(file))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
@@ -702,11 +597,11 @@ public sealed class SpellImportCommand(ArcanumApiClient apiClient, IThemePalette
 
         try
         {
-            json = await File.ReadAllTextAsync(settings.File, cancellationToken).ConfigureAwait(false);
+            json = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{settings.File}': {ex.Message}")));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 
             return 1;
         }
@@ -731,7 +626,7 @@ public sealed class SpellImportCommand(ArcanumApiClient apiClient, IThemePalette
             return 1;
         }
 
-        SpellImportRequest request = new(payload, settings.Workspace, null);
+        SpellImportRequest request = new(payload, workspace, null);
 
         Result<SpellSummary> result = await apiClient.ImportSpellAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -749,32 +644,28 @@ public sealed class SpellImportCommand(ArcanumApiClient apiClient, IThemePalette
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandOption("--file <FILE>")]
-        public string? File { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellCastCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellCastCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Dry-run preview of a spell's assembled system prompt — no inference tokens consumed (POST /api/spells/{name}/cast).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="workspace">Workspace root to scope the cast.</param>
+    /// <param name="session">Session GUID to bind context from.</param>
+    /// <param name="campaign">Campaign GUID to bind context from.</param>
+    [Command("cast")]
+    public async Task<int> Cast(
+        [Argument] string name,
+        string? workspace = null,
+        string? session = null,
+        string? campaign = null,
+        CancellationToken cancellationToken = default)
     {
 
         Guid? sessionId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.SessionId))
+        if (!string.IsNullOrWhiteSpace(session))
         {
 
-            if (!CliArgReader.TryParseGuid(settings.SessionId, out Guid parsedSessionId))
+            if (!CliArgReader.TryParseGuid(session, out Guid parsedSessionId))
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
 
@@ -787,10 +678,10 @@ public sealed class SpellCastCommand(ArcanumApiClient apiClient, IThemePalette t
 
         Guid? campaignId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.CampaignId))
+        if (!string.IsNullOrWhiteSpace(campaign))
         {
 
-            if (!CliArgReader.TryParseGuid(settings.CampaignId, out Guid parsedCampaignId))
+            if (!CliArgReader.TryParseGuid(campaign, out Guid parsedCampaignId))
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
 
@@ -801,9 +692,9 @@ public sealed class SpellCastCommand(ArcanumApiClient apiClient, IThemePalette t
 
         }
 
-        SpellCastRequest request = new(settings.Workspace, sessionId, campaignId);
+        SpellCastRequest request = new(workspace, sessionId, campaignId);
 
-        Result<SpellCastResult> result = await apiClient.CastSpellAsync(settings.Name, request, cancellationToken).ConfigureAwait(false);
+        Result<SpellCastResult> result = await apiClient.CastSpellAsync(name, request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -900,42 +791,30 @@ public sealed class SpellCastCommand(ArcanumApiClient apiClient, IThemePalette t
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Clone a spell to a new name (POST /api/spells/{name}/clone).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="newName">New spell name.</param>
+    /// <param name="workspace">Workspace root to scope the clone.</param>
+    [Command("clone")]
+    public async Task<int> Clone(
+        [Argument] string name,
+        string? newName = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-        [CommandOption("--session <ID>")]
-        public string? SessionId { get; init; }
-
-        [CommandOption("--campaign <ID>")]
-        public string? CampaignId { get; init; }
-
-    }
-
-}
-
-public sealed class SpellCloneCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellCloneCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.NewName))
+        if (string.IsNullOrWhiteSpace(newName))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--new-name is required.")));
 
             return 1;
         }
 
-        CloneSpellRequest request = new(settings.NewName.Trim(), settings.Workspace);
+        CloneSpellRequest request = new(newName.Trim(), workspace);
 
-        Result<SpellSummary> result = await apiClient.CloneSpellAsync(settings.Name, request, cancellationToken).ConfigureAwait(false);
+        Result<SpellSummary> result = await apiClient.CloneSpellAsync(name, request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -945,7 +824,7 @@ public sealed class SpellCloneCommand(ArcanumApiClient apiClient, IThemePalette 
         }
 
         AnsiConsole.MarkupLine(
-            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Cloned spell \"{settings.Name}\" \u2192 \"{result.Value.Name}\"")));
+            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Cloned spell \"{name}\" \u2192 \"{result.Value.Name}\"")));
 
         SpellCommandSupport.WriteSpellSummaryTable([result.Value], themePalette);
 
@@ -953,53 +832,54 @@ public sealed class SpellCloneCommand(ArcanumApiClient apiClient, IThemePalette 
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--new-name <NAME>")]
-        public required string NewName { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
 }
 
-public sealed class SpellVersionCreateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellVersionCreateCommand.Settings>
+/// <summary>
+/// Manage named spell file versions (SPELL.v{label}.md sidecar files).
+/// </summary>
+public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Create a new spell version (POST /api/spells/{name}/versions).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="version">Version label.</param>
+    /// <param name="body">Version body: inline text, or @filename to read from a file.</param>
+    /// <param name="workspace">Workspace root to scope the version.</param>
+    [Command("create")]
+    public async Task<int> Create(
+        [Argument] string name,
+        string? version = null,
+        string? body = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
     {
 
-        if (string.IsNullOrWhiteSpace(settings.Version))
+        if (string.IsNullOrWhiteSpace(version))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
 
-        if (string.IsNullOrEmpty(settings.Body))
+        if (string.IsNullOrEmpty(body))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
 
             return 1;
         }
 
-        if (!CliArgReader.TryReadInlineOrFile(settings.Body, out string body, out string? bodyError))
+        if (!CliArgReader.TryReadInlineOrFile(body, out string resolvedBody, out string? bodyError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
 
             return 1;
         }
 
-        CreateSpellVersionRequest request = new(settings.Version.Trim(), body, settings.Workspace);
+        CreateSpellVersionRequest request = new(version.Trim(), resolvedBody, workspace);
 
-        Result<SpellVersionDto> result = await apiClient.CreateSpellVersionAsync(settings.Name, request, cancellationToken).ConfigureAwait(false);
+        Result<SpellVersionDto> result = await apiClient.CreateSpellVersionAsync(name, request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -1009,64 +889,53 @@ public sealed class SpellVersionCreateCommand(ArcanumApiClient apiClient, ITheme
         }
 
         AnsiConsole.MarkupLine(
-            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Created version {result.Value.Version} for spell \"{settings.Name}\"")));
+            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Created version {result.Value.Version} for spell \"{name}\"")));
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Update an existing spell version's body (PUT /api/spells/{name}/versions/{version}).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="version">Version label.</param>
+    /// <param name="body">Version body: inline text, or @filename to read from a file.</param>
+    /// <param name="workspace">Workspace root to scope the version.</param>
+    [Command("update")]
+    public async Task<int> Update(
+        [Argument] string name,
+        string? version = null,
+        string? body = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--version <LABEL>")]
-        public string? Version { get; init; }
-
-        [CommandOption("--body <TEXT_OR_FILE>")]
-        [Description("Version body: inline text, or @filename to read from a file.")]
-        public string? Body { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellVersionUpdateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellVersionUpdateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Version))
+        if (string.IsNullOrWhiteSpace(version))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
 
-        if (string.IsNullOrEmpty(settings.Body))
+        if (string.IsNullOrEmpty(body))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--body is required.")));
 
             return 1;
         }
 
-        if (!CliArgReader.TryReadInlineOrFile(settings.Body, out string body, out string? bodyError))
+        if (!CliArgReader.TryReadInlineOrFile(body, out string resolvedBody, out string? bodyError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(bodyError!)));
 
             return 1;
         }
 
-        UpdateSpellVersionRequest request = new(body, settings.Workspace);
+        UpdateSpellVersionRequest request = new(resolvedBody, workspace);
 
         Result<SpellVersionDto> result = await apiClient
-            .UpdateSpellVersionAsync(settings.Name, settings.Version.Trim(), request, cancellationToken)
+            .UpdateSpellVersionAsync(name, version.Trim(), request, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -1077,50 +946,37 @@ public sealed class SpellVersionUpdateCommand(ArcanumApiClient apiClient, ITheme
         }
 
         AnsiConsole.MarkupLine(
-            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Updated version {result.Value.Version} for spell \"{settings.Name}\"")));
+            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Updated version {result.Value.Version} for spell \"{name}\"")));
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Activate a spell version, swapping it into SPELL.md (POST /api/spells/{name}/versions/{version}/activate).
+    /// </summary>
+    /// <param name="name">Spell name.</param>
+    /// <param name="version">Version label.</param>
+    /// <param name="workspace">Workspace root to scope the version.</param>
+    [Command("activate")]
+    public async Task<int> Activate(
+        [Argument] string name,
+        string? version = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--version <LABEL>")]
-        public string? Version { get; init; }
-
-        [CommandOption("--body <TEXT_OR_FILE>")]
-        [Description("Version body: inline text, or @filename to read from a file.")]
-        public string? Body { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class SpellVersionActivateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SpellVersionActivateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Version))
+        if (string.IsNullOrWhiteSpace(version))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--version is required.")));
 
             return 1;
         }
 
-        ActivateSpellVersionRequest request = new(settings.Workspace);
+        ActivateSpellVersionRequest request = new(workspace);
 
         Result<SpellVersionDto> result = await apiClient
-            .ActivateSpellVersionAsync(settings.Name, settings.Version.Trim(), request, cancellationToken)
+            .ActivateSpellVersionAsync(name, version.Trim(), request, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -1131,7 +987,7 @@ public sealed class SpellVersionActivateCommand(ArcanumApiClient apiClient, IThe
         }
 
         AnsiConsole.MarkupLine(
-            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Activated version {result.Value.Version} for spell \"{settings.Name}\"")));
+            themePalette.HighlightMarkup(Markup.Escape($"\u2713 Activated version {result.Value.Version} for spell \"{name}\"")));
 
         if (result.Value.PreviousVersion is not null)
         {
@@ -1141,20 +997,6 @@ public sealed class SpellVersionActivateCommand(ArcanumApiClient apiClient, IThe
         }
 
         return 0;
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<NAME>")]
-        public required string Name { get; init; }
-
-        [CommandOption("--version <LABEL>")]
-        public string? Version { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
 
     }
 

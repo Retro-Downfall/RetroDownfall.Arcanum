@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using ConsoleAppFramework;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -13,14 +14,18 @@ using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 [ExcludeFromCodeCoverage] // Reason: long-running Kestrel host entrypoint; config readers are covered via internal static unit tests.
-public sealed class ServeCommand(IThemePalette themePalette) : AsyncCommand
+public sealed class ServeCommand(IThemePalette themePalette)
 {
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+
+    /// <summary>
+    /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).
+    /// </summary>
+    [Command("")]
+    public async Task<int> Run(CancellationToken cancellationToken)
     {
 
         cancellationToken.ThrowIfCancellationRequested();

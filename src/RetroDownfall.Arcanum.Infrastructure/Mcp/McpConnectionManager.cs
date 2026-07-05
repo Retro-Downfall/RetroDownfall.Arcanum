@@ -43,10 +43,6 @@ public sealed partial class McpConnectionManager(
 
     private static readonly McpServerConfig InternalMcpServerConfig = new() { Command = "arcanum-internal" };
 
-    // Bridges Streamable HTTP multi-round tool-response (MRTR) input requests into the shared
-    // human-prompt channel (same surface as the in-process ask_human tool).
-    private readonly IMcpInputElicitor _httpInputElicitor = new HumanPromptMcpInputElicitor(humanPromptRegistry);
-
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
 
     private readonly SemaphoreSlim _registryLock = new(1, 1);

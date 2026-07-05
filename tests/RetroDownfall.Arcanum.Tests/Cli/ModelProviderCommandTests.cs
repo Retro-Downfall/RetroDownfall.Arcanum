@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class ModelProviderCommandTests
 {
 
@@ -27,7 +27,7 @@ public sealed class ModelProviderCommandTests
             new ApiResponse<ModelInfoDto[]>([model], true, null),
             ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray));
 
-        CommandAppResult result = RunCommand(handler, ["model", "list"]);
+        CliTestResult result = RunCommand(handler, ["model", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -49,7 +49,7 @@ public sealed class ModelProviderCommandTests
             new ApiResponse<ProviderInfoDto[]>([provider], true, null),
             ArcanumJsonContext.Default.ApiResponseProviderInfoDtoArray));
 
-        CommandAppResult result = RunCommand(handler, ["provider", "list"]);
+        CliTestResult result = RunCommand(handler, ["provider", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -61,7 +61,7 @@ public sealed class ModelProviderCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -78,11 +78,7 @@ public sealed class ModelProviderCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

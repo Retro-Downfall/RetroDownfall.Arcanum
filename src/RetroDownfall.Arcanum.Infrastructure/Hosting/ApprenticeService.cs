@@ -2474,6 +2474,80 @@ internal sealed class ApprenticeService(
 
     }
 
+    /// <summary>
+    /// Parses a <c>dispatch_sending</c> tool result and publishes <c>sendingDispatched</c> followed by
+    /// <c>sendingCompleted</c>/<c>sendingFailed</c> on <paramref name="apprenticeId"/>'s Chronicle. Malformed
+    /// payloads are ignored (best-effort observability; never fails the step).
+    /// </summary>
+    private void PublishDispatchSendingEvents(Guid apprenticeId, string resultText)
+    {
+
+        DispatchSendingResultWire? payload;
+
+        try
+        {
+
+            payload = System.Text.Json.JsonSerializer.Deserialize(
+                resultText.Trim(),
+                McpJsonSerializerContext.Default.DispatchSendingResultWire);
+
+        }
+        catch (System.Text.Json.JsonException)
+        {
+
+            return;
+
+        }
+
+        if (payload is null)
+        {
+
+            return;
+
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.SendingDispatched,
+            ApprenticeId = apprenticeId,
+            Timestamp = now,
+            Description = payload.AgentUrl,
+            Summary = payload.TaskId,
+        });
+
+        if (payload.Succeeded)
+        {
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.SendingCompleted,
+                ApprenticeId = apprenticeId,
+                Timestamp = now,
+                Description = payload.AgentUrl,
+                Summary = payload.TaskId,
+                Result = payload.Response,
+            });
+
+        }
+        else
+        {
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.SendingFailed,
+                ApprenticeId = apprenticeId,
+                Timestamp = now,
+                Description = payload.AgentUrl,
+                Summary = payload.TaskId,
+                Error = payload.Error,
+            });
+
+        }
+
+    }
+
     private static bool TryParseCastSendingChildId(string resultText, out Guid childId)
     {
         childId = Guid.Empty;
@@ -2625,6 +2699,22 @@ internal sealed class ApprenticeService(
                 {
 
                     spawnedChildIds.Add(spawnedChildId);
+
+                }
+
+                // dispatch_sending (Archmage Client) is blocking: by the time this ToolResult frame
+                // arrives, the exchange with the remote A2A agent has already fully completed or
+                // failed. Unlike cast_sending there is no child Apprentice to stamp/start afterward,
+                // so the Chronicle events are published immediately here — apprenticeId (the currently
+                // running Apprentice) is already in scope, which is exactly the piece of context the
+                // dispatch_sending MCP tool itself cannot see (it is workspace-scoped, not
+                // Apprentice-scoped; see DESIGN.md §5.7.1).
+                if (frame.Type == IntelligenceEventType.ToolResult
+                    && string.Equals(frame.ToolCall?.Name, "dispatch_sending", StringComparison.Ordinal)
+                    && !string.IsNullOrWhiteSpace(frame.Data))
+                {
+
+                    PublishDispatchSendingEvents(apprenticeId, frame.Data);
 
                 }
 

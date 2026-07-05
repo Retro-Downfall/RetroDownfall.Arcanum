@@ -1,11 +1,10 @@
-using System.ComponentModel;
 using System.Text.Json;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 
@@ -101,31 +100,44 @@ internal static class ApprenticeCommandSupport
 
 }
 
-public sealed class ApprenticeListCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeListCommand.Settings>
+/// <summary>
+/// The Forge Apprentice orchestration (requires arcanum serve).
+/// </summary>
+public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// List Apprentices (GET /api/apprentices).
+    /// </summary>
+    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="status">Filter by status.</param>
+    /// <param name="limit">Maximum number of Apprentices to return.</param>
+    [Command("list")]
+    public async Task<int> List(
+        string? campaignId = null,
+        string? status = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
     {
 
-        Guid? campaignId = null;
+        Guid? parsedCampaignId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.CampaignId))
+        if (!string.IsNullOrWhiteSpace(campaignId))
         {
 
-            if (!CliArgReader.TryParseGuid(settings.CampaignId, out Guid parsed))
+            if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
 
-            campaignId = parsed;
+            parsedCampaignId = parsed;
 
         }
 
         Result<ListPageResult<ApprenticeSummaryDto>> result = await apiClient
-            .GetApprenticesAsync(campaignId, settings.Status, settings.Limit, cancellationToken: cancellationToken)
+            .GetApprenticesAsync(parsedCampaignId, status, limit, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -174,37 +186,22 @@ public sealed class ApprenticeListCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Show Apprentice detail (GET /api/apprentices/{id}).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("get")]
+    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandOption("--campaignId <ID>")]
-        public string? CampaignId { get; init; }
-
-        [CommandOption("--status <STATUS>")]
-        public string? Status { get; init; }
-
-        [CommandOption("--limit <N>")]
-        public int? Limit { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeGetCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeGetCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result<ApprenticeDetailDto> result = await apiClient.GetApprenticeAsync(id, cancellationToken).ConfigureAwait(false);
+        Result<ApprenticeDetailDto> result = await apiClient.GetApprenticeAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -219,65 +216,64 @@ public sealed class ApprenticeGetCommand(ArcanumApiClient apiClient, IThemePalet
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Create an Apprentice (POST /api/apprentices).
+    /// </summary>
+    /// <param name="goal">Apprentice goal: inline text, or @filename to read from a file.</param>
+    /// <param name="name">Display name; defaults to a truncated form of the goal.</param>
+    /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
+    /// <param name="workspace">Workspace root to scope the Apprentice.</param>
+    [Command("create")]
+    public async Task<int> Create(
+        string? goal = null,
+        string? name = null,
+        string? campaignId = null,
+        string? workspace = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeCreateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeCreateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrEmpty(settings.Goal))
+        if (string.IsNullOrEmpty(goal))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
             return 1;
         }
 
-        if (!CliArgReader.TryReadInlineOrFile(settings.Goal, out string goal, out string? goalError))
+        if (!CliArgReader.TryReadInlineOrFile(goal, out string resolvedGoal, out string? goalError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(goalError!)));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(goal))
+        if (string.IsNullOrWhiteSpace(resolvedGoal))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal must not be empty.")));
 
             return 1;
         }
 
-        Guid? campaignId = null;
+        Guid? parsedCampaignId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.CampaignId))
+        if (!string.IsNullOrWhiteSpace(campaignId))
         {
 
-            if (!CliArgReader.TryParseGuid(settings.CampaignId, out Guid parsed))
+            if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
 
                 return 1;
             }
 
-            campaignId = parsed;
+            parsedCampaignId = parsed;
 
         }
 
-        string name = string.IsNullOrWhiteSpace(settings.Name)
-            ? ApprenticeCommandSupport.DeriveNameFromGoal(goal)
-            : settings.Name.Trim();
+        string resolvedName = string.IsNullOrWhiteSpace(name)
+            ? ApprenticeCommandSupport.DeriveNameFromGoal(resolvedGoal)
+            : name.Trim();
 
-        CreateApprenticeRequest request = new(name, goal.Trim(), campaignId, settings.Workspace);
+        CreateApprenticeRequest request = new(resolvedName, resolvedGoal.Trim(), parsedCampaignId, workspace);
 
         Result<ApprenticeDetailDto> result = await apiClient.CreateApprenticeAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -297,42 +293,22 @@ public sealed class ApprenticeCreateCommand(ArcanumApiClient apiClient, IThemePa
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Delete a terminal Apprentice (DELETE /api/apprentices/{id}).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("delete")]
+    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandOption("--goal <TEXT_OR_FILE>")]
-        [Description("Apprentice goal: inline text, or @filename to read from a file.")]
-        public string? Goal { get; init; }
-
-        [CommandOption("--name <NAME>")]
-        [Description("Display name; defaults to a truncated form of the goal.")]
-        public string? Name { get; init; }
-
-        [CommandOption("--campaignId <ID>")]
-        public string? CampaignId { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeDeleteCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result result = await apiClient.DeleteApprenticeAsync(id, cancellationToken).ConfigureAwait(false);
+        Result result = await apiClient.DeleteApprenticeAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -347,35 +323,53 @@ public sealed class ApprenticeDeleteCommand(ArcanumApiClient apiClient, IThemePa
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Start plan generation and execution (POST /api/apprentices/{id}/start).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("start")]
+    public Task<int> Start([Argument] string id, CancellationToken cancellationToken) =>
+        RunLifecycleActionAsync(id, "started", apiClient.StartApprenticeAsync, cancellationToken);
+
+    /// <summary>
+    /// Pause at the next step boundary (POST /api/apprentices/{id}/pause).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("pause")]
+    public Task<int> Pause([Argument] string id, CancellationToken cancellationToken) =>
+        RunLifecycleActionAsync(id, "paused", apiClient.PauseApprenticeAsync, cancellationToken);
+
+    /// <summary>
+    /// Resume from checkpoint (POST /api/apprentices/{id}/resume).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("resume")]
+    public Task<int> Resume([Argument] string id, CancellationToken cancellationToken) =>
+        RunLifecycleActionAsync(id, "resumed", apiClient.ResumeApprenticeAsync, cancellationToken);
+
+    /// <summary>
+    /// Cancel execution (POST /api/apprentices/{id}/cancel).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("cancel")]
+    public Task<int> Cancel([Argument] string id, CancellationToken cancellationToken) =>
+        RunLifecycleActionAsync(id, "cancelled", apiClient.CancelApprenticeAsync, cancellationToken);
+
+    private async Task<int> RunLifecycleActionAsync(
+        string id,
+        string actionLabel,
+        Func<Guid, CancellationToken, Task<Result<string>>> invoke,
+        CancellationToken cancellationToken)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public abstract class ApprenticeLifecycleCommandBase(IThemePalette themePalette)
-    : AsyncCommand<ApprenticeLifecycleCommandBase.Settings>
-{
-
-    protected abstract string ActionLabel { get; }
-
-    protected abstract Task<Result<string>> InvokeAsync(Guid id, CancellationToken cancellationToken);
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result<string> result = await InvokeAsync(id, cancellationToken).ConfigureAwait(false);
+        Result<string> result = await invoke(apprenticeId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -384,88 +378,36 @@ public abstract class ApprenticeLifecycleCommandBase(IThemePalette themePalette)
             return 1;
         }
 
-        AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape($"Apprentice {ActionLabel}:"), Markup.Escape(id.ToString("D"))));
+        AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape($"Apprentice {actionLabel}:"), Markup.Escape(apprenticeId.ToString("D"))));
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Replace the remaining plan steps (POST /api/apprentices/{id}/reweave).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    /// <param name="plan">JSON array of plan steps: inline text, or @filename to read from a file.</param>
+    [Command("reweave")]
+    public async Task<int> Reweave([Argument] string id, string? plan = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeStartCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : ApprenticeLifecycleCommandBase(themePalette)
-{
-
-    protected override string ActionLabel => "started";
-
-    protected override Task<Result<string>> InvokeAsync(Guid id, CancellationToken cancellationToken) =>
-        apiClient.StartApprenticeAsync(id, cancellationToken);
-
-}
-
-public sealed class ApprenticePauseCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : ApprenticeLifecycleCommandBase(themePalette)
-{
-
-    protected override string ActionLabel => "paused";
-
-    protected override Task<Result<string>> InvokeAsync(Guid id, CancellationToken cancellationToken) =>
-        apiClient.PauseApprenticeAsync(id, cancellationToken);
-
-}
-
-public sealed class ApprenticeResumeCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : ApprenticeLifecycleCommandBase(themePalette)
-{
-
-    protected override string ActionLabel => "resumed";
-
-    protected override Task<Result<string>> InvokeAsync(Guid id, CancellationToken cancellationToken) =>
-        apiClient.ResumeApprenticeAsync(id, cancellationToken);
-
-}
-
-public sealed class ApprenticeCancelCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : ApprenticeLifecycleCommandBase(themePalette)
-{
-
-    protected override string ActionLabel => "cancelled";
-
-    protected override Task<Result<string>> InvokeAsync(Guid id, CancellationToken cancellationToken) =>
-        apiClient.CancelApprenticeAsync(id, cancellationToken);
-
-}
-
-public sealed class ApprenticeReweaveCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeReweaveCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        if (string.IsNullOrEmpty(settings.Plan))
+        if (string.IsNullOrEmpty(plan))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--plan is required.")));
 
             return 1;
         }
 
-        if (!CliArgReader.TryReadInlineOrFile(settings.Plan, out string planJson, out string? planError))
+        if (!CliArgReader.TryReadInlineOrFile(plan, out string planJson, out string? planError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(planError!)));
 
@@ -492,7 +434,7 @@ public sealed class ApprenticeReweaveCommand(ArcanumApiClient apiClient, IThemeP
             return 1;
         }
 
-        Result<ApprenticeDetailDto> result = await apiClient.ReweaveApprenticeAsync(id, steps, cancellationToken).ConfigureAwait(false);
+        Result<ApprenticeDetailDto> result = await apiClient.ReweaveApprenticeAsync(apprenticeId, steps, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -510,42 +452,30 @@ public sealed class ApprenticeReweaveCommand(ArcanumApiClient apiClient, IThemeP
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Provide Divine Intervention guidance to an escalated Apprentice (POST /api/apprentices/{id}/intervene).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    /// <param name="guidance">Guidance text for the escalated Apprentice.</param>
+    [Command("intervene")]
+    public async Task<int> Intervene([Argument] string id, string? guidance = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--plan <JSON_OR_FILE>")]
-        [Description("JSON array of plan steps: inline text, or @filename to read from a file.")]
-        public string? Plan { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeInterveneCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeInterveneCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Guidance))
+        if (string.IsNullOrWhiteSpace(guidance))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--guidance is required.")));
 
             return 1;
         }
 
-        Result<string> result = await apiClient.IntervereApprenticeAsync(id, settings.Guidance.Trim(), cancellationToken).ConfigureAwait(false);
+        Result<string> result = await apiClient.IntervereApprenticeAsync(apprenticeId, guidance.Trim(), cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -560,34 +490,28 @@ public sealed class ApprenticeInterveneCommand(ArcanumApiClient apiClient, IThem
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Delegate a child Apprentice via The Conclave (POST /api/apprentices/{id}/cast).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    /// <param name="goal">Child Apprentice goal text.</param>
+    /// <param name="name">Display name for the child Apprentice.</param>
+    [Command("cast")]
+    public async Task<int> Cast(
+        [Argument] string id,
+        string? goal = null,
+        string? name = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--guidance <TEXT>")]
-        public string? Guidance { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeCastCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeCastCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Goal))
+        if (string.IsNullOrWhiteSpace(goal))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
 
@@ -595,7 +519,7 @@ public sealed class ApprenticeCastCommand(ArcanumApiClient apiClient, IThemePale
         }
 
         Result<ApprenticeDetailDto> result = await apiClient
-            .CastApprenticeAsync(id, settings.Goal.Trim(), settings.Name, cancellationToken)
+            .CastApprenticeAsync(apprenticeId, goal.Trim(), name, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -625,30 +549,15 @@ public sealed class ApprenticeCastCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Stream live Apprentice events (GET /api/apprentices/{id}/chronicle, SSE).
+    /// </summary>
+    /// <param name="id">Apprentice GUID.</param>
+    [Command("chronicle")]
+    public async Task<int> Chronicle([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--goal <TEXT>")]
-        public string? Goal { get; init; }
-
-        [CommandOption("--name <NAME>")]
-        public string? Name { get; init; }
-
-    }
-
-}
-
-public sealed class ApprenticeChronicleCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ApprenticeChronicleCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
@@ -677,7 +586,7 @@ public sealed class ApprenticeChronicleCommand(ArcanumApiClient apiClient, IThem
         try
         {
 
-            await foreach (ChronicleFrame frame in apiClient.StreamApprenticeChronicleAsync(id, linked.Token).ConfigureAwait(false))
+            await foreach (ChronicleFrame frame in apiClient.StreamApprenticeChronicleAsync(apprenticeId, linked.Token).ConfigureAwait(false))
             {
 
                 if (string.Equals(frame.Type, "error", StringComparison.Ordinal))
@@ -720,14 +629,6 @@ public sealed class ApprenticeChronicleCommand(ArcanumApiClient apiClient, IThem
         }
 
         return sawError ? 1 : 0;
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
 
     }
 

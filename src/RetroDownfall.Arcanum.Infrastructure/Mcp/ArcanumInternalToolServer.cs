@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
@@ -82,6 +83,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _castSendingSchema;
 
+    private readonly JsonElement _dispatchSendingSchema;
+
     private readonly IntelligenceSettings _settings;
 
     private readonly long _maxFileReadSizeBytes;
@@ -90,7 +93,17 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly bool _sagaEnabled;
 
-    private readonly McpRequestCancellationBroker _requestCancellationBroker;
+    private readonly bool _a2aClientEnabled;
+
+    /// <summary>
+    /// In-flight <c>tools/call</c> request ids to their linked <see cref="CancellationTokenSource"/>, so
+    /// an inbound <c>notifications/cancelled</c> can cancel cooperative tool work (e.g. <c>execute_command</c>)
+    /// without waiting for the transport itself to tear down. Replaces the pre-SDK-migration
+    /// <c>McpRequestCancellationBroker</c>, which correlated ids on the client side before the request was
+    /// written; the SDK client now dispatches <c>notifications/cancelled</c> itself, so this server reads it
+    /// directly off the wire.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _inFlightToolCalls = new(StringComparer.Ordinal);
 
     private readonly int _maxJsonRpcLineBytes;
 
@@ -110,7 +123,7 @@ internal sealed partial class ArcanumInternalToolServer
         long maxFileReadSizeBytes,
         bool conclaveEnabled,
         bool sagaEnabled,
-        McpRequestCancellationBroker requestCancellationBroker,
+        bool a2aClientEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -126,8 +139,6 @@ internal sealed partial class ArcanumInternalToolServer
         ArgumentNullException.ThrowIfNull(pacer);
 
         ArgumentNullException.ThrowIfNull(intelligenceSettings);
-
-        ArgumentNullException.ThrowIfNull(requestCancellationBroker);
 
         if (listDirectoryMaxPaths < 1)
         {
@@ -180,7 +191,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         _sagaEnabled = sagaEnabled;
 
-        _requestCancellationBroker = requestCancellationBroker;
+        _a2aClientEnabled = a2aClientEnabled;
 
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
@@ -214,11 +225,24 @@ internal sealed partial class ArcanumInternalToolServer
 
         _castSendingSchema = BuildCastSendingSchema();
 
+        _dispatchSendingSchema = BuildDispatchSendingSchema();
+
         _executeCommandToolDescription =
             $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout or cooperative cancel). Optional workingDirectory is relative to the workspace root.";
 
         _toolHandlers = BuildToolHandlerRegistry();
     }
+
+    /// <summary>
+    /// In-flight per-line handler tasks, dispatched (not awaited) by <see cref="RunAsync"/> so a
+    /// long-running <c>tools/call</c> never blocks the read loop from consuming the next line —
+    /// critically, an inbound <c>notifications/cancelled</c> for that same in-flight call must be
+    /// read and processed while the call is still running, which a sequential await-per-line loop
+    /// could never do (the loop itself would be blocked awaiting the very call the notification is
+    /// meant to cancel). Self-removing on completion; awaited (briefly) on shutdown so responses
+    /// in flight get a chance to be written before the outbound channel is completed.
+    /// </summary>
+    private readonly ConcurrentDictionary<Task, byte> _inFlightLineTasks = new();
 
     /// <summary>
     /// Processes inbound JSON-RPC lines until <paramref name="cancellationToken"/> is canceled or the client completes the channel.
@@ -234,18 +258,16 @@ internal sealed partial class ArcanumInternalToolServer
                     continue;
                 }
 
-                try
-                {
-                    await HandleLineAsync(line, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogWarning(ex, "Arcanum internal MCP server failed handling one line.");
-                }
+                Task lineTask = Task.Run(() => HandleLineSafelyAsync(line, cancellationToken), CancellationToken.None);
+
+                _inFlightLineTasks[lineTask] = 0;
+
+                _ = lineTask.ContinueWith(
+                    static (completed, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(completed, out _),
+                    _inFlightLineTasks,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -254,7 +276,40 @@ internal sealed partial class ArcanumInternalToolServer
         }
         finally
         {
+            Task[] pending = _inFlightLineTasks.Keys.ToArray();
+
+            if (pending.Length > 0)
+            {
+                using CancellationTokenSource drainTimeout = new(TimeSpan.FromSeconds(5));
+
+                try
+                {
+                    await Task.WhenAll(pending).WaitAsync(drainTimeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Best-effort drain; any handler still running past the grace period will have
+                    // its response write fail harmlessly once _toClient is completed below.
+                }
+            }
+
             _toClient.TryComplete();
+        }
+    }
+
+    private async Task HandleLineSafelyAsync(string line, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await HandleLineAsync(line, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Server shutting down; nothing left to respond to.
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Arcanum internal MCP server failed handling one line.");
         }
     }
 
@@ -303,6 +358,13 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!root.TryGetProperty("id", out _))
         {
+            // A method with no "id" is a notification. The only one this server acts on is the
+            // SDK client's wire-level cancellation signal for an in-flight tools/call.
+            if (string.Equals(methodProp.GetString(), "notifications/cancelled", StringComparison.Ordinal))
+            {
+                HandleCancelledNotification(root);
+            }
+
             return;
         }
 
@@ -354,6 +416,49 @@ internal sealed partial class ArcanumInternalToolServer
             await _toClient.WriteAsync(wire + "\n", cancellationToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Handles an inbound <c>notifications/cancelled</c> line: resolves <c>params.requestId</c> to the
+    /// matching in-flight <c>tools/call</c> and cancels its linked token. Malformed or unmatched
+    /// notifications are silently ignored (best-effort, matching the notification's fire-and-forget contract).
+    /// </summary>
+    private void HandleCancelledNotification(JsonElement root)
+    {
+        if (!root.TryGetProperty("params", out JsonElement cancelParams)
+            || cancelParams.ValueKind != JsonValueKind.Object
+            || !cancelParams.TryGetProperty("requestId", out JsonElement requestIdEl))
+        {
+            return;
+        }
+
+        string requestKey = NormalizeRequestId(requestIdEl);
+
+        if (!_inFlightToolCalls.TryGetValue(requestKey, out CancellationTokenSource? cts))
+        {
+            return;
+        }
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The tool call already completed and disposed its CancellationTokenSource
+            // concurrently with this notification; nothing left to cancel.
+        }
+    }
+
+    /// <summary>
+    /// Normalizes a JSON-RPC id (string or number) to a stable dictionary key, matching the id shape a
+    /// client's <c>tools/call</c> request and its later <c>notifications/cancelled.params.requestId</c>
+    /// both use for the same in-flight request.
+    /// </summary>
+    private static string NormalizeRequestId(JsonElement id) => id.ValueKind switch
+    {
+        JsonValueKind.String => id.GetString() ?? id.GetRawText(),
+        _ => id.GetRawText(),
+    };
 
     private JsonRpcResponse BuildInitializeResponse(JsonRpcRequest request, JsonElement rpcId)
     {
@@ -460,6 +565,18 @@ internal sealed partial class ArcanumInternalToolServer
                     Description =
                         "Conclave delegation: cast a Sending to spawn a new child Apprentice that pursues a delegated sub-task outside your immediate spell. Returns the new child Apprentice id.",
                     InputSchema = _castSendingSchema,
+                });
+        }
+
+        if (_a2aClientEnabled)
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "dispatch_sending",
+                    Description =
+                        "Archmage Client: dispatch a Sending to an external A2A-compatible agent at agent_url and block until it responds. Returns the remote agent's response text.",
+                    InputSchema = _dispatchSendingSchema,
                 });
         }
 
@@ -571,22 +688,43 @@ internal sealed partial class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("The Conclave is disabled; cross-Apprentice delegation is not available."));
         }
 
-        using CancellationTokenSource toolScope = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            _requestCancellationBroker.GetTokenOrFallback(McpClient.NormalizeRpcId(rpcId), cancellationToken));
-
-        CancellationToken toolToken = toolScope.Token;
-
-        if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
+        if (call.Name == "dispatch_sending" && !_a2aClientEnabled)
         {
-
-            return BuildToolsCallResponse(rpcId, ToolError($"Unknown tool: {call.Name}"));
-
+            return BuildToolsCallResponse(rpcId, ToolError("A2A is disabled; dispatch_sending is not available."));
         }
 
-        McpToolsCallResultWire result = await handler(call.Arguments, toolToken).ConfigureAwait(false);
+        string requestKey = NormalizeRequestId(rpcId);
 
-        return BuildToolsCallResponse(rpcId, result);
+        using CancellationTokenSource toolScope = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        _inFlightToolCalls[requestKey] = toolScope;
+
+        try
+        {
+            if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
+            {
+
+                return BuildToolsCallResponse(rpcId, ToolError($"Unknown tool: {call.Name}"));
+
+            }
+
+            McpToolsCallResultWire result = await handler(call.Arguments, toolScope.Token).ConfigureAwait(false);
+
+            return BuildToolsCallResponse(rpcId, result);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // toolScope was cancelled by an inbound notifications/cancelled for THIS request
+            // (HandleCancelledNotification), not by a server-wide shutdown (which is signaled by
+            // cancellationToken itself, checked above). Return a normal tool-error response so
+            // RunAsync's read loop keeps processing subsequent lines instead of this
+            // OperationCanceledException propagating out and ending the whole in-process server.
+            return BuildToolsCallResponse(rpcId, ToolError("Tool call was cancelled."));
+        }
+        finally
+        {
+            _inFlightToolCalls.TryRemove(requestKey, out _);
+        }
     }
 
     private JsonRpcResponse BuildToolsCallResponse(JsonElement rpcId, McpToolsCallResultWire result)

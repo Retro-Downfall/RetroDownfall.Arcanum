@@ -8,7 +8,6 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -16,6 +15,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// RAG Phase 2 — smoke tests for <c>arcanum session divine</c> (POST /api/sessions/divine).
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class SessionDivinationCommandTests
 {
 
@@ -42,7 +42,7 @@ public sealed class SessionDivinationCommandTests
             new ApiResponse<SemanticSearchResult>(payload, true, null),
             ArcanumJsonContext.Default.ApiResponseSemanticSearchResult));
 
-        CommandAppResult result = RunCommand(handler, ["session", "divine", "race condition"]);
+        CliTestResult result = RunCommand(handler, ["session", "divine", "race condition"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -74,7 +74,7 @@ public sealed class SessionDivinationCommandTests
             new ApiResponse<SemanticSearchResult>(payload, true, null),
             ArcanumJsonContext.Default.ApiResponseSemanticSearchResult));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["session", "divine", "hello", "--limit", "3", "--campaign", campaignId.ToString(), "--status", "archived"]);
 
@@ -102,7 +102,7 @@ public sealed class SessionDivinationCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["session", "divine", "hello", "--campaign", "not-a-guid"]);
+        CliTestResult result = RunCommand(handler, ["session", "divine", "hello", "--campaign", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -122,7 +122,7 @@ public sealed class SessionDivinationCommandTests
             ArcanumJsonContext.Default.ApiResponseSemanticSearchResult,
             HttpStatusCode.ServiceUnavailable));
 
-        CommandAppResult result = RunCommand(handler, ["session", "divine", "hello"]);
+        CliTestResult result = RunCommand(handler, ["session", "divine", "hello"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -131,7 +131,7 @@ public sealed class SessionDivinationCommandTests
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
         request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -148,11 +148,7 @@ public sealed class SessionDivinationCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -6,7 +6,6 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 
@@ -89,19 +88,26 @@ internal static class CampaignCommandSupport
 
 }
 
-public sealed class CampaignListCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignListCommand.Settings>
+/// <summary>
+/// The Forge campaign registry (requires arcanum serve).
+/// </summary>
+public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// List registered campaigns (GET /api/campaigns).
+    /// </summary>
+    /// <param name="type">Filter by workspace type: spell, campaign, data, custom.</param>
+    [Command("list")]
+    public async Task<int> List(string? type = null, CancellationToken cancellationToken = default)
     {
 
-        WorkspaceType? type = null;
+        WorkspaceType? workspaceType = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.Type))
+        if (!string.IsNullOrWhiteSpace(type))
         {
 
-            if (!CampaignCommandSupport.TryParseWorkspaceType(settings.Type, out WorkspaceType parsed))
+            if (!CampaignCommandSupport.TryParseWorkspaceType(type, out WorkspaceType parsed))
             {
                 AnsiConsole.MarkupLine(
                     themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
@@ -109,11 +115,11 @@ public sealed class CampaignListCommand(ArcanumApiClient apiClient, IThemePalett
                 return 1;
             }
 
-            type = parsed;
+            workspaceType = parsed;
 
         }
 
-        Result<ListPageResult<CampaignDto>> result = await apiClient.GetCampaignsAsync(type, cancellationToken).ConfigureAwait(false);
+        Result<ListPageResult<CampaignDto>> result = await apiClient.GetCampaignsAsync(workspaceType, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -156,32 +162,22 @@ public sealed class CampaignListCommand(ArcanumApiClient apiClient, IThemePalett
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Show campaign detail (GET /api/campaigns/{id}).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    [Command("get")]
+    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandOption("--type <TYPE>")]
-        [Description("Filter by workspace type: spell, campaign, data, custom.")]
-        public string? Type { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignGetCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignGetCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result<CampaignDto> result = await apiClient.GetCampaignAsync(id, cancellationToken).ConfigureAwait(false);
+        Result<CampaignDto> result = await apiClient.GetCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -196,40 +192,39 @@ public sealed class CampaignGetCommand(ArcanumApiClient apiClient, IThemePalette
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Register a new campaign (POST /api/campaigns).
+    /// </summary>
+    /// <param name="name">Campaign display name.</param>
+    /// <param name="path">Absolute filesystem path to register as the campaign root.</param>
+    /// <param name="type">Workspace type: spell, campaign, data, custom. Defaults to campaign.</param>
+    /// <param name="description">Optional campaign description.</param>
+    [Command("create")]
+    public async Task<int> Create(
+        string? name = null,
+        string? path = null,
+        string? type = null,
+        string? description = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignCreateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignCreateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (string.IsNullOrWhiteSpace(settings.Name))
+        if (string.IsNullOrWhiteSpace(name))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Path))
+        if (string.IsNullOrWhiteSpace(path))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--path is required.")));
 
             return 1;
         }
 
-        string typeText = string.IsNullOrWhiteSpace(settings.Type) ? "campaign" : settings.Type;
+        string typeText = string.IsNullOrWhiteSpace(type) ? "campaign" : type;
 
-        if (!CampaignCommandSupport.TryParseWorkspaceType(typeText, out WorkspaceType type))
+        if (!CampaignCommandSupport.TryParseWorkspaceType(typeText, out WorkspaceType workspaceType))
         {
             AnsiConsole.MarkupLine(
                 themePalette.ErrorMarkup(Markup.Escape("--type must be one of: spell, campaign, data, custom.")));
@@ -237,7 +232,7 @@ public sealed class CampaignCreateCommand(ArcanumApiClient apiClient, IThemePale
             return 1;
         }
 
-        RegisterCampaignRequest request = new(settings.Name.Trim(), settings.Path.Trim(), type, settings.Description);
+        RegisterCampaignRequest request = new(name.Trim(), path.Trim(), workspaceType, description);
 
         Result<CampaignDto> result = await apiClient.CreateCampaignAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -257,46 +252,25 @@ public sealed class CampaignCreateCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Update a campaign (PUT /api/campaigns/{id}).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="name">New campaign display name.</param>
+    [Command("update")]
+    public async Task<int> Update([Argument] string id, string? name = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandOption("--name <NAME>")]
-        [Description("Campaign display name.")]
-        public string? Name { get; init; }
-
-        [CommandOption("--path <PATH>")]
-        [Description("Absolute filesystem path to register as the campaign root.")]
-        public string? Path { get; init; }
-
-        [CommandOption("--type <TYPE>")]
-        [Description("Workspace type: spell, campaign, data, custom. Defaults to campaign.")]
-        public string? Type { get; init; }
-
-        [CommandOption("--description <TEXT>")]
-        [Description("Optional campaign description.")]
-        public string? Description { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignUpdateCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignUpdateCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        UpdateCampaignRequest request = new(settings.Name, null, null, null);
+        UpdateCampaignRequest request = new(name, null, null, null);
 
-        Result<CampaignDto> result = await apiClient.UpdateCampaignAsync(id, request, cancellationToken).ConfigureAwait(false);
+        Result<CampaignDto> result = await apiClient.UpdateCampaignAsync(campaignId, request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -312,35 +286,22 @@ public sealed class CampaignUpdateCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Remove a campaign (DELETE /api/campaigns/{id}).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    [Command("delete")]
+    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--name <NAME>")]
-        [Description("New campaign display name.")]
-        public string? Name { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignDeleteCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result result = await apiClient.DeleteCampaignAsync(id, cancellationToken).ConfigureAwait(false);
+        Result result = await apiClient.DeleteCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -355,31 +316,23 @@ public sealed class CampaignDeleteCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Export a campaign's spells and prompts as JSON (POST /api/campaigns/{id}/export).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="output">Write exported JSON to this file instead of stdout.</param>
+    [Command("export")]
+    public async Task<int> Export([Argument] string id, string? output = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignExportCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignExportCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result<CampaignExportDto> result = await apiClient.ExportCampaignAsync(id, cancellationToken).ConfigureAwait(false);
+        Result<CampaignExportDto> result = await apiClient.ExportCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -392,51 +345,39 @@ public sealed class CampaignExportCommand(ArcanumApiClient apiClient, IThemePale
             result.Value,
             RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.CampaignExportDto);
 
-        if (string.IsNullOrWhiteSpace(settings.Output))
+        if (string.IsNullOrWhiteSpace(output))
         {
             await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
         }
         else
         {
-            await File.WriteAllTextAsync(settings.Output, json, cancellationToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
 
             AnsiConsole.MarkupLine(
-                themePalette.HighlightLabelMarkup(Markup.Escape("Campaign exported to:"), Markup.Escape(settings.Output)));
+                themePalette.HighlightLabelMarkup(Markup.Escape("Campaign exported to:"), Markup.Escape(output)));
         }
 
         return 0;
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Import spells and prompts into a campaign (POST /api/campaigns/{id}/import).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="file">Path to a campaign export JSON file (as produced by 'campaign export').</param>
+    [Command("import")]
+    public async Task<int> Import([Argument] string id, string? file = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--output <FILE>")]
-        [Description("Write exported JSON to this file instead of stdout.")]
-        public string? Output { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignImportCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignImportCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.File))
+        if (string.IsNullOrWhiteSpace(file))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
@@ -447,11 +388,11 @@ public sealed class CampaignImportCommand(ArcanumApiClient apiClient, IThemePale
 
         try
         {
-            json = await File.ReadAllTextAsync(settings.File, cancellationToken).ConfigureAwait(false);
+            json = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{settings.File}': {ex.Message}")));
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 
             return 1;
         }
@@ -480,7 +421,7 @@ public sealed class CampaignImportCommand(ArcanumApiClient apiClient, IThemePale
 
         CampaignImportRequest request = new("merge", payload);
 
-        Result<CampaignImportResultDto> result = await apiClient.ImportCampaignAsync(id, request, cancellationToken).ConfigureAwait(false);
+        Result<CampaignImportResultDto> result = await apiClient.ImportCampaignAsync(campaignId, request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -505,28 +446,23 @@ public sealed class CampaignImportCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// List spells scoped to a campaign, shadowing built-ins (GET /api/campaigns/{id}/spells).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="query">-q, Free-text query.</param>
+    /// <param name="tag">Filter by tag.</param>
+    /// <param name="tool">Filter by declared tool.</param>
+    [Command("spells")]
+    public async Task<int> Spells(
+        [Argument] string id,
+        string? query = null,
+        string? tag = null,
+        string? tool = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--file <FILE>")]
-        [Description("Path to a campaign export JSON file (as produced by 'campaign export').")]
-        public string? File { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignSpellsCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignSpellsCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
@@ -534,7 +470,7 @@ public sealed class CampaignSpellsCommand(ArcanumApiClient apiClient, IThemePale
         }
 
         Result<SpellSummary[]> result = await apiClient
-            .GetCampaignSpellsAsync(id, settings.Query, settings.Tag, settings.Tool, cancellationToken)
+            .GetCampaignSpellsAsync(campaignId, query, tag, tool, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -550,33 +486,21 @@ public sealed class CampaignSpellsCommand(ArcanumApiClient apiClient, IThemePale
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// List prompts scoped to a campaign (GET /api/campaigns/{id}/prompts).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="query">-q, Free-text query.</param>
+    /// <param name="tag">Filter by tag.</param>
+    [Command("prompts")]
+    public async Task<int> Prompts(
+        [Argument] string id,
+        string? query = null,
+        string? tag = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("-q|--query <QUERY>")]
-        public string? Query { get; init; }
-
-        [CommandOption("--tag <TAG>")]
-        public string? Tag { get; init; }
-
-        [CommandOption("--tool <TOOL>")]
-        public string? Tool { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignPromptsCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignPromptsCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
@@ -584,7 +508,7 @@ public sealed class CampaignPromptsCommand(ArcanumApiClient apiClient, IThemePal
         }
 
         Result<ListPageResult<PromptSummaryDto>> result = await apiClient
-            .GetCampaignPromptsAsync(id, settings.Query, settings.Tag, cancellationToken)
+            .GetCampaignPromptsAsync(campaignId, query, tag, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -625,43 +549,38 @@ public sealed class CampaignPromptsCommand(ArcanumApiClient apiClient, IThemePal
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// List sessions scoped to a campaign (GET /api/campaigns/{id}/sessions).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="status">Filter by session status.</param>
+    /// <param name="search">Free-text search.</param>
+    /// <param name="limit">Maximum number of sessions to return.</param>
+    /// <param name="beforeUpdatedAt">Pagination cursor: only sessions updated before this timestamp.</param>
+    [Command("sessions")]
+    public async Task<int> Sessions(
+        [Argument] string id,
+        string? status = null,
+        string? search = null,
+        int? limit = null,
+        string? beforeUpdatedAt = null,
+        CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("-q|--query <QUERY>")]
-        public string? Query { get; init; }
-
-        [CommandOption("--tag <TAG>")]
-        public string? Tag { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignSessionsCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignSessionsCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        DateTimeOffset? beforeUpdatedAt = null;
+        DateTimeOffset? beforeUpdatedAtParsed = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.BeforeUpdatedAt))
+        if (!string.IsNullOrWhiteSpace(beforeUpdatedAt))
         {
 
             if (!DateTimeOffset.TryParse(
-                    settings.BeforeUpdatedAt,
+                    beforeUpdatedAt,
                     System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.RoundtripKind,
                     out DateTimeOffset parsed))
@@ -671,12 +590,12 @@ public sealed class CampaignSessionsCommand(ArcanumApiClient apiClient, IThemePa
                 return 1;
             }
 
-            beforeUpdatedAt = parsed;
+            beforeUpdatedAtParsed = parsed;
 
         }
 
         Result<SessionQueryResult> result = await apiClient
-            .GetCampaignSessionsAsync(id, settings.Status, settings.Search, settings.Limit, beforeUpdatedAt, cancellationToken)
+            .GetCampaignSessionsAsync(campaignId, status, search, limit, beforeUpdatedAtParsed, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -736,43 +655,30 @@ public sealed class CampaignSessionsCommand(ArcanumApiClient apiClient, IThemePa
 
     }
 
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--status <STATUS>")]
-        public string? Status { get; init; }
-
-        [CommandOption("--search <QUERY>")]
-        public string? Search { get; init; }
-
-        [CommandOption("--limit <N>")]
-        public int? Limit { get; init; }
-
-        [CommandOption("--before-updated-at <TIMESTAMP>")]
-        public string? BeforeUpdatedAt { get; init; }
-
-    }
-
 }
 
-public sealed class CampaignCodexGetCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignCodexGetCommand.Settings>
+/// <summary>
+/// Manage the campaign's CODEX.md scratchpad.
+/// </summary>
+public sealed class CampaignCodexCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Print CODEX.md (GET /api/campaigns/{id}/codex).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    [Command("get")]
+    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
     {
 
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result<CodexContentDto> result = await apiClient.GetCampaignCodexAsync(id, cancellationToken).ConfigureAwait(false);
+        Result<CodexContentDto> result = await apiClient.GetCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -794,45 +700,37 @@ public sealed class CampaignCodexGetCommand(ArcanumApiClient apiClient, IThemePa
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Write CODEX.md from a file (PUT /api/campaigns/{id}/codex).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    /// <param name="file">Path to a file whose contents become CODEX.md.</param>
+    [Command("put")]
+    public async Task<int> Put([Argument] string id, string? file = null, CancellationToken cancellationToken = default)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignCodexPutCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignCodexPutCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.File))
+        if (string.IsNullOrWhiteSpace(file))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
 
             return 1;
         }
 
-        if (!CliArgReader.TryReadInlineOrFile($"@{settings.File}", out string content, out string? readError))
+        if (!CliArgReader.TryReadInlineOrFile($"@{file}", out string content, out string? readError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(readError!)));
 
             return 1;
         }
 
-        Result<CodexContentDto> result = await apiClient.PutCampaignCodexAsync(id, content, cancellationToken).ConfigureAwait(false);
+        Result<CodexContentDto> result = await apiClient.PutCampaignCodexAsync(campaignId, content, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -847,35 +745,22 @@ public sealed class CampaignCodexPutCommand(ArcanumApiClient apiClient, IThemePa
 
     }
 
-    public sealed class Settings : CommandSettings
+    /// <summary>
+    /// Delete CODEX.md (DELETE /api/campaigns/{id}/codex).
+    /// </summary>
+    /// <param name="id">Campaign GUID.</param>
+    [Command("delete")]
+    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
     {
 
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
-
-        [CommandOption("--file <FILE>")]
-        [Description("Path to a file whose contents become CODEX.md.")]
-        public string? File { get; init; }
-
-    }
-
-}
-
-public sealed class CampaignCodexDeleteCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<CampaignCodexDeleteCommand.Settings>
-{
-
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
-    {
-
-        if (!CliArgReader.TryParseGuid(settings.Id, out Guid id))
+        if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
 
             return 1;
         }
 
-        Result result = await apiClient.DeleteCampaignCodexAsync(id, cancellationToken).ConfigureAwait(false);
+        Result result = await apiClient.DeleteCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -887,14 +772,6 @@ public sealed class CampaignCodexDeleteCommand(ArcanumApiClient apiClient, IThem
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("CODEX.md removed.")));
 
         return 0;
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<ID>")]
-        public required string Id { get; init; }
 
     }
 

@@ -203,6 +203,10 @@ public static class ArcanumSettingClamps
 
     public static int MaxDescendantsPerRoot(int value) => Math.Clamp(value, 1, 200);
 
+    public static int MaxExternalTasks(int value) => Math.Clamp(value, 1, 500);
+
+    public static int ExternalTaskTimeoutMinutes(int value) => Math.Clamp(value, 5, 1_440);
+
     public static int MaxStepRetries(int value) => Math.Clamp(value, 0, 10);
 
     public static int RetryBackoffSeconds(int value) => Math.Clamp(value, 1, 300);

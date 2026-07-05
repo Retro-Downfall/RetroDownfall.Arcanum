@@ -261,7 +261,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         {
             // Last-resort catch-all so an unanticipated failure (e.g. a handler-level exception)
             // surfaces as a normal Result.Failure + exit code 1, rather than propagating past every
-            // command's ExecuteAsync to Spectre.Console.Cli's generic top-level exception handler.
+            // command method to ConsoleAppFramework's generic top-level exception handler.
             // Any genuine user-requested cancellation was already rethrown by the OperationCanceledException
             // catch above, so nothing reaching here should be treated as a cancellation.
             return Result<T>.Failure(RequestUnexpectedError);

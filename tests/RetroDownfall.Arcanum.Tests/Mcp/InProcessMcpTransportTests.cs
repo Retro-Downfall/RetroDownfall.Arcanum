@@ -96,12 +96,9 @@ public sealed class InProcessMcpTransportTests
 
         Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
 
-        McpRequestCancellationBroker broker = new();
-
         InProcessMcpTransport transport = new(
             clientToServer.Writer,
             serverToClient.Reader,
-            broker,
             maxJsonRpcLineBytes: 2_097_152);
 
         return (transport, clientToServer, serverToClient.Writer);

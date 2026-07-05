@@ -1,15 +1,14 @@
-using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
-/// Bridges a remote MCP tool to <see cref="AIFunction"/> via <see cref="IMcpClient.SendRequestAsync"/> (<c>tools/call</c>).
+/// Bridges a remote or in-process MCP tool to <see cref="AIFunction"/> via <see cref="IMcpClient.CallToolAsync"/>.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: remote MCP tool AIFunction bridge; covered via McpBridgeTool tests and in-process MCP integration paths.
 internal sealed class McpBridgeTool : AIFunction
@@ -60,30 +59,30 @@ internal sealed class McpBridgeTool : AIFunction
     {
         try
         {
-            return await SendToolsCallAsync(_client, arguments, cancellationToken).ConfigureAwait(false);
+            return await CallAndFormatAsync(_client, arguments, cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // W3.4 Group C #6: caller cancel / per-request timeout must NEVER trigger the
             // fallback. The tool may still be executing on the local server; re-running it on
-            // the fallback could double-execute a mutating operation. The wire-cancel
-            // notification (McpClient) tells the local server to stop.
+            // the fallback could double-execute a mutating operation. The SDK dispatches the
+            // wire-cancel notification to the local server so it stops.
             throw;
         }
-        catch (McpTransportUnavailableException ex)
+        catch (Exception ex) when (IsTransportFailure(ex))
         {
             // W3.4 Group C #6: restrict the global fallback to TRANSPORT/CONNECTIVITY failures
             // only (local server down/unreachable / channel closed / transport disposed before
-            // a response). A tools/call that returned an error (isError: true) or a JSON-RPC
-            // error response is a tool-execution failure — the tool already ran, possibly with
-            // side effects — so it must NOT be re-run on the fallback. Those surface as
-            // InvalidOperationException and propagate without a fallback attempt below.
+            // a response). A tools/call that returned an error (isError: true) is a
+            // tool-execution failure — the tool already ran, possibly with side effects — so it
+            // must NOT be re-run on the fallback. Those surface as InvalidOperationException and
+            // propagate without a fallback attempt below.
             if (_fallbackClient is null)
             {
                 throw;
             }
 
-            object? result = await SendToolsCallAsync(_fallbackClient, arguments, cancellationToken).ConfigureAwait(false);
+            object? result = await CallAndFormatAsync(_fallbackClient, arguments, cancellationToken).ConfigureAwait(false);
 
             _fallbackLogger?.LogWarning(
                 ex,
@@ -94,200 +93,78 @@ internal sealed class McpBridgeTool : AIFunction
         }
     }
 
-    private async Task<object?> SendToolsCallAsync(IMcpClient client, AIFunctionArguments arguments, CancellationToken cancellationToken)
+    private async Task<object?> CallAndFormatAsync(IMcpClient client, AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
-        JsonElement paramsElement = BuildToolsCallParamsElement(arguments);
-
         TimeSpan? callTimeout = string.Equals(_name, "ask_human", StringComparison.Ordinal)
             ? Timeout.InfiniteTimeSpan
             : null;
 
-        JsonElement result = await client
-            .SendRequestAsync("tools/call", paramsElement, cancellationToken, callTimeout)
+        CallToolResult result = await client
+            .CallToolAsync(_name, arguments, callTimeout, cancellationToken)
             .ConfigureAwait(false);
 
-        if (result.TryGetProperty("isError", out JsonElement isError) && isError.ValueKind == JsonValueKind.True)
-        {
-            string errText = McpToolResultFormatter.FormatContentText(result, _toolOutputCapBytes);
+        string text = McpToolResultFormatter.FormatContentText(result, _toolOutputCapBytes);
 
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(errText) ? "MCP tool returned isError: true." : errText);
+        if (result.IsError == true)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(text) ? "MCP tool returned isError: true." : text);
         }
 
-        return McpToolResultFormatter.FormatContentText(result, _toolOutputCapBytes);
+        return text;
     }
 
-    private JsonElement BuildToolsCallParamsElement(AIFunctionArguments arguments)
-    {
-        ArrayBufferWriter<byte> buffer = new(512);
-
-        using (Utf8JsonWriter writer = new(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("name", _name);
-            writer.WritePropertyName("arguments");
-            writer.WriteStartObject();
-
-            foreach (KeyValuePair<string, object?> pair in arguments)
-            {
-                if (pair.Value is null)
-                {
-                    continue;
-                }
-
-                writer.WritePropertyName(pair.Key);
-                WriteArgumentValue(writer, pair.Value);
-            }
-
-            writer.WriteEndObject();
-            writer.WriteEndObject();
-        }
-
-        using JsonDocument doc = JsonDocument.Parse(buffer.WrittenMemory);
-
-        return doc.RootElement.Clone();
-    }
-
-    private static void WriteArgumentValue(Utf8JsonWriter writer, object value)
-    {
-        switch (value)
-        {
-            case JsonElement je:
-                je.WriteTo(writer);
-
-                break;
-
-            case string s:
-                writer.WriteStringValue(s);
-
-                break;
-
-            case bool b:
-                writer.WriteBooleanValue(b);
-
-                break;
-
-            case byte by:
-                writer.WriteNumberValue(by);
-
-                break;
-
-            case short sh:
-                writer.WriteNumberValue(sh);
-
-                break;
-
-            case ushort us:
-                writer.WriteNumberValue(us);
-
-                break;
-
-            case int i:
-                writer.WriteNumberValue(i);
-
-                break;
-
-            case uint ui:
-                writer.WriteNumberValue((long)ui);
-
-                break;
-
-            case long l:
-                writer.WriteNumberValue(l);
-
-                break;
-
-            case ulong ul:
-                writer.WriteNumberValue((double)ul);
-
-                break;
-
-            case float f:
-                writer.WriteNumberValue((double)f);
-
-                break;
-
-            case double d:
-                writer.WriteNumberValue(d);
-
-                break;
-
-            case decimal m:
-                writer.WriteStringValue(m.ToString(CultureInfo.InvariantCulture));
-
-                break;
-
-            case Guid g:
-                writer.WriteStringValue(g.ToString("D"));
-
-                break;
-
-            default:
-                writer.WriteStringValue(value.ToString() ?? string.Empty);
-
-                break;
-        }
-    }
+    // W3.4 Group C #6: classifies exceptions raised while calling the SDK client as a
+    // transport/connectivity failure (the local server is down, unreachable, or the connection
+    // closed before a response was received). ClientTransportClosedException (the SDK's own
+    // transport-closed signal) derives from IOException, so it — along with general
+    // IOException/ObjectDisposedException/HttpRequestException/TimeoutException — is eligible for
+    // fallback. Tool-execution failures (InvalidOperationException from isError / a JSON-RPC
+    // error response, surfaced by the SDK as McpProtocolException) are intentionally excluded so
+    // McpBridgeTool does not re-run a possibly-mutating tool on the fallback server.
+    private static bool IsTransportFailure(Exception exception) =>
+        exception is IOException
+            or ObjectDisposedException
+            or System.Net.Http.HttpRequestException
+            or TimeoutException
+            or McpTransportUnavailableException;
 }
 
 /// <summary>
-/// Extracts human-readable text from MCP <c>tools/call</c> <c>result.content</c> payloads.
+/// Extracts human-readable text from an MCP <c>tools/call</c> <see cref="CallToolResult"/>.
 /// </summary>
-[ExcludeFromCodeCoverage] // Reason: MCP JSON content formatting; covered indirectly via McpBridgeTool integration tests.
+[ExcludeFromCodeCoverage] // Reason: MCP content formatting; covered indirectly via McpBridgeTool integration tests.
 internal static class McpToolResultFormatter
 {
-    public static string FormatContentText(JsonElement result, long maxUtf8Bytes = long.MaxValue)
+    public static string FormatContentText(CallToolResult result, long maxUtf8Bytes = long.MaxValue)
     {
-        if (!result.TryGetProperty("content", out JsonElement content) || content.ValueKind != JsonValueKind.Array)
+        ArgumentNullException.ThrowIfNull(result);
+
+        IList<ContentBlock>? content = result.Content;
+
+        if (content is not { Count: > 0 })
         {
-            return McpSecurityLimits.TruncateUtf8(result.GetRawText(), maxUtf8Bytes);
+            string fallback = result.StructuredContent is { } structured ? structured.GetRawText() : string.Empty;
+
+            return McpSecurityLimits.TruncateUtf8(fallback, maxUtf8Bytes);
         }
 
         StringBuilder sb = new();
 
-        foreach (JsonElement block in content.EnumerateArray())
+        foreach (ContentBlock block in content)
         {
-            if (block.ValueKind != JsonValueKind.Object)
+            string piece = block is TextContentBlock { Text.Length: > 0 } textBlock
+                ? textBlock.Text
+                : $"[{block.Type} content omitted]";
+
+            if (sb.Length > 0)
             {
-                continue;
+                sb.AppendLine();
             }
 
-            if (!block.TryGetProperty("type", out JsonElement typeEl) || typeEl.ValueKind != JsonValueKind.String)
-            {
-                sb.Append(block.GetRawText());
-
-                continue;
-            }
-
-            string? type = typeEl.GetString();
-
-            if (string.Equals(type, "text", StringComparison.Ordinal)
-                && block.TryGetProperty("text", out JsonElement textEl)
-                && textEl.ValueKind == JsonValueKind.String)
-            {
-                string? text = textEl.GetString();
-
-                if (!string.IsNullOrEmpty(text))
-                {
-                    if (sb.Length > 0)
-                    {
-                        sb.AppendLine();
-                    }
-
-                    sb.Append(text);
-                }
-            }
-            else
-            {
-                if (sb.Length > 0)
-                {
-                    sb.AppendLine();
-                }
-
-                sb.Append(block.GetRawText());
-            }
+            sb.Append(piece);
         }
 
-        string formatted = sb.Length == 0 ? result.GetRawText() : sb.ToString();
+        string formatted = sb.Length == 0 ? string.Empty : sb.ToString();
 
         return McpSecurityLimits.TruncateUtf8(formatted, maxUtf8Bytes);
     }

@@ -8,11 +8,11 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class PromptCommandTests
 {
 
@@ -28,7 +28,7 @@ public sealed class PromptCommandTests
             new ApiResponse<ListPageResult<PromptSummaryDto>>(new ListPageResult<PromptSummaryDto>([summary], false), true, null),
             ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "list"]);
+        CliTestResult result = RunCommand(handler, ["prompt", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -68,7 +68,7 @@ public sealed class PromptCommandTests
             new ApiResponse<PromptDetailDto>(detail, true, null),
             ArcanumJsonContext.Default.ApiResponsePromptDetailDto));
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "get", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["prompt", "get", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -88,7 +88,7 @@ public sealed class PromptCommandTests
             new ApiResponse<PromptRenderResultDto>(rendered, true, null),
             ArcanumJsonContext.Default.ApiResponsePromptRenderResultDto));
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "render", SampleId.ToString(), "--param", "name=Ada"]);
+        CliTestResult result = RunCommand(handler, ["prompt", "render", SampleId.ToString(), "--param", "name=Ada"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -110,7 +110,7 @@ public sealed class PromptCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "render", SampleId.ToString(), "--param", "no-equals-sign"]);
+        CliTestResult result = RunCommand(handler, ["prompt", "render", SampleId.ToString(), "--param", "no-equals-sign"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -124,7 +124,7 @@ public sealed class PromptCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CommandAppResult result = RunCommand(handler, ["prompt", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["prompt", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -134,7 +134,7 @@ public sealed class PromptCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -151,11 +151,7 @@ public sealed class PromptCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

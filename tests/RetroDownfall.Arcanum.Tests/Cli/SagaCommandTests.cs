@@ -8,7 +8,6 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -16,6 +15,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// RAG Phase 4 — smoke tests for <c>arcanum saga list|divine|delete|stats</c>.
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class SagaCommandTests
 {
 
@@ -32,7 +32,7 @@ public sealed class SagaCommandTests
             new ApiResponse<SagaMemoryDto[]>(payload, true, null),
             ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "list"]);
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -54,7 +54,7 @@ public sealed class SagaCommandTests
             new ApiResponse<SagaMemoryDto[]>([], true, null),
             ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["saga", "list", "--query", "dark mode", "--session", sessionId.ToString(), "--limit", "10", "--offset", "5"]);
 
@@ -80,7 +80,7 @@ public sealed class SagaCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["saga", "list", "--session", "not-a-guid"]);
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--session", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -100,7 +100,7 @@ public sealed class SagaCommandTests
             new ApiResponse<SagaSearchResult>(payload, true, null),
             ArcanumJsonContext.Default.ApiResponseSagaSearchResult));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "divine", "what theme do I like?"]);
+        CliTestResult result = RunCommand(handler, ["saga", "divine", "what theme do I like?"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -128,7 +128,7 @@ public sealed class SagaCommandTests
             new ApiResponse<SagaSearchResult>(new SagaSearchResult([], []), true, null),
             ArcanumJsonContext.Default.ApiResponseSagaSearchResult));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "divine", "hello", "--limit", "3"]);
+        CliTestResult result = RunCommand(handler, ["saga", "divine", "hello", "--limit", "3"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -150,7 +150,7 @@ public sealed class SagaCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["saga", "divine", "   "]);
+        CliTestResult result = RunCommand(handler, ["saga", "divine", "   "]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -170,7 +170,7 @@ public sealed class SagaCommandTests
             ArcanumJsonContext.Default.ApiResponseSagaSearchResult,
             HttpStatusCode.ServiceUnavailable));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "divine", "hello"]);
+        CliTestResult result = RunCommand(handler, ["saga", "divine", "hello"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -182,7 +182,7 @@ public sealed class SagaCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "delete", "mem-1"]);
+        CliTestResult result = RunCommand(handler, ["saga", "delete", "mem-1"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -203,7 +203,7 @@ public sealed class SagaCommandTests
             ArcanumJsonContext.Default.ApiResponseString,
             HttpStatusCode.NotFound));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "delete", "missing-id"]);
+        CliTestResult result = RunCommand(handler, ["saga", "delete", "missing-id"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -219,7 +219,7 @@ public sealed class SagaCommandTests
             new ApiResponse<SagaStats>(payload, true, null),
             ArcanumJsonContext.Default.ApiResponseSagaStats));
 
-        CommandAppResult result = RunCommand(handler, ["saga", "stats"]);
+        CliTestResult result = RunCommand(handler, ["saga", "stats"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -234,7 +234,7 @@ public sealed class SagaCommandTests
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
         request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -251,11 +251,7 @@ public sealed class SagaCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

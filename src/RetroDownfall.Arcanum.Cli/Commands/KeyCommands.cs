@@ -1,16 +1,23 @@
 using System.Diagnostics.CodeAnalysis;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Security;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
+/// <summary>
+/// Master API key utilities (local secret store only; no HTTP).
+/// </summary>
 [ExcludeFromCodeCoverage] // Reason: thin ISecretStore read wrapper; filesystem-specific.
-public sealed class KeyShowCommand(ISecretStore secretStore, IThemePalette themePalette) : AsyncCommand
+public sealed class KeyCommands(ISecretStore secretStore, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    /// <summary>
+    /// Print the stored master API key to stderr (so stdout piping does not capture the secret).
+    /// </summary>
+    [Command("show")]
+    public async Task<int> Show(CancellationToken cancellationToken)
     {
 
         cancellationToken.ThrowIfCancellationRequested();

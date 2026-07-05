@@ -8,11 +8,11 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class TrialCommandTests
 {
 
@@ -35,7 +35,7 @@ public sealed class TrialCommandTests
             new ApiResponse<TrialResult>(trialResult, true, null),
             ArcanumJsonContext.Default.ApiResponseTrialResult));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             [
                 "trial", "run",
@@ -69,7 +69,7 @@ public sealed class TrialCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["trial", "run", "--target", "bogus", "--target-value", "x"]);
+        CliTestResult result = RunCommand(handler, ["trial", "run", "--target", "bogus", "--target-value", "x"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -96,7 +96,7 @@ public sealed class TrialCommandTests
             new ApiResponse<TrialResult>(trialResult, true, null),
             ArcanumJsonContext.Default.ApiResponseTrialResult));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["trial", "run", "--target", "spell", "--target-value", "greet"]);
 
@@ -104,7 +104,7 @@ public sealed class TrialCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -121,11 +121,7 @@ public sealed class TrialCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

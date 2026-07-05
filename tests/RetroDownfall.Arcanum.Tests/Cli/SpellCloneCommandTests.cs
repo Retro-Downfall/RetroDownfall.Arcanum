@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class SpellCloneCommandTests
 {
 
@@ -28,7 +28,7 @@ public sealed class SpellCloneCommandTests
             ArcanumJsonContext.Default.ApiResponseSpellSummary,
             HttpStatusCode.Created));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "clone", "greet", "--new-name", "greet-copy", "--workspace", "/tmp/ws"]);
+        CliTestResult result = RunCommand(handler, ["spell", "clone", "greet", "--new-name", "greet-copy", "--workspace", "/tmp/ws"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -46,7 +46,7 @@ public sealed class SpellCloneCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["spell", "clone", "greet"]);
+        CliTestResult result = RunCommand(handler, ["spell", "clone", "greet"]);
 
         Assert.NotEqual(0, result.ExitCode);
 
@@ -61,13 +61,13 @@ public sealed class SpellCloneCommandTests
             ArcanumJsonContext.Default.ApiResponseSpellSummary,
             HttpStatusCode.BadRequest));
 
-        CommandAppResult result = RunCommand(handler, ["spell", "clone", "greet", "--new-name", "greet-copy", "--workspace", "/tmp/ws"]);
+        CliTestResult result = RunCommand(handler, ["spell", "clone", "greet", "--new-name", "greet-copy", "--workspace", "/tmp/ws"]);
 
         Assert.Equal(1, result.ExitCode);
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -84,11 +84,7 @@ public sealed class SpellCloneCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

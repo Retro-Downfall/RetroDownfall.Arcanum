@@ -26,10 +26,6 @@
 
     <PackageReference Include="Spectre.Console" Version="0.55.0" />
 
-    <PackageReference Include="Spectre.Console.Cli" Version="0.55.0" />
-
-    <PackageReference Include="Spectre.Console.Cli.Testing" Version="0.55.0" />
-
     <PackageReference Include="Spectre.Console.Testing" Version="0.55.0" />
 
     <PackageReference Include="xunit" Version="2.9.3" />

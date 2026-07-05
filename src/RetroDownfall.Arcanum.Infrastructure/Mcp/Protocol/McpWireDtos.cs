@@ -38,15 +38,6 @@ public sealed record McpClientInfo
 }
 
 /// <summary>
-/// MCP <c>tools/list</c> request <c>params</c>.
-/// </summary>
-public sealed record McpToolsListParams
-{
-    [JsonPropertyName("cursor")]
-    public string? Cursor { get; init; }
-}
-
-/// <summary>
 /// MCP <c>tools/call</c> request <c>params</c>.
 /// </summary>
 public sealed record McpToolsCallParams
@@ -322,59 +313,45 @@ public sealed record CastSendingResultWire
 }
 
 /// <summary>
-/// MCP <c>notifications/cancelled</c> notification <c>params</c> (JSON-RPC cooperative cancellation over the wire).
+/// Arguments accepted by the in-process <c>dispatch_sending</c> tool (Archmage Client: A2A delegation to an external agent).
 /// </summary>
-public sealed record McpCancelledParams
+public sealed record DispatchSendingParams
 {
-    [JsonPropertyName("requestId")]
-    public required string RequestId { get; init; }
 
-    [JsonPropertyName("reason")]
-    public string? Reason { get; init; }
+    [JsonPropertyName("goal")]
+    public required string Goal { get; init; }
+
+    [JsonPropertyName("agent_url")]
+    public required string AgentUrl { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
 }
 
 /// <summary>
-/// Streamable HTTP "input required" result (multi-round tool response). When a <c>tools/call</c>
-/// result carries <c>inputRequired: true</c>, the client gathers a response for every
-/// <see cref="InputRequests"/> entry and re-POSTs the same call augmented with
-/// <c>inputResponses</c> and the echoed opaque <see cref="RequestState"/>.
+/// Result payload returned by the in-process <c>dispatch_sending</c> tool. Always the JSON-RPC success shape
+/// (<c>IsError = false</c>) once a dispatch was actually attempted, so both the calling Apprentice's tool loop
+/// and <c>ApprenticeService</c>'s Chronicle interception can parse the same structured outcome — including a
+/// remote-side failure, which is carried in <see cref="Error"/> rather than as an MCP-level tool error.
 /// </summary>
-public sealed record McpInputRequiredResult
+public sealed record DispatchSendingResultWire
 {
-    [JsonPropertyName("inputRequired")]
-    public bool InputRequired { get; init; }
 
-    [JsonPropertyName("inputRequests")]
-    public McpInputRequest[] InputRequests { get; init; } = [];
+    [JsonPropertyName("agentUrl")]
+    public required string AgentUrl { get; init; }
 
-    [JsonPropertyName("requestState")]
-    public JsonElement RequestState { get; init; }
+    [JsonPropertyName("taskId")]
+    public string? TaskId { get; init; }
+
+    [JsonPropertyName("succeeded")]
+    public required bool Succeeded { get; init; }
+
+    [JsonPropertyName("response")]
+    public string? Response { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+
 }
-
-/// <summary>
-/// One input request inside an <see cref="McpInputRequiredResult"/>. <see cref="Id"/> correlates the
-/// request with its <see cref="McpInputResponse"/> on the re-POST.
-/// </summary>
-public sealed record McpInputRequest
-{
-    [JsonPropertyName("id")]
-    public required string Id { get; init; }
-
-    [JsonPropertyName("prompt")]
-    public string? Prompt { get; init; }
-}
-
-/// <summary>
-/// One input response posted back to satisfy an <see cref="McpInputRequest"/> during a multi-round
-/// tool response.
-/// </summary>
-public sealed record McpInputResponse
-{
-    [JsonPropertyName("id")]
-    public required string Id { get; init; }
-
-    [JsonPropertyName("value")]
-    public required string Value { get; init; }
-}
-
 

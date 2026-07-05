@@ -77,13 +77,20 @@
 
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
 
-    <PackageReference Include="Spectre.Console.Cli" Version="0.55.0" />
+    <PackageReference Include="Spectre.Console" Version="0.55.0" />
 
-  </ItemGroup>
+    <PackageReference Include="ConsoleAppFramework" Version="5.7.13">
 
-  <ItemGroup>
+      <PrivateAssets>all</PrivateAssets>
 
-    <TrimmerRootAssembly Include="Spectre.Console.Cli" />
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+
+    </PackageReference>
+
+    <!-- Provides public ConsoleAppContext/ConsoleAppFilter types (the per-project source
+         generator otherwise emits them as internal), since AskCommand.Ask needs
+         ConsoleAppContext as a public method parameter to read EscapedArguments. -->
+    <PackageReference Include="ConsoleAppFramework.Abstractions" Version="5.7.13" />
 
   </ItemGroup>
 

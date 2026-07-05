@@ -1,8 +1,8 @@
-using System.ComponentModel;
 using System.Reflection;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using ConsoleAppFramework;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Security;
@@ -13,7 +13,6 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Spectre.Console;
-using Spectre.Console.Cli;
 using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -24,7 +23,7 @@ public sealed class DoctorCommand(
     IHttpClientFactory httpClientFactory,
     ISecretStore secretStore,
     IThemePalette themePalette,
-    ICliEnvironment cliEnvironment) : AsyncCommand<DoctorCommand.Settings>
+    ICliEnvironment cliEnvironment)
 {
 
     private const string OkGlyph = "\u2713";
@@ -33,10 +32,15 @@ public sealed class DoctorCommand(
 
     private const string FailGlyph = "\u2717";
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Run environment diagnostics (version, paths, API health).
+    /// </summary>
+    /// <param name="fixPermissions">Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store.</param>
+    [Command("")]
+    public async Task<int> Run(bool fixPermissions, CancellationToken cancellationToken)
     {
 
-        if (settings.FixPermissions)
+        if (fixPermissions)
         {
 
             SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths();
@@ -70,17 +74,6 @@ public sealed class DoctorCommand(
         healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
 
         return healthy ? 0 : 1;
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandOption("--fix-permissions")]
-
-        [Description("Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store.")]
-
-        public bool FixPermissions { get; init; }
 
     }
 

@@ -1,22 +1,42 @@
-using System.ComponentModel;
 using System.Text.Json;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.ProvingGrounds;
 
-public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<TrialRunCommand.Settings>
+/// <summary>
+/// The Proving Grounds: run Trials against spells, prompts, or Apprentice goals (requires arcanum serve).
+/// </summary>
+public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Run a Trial with Inquisitors (POST /api/proving-grounds/trials/run).
+    /// </summary>
+    /// <param name="target">Trial target kind: spell, prompt, apprenticeGoal.</param>
+    /// <param name="targetValue">Spell name, prompt GUID, or apprentice goal text.</param>
+    /// <param name="model">Model override for the Trial.</param>
+    /// <param name="workspace">Workspace root to scope the Trial.</param>
+    /// <param name="name">Trial display name; defaults to '{targetKind}:{target}'.</param>
+    /// <param name="inquisitor">Inquisitor spec: inline JSON, or @filename. Pass multiple times for several inquisitors.</param>
+    /// <param name="var">Trial variable as key=value; pass multiple times for several variables.</param>
+    [Command("run")]
+    public async Task<int> Run(
+        string? target = null,
+        string? targetValue = null,
+        string? model = null,
+        string? workspace = null,
+        string? name = null,
+        string[]? inquisitor = null,
+        string[]? var = null,
+        CancellationToken cancellationToken = default)
     {
 
-        TrialTargetKind? targetKind = settings.Target?.Trim().ToLowerInvariant() switch
+        TrialTargetKind? targetKind = target?.Trim().ToLowerInvariant() switch
         {
             "spell" => TrialTargetKind.Spell,
             "prompt" => TrialTargetKind.Prompt,
@@ -32,7 +52,7 @@ public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette th
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.TargetValue))
+        if (string.IsNullOrWhiteSpace(targetValue))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--target-value is required.")));
 
@@ -41,7 +61,7 @@ public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette th
 
         List<Inquisitor> inquisitors = new();
 
-        foreach (string raw in settings.Inquisitor ?? [])
+        foreach (string raw in inquisitor ?? [])
         {
 
             if (!CliArgReader.TryReadInlineOrFile(raw, out string json, out string? readError))
@@ -51,11 +71,11 @@ public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette th
                 return 1;
             }
 
-            Inquisitor? inquisitor;
+            Inquisitor? parsedInquisitor;
 
             try
             {
-                inquisitor = JsonSerializer.Deserialize(json, RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.Inquisitor);
+                parsedInquisitor = JsonSerializer.Deserialize(json, RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.Inquisitor);
             }
             catch (JsonException ex)
             {
@@ -64,18 +84,18 @@ public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette th
                 return 1;
             }
 
-            if (inquisitor is null)
+            if (parsedInquisitor is null)
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("Inquisitor JSON parsed to null.")));
 
                 return 1;
             }
 
-            inquisitors.Add(inquisitor);
+            inquisitors.Add(parsedInquisitor);
 
         }
 
-        if (!CliArgReader.TryParseKeyValuePairs(settings.Var, out Dictionary<string, string> variables, out string? varError))
+        if (!CliArgReader.TryParseKeyValuePairs(var, out Dictionary<string, string> variables, out string? varError))
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(varError!)));
 
@@ -84,12 +104,12 @@ public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette th
 
         Trial trial = new(
             targetKind.Value,
-            settings.TargetValue.Trim(),
+            targetValue.Trim(),
             inquisitors,
             variables.Count == 0 ? null : variables,
-            settings.Model,
-            settings.Workspace,
-            settings.Name);
+            model,
+            workspace,
+            name);
 
         Result<TrialResult> result = await apiClient.RunTrialAsync(trial, cancellationToken).ConfigureAwait(false);
 
@@ -190,37 +210,6 @@ public sealed class TrialRunCommand(ArcanumApiClient apiClient, IThemePalette th
                     ? themePalette.HighlightMarkup(Markup.Escape("yes"))
                     : themePalette.ErrorMarkup(Markup.Escape("no"))),
             new Markup(themePalette.TextMarkup(Markup.Escape(detail))));
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandOption("--target <KIND>")]
-        [Description("Trial target kind: spell, prompt, apprenticeGoal.")]
-        public string? Target { get; init; }
-
-        [CommandOption("--target-value <VALUE>")]
-        [Description("Spell name, prompt GUID, or apprentice goal text.")]
-        public string? TargetValue { get; init; }
-
-        [CommandOption("--model <MODEL>")]
-        public string? Model { get; init; }
-
-        [CommandOption("--workspace <PATH>")]
-        public string? Workspace { get; init; }
-
-        [CommandOption("--name <NAME>")]
-        [Description("Trial display name; defaults to '{targetKind}:{target}'.")]
-        public string? Name { get; init; }
-
-        [CommandOption("--inquisitor <JSON_OR_FILE>")]
-        [Description("Inquisitor spec: inline JSON, or @filename. Pass multiple times for several inquisitors.")]
-        public string[]? Inquisitor { get; init; }
-
-        [CommandOption("--var <KEY=VALUE>")]
-        [Description("Trial variable as key=value; pass multiple times for several variables.")]
-        public string[]? Var { get; init; }
 
     }
 

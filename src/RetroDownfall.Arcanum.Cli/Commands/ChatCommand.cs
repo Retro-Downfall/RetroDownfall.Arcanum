@@ -1,9 +1,9 @@
-using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
+using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -19,7 +19,6 @@ using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
@@ -33,7 +32,7 @@ public sealed class ChatCommand(
     MarkdigSpectreRenderer markdig,
     IGrimoireCliInitialization grimoireBootstrapper,
     IServiceScopeFactory scopeFactory,
-    ICliEnvironment cliEnvironment) : AsyncCommand<ChatCommand.Settings>
+    ICliEnvironment cliEnvironment)
 {
 
     private long MaxAttachFileSizeBytes =>
@@ -70,24 +69,57 @@ public sealed class ChatCommand(
         "/mana",
     };
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Interactive multi-turn REPL with the Mage (streamed plain text, swapped to rendered Markdown at end of turn).
+    /// </summary>
+    /// <param name="model">-m, The specific model to use for this inference request.</param>
+    /// <param name="new">-n, Start a new session thread, clearing the previous session at REPL startup.</param>
+    /// <param name="noTools">Disable MCP-provided tools for this REPL session (built-in tools still apply).</param>
+    /// <param name="unattended">Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.</param>
+    /// <param name="campaign">-c, Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).</param>
+    /// <param name="temperature">Sampling temperature 0-2 (lower = more deterministic). Applies to every turn.</param>
+    /// <param name="topP">--top-p, Nucleus sampling cutoff 0-1. Applies to every turn.</param>
+    /// <param name="maxTokens">Maximum output tokens per turn.</param>
+    /// <param name="seed">Seed for sampling determinism (provider support varies). Applies to every turn.</param>
+    /// <param name="stop">Stop sequence(s); pass --stop multiple times for several stops.</param>
+    /// <param name="responseFormat">Response format: text | json_object | json_schema.</param>
+    /// <param name="presencePenalty">Presence penalty -2..2.</param>
+    /// <param name="frequencyPenalty">Frequency penalty -2..2.</param>
+    [Command("")]
+    public async Task<int> Chat(
+        CancellationToken cancellationToken,
+        string? model = null,
+        bool @new = false,
+        bool noTools = false,
+        bool unattended = false,
+        string? campaign = null,
+        string? temperature = null,
+        string? topP = null,
+        string? maxTokens = null,
+        string? seed = null,
+        string[]? stop = null,
+        string? responseFormat = null,
+        string? presencePenalty = null,
+        string? frequencyPenalty = null)
     {
-        if (settings.New)
+        if (@new)
         {
             cliSession.ClearSession();
         }
 
-        if (!InferenceFlagBinder.TryParse(settings, themePalette, out InferenceFlagBinder.Parsed flags, out int flagsExit))
+        InferenceFlagInputs flagInputs = new(temperature, topP, maxTokens, seed, stop, responseFormat, presencePenalty, frequencyPenalty);
+
+        if (!InferenceFlagBinder.TryParse(flagInputs, themePalette, out InferenceFlagBinder.Parsed flags, out int flagsExit))
         {
             return flagsExit == 0 ? 1 : flagsExit;
         }
 
         Guid? campaignId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.Campaign))
+        if (!string.IsNullOrWhiteSpace(campaign))
         {
 
-            if (!Guid.TryParse(settings.Campaign, out Guid parsedCampaignId))
+            if (!Guid.TryParse(campaign, out Guid parsedCampaignId))
             {
                 AnsiConsole.MarkupLine(
                     themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
@@ -117,12 +149,12 @@ public sealed class ChatCommand(
 
         SessionMut session = new()
         {
-            CurrentModel = string.IsNullOrWhiteSpace(settings.Model) ? null : settings.Model.Trim(),
-            DisableTools = settings.NoTools,
+            CurrentModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
+            DisableTools = noTools,
             CampaignId = campaignId,
         };
 
-        WriteStartupBanner(session, settings, flags);
+        WriteStartupBanner(session, unattended, flags);
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
@@ -199,7 +231,6 @@ public sealed class ChatCommand(
                         prompt,
                         stagedFiles,
                         session,
-                        settings,
                         cancellationToken)
                     .ConfigureAwait(false);
 
@@ -424,7 +455,7 @@ public sealed class ChatCommand(
             bool turnOk = await RunTurnAsync(
                     prompt,
                     session,
-                    settings,
+                    unattended,
                     stderrConsole,
                     cancellationToken,
                     flags,
@@ -447,7 +478,6 @@ public sealed class ChatCommand(
         string prompt,
         HashSet<string> stagedFiles,
         SessionMut session,
-        Settings settings,
         CancellationToken cancellationToken)
     {
         int sp = prompt.AsSpan().IndexOfAny(' ', '\t');
@@ -883,7 +913,7 @@ public sealed class ChatCommand(
         return true;
     }
 
-    private void WriteStartupBanner(SessionMut session, Settings settings, InferenceFlagBinder.Parsed flags)
+    private void WriteStartupBanner(SessionMut session, bool unattended, InferenceFlagBinder.Parsed flags)
     {
 
         Table table = new();
@@ -913,7 +943,7 @@ public sealed class ChatCommand(
                 themePalette.HighlightMarkup(Markup.Escape(campaignId.ToString("D"))));
         }
 
-        if (settings.Unattended)
+        if (unattended)
         {
             table.AddRow(
                 themePalette.MutedMarkup(Markup.Escape("Mode:")),
@@ -1421,7 +1451,7 @@ public sealed class ChatCommand(
     private async Task<bool> RunTurnAsync(
         string prompt,
         SessionMut session,
-        Settings settings,
+        bool unattended,
         IAnsiConsole stderrConsole,
         CancellationToken cancellationToken,
         InferenceFlagBinder.Parsed flags,
@@ -1490,7 +1520,7 @@ public sealed class ChatCommand(
                 sessionId,
                 session.DisableTools,
                 CliTerminalFormatting: true,
-                UnattendedMode: settings.Unattended,
+                UnattendedMode: unattended,
                 AttachedFiles: attachedFiles,
                 ChronosyncDelta: chronosyncDelta,
                 Temperature: flags.Temperature,
@@ -1544,10 +1574,10 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.ToolCall:
 
-                        AskHumanResult humanResult = await AskHumanToolCallStreamHandler
+                        AskHumanResult humanResult = await                         AskHumanToolCallStreamHandler
                             .TryHandleAskHumanAsync(
                                 evt,
-                                settings.Unattended,
+                                unattended,
                                 cliEnvironment.IsInteractive,
                                 apiClient,
                                 themePalette,
@@ -1972,61 +2002,6 @@ public sealed class ChatCommand(
         AnsiConsole.Write(panel);
 
         AnsiConsole.WriteLine();
-    }
-
-    public sealed class Settings : CommandSettings, IInferenceFlagInputs
-    {
-        [CommandOption("-m|--model")]
-        [Description("The specific model to use for this inference request")]
-        public string? Model { get; init; }
-
-        [CommandOption("-n|--new")]
-        [Description("Start a new session thread, clearing the previous session at REPL startup.")]
-        public bool New { get; init; }
-
-        [CommandOption("--no-tools")]
-        [Description("Disable MCP-provided tools for this REPL session (built-in tools still apply).")]
-        public bool NoTools { get; init; }
-
-        [CommandOption("--unattended")]
-        [Description("Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.")]
-        public bool Unattended { get; set; }
-
-        [CommandOption("-c|--campaign <ID>")]
-        [Description("Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).")]
-        public string? Campaign { get; init; }
-
-        [CommandOption("--temperature <VALUE>")]
-        [Description("Sampling temperature 0\u20132 (lower = more deterministic). Applies to every turn.")]
-        public string? Temperature { get; init; }
-
-        [CommandOption("--top-p <VALUE>")]
-        [Description("Nucleus sampling cutoff 0\u20131. Applies to every turn.")]
-        public string? TopP { get; init; }
-
-        [CommandOption("--max-tokens <N>")]
-        [Description("Maximum output tokens per turn.")]
-        public string? MaxTokens { get; init; }
-
-        [CommandOption("--seed <N>")]
-        [Description("Seed for sampling determinism (provider support varies). Applies to every turn.")]
-        public string? Seed { get; init; }
-
-        [CommandOption("--stop <SEQUENCE>")]
-        [Description("Stop sequence(s); pass --stop multiple times for several stops.")]
-        public string[]? Stop { get; init; }
-
-        [CommandOption("--response-format <KIND>")]
-        [Description("Response format: text | json_object | json_schema.")]
-        public string? ResponseFormat { get; init; }
-
-        [CommandOption("--presence-penalty <VALUE>")]
-        [Description("Presence penalty \u22122..2.")]
-        public string? PresencePenalty { get; init; }
-
-        [CommandOption("--frequency-penalty <VALUE>")]
-        [Description("Frequency penalty \u22122..2.")]
-        public string? FrequencyPenalty { get; init; }
     }
 
 }

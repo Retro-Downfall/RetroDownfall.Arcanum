@@ -5,21 +5,21 @@ using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("GlobalConsole")]
 public sealed class AskCommandErrorHandlingTests
 {
 
     [Fact]
-    public async Task Ask_yields_exit_one_when_turn_throws_unexpected_exception()
+    public void Ask_yields_exit_one_when_turn_throws_unexpected_exception()
     {
 
         // An unexpected (non-OCE) fault inside the ask turn must surface as a formatted
         // error + exit 1, not as an unhandled exception / raw stack trace. This exercises
-        // the real Program.Main wiring (CliApplicationFactory.BuildCommandApp) with the
-        // eye replaced by a throwing fake so the fault lands inside the ask turn body.
+        // the real Program.Main wiring (CliApplicationFactory.RunAsync) with the eye
+        // replaced by a throwing fake so the fault lands inside the ask turn body.
         //
         // Note: ConfigureCliServices does not register IApiKeyDigestCache (a pre-existing
         // CLI DI wiring gap tracked separately from W2.3); it is registered here so the
@@ -35,11 +35,9 @@ public sealed class AskCommandErrorHandlingTests
 
         services.AddSingleton<IEyeOfTheWorld, ThrowingEye>();
 
-        CommandApp app = CliApplicationFactory.BuildCommandApp(services);
+        CliTestResult result = CliTestHarness.Run(services, "ask", "hello");
 
-        int exitCode = await app.RunAsync(new[] { "ask", "hello" });
-
-        Assert.Equal(1, exitCode);
+        Assert.Equal(1, result.ExitCode);
 
     }
 

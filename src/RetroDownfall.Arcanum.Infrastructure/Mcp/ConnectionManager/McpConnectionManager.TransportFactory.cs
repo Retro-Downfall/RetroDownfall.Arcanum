@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -10,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -156,21 +159,61 @@ public sealed partial class McpConnectionManager
 
     }
 
-    private McpClient CreateMcpClient(
-        IMcpTransport transport,
-        McpRequestCancellationBroker? requestCancellationBroker = null)
+    /// <summary>
+    /// Builds the shared SDK <see cref="McpClientOptions"/> for every transport: client identity and the
+    /// standard MCP elicitation handler, which bridges a server's <c>elicitation/create</c> request to the
+    /// same <see cref="IHumanPromptRegistry"/> channel the in-process <c>ask_human</c> tool uses. Unlike
+    /// the pre-SDK bespoke "multi-round tool response" extension (HTTP-only), this applies uniformly to
+    /// every transport (stdio, Streamable HTTP, in-process).
+    /// </summary>
+    private McpClientOptions BuildMcpClientOptions()
     {
+        return new McpClientOptions
+        {
+            ClientInfo = new ModelContextProtocol.Protocol.Implementation
+            {
+                Name = typeof(McpConnectionManager).Assembly.GetName().Name ?? "RetroDownfall.Arcanum.Infrastructure",
+                Version = typeof(McpConnectionManager).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            },
+            InitializationTimeout = GetClampedMcpRequestTimeout(),
+            Handlers = new McpClientHandlers
+            {
+                ElicitationHandler = HandleElicitationAsync,
+            },
+        };
+    }
 
-        return new McpClient(
-            transport,
+    private async ValueTask<ModelContextProtocol.Protocol.ElicitResult> HandleElicitationAsync(
+        ModelContextProtocol.Protocol.ElicitRequestParams? request,
+        CancellationToken cancellationToken)
+    {
+        string promptId = string.IsNullOrWhiteSpace(request?.ElicitationId)
+            ? Guid.NewGuid().ToString("N")
+            : request.ElicitationId;
+
+        string value = await humanPromptRegistry.WaitForResponseAsync(promptId, cancellationToken).ConfigureAwait(false);
+
+        return new ModelContextProtocol.Protocol.ElicitResult
+        {
+            Action = "accept",
+            Content = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["value"] = JsonSerializer.SerializeToElement(value, McpJsonSerializerContext.Default.String),
+            },
+        };
+    }
+
+    private SdkMcpClientWrapper CreateSdkMcpClientWrapper(IClientTransport clientTransport)
+    {
+        return new SdkMcpClientWrapper(
+            clientTransport,
+            BuildMcpClientOptions(),
             GetClampedMcpRequestTimeout(),
             GetClampedMcpMaxPaginationPages(),
             GetClampedToolOutputCapBytes(),
             GetClampedMcpMaxToolsPerServer(),
             GetClampedMcpMaxToolsPerListPage(),
-            GetClampedMcpMaxToolsTotalBytes(),
-            requestCancellationBroker);
-
+            GetClampedMcpMaxToolsTotalBytes());
     }
 
     private TimeSpan GetClampedMcpHttpRequestTimeout()
@@ -181,23 +224,22 @@ public sealed partial class McpConnectionManager
 
     }
 
-    private McpHttpClient CreateHttpMcpClient(Uri endpoint)
+    private SdkMcpClientWrapper CreateHttpMcpClient(Uri endpoint)
     {
 
         HttpClient httpClient = httpClientFactory.CreateClient(McpHttpClientName);
 
-        return new McpHttpClient(
-            endpoint,
+        HttpClientTransport transport = new(
+            new HttpClientTransportOptions
+            {
+                Endpoint = endpoint,
+                TransportMode = HttpTransportMode.StreamableHttp,
+            },
             httpClient,
-            GetClampedMcpRequestTimeout(),
-            GetClampedMcpMaxPaginationPages(),
-            GetClampedToolOutputCapBytes(),
-            GetClampedMcpMaxToolsPerServer(),
-            GetClampedMcpMaxToolsPerListPage(),
-            GetClampedMcpMaxToolsTotalBytes(),
-            GetClampedMcpMaxJsonRpcLineBytes(),
-            _httpInputElicitor,
-            logger);
+            loggerFactory: null,
+            ownsHttpClient: false);
+
+        return CreateSdkMcpClientWrapper(transport);
 
     }
 

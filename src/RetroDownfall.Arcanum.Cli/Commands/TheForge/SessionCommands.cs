@@ -1,26 +1,36 @@
 using System.Globalization;
-using RetroDownfall.Arcanum.Cli.Commands;
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 
 /// <summary>
-/// RAG Phase 2 — <c>arcanum session divine &lt;QUERY&gt;</c>: semantic search over Grimoire entries
-/// (POST /api/sessions/divine).
+/// Session semantic search (requires arcanum serve).
 /// </summary>
-public sealed class SessionDivinationCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<SessionDivinationCommand.Settings>
+public sealed class SessionCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// Semantic search over Grimoire entries (POST /api/sessions/divine; requires Arcanum:Embeddings:Enabled and SessionSearchEnabled).
+    /// </summary>
+    /// <param name="query">Search query text.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="campaign">Filter by campaign GUID.</param>
+    /// <param name="status">Filter by session status.</param>
+    [Command("divine")]
+    public async Task<int> Divine(
+        [Argument] string query,
+        int? limit = null,
+        string? campaign = null,
+        string? status = null,
+        CancellationToken cancellationToken = default)
     {
 
-        if (string.IsNullOrWhiteSpace(settings.Query))
+        if (string.IsNullOrWhiteSpace(query))
         {
 
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<QUERY> is required.")));
@@ -31,10 +41,10 @@ public sealed class SessionDivinationCommand(ArcanumApiClient apiClient, IThemeP
 
         Guid? campaignId = null;
 
-        if (!string.IsNullOrWhiteSpace(settings.Campaign))
+        if (!string.IsNullOrWhiteSpace(campaign))
         {
 
-            if (!CliArgReader.TryParseGuid(settings.Campaign, out Guid parsedCampaignId))
+            if (!CliArgReader.TryParseGuid(campaign, out Guid parsedCampaignId))
             {
 
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
@@ -47,7 +57,7 @@ public sealed class SessionDivinationCommand(ArcanumApiClient apiClient, IThemeP
 
         }
 
-        SemanticSearchRequest request = new(settings.Query.Trim(), campaignId, settings.Status, settings.Limit);
+        SemanticSearchRequest request = new(query.Trim(), campaignId, status, limit);
 
         Result<SemanticSearchResult> result = await apiClient
             .DivineSessionsAsync(request, cancellationToken)
@@ -105,23 +115,6 @@ public sealed class SessionDivinationCommand(ArcanumApiClient apiClient, IThemeP
         }
 
         return 0;
-
-    }
-
-    public sealed class Settings : CommandSettings
-    {
-
-        [CommandArgument(0, "<QUERY>")]
-        public required string Query { get; init; }
-
-        [CommandOption("--limit <LIMIT>")]
-        public int? Limit { get; init; }
-
-        [CommandOption("--campaign <CAMPAIGN>")]
-        public string? Campaign { get; init; }
-
-        [CommandOption("--status <STATUS>")]
-        public string? Status { get; init; }
 
     }
 

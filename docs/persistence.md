@@ -15,6 +15,7 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 | **Sanctum breach history** (per-campaign audit trail: tool, breach type, description, JSON details) | `SanctumBreaches` | **New (this change)** — replaces the former in-memory ring buffer (`SanctumBreachStore`, retired) |
 | Apprentice Chronicle (lifecycle/execution events) | — | Deferred (in-memory bounded channel, `ChronicleHub`) |
 | Active Wards | — | **Not persisted by design** (see §7) |
+| A2A task id ↔ Apprentice id mapping (§5.7.1) | — | **Not persisted by design** (see §7) |
 
 ## 2. Serialization strategy
 
@@ -77,6 +78,7 @@ A failed watermark write is logged as a warning and swallowed — it never crash
 - **SSE event bus subscriber state** (`InMemoryEventBus`) — live client connections; a reconnecting client re-subscribes and receives new events going forward. There is no "replay from before I connected" contract today.
 - **Live token streams** — an in-flight `/v1` or `/api/intelligence/ping-stream` response is bound to one HTTP connection and one process; it cannot survive a restart by definition.
 - **`_firstDispatchAfterUtc` startup jitter** (`UnseenServantService`) — intentionally regenerated fresh on every process start (a random 0-60s delay per job) to spread first-tick load; it is not a watermark and persisting it would serve no purpose.
+- **A2A task mappings** (`ArcanumA2AAgentHandler`'s in-memory task-id ↔ Apprentice-id map; DESIGN.md §5.7.1) — an A2A Task maps to an Apprentice, and the Apprentice itself is already fully persisted in `Apprentices`/`Sessions`/`Entries`; the mapping is a cheap runtime index, not new state. On restart, in-flight external A2A tasks are lost (the remote client will see the connection drop and can re-poll `GetTaskAsync`, which will 404 since `InMemoryTaskStore` is also process-lifetime) exactly like any other live SSE/streaming connection in this document. The Archmage Client's outbound delegations (`dispatch_sending`) are also ephemeral: the remote agent's task id lives only in the `sendingDispatched`/`sendingCompleted`/`sendingFailed` Chronicle events on the calling Apprentice, not in a queryable table.
 
 ## 8. Existing patterns followed
 

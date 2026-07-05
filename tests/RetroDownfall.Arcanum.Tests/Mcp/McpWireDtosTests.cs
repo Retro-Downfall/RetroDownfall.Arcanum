@@ -57,26 +57,4 @@ public sealed class McpWireDtosTests
 
     }
 
-    [Fact]
-    public void McpCancelledParams_round_trips_request_id()
-    {
-
-        McpCancelledParams original = new()
-        {
-            RequestId = "deadbeef",
-            Reason = "Client cancelled",
-        };
-
-        string wire = JsonSerializer.Serialize(original, Json.McpCancelledParams);
-
-        McpCancelledParams? parsed = JsonSerializer.Deserialize(wire, Json.McpCancelledParams);
-
-        Assert.NotNull(parsed);
-
-        Assert.Equal("deadbeef", parsed!.RequestId);
-
-        Assert.Equal("Client cancelled", parsed.Reason);
-
-    }
-
 }

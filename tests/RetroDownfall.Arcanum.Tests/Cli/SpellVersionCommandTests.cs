@@ -9,11 +9,11 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class SpellVersionCommandTests
 {
 
@@ -28,7 +28,7 @@ public sealed class SpellVersionCommandTests
             ArcanumJsonContext.Default.ApiResponseSpellVersionDto,
             HttpStatusCode.Created));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["spell", "version", "create", "greet", "--version", "2.0", "--body", "New draft body.", "--workspace", "/tmp/ws"]);
 
@@ -52,7 +52,7 @@ public sealed class SpellVersionCommandTests
             new ApiResponse<SpellVersionDto>(version, true, null),
             ArcanumJsonContext.Default.ApiResponseSpellVersionDto));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["spell", "version", "update", "greet", "--version", "2.0", "--body", "Updated body.", "--workspace", "/tmp/ws"]);
 
@@ -76,7 +76,7 @@ public sealed class SpellVersionCommandTests
             new ApiResponse<SpellVersionDto>(version, true, null),
             ArcanumJsonContext.Default.ApiResponseSpellVersionDto));
 
-        CommandAppResult result = RunCommand(
+        CliTestResult result = RunCommand(
             handler,
             ["spell", "version", "activate", "greet", "--version", "2.0", "--workspace", "/tmp/ws"]);
 
@@ -96,7 +96,7 @@ public sealed class SpellVersionCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["spell", "version", "create", "greet", "--version", "2.0"]);
+        CliTestResult result = RunCommand(handler, ["spell", "version", "create", "greet", "--version", "2.0"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -104,7 +104,7 @@ public sealed class SpellVersionCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -121,11 +121,7 @@ public sealed class SpellVersionCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

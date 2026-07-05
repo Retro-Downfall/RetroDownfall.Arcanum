@@ -8,11 +8,11 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class ApprenticeCommandTests
 {
 
@@ -28,7 +28,7 @@ public sealed class ApprenticeCommandTests
             new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(new ListPageResult<ApprenticeSummaryDto>([summary], false), true, null),
             ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
 
-        CommandAppResult result = RunCommand(handler, ["apprentice", "list"]);
+        CliTestResult result = RunCommand(handler, ["apprentice", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -52,7 +52,7 @@ public sealed class ApprenticeCommandTests
             ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
             HttpStatusCode.Created));
 
-        CommandAppResult result = RunCommand(handler, ["apprentice", "create", "--goal", "Do the thing"]);
+        CliTestResult result = RunCommand(handler, ["apprentice", "create", "--goal", "Do the thing"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -79,7 +79,7 @@ public sealed class ApprenticeCommandTests
             ArcanumJsonContext.Default.ApiResponseString,
             HttpStatusCode.Accepted));
 
-        CommandAppResult result = RunCommand(handler, ["apprentice", "start", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["apprentice", "start", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -102,7 +102,7 @@ public sealed class ApprenticeCommandTests
             ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
             HttpStatusCode.Conflict));
 
-        CommandAppResult result = RunCommand(handler, ["apprentice", "cast", SampleId.ToString(), "--goal", "Sub-goal"]);
+        CliTestResult result = RunCommand(handler, ["apprentice", "cast", SampleId.ToString(), "--goal", "Sub-goal"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -118,7 +118,7 @@ public sealed class ApprenticeCommandTests
 
         RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        CommandAppResult result = RunCommand(handler, ["apprentice", "delete", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["apprentice", "delete", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -128,7 +128,7 @@ public sealed class ApprenticeCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -145,11 +145,7 @@ public sealed class ApprenticeCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

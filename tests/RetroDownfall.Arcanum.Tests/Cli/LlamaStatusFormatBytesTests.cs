@@ -12,7 +12,7 @@ public sealed class LlamaStatusFormatBytesTests
     public void FormatBytes_returns_bytes_for_values_under_one_kibibyte(long bytes, string expected)
     {
 
-        string actual = LlamaStatusCommand.FormatBytes(bytes);
+        string actual = LlamaCommands.FormatBytes(bytes);
 
         Assert.Equal(expected, actual);
 
@@ -25,7 +25,7 @@ public sealed class LlamaStatusFormatBytesTests
     public void FormatBytes_returns_kibibytes_for_values_under_one_mebibyte(long bytes, string expected)
     {
 
-        string actual = LlamaStatusCommand.FormatBytes(bytes);
+        string actual = LlamaCommands.FormatBytes(bytes);
 
         Assert.Equal(expected, actual);
 
@@ -37,7 +37,7 @@ public sealed class LlamaStatusFormatBytesTests
     public void FormatBytes_returns_mebibytes_for_values_under_one_gibibyte(long bytes, string expected)
     {
 
-        string actual = LlamaStatusCommand.FormatBytes(bytes);
+        string actual = LlamaCommands.FormatBytes(bytes);
 
         Assert.Equal(expected, actual);
 
@@ -49,7 +49,7 @@ public sealed class LlamaStatusFormatBytesTests
 
         long bytes = 3L * 1024 * 1024 * 1024;
 
-        string actual = LlamaStatusCommand.FormatBytes(bytes);
+        string actual = LlamaCommands.FormatBytes(bytes);
 
         Assert.Equal("3.0 GiB", actual);
 

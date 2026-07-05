@@ -1,17 +1,23 @@
+using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
-using Spectre.Console.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
 
-public sealed class ModelListCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ModelListCommand.Settings>
+/// <summary>
+/// Native model listing across configured providers (requires arcanum serve).
+/// </summary>
+public sealed class ModelCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// List configured models across all providers (GET /api/models).
+    /// </summary>
+    [Command("list")]
+    public async Task<int> List(CancellationToken cancellationToken)
     {
 
         Result<ModelInfoDto[]> result = await apiClient.GetModelsAsync(cancellationToken).ConfigureAwait(false);
@@ -55,15 +61,19 @@ public sealed class ModelListCommand(ArcanumApiClient apiClient, IThemePalette t
 
     }
 
-    public sealed class Settings : CommandSettings;
-
 }
 
-public sealed class ProviderListCommand(ArcanumApiClient apiClient, IThemePalette themePalette)
-    : AsyncCommand<ProviderListCommand.Settings>
+/// <summary>
+/// Native provider listing and configuration summary (requires arcanum serve).
+/// </summary>
+public sealed class ProviderCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
 
-    protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    /// <summary>
+    /// List configured providers with redacted secrets (GET /api/providers).
+    /// </summary>
+    [Command("list")]
+    public async Task<int> List(CancellationToken cancellationToken)
     {
 
         Result<ProviderInfoDto[]> result = await apiClient.GetProvidersAsync(cancellationToken).ConfigureAwait(false);
@@ -114,7 +124,5 @@ public sealed class ProviderListCommand(ArcanumApiClient apiClient, IThemePalett
         return 0;
 
     }
-
-    public sealed class Settings : CommandSettings;
 
 }

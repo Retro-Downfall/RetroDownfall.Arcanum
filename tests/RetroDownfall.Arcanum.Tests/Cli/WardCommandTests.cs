@@ -8,11 +8,11 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class WardCommandTests
 {
 
@@ -26,7 +26,7 @@ public sealed class WardCommandTests
             new ApiResponse<WardDto[]>([ward], true, null),
             ArcanumJsonContext.Default.ApiResponseWardDtoArray));
 
-        CommandAppResult result = RunCommand(handler, ["ward", "list"]);
+        CliTestResult result = RunCommand(handler, ["ward", "list"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -48,7 +48,7 @@ public sealed class WardCommandTests
             new ApiResponse<WardDto>(ward, true, null),
             ArcanumJsonContext.Default.ApiResponseWardDto));
 
-        CommandAppResult result = RunCommand(handler, ["ward", "get", "ward-1"]);
+        CliTestResult result = RunCommand(handler, ["ward", "get", "ward-1"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -68,7 +68,7 @@ public sealed class WardCommandTests
             new ApiResponse<WardResolutionDto>(resolution, true, null),
             ArcanumJsonContext.Default.ApiResponseWardResolutionDto));
 
-        CommandAppResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow", "--reason", "looks safe"]);
+        CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow", "--reason", "looks safe"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -94,7 +94,7 @@ public sealed class WardCommandTests
             new ApiResponse<WardResolutionDto>(resolution, true, null),
             ArcanumJsonContext.Default.ApiResponseWardResolutionDto));
 
-        CommandAppResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--deny"]);
+        CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--deny"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -112,7 +112,7 @@ public sealed class WardCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["ward", "resolve", "ward-1"]);
+        CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -126,7 +126,7 @@ public sealed class WardCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow", "--deny"]);
+        CliTestResult result = RunCommand(handler, ["ward", "resolve", "ward-1", "--allow", "--deny"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -134,7 +134,7 @@ public sealed class WardCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -151,11 +151,7 @@ public sealed class WardCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

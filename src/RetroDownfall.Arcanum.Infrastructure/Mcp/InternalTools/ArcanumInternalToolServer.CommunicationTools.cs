@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -356,5 +357,98 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("An internal error occurred during cast_sending.");
         }
     }
+
+    private async Task<McpToolsCallResultWire> ExecuteDispatchSendingAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+
+        if (!_a2aClientEnabled)
+        {
+            return ToolError("A2A is disabled; dispatch_sending is not available.");
+        }
+
+        DispatchSendingParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.DispatchSendingParams);
+        }
+        catch (JsonException ex)
+        {
+            _logger?.LogError(ex, "dispatch_sending argument deserialization failed.");
+
+            return ToolError("Invalid arguments for dispatch_sending.");
+        }
+
+        if (args is null || string.IsNullOrWhiteSpace(args.Goal) || string.IsNullOrWhiteSpace(args.AgentUrl))
+        {
+            return ToolError("dispatch_sending requires a non-empty 'goal' and 'agent_url'.");
+        }
+
+        string agentUrl = args.AgentUrl.Trim();
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IA2AClientService client = scope.ServiceProvider.GetRequiredService<IA2AClientService>();
+
+            Result<A2ADispatchResult> result = await client
+                .DispatchSendingAsync(args.Goal.Trim(), args.Name, agentUrl, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Distinguishes "never dispatched" (config gate, allowlist, concurrency cap, bad goal — a
+            // plain MCP tool error, nothing for the Chronicle to say) from "a Sending was actually
+            // attempted" (a structured result either way, so both the tool loop and ApprenticeService's
+            // Chronicle interception can read the same succeeded/error payload).
+            if (result.IsFailure && IsPreflightRejection(result.Error.Code))
+            {
+                return ToolError($"dispatch_sending failed: {result.Error.Message}");
+            }
+
+            DispatchSendingResultWire payload = result.IsSuccess
+                ? new DispatchSendingResultWire
+                {
+                    AgentUrl = agentUrl,
+                    TaskId = result.Value.TaskId,
+                    Succeeded = true,
+                    Response = result.Value.ResponseText,
+                }
+                : new DispatchSendingResultWire
+                {
+                    AgentUrl = agentUrl,
+                    Succeeded = false,
+                    Error = result.Error.Message,
+                };
+
+            string json = JsonSerializer.Serialize(payload, _json.DispatchSendingResultWire);
+
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = json },
+                ],
+                IsError = false,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "dispatch_sending failed.");
+
+            return ToolError("An internal error occurred during dispatch_sending.");
+        }
+    }
+
+    private static bool IsPreflightRejection(string errorCode) => errorCode
+        is ErrorCodes.Sending.Disabled
+        or ErrorCodes.Sending.AgentNotAllowed
+        or ErrorCodes.Sending.MaxTasksReached
+        or ErrorCodes.Apprentice.InvalidGoal;
 
 }

@@ -55,6 +55,8 @@
 
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
 
+    <PackageReference Include="A2A.AspNetCore" Version="1.0.0-preview2" />
+
   </ItemGroup>
 
 </Project>

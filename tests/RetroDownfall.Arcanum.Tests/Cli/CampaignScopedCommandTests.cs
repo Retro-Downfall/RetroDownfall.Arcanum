@@ -10,11 +10,11 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
-using Spectre.Console.Cli.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Trait("Category", "Integration")]
+[Collection("GlobalConsole")]
 public sealed class CampaignScopedCommandTests
 {
 
@@ -30,7 +30,7 @@ public sealed class CampaignScopedCommandTests
             new ApiResponse<SpellSummary[]>([summary], true, null),
             ArcanumJsonContext.Default.ApiResponseSpellSummaryArray));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "spells", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "spells", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -52,7 +52,7 @@ public sealed class CampaignScopedCommandTests
             new ApiResponse<ListPageResult<PromptSummaryDto>>(new ListPageResult<PromptSummaryDto>([summary], false), true, null),
             ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "prompts", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "prompts", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -76,7 +76,7 @@ public sealed class CampaignScopedCommandTests
             new ApiResponse<SessionQueryResult>(queryResult, true, null),
             ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "sessions", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "sessions", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -94,7 +94,7 @@ public sealed class CampaignScopedCommandTests
 
         RecordingHandler handler = new();
 
-        CommandAppResult result = RunCommand(handler, ["campaign", "spells", "not-a-guid"]);
+        CliTestResult result = RunCommand(handler, ["campaign", "spells", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -102,7 +102,7 @@ public sealed class CampaignScopedCommandTests
 
     }
 
-    private static CommandAppResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 
         ServiceCollection services = new();
@@ -119,11 +119,7 @@ public sealed class CampaignScopedCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
-        CommandAppTester tester = new(new CliTypeRegistrar(services));
-
-        tester.Configure(CliApplicationFactory.ConfigureCommands);
-
-        return tester.Run(args);
+        return CliTestHarness.Run(services, args);
 
     }
 

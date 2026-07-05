@@ -230,6 +230,7 @@ public sealed class ReadSagaToolTests
             maxFileReadSizeBytes: 1024 * 1024,
             conclaveEnabled: false,
             sagaEnabled: sagaEnabled,
+            a2aClientEnabled: false,
             maxJsonRpcLineBytes: 2_097_152,
             logger: NullLogger<ArcanumInternalToolServer>.Instance);
 

@@ -194,7 +194,7 @@ public sealed class ArcanumApiClientTests
 
         // Any exception type not explicitly mapped (OperationCanceledException, HttpRequestException,
         // IOException) must still surface as a controlled Result.Failure — never propagate past the
-        // client to a command's caller / Spectre.Console.Cli's generic top-level exception handler.
+        // client to a command's caller / ConsoleAppFramework's generic top-level exception handler.
         RecordingHandler handler = new(_ => throw new InvalidOperationException("handler misconfigured"));
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");

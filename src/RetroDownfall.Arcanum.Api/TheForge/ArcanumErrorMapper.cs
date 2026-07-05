@@ -62,6 +62,21 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Connection.Unreachable =>
                 StatusCodes.Status503ServiceUnavailable,
 
+            ErrorCodes.Sending.AgentUnreachable or ErrorCodes.Sending.AgentCardInvalid =>
+                StatusCodes.Status502BadGateway,
+
+            ErrorCodes.Sending.TaskTimeout =>
+                StatusCodes.Status504GatewayTimeout,
+
+            ErrorCodes.Sending.TaskRejected =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Sending.Disabled or ErrorCodes.Sending.AgentNotAllowed =>
+                StatusCodes.Status403Forbidden,
+
+            ErrorCodes.Sending.MaxTasksReached =>
+                StatusCodes.Status429TooManyRequests,
+
             _ =>
                 StatusCodes.Status500InternalServerError,
         };

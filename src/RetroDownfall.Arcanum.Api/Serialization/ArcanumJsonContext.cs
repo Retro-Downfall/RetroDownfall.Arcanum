@@ -300,6 +300,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<ProviderInfoDto[]>))]
 [JsonSerializable(typeof(Result<ProviderInfoDto[]>))]
 [JsonSerializable(typeof(ConclaveSettings))]
+[JsonSerializable(typeof(ConclaveA2ASettings))]
 [JsonSerializable(typeof(IntelligenceSettings))]
 [JsonSerializable(typeof(PerceptionSettings))]
 [JsonSerializable(typeof(SpellSettings))]

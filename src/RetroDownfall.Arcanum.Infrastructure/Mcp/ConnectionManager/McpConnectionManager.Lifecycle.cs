@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -63,25 +65,32 @@ public sealed partial class McpConnectionManager
             return cwdResult.Error;
         }
 
-        McpProcessTransport transport = new(
-            command.Trim(),
-            arguments: string.Empty,
-            maxJsonRpcLineBytes: GetClampedMcpMaxJsonRpcLineBytes(),
-            argumentList: args,
-            environment: cfg.Env,
-            workingDirectory: cwdResult.Value,
-            stripUserEnvironment: stripUserEnvironment,
-            inheritEnvironmentAllowlist: inheritEnvironmentAllowlist)
+        IReadOnlyDictionary<string, string>? scrubbedEnvironment = McpSecurityLimits.ScrubProcessEnvironment(
+            cfg.Env,
+            stripUserEnvironment,
+            inheritEnvironmentAllowlist);
+
+        Dictionary<string, string> environmentVariables = scrubbedEnvironment is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(scrubbedEnvironment, StringComparer.Ordinal);
+
+        StdioClientTransport transport = new(new StdioClientTransportOptions
         {
-            OnStderrLine = line => logger.LogDebug(
+            Command = command.Trim(),
+            Arguments = args.ToList(),
+            WorkingDirectory = cwdResult.Value,
+            InheritEnvironmentVariables = false,
+            EnvironmentVariables = environmentVariables!,
+            StandardErrorLines = line => logger.LogDebug(
                 "MCP server {ServerName} ({Scope}) stderr: {Line}",
                 entry.Name,
                 logScope,
                 line),
-            OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration),
-        };
+        });
 
-        McpClient client = CreateMcpClient(transport);
+        SdkMcpClientWrapper client = CreateSdkMcpClientWrapper(transport);
+
+        client.OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration);
 
         return await FinishStartAsync(entry, cfg, client, logScope, cancellationToken).ConfigureAwait(false);
     }
@@ -100,7 +109,18 @@ public sealed partial class McpConnectionManager
 
         string logScope = entry.ScopeWorkingDirectory ?? "global";
 
-        McpHttpClient client = CreateHttpMcpClient(endpointResult.Value);
+        ManagedMcpServerEntry capturedEntry = entry;
+
+        long transportGeneration = ++entry.TransportGeneration;
+
+        SdkMcpClientWrapper client = CreateHttpMcpClient(endpointResult.Value);
+
+        // W-MCP-HTTP: the official SDK's Streamable HTTP transport is stateful (an Mcp-Session-Id
+        // tracked server-side), unlike the pre-SDK-migration stateless-POST McpHttpClient. Wiring
+        // OnTransportEnded off McpClient.Completion here means a dropped/expired HTTP session now
+        // reactively flips the entry to Error + publishes an McpServerEvent, the same as stdio —
+        // a capability the bespoke stateless implementation never had.
+        client.OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration);
 
         return await FinishStartAsync(entry, cfg, client, logScope, cancellationToken).ConfigureAwait(false);
     }
@@ -467,32 +487,45 @@ public sealed partial class McpConnectionManager
 
         bool sagaEnabled = embeddings.Enabled && embeddings.SagaEnabled;
 
-        (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
-            humanPromptRegistry,
-            scopeFactory,
-            pacer,
-            workspaceRoot,
-            executeTimeout,
-            timeoutSeconds,
-            listDirectoryMaxPaths,
-            settings.CurrentValue.Intelligence,
-            maxFileReadSizeBytes,
-            settings.CurrentValue.Conclave.Enabled,
-            sagaEnabled,
-            GetClampedMcpMaxJsonRpcLineBytes(),
-            logger: null);
+        ConclaveSettings conclave = settings.CurrentValue.Conclave ?? new ConclaveSettings();
 
-        Task serverTask = Task.Run(() => server.RunAsync(transport.LifetimeCancellation), CancellationToken.None);
+        ConclaveA2ASettings a2a = conclave.A2A ?? new ConclaveA2ASettings();
+
+        bool a2aClientEnabled = conclave.Enabled && a2a.Enabled && a2a.ClientEnabled;
+
+        (ChannelWriter<string> toServer, ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
+            InProcessMcpTransport.CreateServerChannelPair(
+                humanPromptRegistry,
+                scopeFactory,
+                pacer,
+                workspaceRoot,
+                executeTimeout,
+                timeoutSeconds,
+                listDirectoryMaxPaths,
+                settings.CurrentValue.Intelligence,
+                maxFileReadSizeBytes,
+                conclave.Enabled,
+                sagaEnabled,
+                a2aClientEnabled,
+                GetClampedMcpMaxJsonRpcLineBytes(),
+                logger: null);
+
+        // The server's own RunAsync loop terminates when the client-to-server channel completes
+        // (ChannelClientTransport.DisposeAsync calls toServer.TryComplete() on client disposal), so
+        // no separate lifetime token is needed here — channel completion is the shutdown signal.
+        Task serverTask = Task.Run(() => server.RunAsync(CancellationToken.None), CancellationToken.None);
 
         ObserveInternalServerTask(serverTask);
 
-        McpClient? client = null;
+        ChannelClientTransport clientTransport = new(toServer, fromServer, GetClampedMcpMaxJsonRpcLineBytes());
+
+        SdkMcpClientWrapper? client = null;
 
         List<IMcpClient> partitionClients = partition.Clients;
 
         try
         {
-            client = CreateMcpClient(transport, requestCancellationBroker: transport.RequestCancellation);
+            client = CreateSdkMcpClientWrapper(clientTransport);
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
