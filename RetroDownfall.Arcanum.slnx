@@ -19,6 +19,5 @@
   <Project Path="src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj" />
 
   <Project Path="tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj" />
-
-  <Project Path="tests/RetroDownfall.Compendium.Ux.Tests/RetroDownfall.Compendium.Ux.Tests.csproj" />
+  <Project Path="tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj" />
 </Solution>
