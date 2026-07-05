@@ -144,6 +144,21 @@ public sealed partial class McpConnectionManager
 
             return Result.Success();
         }
+        catch (OperationCanceledException)
+        {
+            // Unlike the non-cancellation path below, entry.Client/LoadedTools/Tools are left
+            // untouched here — the caller (StartManagedServerAsync) is responsible for resetting
+            // entry.State off Starting on cancellation so a future start attempt is not
+            // short-circuited into a false "already starting" success. This method only owns not
+            // leaking the subprocess/client that InitializeAsync/GetToolsAsync may have partially
+            // stood up before cancellation.
+            if (pending is not null)
+            {
+                await pending.DisposeAsync().ConfigureAwait(false);
+            }
+
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (pending is not null)
@@ -166,6 +181,37 @@ public sealed partial class McpConnectionManager
                 entry.ScopeWorkingDirectory ?? "global");
 
             return new Error("Mcp.StartFailed", baseEx.Message);
+        }
+    }
+
+    /// <summary>
+    /// Wraps <see cref="StartManagedServerCoreAsync"/> so a canceled start (the caller's
+    /// <paramref name="cancellationToken"/> firing mid-handshake) resets <paramref name="entry"/> off
+    /// <see cref="McpServerState.Starting"/> before rethrowing. <see cref="FinishStartAsync"/> already
+    /// disposes any partially-started client/subprocess on cancellation; without this reset, the entry
+    /// would remain stuck at <see cref="McpServerState.Starting"/> forever, which would make a future
+    /// <c>StartAsync</c> call for the same entry short-circuit into a false "already starting" success
+    /// (see the state check at the top of <c>StartAsync</c>/<c>RestartAsync</c>) without ever actually
+    /// starting anything.
+    /// </summary>
+    private async Task<Result> StartManagedServerWithCancellationHandlingAsync(
+        ManagedMcpServerEntry entry,
+        List<McpServerEvent> pendingEvents,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await StartManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            entry.State = McpServerState.Error;
+
+            entry.ErrorMessage = "MCP server start was canceled.";
+
+            pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+            throw;
         }
     }
 
@@ -293,7 +339,7 @@ public sealed partial class McpConnectionManager
 
         }
 
-        _ = Task.Run(async () =>
+        Task handlerTask = Task.Run(async () =>
         {
 
             if (_disposed)
@@ -379,6 +425,15 @@ public sealed partial class McpConnectionManager
                 PublishEvent(pendingEvent);
             }
         });
+
+        _pendingTransportEndedTasks[handlerTask] = 0;
+
+        _ = handlerTask.ContinueWith(
+            static (completed, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(completed, out _),
+            _pendingTransportEndedTasks,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private int GetClampedListDirectoryMaxPaths()
@@ -408,6 +463,10 @@ public sealed partial class McpConnectionManager
         long maxFileReadSizeBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
             settings.CurrentValue.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes);
 
+        EmbeddingSettings embeddings = settings.CurrentValue.Embeddings ?? new EmbeddingSettings();
+
+        bool sagaEnabled = embeddings.Enabled && embeddings.SagaEnabled;
+
         (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
             humanPromptRegistry,
             scopeFactory,
@@ -419,6 +478,7 @@ public sealed partial class McpConnectionManager
             settings.CurrentValue.Intelligence,
             maxFileReadSizeBytes,
             settings.CurrentValue.Conclave.Enabled,
+            sagaEnabled,
             GetClampedMcpMaxJsonRpcLineBytes(),
             logger: null);
 

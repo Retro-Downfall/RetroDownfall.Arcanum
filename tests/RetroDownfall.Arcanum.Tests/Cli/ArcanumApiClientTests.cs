@@ -116,6 +116,39 @@ public sealed class ArcanumApiClientTests
     }
 
     [Fact]
+    public async Task AskAsync_returns_response_too_large_when_declared_content_length_exceeds_cap()
+    {
+
+        // A misbehaving/compromised local API declaring an oversized Content-Length must be rejected
+        // before any buffering is attempted — the fake declared length here (100 MiB) exceeds
+        // ArcanumApiClient's cap without this test needing to actually transfer that many bytes.
+        RecordingHandler handler = new(_ =>
+        {
+
+            HttpResponseMessage response = new(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("{}")),
+            };
+
+            response.Content.Headers.ContentLength = 100 * 1024 * 1024;
+
+            return response;
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        PingRequest body = new("hello");
+
+        Result<string> result = await client.AskAsync(body, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Api.ResponseTooLarge", result.Error.Code);
+
+    }
+
+    [Fact]
     public async Task AskAsync_returns_connection_error_when_handler_throws_http_request_exception()
     {
 
@@ -129,9 +162,50 @@ public sealed class ArcanumApiClientTests
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal("Connection", result.Error.Code);
+        Assert.Equal("Connection.Unreachable", result.Error.Code);
 
         Assert.Contains("unreachable", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task AskAsync_returns_disconnected_error_when_handler_throws_io_exception()
+    {
+
+        RecordingHandler handler = new(_ => throw new IOException("connection reset by peer"));
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        PingRequest body = new("hello");
+
+        Result<string> result = await client.AskAsync(body, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Connection.Unreachable", result.Error.Code);
+
+        Assert.Contains("lost before the response completed", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task AskAsync_returns_unexpected_error_result_when_handler_throws_unanticipated_exception()
+    {
+
+        // Any exception type not explicitly mapped (OperationCanceledException, HttpRequestException,
+        // IOException) must still surface as a controlled Result.Failure — never propagate past the
+        // client to a command's caller / Spectre.Console.Cli's generic top-level exception handler.
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("handler misconfigured"));
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        PingRequest body = new("hello");
+
+        Result<string> result = await client.AskAsync(body, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Api.UnexpectedError", result.Error.Code);
 
     }
 
@@ -224,6 +298,74 @@ public sealed class ArcanumApiClientTests
         Assert.True(frames[1].Completed);
 
         Assert.Contains("lost before the stream completed", frames[1].Error, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task StreamApprenticeChronicleAsync_parses_sse_frames_via_source_generated_context()
+    {
+
+        string sse =
+            "data: {\"type\":\"tool_result\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"result\":\"did the thing\"}\n\n" +
+            "data: {\"type\":\"status\"}\n\n" +
+            "data: [DONE]\n\n";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(sse),
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<ChronicleFrame> frames = [];
+
+        await foreach (ChronicleFrame frame in client.StreamApprenticeChronicleAsync(Guid.NewGuid(), CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        Assert.Equal(2, frames.Count);
+
+        Assert.Equal("tool_result", frames[0].Type);
+
+        Assert.Equal("did the thing", frames[0].Message);
+
+        Assert.Equal(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), frames[0].Timestamp);
+
+        Assert.Equal("status", frames[1].Type);
+
+        Assert.Equal("status", frames[1].Message);
+
+        Assert.Null(frames[1].Timestamp);
+
+    }
+
+    [Fact]
+    public async Task StreamApprenticeChronicleAsync_skips_frames_with_malformed_json()
+    {
+
+        string sse =
+            "data: not valid json\n\n" +
+            "data: {\"type\":\"status\"}\n\n" +
+            "data: [DONE]\n\n";
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(sse),
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<ChronicleFrame> frames = [];
+
+        await foreach (ChronicleFrame frame in client.StreamApprenticeChronicleAsync(Guid.NewGuid(), CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        Assert.Single(frames);
+
+        Assert.Equal("status", frames[0].Type);
 
     }
 

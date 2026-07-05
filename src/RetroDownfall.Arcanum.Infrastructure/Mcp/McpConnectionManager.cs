@@ -59,6 +59,16 @@ public sealed partial class McpConnectionManager(
 
     private readonly ConcurrentDictionary<(string Name, string? WorkingDirectory), ManagedMcpServerEntry> _registry = new();
 
+    /// <summary>
+    /// Tracks in-flight <see cref="HandleTransportEnded"/> background tasks (fire-and-forget from the
+    /// transport's <c>OnTransportEnded</c> callback) so <see cref="DisposeAsync"/> can await them
+    /// before tearing down <see cref="ManagedMcpServerEntry.Gate"/> and the registry — otherwise a
+    /// handler still mid-flight could acquire an about-to-be-disposed gate, mutate an entry, or
+    /// publish an event concurrently with shutdown. Self-removing on completion to avoid unbounded
+    /// growth across the connection manager's lifetime.
+    /// </summary>
+    private readonly ConcurrentDictionary<Task, byte> _pendingTransportEndedTasks = new();
+
     private bool _globalInitialized;
 
     private bool _globalRegistryLoaded;
@@ -173,68 +183,77 @@ public sealed partial class McpConnectionManager(
 
         try
         {
-            if (entry.State is McpServerState.Running or McpServerState.Starting)
+            try
             {
-                result = Result.Success();
-            }
-            else if (entry.Transport is McpServerTransport.Sse)
-            {
-                entry.State = McpServerState.Error;
-
-                entry.ErrorMessage = "SSE transport is not yet supported.";
-
-                pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
-
-                result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
-            }
-            else
-            {
-                entry.State = McpServerState.Starting;
-
-                pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
-
-                Result startResult = await StartManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
-
-                if (startResult.IsFailure)
+                if (entry.State is McpServerState.Running or McpServerState.Starting)
+                {
+                    result = Result.Success();
+                }
+                else if (entry.Transport is McpServerTransport.Sse)
                 {
                     entry.State = McpServerState.Error;
 
-                    entry.ErrorMessage = startResult.Error.Message;
-
-                    ScheduleRestartBackoff(entry);
+                    entry.ErrorMessage = "SSE transport is not yet supported.";
 
                     pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
-                    result = startResult;
+                    result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
                 }
                 else
                 {
-                    entry.State = McpServerState.Running;
+                    entry.State = McpServerState.Starting;
 
-                    entry.LastConnectedAt = DateTimeOffset.UtcNow;
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
 
-                    entry.ErrorMessage = null;
+                    Result startResult = await StartManagedServerWithCancellationHandlingAsync(entry, pendingEvents, cancellationToken)
+                        .ConfigureAwait(false);
 
-                    entry.RestartAfterUtc = null;
+                    if (startResult.IsFailure)
+                    {
+                        entry.State = McpServerState.Error;
 
-                    pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+                        entry.ErrorMessage = startResult.Error.Message;
 
-                    InvalidateCachesForServer(entry);
+                        ScheduleRestartBackoff(entry);
 
-                    SyncPartitionServerMetadata(entry);
+                        pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
-                    result = Result.Success();
+                        result = startResult;
+                    }
+                    else
+                    {
+                        entry.State = McpServerState.Running;
+
+                        entry.LastConnectedAt = DateTimeOffset.UtcNow;
+
+                        entry.ErrorMessage = null;
+
+                        entry.RestartAfterUtc = null;
+
+                        pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+
+                        InvalidateCachesForServer(entry);
+
+                        SyncPartitionServerMetadata(entry);
+
+                        result = Result.Success();
+                    }
                 }
+            }
+            finally
+            {
+                entry.Gate.Release();
             }
         }
         finally
         {
-            entry.Gate.Release();
-        }
-
-        foreach (McpServerEvent ev in pendingEvents)
-        {
-            PublishEvent(ev);
+            // A finally (rather than a plain statement after the try) so a canceled start still
+            // publishes the Error-state event queued by StartManagedServerWithCancellationHandlingAsync
+            // before the OperationCanceledException propagates to the caller.
+            foreach (McpServerEvent ev in pendingEvents)
+            {
+                PublishEvent(ev);
+            }
         }
 
         return result;
@@ -325,82 +344,91 @@ public sealed partial class McpConnectionManager(
 
         try
         {
-            entry.State = McpServerState.Restarting;
-
-            pendingEvents.Add(BuildEvent(entry, McpServerState.Restarting, null, []));
-
-            await StopManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
-
-            entry.State = McpServerState.Stopped;
-
-            entry.Tools = [];
-
-            entry.ErrorMessage = null;
-
-            pendingEvents.Add(BuildEvent(entry, McpServerState.Stopped, null, []));
-
-            InvalidateCachesForServer(entry);
-
-            RemoveServerMetadataFromPartition(entry);
-
-            if (entry.Transport is McpServerTransport.Sse)
+            try
             {
-                entry.State = McpServerState.Error;
+                entry.State = McpServerState.Restarting;
 
-                entry.ErrorMessage = "SSE transport is not yet supported.";
+                pendingEvents.Add(BuildEvent(entry, McpServerState.Restarting, null, []));
 
-                pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+                await StopManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
 
-                result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
-            }
-            else
-            {
-                entry.State = McpServerState.Starting;
+                entry.State = McpServerState.Stopped;
 
-                pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
+                entry.Tools = [];
 
-                Result startResult = await StartManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+                entry.ErrorMessage = null;
 
-                if (startResult.IsFailure)
+                pendingEvents.Add(BuildEvent(entry, McpServerState.Stopped, null, []));
+
+                InvalidateCachesForServer(entry);
+
+                RemoveServerMetadataFromPartition(entry);
+
+                if (entry.Transport is McpServerTransport.Sse)
                 {
                     entry.State = McpServerState.Error;
 
-                    entry.ErrorMessage = startResult.Error.Message;
-
-                    ScheduleRestartBackoff(entry);
+                    entry.ErrorMessage = "SSE transport is not yet supported.";
 
                     pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
-                    result = startResult;
+                    result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
                 }
                 else
                 {
-                    entry.State = McpServerState.Running;
+                    entry.State = McpServerState.Starting;
 
-                    entry.LastConnectedAt = DateTimeOffset.UtcNow;
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
 
-                    entry.ErrorMessage = null;
+                    Result startResult = await StartManagedServerWithCancellationHandlingAsync(entry, pendingEvents, cancellationToken)
+                        .ConfigureAwait(false);
 
-                    entry.RestartAfterUtc = null;
+                    if (startResult.IsFailure)
+                    {
+                        entry.State = McpServerState.Error;
 
-                    pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+                        entry.ErrorMessage = startResult.Error.Message;
 
-                    InvalidateCachesForServer(entry);
+                        ScheduleRestartBackoff(entry);
 
-                    SyncPartitionServerMetadata(entry);
+                        pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
-                    result = Result.Success();
+                        result = startResult;
+                    }
+                    else
+                    {
+                        entry.State = McpServerState.Running;
+
+                        entry.LastConnectedAt = DateTimeOffset.UtcNow;
+
+                        entry.ErrorMessage = null;
+
+                        entry.RestartAfterUtc = null;
+
+                        pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+
+                        InvalidateCachesForServer(entry);
+
+                        SyncPartitionServerMetadata(entry);
+
+                        result = Result.Success();
+                    }
                 }
+            }
+            finally
+            {
+                entry.Gate.Release();
             }
         }
         finally
         {
-            entry.Gate.Release();
-        }
-
-        foreach (McpServerEvent ev in pendingEvents)
-        {
-            PublishEvent(ev);
+            // A finally (rather than a plain statement after the try) so a canceled restart still
+            // publishes the Error-state event queued by StartManagedServerWithCancellationHandlingAsync
+            // before the OperationCanceledException propagates to the caller.
+            foreach (McpServerEvent ev in pendingEvents)
+            {
+                PublishEvent(ev);
+            }
         }
 
         return result;
@@ -654,6 +682,24 @@ public sealed partial class McpConnectionManager(
         }
 
         _disposed = true;
+
+        // Awaited before StopAllAsync/gate disposal below: a HandleTransportEnded background task
+        // that was already past its own _disposed check when the flag flipped above could otherwise
+        // still be mid-flight — acquiring entry.Gate, mutating entry.Client, or publishing an event —
+        // concurrently with this method disposing that same gate and clearing the registry.
+        Task[] pendingTransportEndedTasks = _pendingTransportEndedTasks.Keys.ToArray();
+
+        if (pendingTransportEndedTasks.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(pendingTransportEndedTasks).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Error awaiting in-flight transport-ended handler(s) during shutdown.");
+            }
+        }
 
         await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
 

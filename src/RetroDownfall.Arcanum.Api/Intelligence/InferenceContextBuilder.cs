@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
 
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -63,14 +65,59 @@ public sealed class InferenceContextBuilder(
         string newUserPrompt)
     {
 
-        if (HasStatelessMessages(request))
+        List<MeAiChatMessage> messages = HasStatelessMessages(request)
+            ? MapStatelessMessagesToMeAi(request.StatelessMessages!)
+            : MapGrimoireToMeAiMessages(thread, newUserPrompt);
+
+        AttachScryingFociToLastMessage(messages, request.ScryingFoci);
+
+        return messages;
+
+    }
+
+    /// <summary>
+    /// Scrying — appends CLI/native <see cref="PingRequest.ScryingFoci"/> images to the current
+    /// turn's final message (ephemeral: images are threaded onto the in-memory chat message list
+    /// only, never persisted to the Grimoire). No-op when there are no foci to attach.
+    /// </summary>
+    private static void AttachScryingFociToLastMessage(
+        List<MeAiChatMessage> messages,
+        List<ScryingFocusDto>? scryingFoci)
+    {
+
+        if (scryingFoci is not { Count: > 0 } || messages.Count == 0)
         {
 
-            return MapStatelessMessagesToMeAi(request.StatelessMessages!);
+            return;
 
         }
 
-        return MapGrimoireToMeAiMessages(thread, newUserPrompt);
+        MeAiChatMessage last = messages[^1];
+
+        List<AIContent> contents = new(last.Contents.Count + scryingFoci.Count);
+
+        contents.AddRange(last.Contents);
+
+        foreach (ScryingFocusDto focus in scryingFoci)
+        {
+
+            try
+            {
+
+                contents.Add(new DataContent(Convert.FromBase64String(focus.Data), focus.MimeType));
+
+            }
+            catch (FormatException)
+            {
+
+                // Malformed base64 — validated earlier by ScryingValidator/ScryingFocusStager for
+                // well-formed requests; skip rather than fail deep inside message construction.
+
+            }
+
+        }
+
+        messages[^1] = new MeAiChatMessage(last.Role, contents) { AuthorName = last.AuthorName };
 
     }
 
@@ -370,11 +417,17 @@ public sealed class InferenceContextBuilder(
             {
 
                 if (string.Equals(part.Kind, "image_url", StringComparison.OrdinalIgnoreCase)
-                    && !string.IsNullOrWhiteSpace(part.ImageUrl)
-                    && Uri.TryCreate(part.ImageUrl, UriKind.Absolute, out Uri? imageUri))
+                    && !string.IsNullOrWhiteSpace(part.ImageUrl))
                 {
 
-                    contents.Add(new UriContent(imageUri, "image/*"));
+                    AIContent? imageContent = TryBuildImageContent(part.ImageUrl);
+
+                    if (imageContent is not null)
+                    {
+
+                        contents.Add(imageContent);
+
+                    }
 
                     continue;
 
@@ -421,6 +474,85 @@ public sealed class InferenceContextBuilder(
         }
 
         return textOnly;
+
+    }
+
+    /// <summary>
+    /// Builds the provider-facing multimodal content for an <c>image_url</c> part. <c>data:</c>
+    /// URIs (CLI Scrying foci and any inline base64 image supplied via <c>/v1</c>) decode to
+    /// <see cref="DataContent"/> so the provider receives the raw bytes; <c>http(s)</c> URLs map to
+    /// <see cref="UriContent"/> unchanged (provider fetches). Returns <c>null</c> for anything else
+    /// (malformed URI/data URI) — the part is dropped rather than failing the whole turn.
+    /// </summary>
+    private static AIContent? TryBuildImageContent(string imageUrl)
+    {
+
+        if (imageUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return TryParseDataUri(imageUrl, out string mime, out byte[] bytes)
+                ? new DataContent(bytes, string.IsNullOrWhiteSpace(mime) ? "image/*" : mime)
+                : null;
+
+        }
+
+        return Uri.TryCreate(imageUrl, UriKind.Absolute, out Uri? imageUri)
+            ? new UriContent(imageUri, "image/*")
+            : null;
+
+    }
+
+    private static bool TryParseDataUri(string dataUri, out string mimeType, out byte[] data)
+    {
+
+        mimeType = string.Empty;
+
+        data = [];
+
+        ReadOnlySpan<char> body = dataUri.AsSpan("data:".Length);
+
+        int comma = body.IndexOf(',');
+
+        if (comma < 0)
+        {
+
+            return false;
+
+        }
+
+        ReadOnlySpan<char> descriptor = body[..comma];
+
+        ReadOnlySpan<char> base64Payload = body[(comma + 1)..];
+
+        int semicolon = descriptor.IndexOf(';');
+
+        ReadOnlySpan<char> mimeSpan = semicolon >= 0 ? descriptor[..semicolon] : descriptor;
+
+        ReadOnlySpan<char> encoding = semicolon >= 0 ? descriptor[(semicolon + 1)..] : ReadOnlySpan<char>.Empty;
+
+        if (!encoding.Equals("base64", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return false;
+
+        }
+
+        try
+        {
+
+            data = Convert.FromBase64String(base64Payload.ToString());
+
+        }
+        catch (FormatException)
+        {
+
+            return false;
+
+        }
+
+        mimeType = mimeSpan.ToString();
+
+        return true;
 
     }
 

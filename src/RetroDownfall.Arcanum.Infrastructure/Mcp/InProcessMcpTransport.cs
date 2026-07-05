@@ -116,6 +116,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         IntelligenceSettings intelligenceSettings,
         long maxFileReadSizeBytes,
         bool conclaveEnabled,
+        bool sagaEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -162,6 +163,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             intelligenceSettings,
             maxFileReadSizeBytes,
             conclaveEnabled,
+            sagaEnabled,
             requestCancellationBroker,
             maxJsonRpcLineBytes,
             logger,

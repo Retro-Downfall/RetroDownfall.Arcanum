@@ -55,13 +55,15 @@ public static class SettingDescriptors
 
         new("providers.name", ConfigSection.Providers, "Provider name", "Human-readable name for this provider entry.", SettingKind.String, Placeholder: "Local Ollama"),
 
-        new("providers.type", ConfigSection.Providers, "Provider type", "Backend kind: Ollama (local OllamaSharp), OpenAICompatible (any OpenAI-shaped HTTP API), or LlamaCppServer (spawned local llama-server).", SettingKind.Enum, EnumType: typeof(AiProviderKind)),
+        new("providers.type", ConfigSection.Providers, "Provider type", "Backend kind: OpenAICompatible (any OpenAI-shaped HTTP API, including Ollama via its /v1 endpoint) or LlamaCppServer (spawned local llama-server).", SettingKind.Enum, EnumType: typeof(AiProviderKind)),
 
-        new("providers.endpoint", ConfigSection.Providers, "Endpoint", "Base URL for the provider API. Ollama: http://localhost:11434. OpenAI-compatible usually includes /v1. Ignored for LlamaCppServer.", SettingKind.String, Placeholder: "https://api.openai.com/v1"),
+        new("providers.endpoint", ConfigSection.Providers, "Endpoint", "Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1). Ignored for LlamaCppServer.", SettingKind.String, Placeholder: "https://api.openai.com/v1"),
 
         new("providers.apiKey", ConfigSection.Providers, "API key", "Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local Ollama.", SettingKind.Secret, Placeholder: "sk-..."),
 
-        new("providers.models", ConfigSection.Providers, "Models", "Model IDs advertised by this provider. Must include the DefaultModel and FastModel if those reference this provider.", SettingKind.StringArray),
+        new("providers.models.name", ConfigSection.Providers, "Model name", "Model ID advertised by this provider. Must include the DefaultModel and FastModel if those reference this provider.", SettingKind.String, Placeholder: "gpt-4o"),
+
+        new("providers.models.supportsVision", ConfigSection.Providers, "Supports vision", "When true, this model accepts image content (Scrying). The Scrying capability gate rejects images to models where this is false.", SettingKind.Bool),
 
         new("providers.contextWindowLimit", ConfigSection.Providers, "Context window limit", "Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152.", SettingKind.Int, 256, 2_097_152, 128, ClampName: nameof(ArcanumSettingClamps.ContextWindowLimit)),
 
@@ -79,7 +81,7 @@ public static class SettingDescriptors
 
         new("intelligence.listDirectoryMaxPaths", ConfigSection.Intelligence, "List directory max paths", "Maximum file/dir entries returned by the list_directory tool in one call.", SettingKind.Int, 1, 2000, 1, ClampName: nameof(ArcanumSettingClamps.ListDirectoryMaxPaths)),
 
-        new("intelligence.enableLoreSystem", ConfigSection.Intelligence, "Enable lore system", "When true, the operator key-value Lore memory is consulted during inference.", SettingKind.Bool),
+        new("intelligence.enableLoreSystem", ConfigSection.Intelligence, "Enable Lore system", "When true, the operator key-value Lore memory is consulted during inference.", SettingKind.Bool),
 
         new("intelligence.enableArchiveSearch", ConfigSection.Intelligence, "Enable archive search", "When true, the archive search tool can be invoked to query past sessions.", SettingKind.Bool),
 
@@ -267,7 +269,7 @@ public static class SettingDescriptors
 
         new("grimoire.workspaceContextRetentionCount", ConfigSection.Storage, "Workspace context retention", "Number of Chronosync WorkspaceContext snapshots retained per workspace path before older rows are purged.", SettingKind.Int, 1, 1000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceContextRetentionCount)),
 
-        new("grimoire.defaultLoreListLimit", ConfigSection.Storage, "Default lore list limit", "Default page size for GET /api/lore when limit is omitted.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.ListQueryLimit)),
+        new("grimoire.defaultLoreListLimit", ConfigSection.Storage, "Default Lore list limit", "Default page size for GET /api/lore when limit is omitted.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.ListQueryLimit)),
 
         // ===== Storage — Sessions =====
 
@@ -408,12 +410,11 @@ public static class SettingDescriptors
         new("resilience.healthProbeTimeoutSeconds", ConfigSection.Resilience, "Health probe timeout (s)", "HTTP timeout for each individual health probe call.", SettingKind.Int, 1, 30, 1, ClampName: nameof(ArcanumSettingClamps.HealthProbeTimeoutSeconds)),
 
         // ===== Intelligence — Embeddings & RAG =====
-        // RAG Phase 1 — The Weave & Divination. Arcanum:Embeddings is the technical config key
-        // (operators search for "embeddings"); the domain metaphor is documented per-row below and in
-        // DESIGN.md §21. Phase 1 ships only these foundation fields + the four phase feature flags —
-        // the nested Saga:*/Codebase:* sub-records described for later phases are added when those
-        // phases land, so this list stays in exact sync with ArcanumSettings.Embeddings (see
-        // SettingDescriptorCoverageTests).
+        // RAG Phases 1-5 — The Weave, Divination, session search, semantic codebase retrieval, Saga
+        // (long-term associative memory), and embedding-based semantic spell routing. Arcanum:Embeddings
+        // is the technical config key (operators search for "embeddings"); the domain metaphor is
+        // documented per-row below and in DESIGN.md §21. This list stays in exact sync with
+        // ArcanumSettings.Embeddings (see SettingDescriptorCoverageTests).
 
         new("embeddings.enabled", ConfigSection.Intelligence, "Embeddings enabled", "Master toggle for The Weave (Arcanum's embedding and vector substrate) and Divination (semantic search). When false (default), every RAG code path is unchanged from pre-RAG behavior.", SettingKind.Bool),
 
@@ -437,11 +438,51 @@ public static class SettingDescriptors
 
         new("embeddings.sessionSearchEnabled", ConfigSection.Intelligence, "Session search enabled", "Phase 2 feature flag: session semantic search (Divination over the Grimoire). Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
+        new("embeddings.embeddingQueueIntervalSeconds", ConfigSection.Intelligence, "Embedding queue interval (s)", "Phase 2: interval between EntryWeavingService embedding queue processing ticks. Only relevant when Session search enabled is true.", SettingKind.Int, 1, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsEmbeddingQueueIntervalSeconds)),
+
         new("embeddings.codebaseRetrievalEnabled", ConfigSection.Intelligence, "Codebase retrieval enabled", "Phase 3 feature flag: semantic codebase retrieval. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+
+        new("embeddings.codebase.maxFilesToIndex", ConfigSection.Intelligence, "Codebase max files to index", "Phase 3: maximum files embedded per workspace during a single indexing tick.", SettingKind.Int, 1, 10_000, 10, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex)),
+
+        new("embeddings.codebase.maxFileSizeChars", ConfigSection.Intelligence, "Codebase max file size (chars)", "Phase 3: files larger than this (characters) are skipped during indexing.", SettingKind.Int, 1_000, 500_000, 1_000, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars)),
+
+        new("embeddings.codebase.fileExtensions", ConfigSection.Intelligence, "Codebase file extensions", "File extensions eligible for indexing (case-insensitive), e.g. .cs, .py, .md. An empty list indexes nothing.", SettingKind.StringArray),
+
+        new("embeddings.codebase.indexingIntervalMinutes", ConfigSection.Intelligence, "Codebase indexing interval (min)", "Phase 3: background re-indexing interval for workspaces with active inference.", SettingKind.Int, 5, 1_440, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseIndexingIntervalMinutes)),
+
+        new("embeddings.codebase.maxRetrievedChunks", ConfigSection.Intelligence, "Codebase max retrieved chunks", "Phase 3: maximum file chunks injected into the system prompt per inference turn.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxRetrievedChunks)),
 
         new("embeddings.sagaEnabled", ConfigSection.Intelligence, "Saga enabled", "Phase 4 feature flag: Saga, Arcanum's long-term associative memory. Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
-        new("embeddings.semanticSpellRoutingEnabled", ConfigSection.Intelligence, "Semantic spell routing enabled", "Phase 5 feature flag: embedding-based spell routing pre-filter. When false (default), the existing LLM-based SemanticRouter is used unchanged. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+        new("embeddings.saga.extractionEnabled", ConfigSection.Intelligence, "Saga extraction enabled", "Phase 4: when Saga enabled is true, controls whether the background SagaExtractionService runs. Set false for retrieval-only mode (existing memories still surface, no new ones are extracted).", SettingKind.Bool),
+
+        new("embeddings.saga.maxMemoriesPerSession", ConfigSection.Intelligence, "Saga max memories per session", "Phase 4: maximum Saga memories associated with a single session. New extractions for a session at this cap are rejected.", SettingKind.Int, 1, 1_000, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesPerSession)),
+
+        new("embeddings.saga.maxMemoriesTotal", ConfigSection.Intelligence, "Saga max memories total", "Phase 4: maximum total Saga memories across all sessions. New extractions are rejected once this cap is reached.", SettingKind.Int, 100, 1_000_000, 100, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesTotal)),
+
+        new("embeddings.saga.extractionModel", ConfigSection.Intelligence, "Saga extraction model", "Phase 4: model used for memory extraction. Falls back to Arcanum:FastModel, then Arcanum:DefaultModel, when empty.", SettingKind.String, Placeholder: "(uses FastModel/DefaultModel)"),
+
+        new("embeddings.saga.extractionMaxTokens", ConfigSection.Intelligence, "Saga extraction max tokens", "Phase 4: maximum output tokens for the extraction LLM call.", SettingKind.Int, 100, 4_096, 50, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionMaxTokens)),
+
+        new("embeddings.saga.extractionIntervalMinutes", ConfigSection.Intelligence, "Saga extraction interval (min)", "Phase 4: interval, in minutes, between SagaExtractionService queue processing ticks (informational — the service is event-driven, enqueued after successful inference turns, not polling).", SettingKind.Int, 1, 1_440, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionIntervalMinutes)),
+
+        new("embeddings.saga.extractionWindowEntries", ConfigSection.Intelligence, "Saga extraction window (entries)", "Phase 4: number of recent Grimoire entries reviewed per extraction call.", SettingKind.Int, 2, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionWindowEntries)),
+
+        new("embeddings.semanticSpellRoutingEnabled", ConfigSection.Intelligence, "Semantic Spell Routing enabled", "Phase 5 feature flag: embedding-based Spell Routing pre-filter. When false (default), the existing LLM-based SemanticRouter is used unchanged. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+
+        new("embeddings.spellRoutingHybridMode", ConfigSection.Intelligence, "Spell Routing hybrid mode", "Phase 5: when true and Semantic Spell Routing enabled is also true, embedding similarity pre-filters the spell catalog to the top-K candidates before the LLM router picks from that reduced set. When false, the highest-similarity spell above the similarity threshold wins outright with no LLM call.", SettingKind.Bool),
+
+        new("embeddings.spellRoutingHybridTopK", ConfigSection.Intelligence, "Spell Routing hybrid top-K", "Phase 5: number of top candidates passed to the LLM router in hybrid mode.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSpellRoutingHybridTopK)),
+
+        // ===== Scrying (Vision/Multimodality) =====
+
+        new("scrying.enabled", ConfigSection.Scrying, "Scrying enabled", "Master kill-switch. When false, image content is rejected at the API boundary even for vision-capable models.", SettingKind.Bool),
+
+        new("scrying.maxImageBytes", ConfigSection.Scrying, "Max image bytes", "Maximum bytes per image, measured against the decoded data: URI payload. http(s)-hosted images are not size-checked here; the downstream provider fetches and rejects them.", SettingKind.Long, 1024, 20_971_520, 1024, ClampName: nameof(ArcanumSettingClamps.ScryingMaxImageBytes)),
+
+        new("scrying.maxImagesPerRequest", ConfigSection.Scrying, "Max images per request", "Maximum images per inference request (native Scrying foci and /v1 image_url parts combined).", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.ScryingMaxImagesPerRequest)),
+
+        new("scrying.allowedMimeTypes", ConfigSection.Scrying, "Allowed MIME types", "Allowed image MIME types. Non-matching types are rejected. Only enforced for data: URI images; not enforced for http(s) URLs.", SettingKind.StringArray),
 
     ];
 

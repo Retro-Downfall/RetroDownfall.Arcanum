@@ -4,6 +4,7 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -120,6 +121,153 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotNull(body);
 
         Assert.Equal("invalid_value", body!.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_ImageToNonVisionModel_ReturnsVisionNotSupported()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // The shared fixture's default provider model ("mistral:latest") declares no
+        // supportsVision — the OpenAiV1Endpoints gate must reject the image before ever calling
+        // into the (fake) intelligence provider.
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "messages": [
+                { "role": "user", "content": [
+                  { "type": "text", "text": "what is this?" },
+                  { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+                ] }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("vision_not_supported", body!.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_ImageToVisionCapableModel_Succeeds()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "vision-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "vision-provider",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "vision-model",
+              "messages": [
+                { "role": "user", "content": [
+                  { "type": "text", "text": "what is this?" },
+                  { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+                ] }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiChatResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiChatResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(factory.FakeIntelligence.NextText, body!.Choices[0].Message.Content);
+
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_ImageWithScryingDisabled_ReturnsFeatureDisabled()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "vision-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "vision-provider",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                    },
+                ],
+                Scrying = settings.Scrying with { Enabled = false },
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "vision-model",
+              "messages": [
+                { "role": "user", "content": [
+                  { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+                ] }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("feature_disabled", body!.Error.Code);
 
     }
 

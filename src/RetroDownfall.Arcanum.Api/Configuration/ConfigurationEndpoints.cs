@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -172,9 +173,9 @@ internal static class ConfigurationEndpoints
             {
                 string redactedEndpoint = RedactRequired(provider.Endpoint);
 
-                foreach (string model in provider.Models)
+                foreach (ModelEntry model in provider.Models)
                 {
-                    models.Add(new ModelInfoDto(model, provider.Name, provider.Type.ToString(), redactedEndpoint, provider.ContextWindowLimit));
+                    models.Add(new ModelInfoDto(model.Name, provider.Name, provider.Type.ToString(), redactedEndpoint, provider.ContextWindowLimit));
                 }
 
                 if (provider.Type == AiProviderKind.LlamaCppServer && provider.LlamaCpp?.ModelMap is { Count: > 0 } modelMap)
@@ -204,7 +205,7 @@ internal static class ConfigurationEndpoints
                     p.Type.ToString(),
                     RedactRequired(p.Endpoint),
                     RedactOptional(p.ApiKey),
-                    p.Models,
+                    p.Models.Select(static m => m.Name).ToArray(),
                     p.ContextWindowLimit,
                     p.LlamaCpp?.ModelMap is { Count: > 0 }))
                 .ToArray();

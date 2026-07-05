@@ -34,4 +34,5 @@ public sealed record PingRequest(
     Guid? CampaignId = null,
     ToolPolicy? ToolPolicy = null,
     string? AdditionalSystemPrompt = null,
-    string? OverrideSpellPath = null);
+    string? OverrideSpellPath = null,
+    List<ScryingFocusDto>? ScryingFoci = null);

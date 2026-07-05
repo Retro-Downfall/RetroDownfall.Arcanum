@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
     public partial class ArcanumDbContextModel
     {
         private ArcanumDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("404f437e-9168-4f8c-97e2-72b895b0c420"), entityTypeCount: 7)
+            : base(skipDetectChanges: false, modelId: new Guid("b6a4cc09-ac8e-40f5-a157-04b57693c0ed"), entityTypeCount: 7)
         {
         }
 

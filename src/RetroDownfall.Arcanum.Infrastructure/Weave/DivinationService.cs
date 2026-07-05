@@ -1,5 +1,7 @@
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -94,6 +96,200 @@ internal sealed class DivinationService(
                 "Semantic search is temporarily unavailable. See server logs for detail."));
 
         }
+
+    }
+
+    public async Task<Result<DivinationResult[]>> SearchScopedAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        string scopeTableName,
+        string scopeJoinColumn,
+        string scopeFilterColumn,
+        string scopeFilterValue,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            DbConnection connection = db.Database.GetDbConnection();
+
+            if (connection.State != ConnectionState.Open)
+            {
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            HashSet<string> scopeIds = await LoadScopeIdsAsync(
+                connection,
+                scopeTableName,
+                scopeJoinColumn,
+                scopeFilterColumn,
+                scopeFilterValue,
+                cancellationToken).ConfigureAwait(false);
+
+            if (scopeIds.Count == 0)
+            {
+
+                return Result<DivinationResult[]>.Success([]);
+
+            }
+
+            float[] queryVector = queryEmbedding.Vector.ToArray();
+
+            // The vec0 KNN path (used when IsVecAvailable) has no per-row partition key in its current
+            // schema, so a scoped search always ranks via the managed brute-force path below instead —
+            // but bounded to just the scoped candidate rows fetched above, not a full-table scan.
+            DivinationResult[] results = await SearchManagedScopedAsync(
+                connection,
+                DeriveBlobTableName(tableName),
+                primaryKeyColumn,
+                embeddingColumn,
+                scopeIds,
+                queryVector,
+                maxResults,
+                similarityThreshold,
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<DivinationResult[]>.Success(results);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(ex, "Scoped divination search against {TableName} failed; treating as no results.", tableName);
+
+            return Result<DivinationResult[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "Semantic search is temporarily unavailable. See server logs for detail."));
+
+        }
+
+    }
+
+    private static async Task<HashSet<string>> LoadScopeIdsAsync(
+        DbConnection connection,
+        string scopeTableName,
+        string scopeJoinColumn,
+        string scopeFilterColumn,
+        string scopeFilterValue,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        // scopeTableName/scopeJoinColumn/scopeFilterColumn are internal constants owned by the calling
+        // feature's retrieval code (never user input), same as tableName/primaryKeyColumn/embeddingColumn
+        // in SearchVecAsync — only scopeFilterValue is a bound parameter.
+        cmd.CommandText =
+            $"""
+            SELECT DISTINCT "{scopeJoinColumn}"
+            FROM "{scopeTableName}"
+            WHERE "{scopeFilterColumn}" = @scopeFilterValue
+            """;
+
+        AddParameter(cmd, "@scopeFilterValue", scopeFilterValue);
+
+        HashSet<string> ids = new(StringComparer.Ordinal);
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            ids.Add(reader.GetString(0));
+
+        }
+
+        return ids;
+
+    }
+
+    private static async Task<DivinationResult[]> SearchManagedScopedAsync(
+        DbConnection connection,
+        string blobTableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        HashSet<string> scopeIds,
+        float[] queryVector,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        StringBuilder sql = new(
+            $"""
+            SELECT "{primaryKeyColumn}", "{embeddingColumn}"
+            FROM "{blobTableName}"
+            WHERE "{primaryKeyColumn}" IN (
+            """);
+
+        int i = 0;
+
+        foreach (string id in scopeIds)
+        {
+
+            if (i > 0)
+            {
+                sql.Append(", ");
+
+            }
+
+            string paramName = $"@scopeId{i.ToString(CultureInfo.InvariantCulture)}";
+
+            sql.Append(paramName);
+
+            AddParameter(cmd, paramName, id);
+
+            i++;
+
+        }
+
+        sql.Append(')');
+
+        cmd.CommandText = sql.ToString();
+
+        List<(string Id, float Similarity)> scored = [];
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            string id = reader.GetString(0);
+
+            byte[] blob = (byte[])reader[1];
+
+            float[] candidate = EmbeddingBlobCodec.Decode(blob);
+
+            float similarity = EmbeddingBlobCodec.CosineSimilarity(queryVector, candidate);
+
+            if (similarity >= similarityThreshold)
+            {
+
+                scored.Add((id, similarity));
+
+            }
+
+        }
+
+        return scored
+            .OrderByDescending(static s => s.Similarity)
+            .Take(maxResults)
+            .Select(static s => new DivinationResult(s.Id, s.Similarity, EmptyMetadata))
+            .ToArray();
 
     }
 

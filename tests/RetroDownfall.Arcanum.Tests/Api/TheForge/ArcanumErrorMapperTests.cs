@@ -18,9 +18,6 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Hub.Timeout, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Hub.Model, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Hub.Error, StatusCodes.Status500InternalServerError)]
-    [InlineData(ErrorCodes.Ollama.Pull, StatusCodes.Status404NotFound)]
-    [InlineData(ErrorCodes.Ollama.ListModels, StatusCodes.Status404NotFound)]
-    [InlineData(ErrorCodes.Ollama.Error, StatusCodes.Status500InternalServerError)]
     [InlineData(ErrorCodes.Campaign.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Campaign.InvalidPath, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Campaign.PathNotAllowed, StatusCodes.Status403Forbidden)]
@@ -74,6 +71,15 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.ProvingGrounds.SpellNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.ProvingGrounds.PromptNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.ProvingGrounds.InferenceFailed, StatusCodes.Status500InternalServerError)]
+    [InlineData(ErrorCodes.Validation.InvalidProviderType, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Connection.Unreachable, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.Saga.NotFound, StatusCodes.Status404NotFound)]
+    [InlineData(ErrorCodes.Saga.NotEmpty, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Saga.SearchFailed, StatusCodes.Status500InternalServerError)]
+    // FeatureDisabled means an operator turned a feature off in config, not that the caller lacks
+    // permission, so it maps to 503 (retry later) rather than sharing the 403 used by genuine
+    // access-control failures (PathNotAllowed, AccessDenied, etc.) above.
+    [InlineData(ErrorCodes.Embeddings.FeatureDisabled, StatusCodes.Status503ServiceUnavailable)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {

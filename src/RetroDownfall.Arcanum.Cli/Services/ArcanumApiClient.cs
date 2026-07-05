@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -18,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
@@ -90,8 +92,16 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.");
 
     private static readonly Error RequestUnreachableError = new(
-        "Connection",
+        ErrorCodes.Connection.Unreachable,
         "API is unreachable. Is 'arcanum serve' running in a background terminal?");
+
+    private static readonly Error RequestDisconnectedError = new(
+        ErrorCodes.Connection.Unreachable,
+        "The connection to the Arcanum API was lost before the response completed.");
+
+    private static readonly Error RequestUnexpectedError = new(
+        "Api.UnexpectedError",
+        "An unexpected error occurred while calling the Arcanum API.");
 
     private static readonly Error InvalidResponseError = new(
         "Api.InvalidResponse",
@@ -100,6 +110,62 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
     private static readonly Error ApiRequestFailedError = new(
         "Api.Error",
         "Request failed.");
+
+    /// <summary>
+    /// Hard cap on a single buffered API response body. Generous for any legitimate JSON envelope
+    /// this API returns, but bounds CLI memory use if the local API ever misbehaves or a
+    /// misconfigured/compromised process is answering on the configured base address.
+    /// </summary>
+    private const long MaxResponseBytes = 64 * 1024 * 1024;
+
+    private static readonly Error ResponseTooLargeError = new(
+        "Api.ResponseTooLarge",
+        "The API response exceeded the maximum allowed size and was not read.");
+
+    /// <summary>
+    /// Reads <paramref name="content"/> up to <paramref name="maxBytes"/>, returning <c>null</c>
+    /// (without buffering the rest) when the response is — or grows to be — larger than that, rather
+    /// than <see cref="HttpContent.ReadAsByteArrayAsync(CancellationToken)"/>'s unbounded buffering.
+    /// </summary>
+    private static async Task<byte[]?> TryReadCappedContentAsync(
+        HttpContent content,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        long? declaredLength = content.Headers.ContentLength;
+
+        if (declaredLength is { } length && length > maxBytes)
+        {
+            return null;
+        }
+
+        Stream stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+        await using (stream.ConfigureAwait(false))
+        {
+            using MemoryStream buffer = new();
+
+            byte[] chunk = new byte[81_920];
+
+            long total = 0;
+
+            int read;
+
+            while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                total += read;
+
+                if (total > maxBytes)
+                {
+                    return null;
+                }
+
+                await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            }
+
+            return buffer.ToArray();
+        }
+    }
 
     private static readonly MediaTypeHeaderValue JsonUtf8ContentType = new("application/json") { CharSet = "utf-8" };
 
@@ -160,7 +226,13 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
-            byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (responseBytes is null)
+            {
+                return Result<T>.Failure(ResponseTooLargeError);
+            }
 
             ApiResponse<T>? envelope = TryDeserialize(responseBytes, responseTypeInfo);
 
@@ -177,6 +249,22 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         catch (HttpRequestException)
         {
             return Result<T>.Failure(RequestUnreachableError);
+        }
+        catch (IOException)
+        {
+            // Distinct from HttpRequestException: this is the connection dropping mid-response (e.g.
+            // the local 'arcanum serve' process crashing while streaming the body), thrown by the
+            // content stream read inside TryReadCappedContentAsync rather than by SendAsync itself.
+            return Result<T>.Failure(RequestDisconnectedError);
+        }
+        catch (Exception)
+        {
+            // Last-resort catch-all so an unanticipated failure (e.g. a handler-level exception)
+            // surfaces as a normal Result.Failure + exit code 1, rather than propagating past every
+            // command's ExecuteAsync to Spectre.Console.Cli's generic top-level exception handler.
+            // Any genuine user-requested cancellation was already rethrown by the OperationCanceledException
+            // catch above, so nothing reaching here should be treated as a cancellation.
+            return Result<T>.Failure(RequestUnexpectedError);
         }
     }
 
@@ -278,6 +366,21 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         return result.IsSuccess
             ? Result<string>.Success(result.Value?.Text ?? string.Empty)
             : Result<string>.Failure(result.Error);
+    }
+
+    public async Task<Result<SemanticSearchResult>> DivineSessionsAsync(
+        SemanticSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.SemanticSearchRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/sessions/divine",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSemanticSearchResult,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<Result<bool>> SubmitHumanResponseAsync(
@@ -781,9 +884,12 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                    .ConfigureAwait(false);
 
-                ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+                ApiResponse<string>? envelope = responseBytes is null
+                    ? null
+                    : TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 string message;
 
@@ -1203,9 +1309,12 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                    .ConfigureAwait(false);
 
-                ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+                ApiResponse<string>? envelope = responseBytes is null
+                    ? null
+                    : TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 string message = envelope is { IsSuccess: false, Error: not null }
                     ? FormatApiError(envelope.Error.Value)
@@ -2428,9 +2537,12 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[] responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                    .ConfigureAwait(false);
 
-                ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
+                ApiResponse<string>? envelope = responseBytes is null
+                    ? null
+                    : TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 string message = envelope is { IsSuccess: false, Error: not null }
                     ? FormatApiError(envelope.Error.Value)
@@ -2530,54 +2642,32 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
     }
 
-    private static readonly string[] ChronicleMessageProperties =
-    [
-        "message",
-        "description",
-        "result",
-        "error",
-        "summary",
-    ];
-
     private static ChronicleFrame? TryParseChronicleFrame(string json)
     {
         try
         {
-            using JsonDocument document = JsonDocument.Parse(json);
+            ChronicleFrameWire? wire = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ChronicleFrameWire);
 
-            JsonElement root = document.RootElement;
+            if (wire is null)
+            {
+                return null;
+            }
 
-            string type = root.TryGetProperty("type", out JsonElement typeElement) && typeElement.ValueKind == JsonValueKind.String
-                ? typeElement.GetString() ?? "unknown"
-                : "unknown";
+            string type = string.IsNullOrEmpty(wire.Type) ? "unknown" : wire.Type;
 
-            DateTimeOffset? timestamp = root.TryGetProperty("timestamp", out JsonElement timestampElement)
-                && timestampElement.ValueKind == JsonValueKind.String
+            DateTimeOffset? timestamp = !string.IsNullOrEmpty(wire.Timestamp)
                 && DateTimeOffset.TryParse(
-                    timestampElement.GetString(),
+                    wire.Timestamp,
                     CultureInfo.InvariantCulture,
                     DateTimeStyles.RoundtripKind,
                     out DateTimeOffset parsed)
                     ? parsed
                     : null;
 
-            string message = type;
-
-            foreach (string propertyName in ChronicleMessageProperties)
-            {
-                if (root.TryGetProperty(propertyName, out JsonElement valueElement)
-                    && valueElement.ValueKind == JsonValueKind.String)
-                {
-                    string? value = valueElement.GetString();
-
-                    if (!string.IsNullOrEmpty(value))
-                    {
-                        message = value;
-
-                        break;
-                    }
-                }
-            }
+            // First non-empty of these (in this priority order) wins, falling back to the frame type
+            // itself — mirrors the server's own Chronicle event shapes, which use different property
+            // names depending on event kind (a status update vs. a tool result vs. an error, etc.).
+            string message = FirstNonEmpty(wire.Message, wire.Description, wire.Result, wire.Error, wire.Summary) ?? type;
 
             return new ChronicleFrame(type, timestamp, message);
         }
@@ -2585,6 +2675,73 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         {
             return null;
         }
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (string? value in values)
+        {
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    #endregion
+
+    #region Saga (RAG Phase 4)
+
+    public async Task<Result<SagaMemoryDto[]>> SagaListAsync(
+        string? query = null,
+        Guid? sessionId = null,
+        int? limit = null,
+        int? offset = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            "api/saga",
+            ("q", query),
+            ("sessionId", sessionId?.ToString("D")),
+            ("limit", limit?.ToString(CultureInfo.InvariantCulture)),
+            ("offset", offset?.ToString(CultureInfo.InvariantCulture)));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray,
+            static envelope => Result<SagaMemoryDto[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SagaSearchResult>> SagaDivineAsync(
+        SagaSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.SagaSearchRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/saga/divine",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSagaSearchResult,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result> SagaDeleteAsync(string id, CancellationToken cancellationToken = default) =>
+        await DeleteReturningNoContentAsync($"api/saga/{Uri.EscapeDataString(id)}", cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<SagaStats>> SagaStatsAsync(CancellationToken cancellationToken = default)
+    {
+        return await GetApiAsync(
+            "api/saga/stats",
+            ArcanumJsonContext.Default.ApiResponseSagaStats,
+            cancellationToken).ConfigureAwait(false);
     }
 
     #endregion

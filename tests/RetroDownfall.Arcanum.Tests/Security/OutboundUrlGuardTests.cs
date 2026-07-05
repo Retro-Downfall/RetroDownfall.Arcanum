@@ -297,8 +297,8 @@ public sealed class OutboundUrlGuardTests : IDisposable
                 new ProviderSettings
                 {
                     Name = "ollama-local",
-                    Type = AiProviderKind.Ollama,
-                    Endpoint = "http://169.254.0.1:11434",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "http://169.254.0.1:11434/v1",
                 },
             ],
         };

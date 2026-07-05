@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -284,6 +285,91 @@ public sealed class SystemPromptBuilderTests
             activeSpell: spell);
 
         Assert.DoesNotContain("#### Available Spell Scripts", prompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Build_WithSagaMemories_IncludesSagaSectionAfterSemanticContextBeforeDataStreams()
+    {
+
+        SagaMemory[] memories =
+        [
+            new("The operator prefers functional-style C# with expression-bodied members.", 0.92f, new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero)),
+            new("The project uses xUnit for testing with hand-written fakes.", 0.81f, new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero)),
+        ];
+
+        List<DataStreamPayload> streams = [new("metrics", "text/plain", "cpu=42%")];
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello") { DataStreams = streams },
+            codexContent: null,
+            semanticContext:
+            [
+                new SemanticContextChunk("src/App.cs", 0, 1, 0.9f, "class App {}"),
+            ],
+            sagaMemories: memories);
+
+        Assert.Contains("### Saga (Associative Memory)", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("The operator prefers functional-style C# with expression-bodied members.", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("The project uses xUnit for testing with hand-written fakes.", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("similarity: 0.92", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("formed 2026-01-15", prompt, StringComparison.Ordinal);
+
+        int semanticContextIndex = prompt.IndexOf("### Semantic Context (Retrieved Codebase)", StringComparison.Ordinal);
+
+        int sagaIndex = prompt.IndexOf("### Saga (Associative Memory)", StringComparison.Ordinal);
+
+        int dataStreamIndex = prompt.IndexOf("### Data Stream: metrics", StringComparison.Ordinal);
+
+        Assert.True(semanticContextIndex < sagaIndex, "Saga section must come after Semantic Context.");
+
+        Assert.True(sagaIndex < dataStreamIndex, "Saga section must come before Data Streams.");
+
+    }
+
+    [Fact]
+    public void Build_WithoutSagaMemories_OmitsSagaSection()
+    {
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            sagaMemories: null);
+
+        Assert.DoesNotContain("### Saga (Associative Memory)", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("[None]", prompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Build_WithEmptySagaMemoriesArray_OmitsSagaSection()
+    {
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            sagaMemories: []);
+
+        Assert.DoesNotContain("### Saga (Associative Memory)", prompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Build_DefaultSagaMemoriesParameter_KeepsExistingAssertionsGreen()
+    {
+
+        // Confirms the new SagaMemory[]? sagaMemories = null parameter is purely additive: callers
+        // that omit it entirely (all pre-Phase-4 call sites) behave exactly as before.
+        string prompt = SystemPromptBuilder.Build(new PingRequest("hello"), codexContent: null);
+
+        Assert.Contains("## DATA", prompt, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Saga", prompt, StringComparison.Ordinal);
 
     }
 

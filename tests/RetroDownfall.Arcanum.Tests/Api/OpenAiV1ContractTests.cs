@@ -20,16 +20,6 @@ public sealed class OpenAiV1ContractTests
     }
 
     [Fact]
-    public void OllamaPullFailure_MapsToModelNotFoundAnd404()
-    {
-
-        Assert.Equal("model_not_found", OpenAiV1Endpoints.MapPublicOpenAiErrorCodeForTests("Ollama.Pull"));
-
-        Assert.Equal(StatusCodes.Status404NotFound, OpenAiV1Endpoints.ResolveOpenAiInferenceFailureStatusCodeForTests("Ollama.Pull"));
-
-    }
-
-    [Fact]
     public void HubToolLoopFailure_ResolvesTo503()
     {
 
@@ -96,8 +86,8 @@ public sealed class OpenAiV1ContractTests
                 new ProviderSettings
                 {
                     Name = "Local",
-                    Type = AiProviderKind.Ollama,
-                    Endpoint = "http://127.0.0.1:11434",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "http://127.0.0.1:11434/v1",
                     Models = ["mistral:latest"],
                 },
             ],

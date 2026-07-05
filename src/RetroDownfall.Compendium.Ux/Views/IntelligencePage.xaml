@@ -149,7 +149,7 @@
                    FontSize="18"
                    FontAttributes="Bold" />
 
-            <controls:LabeledToggle Label="Enable lore system"
+            <controls:LabeledToggle Label="Enable Lore system"
                                     Description="When true, the operator key-value Lore memory is consulted during inference."
                                     IsOn="{Binding Intelligence.EnableLoreSystem, Mode=TwoWay}" />
 

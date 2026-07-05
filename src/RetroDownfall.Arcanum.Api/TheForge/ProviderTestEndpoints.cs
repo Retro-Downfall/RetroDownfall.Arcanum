@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -18,6 +20,13 @@ internal static class ProviderTestEndpoints
 {
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Hard cap on a probed provider's response body. A hostile or misconfigured "OpenAI-compatible"
+    /// endpoint could otherwise return an unbounded body that this endpoint would buffer wholesale via
+    /// <see cref="HttpContent.ReadAsStringAsync(CancellationToken)"/>.
+    /// </summary>
+    private const long MaxProbeResponseBytes = 4 * 1024 * 1024;
 
     public static RouteGroupBuilder MapProviderTestEndpoints(this RouteGroupBuilder apiGroup)
     {
@@ -36,12 +45,12 @@ internal static class ProviderTestEndpoints
                             traceId));
                 }
 
-                if (body.Type is not AiProviderKind.Ollama and not AiProviderKind.OpenAICompatible)
+                if (body.Type is not AiProviderKind.OpenAICompatible)
                 {
                     return Results.BadRequest(
                         ApiResponse<ProviderTestResult>.FromResult(
                             Result<ProviderTestResult>.Failure(
-                                new Error("Validation.InvalidProviderType", "type must be Ollama or OpenAICompatible.")),
+                                new Error(ErrorCodes.Validation.InvalidProviderType, "type must be OpenAICompatible.")),
                             traceId));
                 }
 
@@ -51,9 +60,20 @@ internal static class ProviderTestEndpoints
 
                 if (urlValidation.IsFailure)
                 {
+                    // Matches the sanitized posture already used below for probe connectivity
+                    // failures (W3.5): keep the detailed guard reason (which can carry resolved
+                    // hosts/IPs) in the server log; return a generic, non-revealing message to the
+                    // client.
+                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.TheForge.ProviderTest")
+                        .LogDebug(
+                            "Provider test endpoint {Endpoint} failed outbound URL validation: {Reason}",
+                            body.Endpoint,
+                            urlValidation.Error.Message);
+
                     return Results.BadRequest(
                         ApiResponse<ProviderTestResult>.FromResult(
-                            Result<ProviderTestResult>.Failure(urlValidation.Error),
+                            Result<ProviderTestResult>.Failure(
+                                new Error(urlValidation.Error.Code, "The endpoint URL failed validation (invalid, unresolvable, or blocked). See server logs for detail.")),
                             traceId));
                 }
 
@@ -77,12 +97,7 @@ internal static class ProviderTestEndpoints
     {
         string baseUrl = request.Endpoint.Trim().TrimEnd('/');
 
-        string probeUrl = request.Type switch
-        {
-            AiProviderKind.Ollama => $"{baseUrl}/api/tags",
-            AiProviderKind.OpenAICompatible => $"{baseUrl}/models",
-            _ => $"{baseUrl}/models",
-        };
+        string probeUrl = $"{baseUrl}/models";
 
         using HttpClient client = new(OutboundUrlGuard.CreateProviderEgressHandler(), disposeHandler: true)
         {
@@ -111,14 +126,19 @@ internal static class ProviderTestEndpoints
                     $"Endpoint returned HTTP {(int)response.StatusCode}.");
             }
 
-            string payload = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            string? payload = await TryReadCappedStringAsync(response.Content, MaxProbeResponseBytes, cancellationToken)
+                .ConfigureAwait(false);
 
-            string[] models = request.Type switch
+            if (payload is null)
             {
-                AiProviderKind.Ollama => ParseOllamaModels(payload),
-                AiProviderKind.OpenAICompatible => ParseOpenAiModels(payload),
-                _ => [],
-            };
+                return new ProviderTestResult(
+                    false,
+                    stopwatch.ElapsedMilliseconds,
+                    [],
+                    "Endpoint response exceeded the maximum allowed size and was not read.");
+            }
+
+            string[] models = ParseOpenAiModels(payload);
 
             return new ProviderTestResult(true, stopwatch.ElapsedMilliseconds, models, null);
         }
@@ -156,32 +176,49 @@ internal static class ProviderTestEndpoints
         }
     }
 
-    private static string[] ParseOllamaModels(string json)
+    /// <summary>
+    /// Reads <paramref name="content"/> up to <paramref name="maxBytes"/> as UTF-8 text, returning
+    /// <c>null</c> (without buffering the rest) when the response is — or grows to be — larger than
+    /// that, rather than <see cref="HttpContent.ReadAsStringAsync(CancellationToken)"/>'s unbounded
+    /// buffering of an untrusted (potentially hostile) endpoint's body.
+    /// </summary>
+    private static async Task<string?> TryReadCappedStringAsync(
+        HttpContent content,
+        long maxBytes,
+        CancellationToken cancellationToken)
     {
-        try
+        long? declaredLength = content.Headers.ContentLength;
+
+        if (declaredLength is { } length && length > maxBytes)
         {
-            using JsonDocument doc = JsonDocument.Parse(json);
-
-            if (!doc.RootElement.TryGetProperty("models", out JsonElement models) || models.ValueKind != JsonValueKind.Array)
-            {
-                return [];
-            }
-
-            List<string> names = [];
-
-            foreach (JsonElement model in models.EnumerateArray())
-            {
-                if (model.TryGetProperty("name", out JsonElement name) && name.ValueKind == JsonValueKind.String)
-                {
-                    names.Add(name.GetString() ?? string.Empty);
-                }
-            }
-
-            return names.Where(static n => n.Length > 0).ToArray();
+            return null;
         }
-        catch (JsonException)
+
+        Stream stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+        await using (stream.ConfigureAwait(false))
         {
-            return [];
+            using MemoryStream buffer = new();
+
+            byte[] chunk = new byte[81_920];
+
+            long total = 0;
+
+            int read;
+
+            while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                total += read;
+
+                if (total > maxBytes)
+                {
+                    return null;
+                }
+
+                await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            }
+
+            return Encoding.UTF8.GetString(buffer.ToArray());
         }
     }
 
@@ -189,24 +226,17 @@ internal static class ProviderTestEndpoints
     {
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(json);
+            OpenAiModelListResponse? response = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiModelListResponse);
 
-            if (!doc.RootElement.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+            if (response?.Data is not { Count: > 0 } data)
             {
                 return [];
             }
 
-            List<string> ids = [];
-
-            foreach (JsonElement model in data.EnumerateArray())
-            {
-                if (model.TryGetProperty("id", out JsonElement id) && id.ValueKind == JsonValueKind.String)
-                {
-                    ids.Add(id.GetString() ?? string.Empty);
-                }
-            }
-
-            return ids.Where(static n => n.Length > 0).ToArray();
+            return data
+                .Select(static model => model.Id)
+                .Where(static id => !string.IsNullOrEmpty(id))
+                .ToArray();
         }
         catch (JsonException)
         {

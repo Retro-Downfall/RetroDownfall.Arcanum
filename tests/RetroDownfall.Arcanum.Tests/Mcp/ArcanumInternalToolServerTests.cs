@@ -108,7 +108,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         await using TestMcpSession session = await CreateSessionAsync(
             intelligenceSettings: allFeatures,
-            conclaveEnabled: true);
+            conclaveEnabled: true,
+            sagaEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
 
@@ -714,7 +715,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         IntelligenceSettings? intelligenceSettings = null,
         long maxFileReadSizeBytes = 1024 * 1024,
         int maxJsonRpcLineBytes = 2_097_152,
-        bool conclaveEnabled = false)
+        bool conclaveEnabled = false,
+        bool sagaEnabled = false)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -754,6 +756,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             intelligenceSettings: settings,
             maxFileReadSizeBytes: maxFileReadSizeBytes,
             conclaveEnabled: conclaveEnabled,
+            sagaEnabled: sagaEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance);
 

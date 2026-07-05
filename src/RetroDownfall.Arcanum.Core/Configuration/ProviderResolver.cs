@@ -9,41 +9,12 @@ public static class ProviderResolver
 {
 
     /// <summary>
-    /// Case-insensitive match between a configured model id and a requested id, with **symmetric**
-    /// Ollama-style tag handling: a bare name matches a tagged name in either direction
-    /// (<c>llama3</c> ↔ <c>llama3:8b</c>), while two differently-tagged names do not
-    /// (<c>llama3:8b</c> ≠ <c>llama3:70b</c>). Tag-insensitive comparison applies only when exactly
-    /// one side carries a <c>:tag</c>.
+    /// Case-insensitive exact match between a configured model id and a requested id. The requested
+    /// model name must exactly match (case-insensitive) a configured model id — there is no bare-name
+    /// or tag-stripping fallback.
     /// </summary>
-    public static bool ModelNameMatches(string configuredModel, string needle)
-    {
-
-        if (string.Equals(configuredModel, needle, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        bool configuredHasTag = configuredModel.Contains(':');
-
-        bool needleHasTag = needle.Contains(':');
-
-        if (configuredHasTag == needleHasTag)
-        {
-            return false;
-        }
-
-        return StripTag(configuredModel).Equals(StripTag(needle), StringComparison.OrdinalIgnoreCase);
-
-    }
-
-    private static ReadOnlySpan<char> StripTag(string model)
-    {
-
-        int colonIndex = model.IndexOf(':');
-
-        return colonIndex >= 0 ? model.AsSpan(0, colonIndex) : model.AsSpan();
-
-    }
+    public static bool ModelNameMatches(string configuredModel, string needle) =>
+        string.Equals(configuredModel, needle, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Returns the union of <see cref="ProviderSettings.Models"/> and, for <see cref="AiProviderKind.LlamaCppServer"/> providers, <c>LlamaCpp.ModelMap</c> keys.
@@ -53,11 +24,11 @@ public static class ProviderResolver
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-        string[] models = provider.Models ?? [];
+        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Length; i++)
+        for (int i = 0; i < models.Count; i++)
         {
-            string model = models[i];
+            string model = models[i].Name;
 
             if (!string.IsNullOrWhiteSpace(model) && seen.Add(model))
             {
@@ -84,6 +55,72 @@ public static class ProviderResolver
                 yield return key;
             }
         }
+
+    }
+
+    /// <summary>
+    /// Resolves whether <paramref name="modelName"/> declares Scrying (vision) support on any
+    /// configured provider's <see cref="ModelEntry.SupportsVision"/>. Models advertised only via
+    /// <c>LlamaCpp.ModelMap</c> (no matching <see cref="ProviderSettings.Models"/> entry) are
+    /// never vision-capable — capability is declared exclusively through <see cref="ModelEntry"/>.
+    /// </summary>
+    public static bool SupportsVision(ArcanumSettings settings, string? modelName)
+    {
+
+        if (string.IsNullOrWhiteSpace(modelName))
+        {
+            return false;
+        }
+
+        ProviderSettings[] providers = settings.Providers ?? [];
+
+        for (int pi = 0; pi < providers.Length; pi++)
+        {
+            if (TryFindModelEntry(providers[pi], modelName, out ModelEntry? entry) && entry!.SupportsVision)
+            {
+                return true;
+            }
+        }
+
+        return false;
+
+    }
+
+    /// <summary>
+    /// Resolves whether <paramref name="modelName"/> declares Scrying (vision) support on the
+    /// specific <paramref name="provider"/> (post-resolution overload — avoids re-scanning every
+    /// configured provider when the caller already knows which one was selected).
+    /// </summary>
+    public static bool SupportsVision(ProviderSettings provider, string? modelName)
+    {
+
+        if (string.IsNullOrWhiteSpace(modelName))
+        {
+            return false;
+        }
+
+        return TryFindModelEntry(provider, modelName, out ModelEntry? entry) && entry!.SupportsVision;
+
+    }
+
+    private static bool TryFindModelEntry(ProviderSettings provider, string modelName, out ModelEntry? entry)
+    {
+
+        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+
+        for (int i = 0; i < models.Count; i++)
+        {
+            if (ModelNameMatches(models[i].Name, modelName))
+            {
+                entry = models[i];
+
+                return true;
+            }
+        }
+
+        entry = null;
+
+        return false;
 
     }
 
@@ -152,8 +189,12 @@ public static class ProviderResolver
     /// (array-index) order. Backward compatible: when <paramref name="health"/> is <c>null</c>, returns
     /// at most one candidate — the same provider <see cref="TryResolveProviderForModel"/> would pick.
     /// When <paramref name="health"/> is supplied, providers reported unhealthy are excluded from the
-    /// result; if that would leave zero candidates, the first match is returned anyway so the operator
-    /// observes the real inference error rather than a spurious "no providers" failure.
+    /// result; if that would leave zero candidates, every match is returned anyway (not just the
+    /// first) so the caller's runtime connectivity fallback can still rotate through all configured
+    /// candidates — health tracking can be stale (e.g. all matches transiently marked unhealthy by a
+    /// slow probe interval) and returning only one candidate would prevent
+    /// <c>WizardIntelligenceProvider</c>'s fallback loop from ever trying the others, collapsing
+    /// <c>Resilience.MaxFallbackAttempts</c> down to a single attempt regardless of configuration.
     /// </summary>
     public static IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> ResolveCandidates(
         ArcanumSettings settings,
@@ -194,7 +235,7 @@ public static class ProviderResolver
 
         }
 
-        return healthyMatches.Count > 0 ? healthyMatches : [matches[0]];
+        return healthyMatches.Count > 0 ? healthyMatches : matches;
 
     }
 

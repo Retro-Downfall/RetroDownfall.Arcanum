@@ -11,11 +11,11 @@ public sealed class ProviderResolverCandidatesTests
 
         Name = name,
 
-        Type = AiProviderKind.Ollama,
+        Type = AiProviderKind.OpenAICompatible,
 
-        Endpoint = "http://localhost:11434",
+        Endpoint = "http://localhost:11434/v1",
 
-        Models = models,
+        Models = [.. models.Select(static m => (ModelEntry)m)],
 
     };
 
@@ -101,9 +101,13 @@ public sealed class ProviderResolverCandidatesTests
     }
 
     [Fact]
-    public void ResolveCandidates_returns_first_when_all_unhealthy()
+    public void ResolveCandidates_returns_all_matches_when_all_unhealthy()
     {
 
+        // Health tracking can be stale (e.g. a slow probe interval marking every matching provider
+        // unhealthy transiently), so returning only the first match here would prevent
+        // WizardIntelligenceProvider's runtime fallback loop from ever trying the others — collapsing
+        // Resilience.MaxFallbackAttempts down to a single attempt regardless of configuration.
         ArcanumSettings settings = new()
         {
 
@@ -124,9 +128,11 @@ public sealed class ProviderResolverCandidatesTests
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
             ProviderResolver.ResolveCandidates(settings, "llama3", health);
 
-        (ProviderSettings provider, string _) = Assert.Single(candidates);
+        Assert.Equal(2, candidates.Count);
 
-        Assert.Equal("first", provider.Name);
+        Assert.Equal("first", candidates[0].Provider.Name);
+
+        Assert.Equal("second", candidates[1].Provider.Name);
 
     }
 

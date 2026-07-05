@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -37,6 +38,15 @@ internal static class EmbeddingBlobCodec
     /// results cluster in <c>[0, 1]</c> in practice). Returns <c>0</c> for mismatched or zero-length
     /// vectors rather than throwing — the managed fallback path treats that as "no signal", not a
     /// search failure.
+    ///
+    /// SIMD-vectorized via <see cref="Vector{T}"/> (hardware width chosen by the JIT at startup —
+    /// SSE/AVX on x64, NEON on Arm64 — with no platform-specific code and no extra NuGet dependency,
+    /// keeping this Native AOT friendly). This is the hot path for the managed brute-force fallback in
+    /// <c>DivinationService.SearchManagedAsync</c> when sqlite-vec is unavailable — see DESIGN.md §16.
+    /// Each lane's dot/norm products are summed horizontally in <c>float</c> via <see cref="Vector.Dot"/>,
+    /// then accumulated across lanes in <c>double</c> to bound precision loss on long vectors; the scalar
+    /// remainder (when <c>a.Length</c> isn't a multiple of <see cref="Vector{T}.Count"/>) is folded in the
+    /// same way as the original scalar loop.
     /// </summary>
     public static float CosineSimilarity(ReadOnlySpan<float> a, ReadOnlySpan<float> b)
     {
@@ -53,7 +63,31 @@ internal static class EmbeddingBlobCodec
 
         double normB = 0;
 
-        for (int i = 0; i < a.Length; i++)
+        int simdWidth = Vector<float>.Count;
+
+        int i = 0;
+
+        if (a.Length >= simdWidth)
+        {
+
+            for (; i <= a.Length - simdWidth; i += simdWidth)
+            {
+
+                Vector<float> va = new(a.Slice(i, simdWidth));
+
+                Vector<float> vb = new(b.Slice(i, simdWidth));
+
+                dot += Vector.Dot(va, vb);
+
+                normA += Vector.Dot(va, va);
+
+                normB += Vector.Dot(vb, vb);
+
+            }
+
+        }
+
+        for (; i < a.Length; i++)
         {
 
             dot += (double)a[i] * b[i];
@@ -70,7 +104,16 @@ internal static class EmbeddingBlobCodec
 
         }
 
-        return (float)(dot / (Math.Sqrt(normA) * Math.Sqrt(normB)));
+        float similarity = (float)(dot / (Math.Sqrt(normA) * Math.Sqrt(normB)));
+
+        // A poisoned provider response (a NaN/Infinity float slipping into an otherwise
+        // finite-looking vector) can still yield a non-finite result even with both norms positive.
+        // Propagating NaN/Infinity downstream is actively dangerous: `NaN >= threshold` is always
+        // false (silently masking a real match as "below threshold" rather than surfacing the
+        // corruption), and sort order among NaN values is undefined, so callers that sort by
+        // similarity (SemanticSpellRouter, Divination) could rank results unpredictably. Treating
+        // it as "no signal" (0) is the same safe default already used for mismatched/zero vectors.
+        return float.IsFinite(similarity) ? similarity : 0f;
 
     }
 

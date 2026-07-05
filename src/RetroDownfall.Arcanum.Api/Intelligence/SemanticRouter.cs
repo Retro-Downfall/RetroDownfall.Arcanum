@@ -20,9 +20,26 @@ internal static class SemanticRouter
         int maxOutputTokens,
         float temperature,
         CancellationToken cancellationToken,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IReadOnlyList<SpellMetadata>? candidates = null)
     {
         if (availableSpells.Count == 0)
+        {
+            return null;
+        }
+
+        // RAG Phase 5 — when a caller (SemanticSpellRouter, in hybrid mode) supplies a pre-filtered
+        // candidate list, only those spells are offered to the LLM (reduced context), and the
+        // response is resolved against that same offered set below — never the full availableSpells
+        // list. A hallucinated or otherwise out-of-set spell name (one the model saw in its own
+        // training data or general knowledge, not from this prompt's offered list) must not resolve
+        // to a real spell just because it happens to exist somewhere in the broader catalog; doing
+        // so would silently defeat the whole point of the top-K filter. A null candidates list (the
+        // default, used by every existing caller) means "unchanged behavior": the full catalog is
+        // both offered and resolved against.
+        IReadOnlyList<SpellMetadata> offeredSpells = candidates ?? availableSpells;
+
+        if (offeredSpells.Count == 0)
         {
             return null;
         }
@@ -31,14 +48,14 @@ internal static class SemanticRouter
 
         var toolsList = new StringBuilder(128);
 
-        for (int i = 0; i < availableSpells.Count; i++)
+        for (int i = 0; i < offeredSpells.Count; i++)
         {
             if (i > 0)
             {
                 _ = toolsList.Append("; ");
             }
 
-            SpellMetadata s = availableSpells[i];
+            SpellMetadata s = offeredSpells[i];
 
             _ = toolsList.Append(s.Name).Append(": ").Append(s.Description);
         }
@@ -137,7 +154,7 @@ internal static class SemanticRouter
             return null;
         }
 
-        foreach (SpellMetadata spell in availableSpells)
+        foreach (SpellMetadata spell in offeredSpells)
         {
             if (spell.Name.Equals(spellName, StringComparison.OrdinalIgnoreCase))
             {

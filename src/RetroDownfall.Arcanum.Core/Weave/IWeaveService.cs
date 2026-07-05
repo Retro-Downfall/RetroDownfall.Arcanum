@@ -9,8 +9,9 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// <see cref="IDivinationService"/>) queries it for semantically relevant knowledge.
 ///
 /// Mirrors the existing <c>IChatClientFactory</c> / <c>IChatClient</c> split in spirit: this is the
-/// stable domain contract; the concrete provider wiring (Ollama/OpenAICompatible/LlamaCppServer) lives
-/// behind <c>IEmbeddingGeneratorFactory</c> in the Api layer and is resolved lazily per call.
+/// stable domain contract; the concrete provider wiring (OpenAICompatible, including Ollama via its
+/// /v1 endpoint, or LlamaCppServer) lives behind <c>IEmbeddingGeneratorFactory</c> in the Api layer and
+/// is resolved lazily per call.
 ///
 /// Every method is designed to <b>never throw</b> for expected failure modes (feature disabled,
 /// provider unreachable, timeout) — callers get a <see cref="Result{T}"/> and are expected to degrade

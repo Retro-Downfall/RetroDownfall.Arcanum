@@ -27,7 +27,7 @@ public sealed class ChatClientFactoryTests
     }
 
     [Fact]
-    public async Task ResolveClientAsync_OllamaProvider_ReturnsLease()
+    public async Task ResolveClientAsync_OllamaViaOpenAiCompatible_ReturnsLease()
     {
         ArcanumSettings settings = new()
         {
@@ -37,8 +37,8 @@ public sealed class ChatClientFactoryTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
-                    Endpoint = "http://127.0.0.1:11434",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "http://127.0.0.1:11434/v1",
                     Models = ["mistral:latest"],
                 },
             ],
@@ -49,8 +49,6 @@ public sealed class ChatClientFactoryTests
         using ChatClientLease lease = await factory.ResolveClientAsync(null, CancellationToken.None);
 
         Assert.Equal("mistral:latest", lease.ResolvedModel);
-
-        Assert.True(lease.IsOllama);
 
         Assert.NotNull(lease.ChatClient);
     }
@@ -77,8 +75,6 @@ public sealed class ChatClientFactoryTests
         ChatClientFactory factory = CreateFactory(settings);
 
         using ChatClientLease lease = await factory.ResolveClientAsync("gpt-test", CancellationToken.None);
-
-        Assert.False(lease.IsOllama);
 
         Assert.Equal("gpt-test", lease.ResolvedModel);
     }

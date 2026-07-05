@@ -193,4 +193,56 @@ public sealed class ProcessResourceLimiterTests
 
     }
 
+    [Fact]
+    public async Task Apply_ExposesWasOomKilledAsync_WhenCgroupIsAvailable()
+    {
+
+        if (!OperatingSystem.IsLinux())
+        {
+
+            // cgroups v2 is Linux-only; nothing to verify on this host.
+            return;
+
+        }
+
+        ProcessStartInfo psi = new() { FileName = "/bin/echo" };
+
+        psi.ArgumentList.Add("hi");
+
+        ResourceLimits limits = new() { MaxMemoryMb = 256 };
+
+        ProcessResourceLimiterResult result = _limiter.Apply(psi, limits);
+
+        Assert.Null(result.Error);
+
+        if (result.CleanupAsync is null)
+        {
+
+            // No cgroup delegation available in this sandbox: the limiter already fell back to
+            // setrlimit-only enforcement, which exposes no OOM evidence — nothing further to assert.
+            return;
+
+        }
+
+        try
+        {
+
+            // Exposed whenever a real cgroups v2 scope backs this invocation (see ApplyOnLinux),
+            // so CappedChildProcessRunner can require authoritative OOM evidence before attributing
+            // a SIGKILL/SIGSEGV exit to the configured memory limit.
+            Assert.NotNull(result.WasOomKilledAsync);
+
+            // A freshly created, never-scheduled cgroup has not triggered any kernel OOM kill yet.
+            Assert.False(await result.WasOomKilledAsync!());
+
+        }
+        finally
+        {
+
+            await result.CleanupAsync(0);
+
+        }
+
+    }
+
 }

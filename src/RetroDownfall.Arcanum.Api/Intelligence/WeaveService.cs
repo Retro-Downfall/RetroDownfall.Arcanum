@@ -1,3 +1,5 @@
+using System.ClientModel;
+using System.Net.Http;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -99,6 +101,8 @@ public sealed class WeaveService(
 
         int requestTimeoutSeconds = ArcanumSettingClamps.EmbeddingsRequestTimeoutSeconds(embeddings.RequestTimeoutSeconds);
 
+        int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
+
         List<Embedding<float>> results = new(texts.Count);
 
         try
@@ -114,7 +118,18 @@ public sealed class WeaveService(
 
                 for (int i = 0; i < count; i++)
                 {
-                    batch.Add(texts[offset + i]);
+
+                    // Defense-in-depth against 413/400 provider errors: some callers (for example
+                    // EntryWeavingService embedding a full Grimoire entry) do not route text through
+                    // WeaveService.ChunkAsync first, and characters-to-tokens conversion can
+                    // underestimate heavy UTF-8/code content even for already-chunked text. Every
+                    // string leaving this method is hard-capped to ChunkSizeChars on a surrogate-safe
+                    // boundary before it ever reaches the provider.
+                    string text = texts[offset + i];
+
+                    batch.Add(text.Length > chunkSizeChars
+                        ? text[..Utf8Truncation.SafeCharSliceLength(text, chunkSizeChars)]
+                        : text);
 
                 }
 
@@ -144,6 +159,38 @@ public sealed class WeaveService(
                 "The embedding provider timed out."));
 
         }
+        catch (ClientResultException ex) when (IsPayloadOrRequestSizeError(ex.Status))
+        {
+
+            // OpenAI-SDK-shaped providers (OpenAI, DeepSeek, most self-hosted OpenAI-compatible
+            // servers) surface HTTP error responses as ClientResultException, not HttpRequestException.
+            logger.LogWarning(
+                ex,
+                "Embedding provider rejected the batch as too large (HTTP {StatusCode}). Consider lowering "
+                    + "Arcanum:Embeddings:ChunkSizeChars or BatchSize.",
+                ex.Status);
+
+            return Result<Embedding<float>[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider rejected the request as too large. See server logs for detail."));
+
+        }
+        catch (HttpRequestException ex) when (IsPayloadOrRequestSizeError((int?)ex.StatusCode ?? 0))
+        {
+
+            // Defense-in-depth for providers/transports that surface a raw HttpRequestException with a
+            // populated StatusCode instead of the SDK's ClientResultException.
+            logger.LogWarning(
+                ex,
+                "Embedding provider rejected the batch as too large (HTTP {StatusCode}). Consider lowering "
+                    + "Arcanum:Embeddings:ChunkSizeChars or BatchSize.",
+                ex.StatusCode);
+
+            return Result<Embedding<float>[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider rejected the request as too large. See server logs for detail."));
+
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
 
@@ -156,6 +203,14 @@ public sealed class WeaveService(
         }
 
     }
+
+    /// <summary>
+    /// <c>413 Payload Too Large</c> and <c>400 Bad Request</c> are the two statuses upstream OpenAI-
+    /// compatible providers (OpenAI, DeepSeek, llama.cpp) use to reject an oversized embedding batch or
+    /// a single input exceeding the provider's context/dimension limit.
+    /// </summary>
+    private static bool IsPayloadOrRequestSizeError(int statusCode) =>
+        statusCode is 413 or 400;
 
     private async Task<Embedding<float>[]> EmbedOneBatchAsync(
         List<string> batch,
@@ -220,9 +275,20 @@ public sealed class WeaveService(
 
             int length = Math.Min(chunkSizeChars, text.Length - offset);
 
+            bool isFinalChunk = offset + length >= text.Length;
+
+            // Never end a non-final chunk on a lone high surrogate — the next window (offset + step,
+            // computed independently of this chunk's length) still covers the full character, so
+            // shaving one char off this chunk's tail cannot create a coverage gap in the overall scan.
+            if (!isFinalChunk && length > 0 && char.IsHighSurrogate(text[offset + length - 1]))
+            {
+                length--;
+
+            }
+
             chunks.Add((text.Substring(offset, length), offset));
 
-            if (offset + length >= text.Length)
+            if (isFinalChunk)
             {
                 break;
 

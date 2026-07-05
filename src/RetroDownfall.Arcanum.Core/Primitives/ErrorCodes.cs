@@ -17,6 +17,8 @@ public static class ErrorCodes
 
         public const string InvalidBody = "Validation.InvalidBody";
 
+        public const string InvalidProviderType = "Validation.InvalidProviderType";
+
     }
 
     /// <summary>Hub — intelligence provider / inference pipeline failures.</summary>
@@ -30,18 +32,6 @@ public static class ErrorCodes
         public const string Model = "Hub.Model";
 
         public const string Error = "Hub.Error";
-
-    }
-
-    /// <summary>Ollama — local model provider integration.</summary>
-    public static class Ollama
-    {
-
-        public const string Pull = "Ollama.Pull";
-
-        public const string ListModels = "Ollama.ListModels";
-
-        public const string Error = "Ollama.Error";
 
     }
 
@@ -265,6 +255,8 @@ public static class ErrorCodes
 
         public const string Timeout = "Connection.Timeout";
 
+        public const string Unreachable = "Connection.Unreachable";
+
     }
 
     /// <summary>Security — authentication and outbound URL policy.</summary>
@@ -302,6 +294,34 @@ public static class ErrorCodes
         public const string PromptNotFound = "ProvingGrounds.PromptNotFound";
 
         public const string InferenceFailed = "ProvingGrounds.InferenceFailed";
+
+    }
+
+    /// <summary>Saga — RAG Phase 4 long-term associative memory.</summary>
+    public static class Saga
+    {
+
+        public const string NotFound = "Saga.NotFound";
+
+        public const string NotEmpty = "Saga.NotEmpty";
+
+        public const string SearchFailed = "Saga.SearchFailed";
+
+    }
+
+    /// <summary>Scrying — vision/multimodality capability gate and image validation.</summary>
+    public static class Scrying
+    {
+
+        public const string VisionNotSupported = "Scrying.VisionNotSupported";
+
+        public const string ImageTooLarge = "Scrying.ImageTooLarge";
+
+        public const string TooManyImages = "Scrying.TooManyImages";
+
+        public const string UnsupportedMimeType = "Scrying.UnsupportedMimeType";
+
+        public const string FeatureDisabled = "Scrying.FeatureDisabled";
 
     }
 

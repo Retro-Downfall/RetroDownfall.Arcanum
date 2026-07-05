@@ -91,6 +91,16 @@ internal static class LlamaEndpoints
 
         httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
 
+        // Explicitly link httpContext.RequestAborted alongside the DI-bound cancellationToken (which
+        // ASP.NET Core already binds to RequestAborted for Minimal API parameters) — this is a
+        // long-running download, and an explicit link guards against a future signature change
+        // silently decoupling the two, leaking the download task past client disconnect.
+        using CancellationTokenSource pullCts = CancellationTokenSource.CreateLinkedTokenSource(
+            httpContext.RequestAborted,
+            cancellationToken);
+
+        CancellationToken ct = pullCts.Token;
+
         ArrayBufferWriter<byte> buffer = new(256);
 
         Channel<LlamaPullProgress> channel = Channel.CreateBounded<LlamaPullProgress>(new BoundedChannelOptions(64)
@@ -98,7 +108,7 @@ internal static class LlamaEndpoints
             FullMode = BoundedChannelFullMode.DropOldest,
         });
 
-        Task writerTask = WriteProgressStreamAsync(httpContext, channel.Reader, buffer, cancellationToken);
+        Task writerTask = WriteProgressStreamAsync(httpContext, channel.Reader, buffer, ct);
 
         Progress<LlamaPullProgress> progress = new(frame => _ = channel.Writer.TryWrite(frame));
 
@@ -109,7 +119,7 @@ internal static class LlamaEndpoints
                 normalizedUrl,
                 body.Sha256,
                 progress,
-                cancellationToken).ConfigureAwait(false);
+                ct).ConfigureAwait(false);
 
             if (result.IsFailure)
             {
@@ -126,10 +136,10 @@ internal static class LlamaEndpoints
                     CacheKey = cacheKey,
                     Completed = true,
                     Error = PublicPullFailureMessage,
-                }, cancellationToken).ConfigureAwait(false);
+                }, ct).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // client cancelled
         }
@@ -142,7 +152,7 @@ internal static class LlamaEndpoints
         {
             await writerTask.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // client cancelled
         }

@@ -39,6 +39,12 @@ public sealed class ChatCommand(
     private long MaxAttachFileSizeBytes =>
         ArcanumSettingClamps.MaxAttachFileSizeBytes(arcanumSettings.Value.Cli.MaxAttachFileSizeBytes);
 
+    private long MaxScryingImageBytes =>
+        ArcanumSettingClamps.ScryingMaxImageBytes(arcanumSettings.Value.Scrying.MaxImageBytes);
+
+    private string[] AllowedScryingMimeTypes =>
+        arcanumSettings.Value.Scrying.AllowedMimeTypes ?? [];
+
     private const string DefaultStagedOnlyPrompt = "Please review the attached files.";
 
     private static readonly HashSet<string> SlashCommandVerbs = new(StringComparer.OrdinalIgnoreCase)
@@ -120,6 +126,8 @@ public sealed class ChatCommand(
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
+        HashSet<string> stagedImages = new(StringComparer.Ordinal);
+
         int exitCode = 0;
 
         while (true)
@@ -128,8 +136,10 @@ public sealed class ChatCommand(
 
             string? raw;
 
-            string promptMarkup = stagedFiles.Count > 0
-                ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedFiles.Count} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
+            int stagedCount = stagedFiles.Count + stagedImages.Count;
+
+            string promptMarkup = stagedCount > 0
+                ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedCount} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
                 : $"{themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >";
 
             if (cliEnvironment.ShouldShowManaBar
@@ -175,7 +185,7 @@ public sealed class ChatCommand(
 
             if (string.IsNullOrWhiteSpace(prompt))
             {
-                if (stagedFiles.Count == 0)
+                if (stagedFiles.Count == 0 && stagedImages.Count == 0)
                 {
                     continue;
                 }
@@ -241,6 +251,29 @@ public sealed class ChatCommand(
                         themePalette.ErrorLabelMarkup(
                             Markup.Escape($"@{tokenPath}"),
                             Markup.Escape($"not found at {fullPath}; the literal token was kept in the prompt. Use /attach to browse interactively.")));
+
+                    continue;
+                }
+
+                if (ScryingFocusStager.IsImagePath(fullPath))
+                {
+                    ScryingFocusStager.StagingResult sizeCheck = ScryingFocusStager.CheckSize(fullPath, MaxScryingImageBytes);
+
+                    if (sizeCheck.Error is not null)
+                    {
+                        WriteCannotStageScryingFocus(Path.GetFileName(fullPath), sizeCheck.Error);
+
+                        continue;
+                    }
+
+                    stagedImages.Add(fullPath);
+
+                    string sizeLabel = ScryingFocusStager.FormatByteCount(sizeCheck.FileSizeBytes ?? 0);
+
+                    AnsiConsole.MarkupLine(
+                        $"{themePalette.HighlightMarkup(Markup.Escape("Scrying focus:"))} {themePalette.TextMarkup(Markup.Escape($"{Path.GetFileName(fullPath)} ({sizeLabel})"))}");
+
+                    prompt = prompt.Remove(match.Index, match.Length);
 
                     continue;
                 }
@@ -340,7 +373,53 @@ public sealed class ChatCommand(
                 }
             }
 
+            List<ScryingFocusDto>? scryingFociForRequest = null;
+
+            if (stagedImages.Count > 0)
+            {
+                List<ScryingFocusDto> foci = new();
+
+                bool anyImageFailed = false;
+
+                foreach (string imagePath in stagedImages.OrderBy(f => f, StringComparer.Ordinal))
+                {
+                    ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(
+                        imagePath,
+                        MaxScryingImageBytes,
+                        AllowedScryingMimeTypes);
+
+                    if (staged.Error is not null)
+                    {
+                        WriteCannotStageScryingFocus(Path.GetFileName(imagePath), staged.Error);
+
+                        anyImageFailed = true;
+
+                        continue;
+                    }
+
+                    foci.Add(staged.Focus!);
+                }
+
+                if (anyImageFailed && foci.Count == 0 && attachedFilesForRequest is null)
+                {
+                    stagedFiles.Clear();
+
+                    stagedImages.Clear();
+
+                    exitCode = 1;
+
+                    continue;
+                }
+
+                if (foci.Count > 0)
+                {
+                    scryingFociForRequest = foci;
+                }
+            }
+
             stagedFiles.Clear();
+
+            stagedImages.Clear();
 
             bool turnOk = await RunTurnAsync(
                     prompt,
@@ -349,7 +428,8 @@ public sealed class ChatCommand(
                     stderrConsole,
                     cancellationToken,
                     flags,
-                    attachedFilesForRequest)
+                    attachedFilesForRequest,
+                    scryingFociForRequest)
                 .ConfigureAwait(false);
 
             if (!turnOk)
@@ -434,7 +514,7 @@ public sealed class ChatCommand(
 
                 foreach (ProviderSettings provider in providers)
                 {
-                    string[] models = provider.Models ?? [];
+                    string[] models = [.. (provider.Models ?? []).Select(static m => m.Name)];
 
                     if (models.Length == 0)
                     {
@@ -966,6 +1046,10 @@ public sealed class ChatCommand(
 
         table.AddRow("/attach", "Open interactive file browser to stage files for the next prompt.");
 
+        table.AddRow(
+            "@" + themePalette.HighlightMarkup(Markup.Escape("path/to/image.png")),
+            "Stage a Scrying focus (image) for the next prompt; requires a vision-capable model.");
+
         AnsiConsole.Write(table);
     }
 
@@ -975,6 +1059,13 @@ public sealed class ChatCommand(
             themePalette.ErrorMarkup(
                 Markup.Escape(
                     $"Cannot stage {fileName}: File exceeds the configured limit ({maxAttachFileSizeBytes} bytes).")));
+    }
+
+    private void WriteCannotStageScryingFocus(string fileName, string reason)
+    {
+        AnsiConsole.MarkupLine(
+            themePalette.ErrorMarkup(
+                Markup.Escape($"Cannot stage {fileName}: {reason} The literal token was kept in the prompt.")));
     }
 
     private string FormatBrowseItem(BrowseItem item)
@@ -1334,7 +1425,8 @@ public sealed class ChatCommand(
         IAnsiConsole stderrConsole,
         CancellationToken cancellationToken,
         InferenceFlagBinder.Parsed flags,
-        List<AttachedFileDto>? attachedFiles = null)
+        List<AttachedFileDto>? attachedFiles = null,
+        List<ScryingFocusDto>? scryingFoci = null)
     {
         using CancellationTokenSource perTurnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -1409,7 +1501,8 @@ public sealed class ChatCommand(
                 ResponseFormat: flags.ResponseFormat,
                 PresencePenalty: flags.PresencePenalty,
                 FrequencyPenalty: flags.FrequencyPenalty,
-                CampaignId: session.CampaignId);
+                CampaignId: session.CampaignId,
+                ScryingFoci: scryingFoci);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {

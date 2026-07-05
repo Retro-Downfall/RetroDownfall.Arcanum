@@ -70,14 +70,14 @@ internal static class OpenAiV1Endpoints
         {
             string ownedBy = string.IsNullOrWhiteSpace(provider.Name) ? "system" : provider.Name;
 
-            foreach (string model in provider.Models)
+            foreach (ModelEntry model in provider.Models)
             {
-                if (string.IsNullOrWhiteSpace(model))
+                if (string.IsNullOrWhiteSpace(model.Name))
                 {
                     continue;
                 }
 
-                string id = model.Trim();
+                string id = model.Name.Trim();
 
                 if (!seen.TryAdd(id, true))
                 {
@@ -265,7 +265,8 @@ internal static class OpenAiV1Endpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
-        if (!ProviderResolver.TryResolveProviderForModel(settings.Value, body.Model, out _, out string resolvedModel)
+        if (!ProviderResolver.TryResolveProviderForModel(settings.Value, body.Model, out ProviderSettings? resolvedProvider, out string resolvedModel)
+            || resolvedProvider is null
             || string.IsNullOrWhiteSpace(resolvedModel))
         {
             return JsonError(
@@ -274,6 +275,46 @@ internal static class OpenAiV1Endpoints
                 code: "model_not_found",
                 param: "model",
                 statusCode: StatusCodes.Status404NotFound);
+        }
+
+        // Scrying — reject images before any inference token is consumed. Count/MIME/size are
+        // validated against the mapped PingRequest (shared with the native ping path); vision
+        // capability is checked against the already-resolved provider/model.
+        if (ScryingValidator.RequestContainsImages(ping))
+        {
+            ScryingSettings scrying = settings.Value.Scrying ?? new ScryingSettings();
+
+            if (!scrying.Enabled)
+            {
+                return JsonError(
+                    "Scrying is disabled. Enable Arcanum:Scrying:Enabled to send images.",
+                    "invalid_request_error",
+                    code: "feature_disabled",
+                    param: null,
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            Result scryingShape = ScryingValidator.ValidateRequestImages(ping, scrying);
+
+            if (scryingShape.IsFailure)
+            {
+                return JsonError(
+                    scryingShape.Error.Message,
+                    "invalid_request_error",
+                    code: MapScryingOpenAiErrorCode(scryingShape.Error.Code),
+                    param: null,
+                    statusCode: ArcanumErrorMapper.ResolveStatusCode(scryingShape.Error.Code));
+            }
+
+            if (!ProviderResolver.SupportsVision(resolvedProvider, resolvedModel))
+            {
+                return JsonError(
+                    $"Model '{resolvedModel}' does not support vision. Use a vision-capable model.",
+                    "invalid_request_error",
+                    code: "vision_not_supported",
+                    param: "model",
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
         }
 
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -400,6 +441,8 @@ internal static class OpenAiV1Endpoints
 
         bool streamErrored = false;
 
+        bool disconnected = false;
+
         try
         {
             await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
@@ -484,6 +527,17 @@ internal static class OpenAiV1Endpoints
         {
             aborted = true;
         }
+        catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+        {
+            // Client dropped the TCP connection ungracefully (broken pipe / reset). Cancel the
+            // linked inference CTS so the producer stops promptly, and never attempt to write an
+            // error frame — or any further terminal frame — to a dead socket.
+            streamCts.Cancel();
+
+            aborted = true;
+
+            disconnected = true;
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Unhandled exception while streaming OpenAI chat completion {CompletionId}.", completionId);
@@ -509,7 +563,7 @@ internal static class OpenAiV1Endpoints
             return Results.Empty;
         }
 
-        if (streamErrored)
+        if (streamErrored || disconnected)
         {
             return Results.Empty;
         }
@@ -703,8 +757,6 @@ internal static class OpenAiV1Endpoints
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
         "Prompt is required.",
         "Attached file validation failed.",
-        "The requested model could not be downloaded from Ollama.",
-        "Could not reach Ollama to list local models.",
     ];
 
     private static string SanitizeStreamErrorMessage(string? rawMessage)
@@ -827,10 +879,12 @@ internal static class OpenAiV1Endpoints
             ErrorCodes.Validation.AttachedFiles => "invalid_value",
             ErrorCodes.Hub.ToolLoop => "server_error",
             ErrorCodes.Hub.Timeout => "server_error",
-            ErrorCodes.Ollama.Pull => "model_not_found",
-            ErrorCodes.Ollama.ListModels => "server_error",
-            ErrorCodes.Ollama.Error => "inference_failed",
             ErrorCodes.Hub.Error => "inference_failed",
+            ErrorCodes.Scrying.VisionNotSupported => "vision_not_supported",
+            ErrorCodes.Scrying.FeatureDisabled => "feature_disabled",
+            ErrorCodes.Scrying.TooManyImages
+                or ErrorCodes.Scrying.UnsupportedMimeType
+                or ErrorCodes.Scrying.ImageTooLarge => MapScryingOpenAiErrorCode(internalCode),
             _ => "inference_failed",
         };
 
@@ -843,9 +897,17 @@ internal static class OpenAiV1Endpoints
             ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
             ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
             ErrorCodes.Hub.Timeout => "Inference timed out.",
-            ErrorCodes.Ollama.Pull => "The requested model could not be downloaded from Ollama.",
-            ErrorCodes.Ollama.ListModels => "Could not reach Ollama to list local models.",
             _ => "Inference failed. See server logs for details.",
+        };
+
+    private static string MapScryingOpenAiErrorCode(string internalCode) =>
+        internalCode switch
+        {
+            ErrorCodes.Scrying.TooManyImages => "too_many_images",
+            ErrorCodes.Scrying.UnsupportedMimeType => "unsupported_mime_type",
+            ErrorCodes.Scrying.ImageTooLarge => "image_too_large",
+            ErrorCodes.Scrying.FeatureDisabled => "feature_disabled",
+            _ => "invalid_value",
         };
 
     private static bool IsSupportedContentPartType(string? type) =>

@@ -8,13 +8,13 @@ public sealed class ProviderResolverTests
     [Theory]
     [InlineData("llama3", "llama3", true)]
     [InlineData("Llama3", "llama3", true)]
-    [InlineData("llama3:latest", "llama3", true)]
     [InlineData("llama3:latest", "llama3:latest", true)]
-    [InlineData("llama3:8b", "llama3", true)]
-    [InlineData("llama3", "llama3:8b", true)]
+    [InlineData("llama3:latest", "llama3", false)]
+    [InlineData("llama3:8b", "llama3", false)]
+    [InlineData("llama3", "llama3:8b", false)]
     [InlineData("llama3:8b", "llama3:70b", false)]
     [InlineData("gpt-4", "gpt-4o", false)]
-    public void ModelNameMatches_HandlesCaseAndSymmetricTagStripping(string configured, string needle, bool expected)
+    public void ModelNameMatches_IsCaseInsensitiveExactMatch(string configured, string needle, bool expected)
     {
 
         bool matches = ProviderResolver.ModelNameMatches(configured, needle);
@@ -29,8 +29,8 @@ public sealed class ProviderResolverTests
 
         ProviderSettings provider = new()
         {
-            Name = "ollama",
-            Type = AiProviderKind.Ollama,
+            Name = "compat",
+            Type = AiProviderKind.OpenAICompatible,
             Models = ["llama3", "llama3", " ", "mistral"],
         };
 
@@ -105,8 +105,8 @@ public sealed class ProviderResolverTests
 
         ProviderSettings provider = new()
         {
-            Name = "ollama",
-            Type = AiProviderKind.Ollama,
+            Name = "compat",
+            Type = AiProviderKind.OpenAICompatible,
             Models = ["llama3:latest"],
         };
 
@@ -114,7 +114,7 @@ public sealed class ProviderResolverTests
 
         bool resolved = ProviderResolver.TryResolveProviderForModel(
             settings,
-            "llama3",
+            "llama3:latest",
             out ProviderSettings? found,
             out string resolvedModel);
 
@@ -137,7 +137,7 @@ public sealed class ProviderResolverTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -164,7 +164,7 @@ public sealed class ProviderResolverTests
         ProviderSettings provider = new()
         {
             Name = "ollama",
-            Type = AiProviderKind.Ollama,
+            Type = AiProviderKind.OpenAICompatible,
             Models = ["mistral"],
         };
 
@@ -200,7 +200,7 @@ public sealed class ProviderResolverTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -227,14 +227,14 @@ public sealed class ProviderResolverTests
         ProviderSettings first = new()
         {
             Name = "first",
-            Type = AiProviderKind.Ollama,
+            Type = AiProviderKind.OpenAICompatible,
             Models = ["alpha", "beta"],
         };
 
         ProviderSettings second = new()
         {
             Name = "second",
-            Type = AiProviderKind.Ollama,
+            Type = AiProviderKind.OpenAICompatible,
             Models = ["gamma"],
         };
 

@@ -9,8 +9,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// <summary>
 /// Raw-SQL persistence for <see cref="UnseenServantWatermark"/> rows, reusing the scoped
 /// <see cref="ArcanumDbContext"/>'s connection. The <c>UnseenServantWatermarks</c> table is not
-/// part of the compiled EF model (see <c>20260703150000_AddUnseenServantWatermarks.sql</c>), so
-/// all access goes through <see cref="DbCommand"/> rather than LINQ.
+/// part of the compiled EF model (created by the embedded <c>InitialCreate.sql</c> schema baseline
+/// under <c>Data/SqlMigrations/</c>), so all access goes through <see cref="DbCommand"/> rather than LINQ.
 /// </summary>
 internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseenServantWatermarkStore
 {

@@ -45,7 +45,7 @@ Compendium decrypts keys on read and re-encrypts them on save, so the file remai
 - **MVVM** via `CommunityToolkit.Mvvm` source generators.
 - **Models**: UI-only types — `ConfigSection`/`SectionDescriptor` (nav) and the `SettingDescriptor` metadata table (see below). The domain model is reused from `RetroDownfall.Arcanum.Core`.
 - **Services**: `ArcanumConfigurationStore`, `ArcanumDataProtectionSecretProtector`, `DialogService`. All filesystem paths are composed with `Path.Combine` and `ArcanumPaths.*`.
-- **ViewModels**: one root `ConfigurationViewModel` plus a `SectionViewModel` per configuration domain (Host, Server, Providers, Intelligence, Mcp, LlamaCpp, Orchestration, Security, CommLink, Storage, Forge, ProvingGrounds, Cli). Core records are immutable `init`-only; the VMs expose mutable `[ObservableProperty]` fields and rebuild records via `with` expressions on save.
+- **ViewModels**: one root `ConfigurationViewModel` plus a `SectionViewModel` per configuration domain (Host, Server, Providers, Intelligence, Mcp, LlamaCpp, Orchestration, Security, CommLink, Storage, Forge, ProvingGrounds, Cli, Scrying). Core records are immutable `init`-only; the VMs expose mutable `[ObservableProperty]` fields and rebuild records via `with` expressions on save. `ProvidersSectionViewModel.ProviderViewModel.Models` is an `ObservableCollection<ModelEntryViewModel>` (name + Scrying `supportsVision` toggle per row), not a chips string — each `Arcanum:Providers[].models` entry is a `ModelEntry`, not a bare string.
 - **Views**: `AppShell` (side nav + content host + sticky `SaveBar`), one `ContentPage` per section, and reusable controls (`LabeledEntry`, `LabeledStepper`, `LabeledToggle`, `ChipsEditor`, `LabeledPicker`, `LabeledColorEntry`, `SaveBar`).
 
 ## SettingDescriptor metadata table
@@ -71,7 +71,7 @@ Two tests in `tests/RetroDownfall.Compendium.Ux.Tests` guard the table against d
 | `LabeledEntry` | String / Path / Secret | Label + Entry + description + validation hint; `IsPassword` for secrets. |
 | `LabeledStepper` | Int / Long / Float | Label + Stepper bound to descriptor clamp `Min`/`Max`/`Increment` + live value label + description + validation hint. |
 | `LabeledToggle` | Bool | Label + Switch + description. |
-| `ChipsEditor` | StringArray | Add/remove chips for `string[]` fields (CORS origins, forbidden arts, allowed hosts, models). |
+| `ChipsEditor` | StringArray | Add/remove chips for `string[]` fields (CORS origins, forbidden arts, allowed hosts, Scrying allowed MIME types). |
 | `LabeledPicker` | Enum | Label + Picker whose `ItemsSource` is `Enum.GetValues(EnumType)`; `EnumToStringConverter` renders human-readable labels (e.g. `OpenAI Compatible`, `System Default`). |
 | `LabeledColorEntry` | Color | Hex Entry + live `BoxView` swatch (via `HexToColorConverter`, parses `#RGB`/`#RRGGBB`/`#AARRGGBB`) + description + validation hint. Used for all 10 CLI theme colors. |
 | `SaveBar` | — | Sticky strip: dirty dot, Save/Reload, last-saved timestamp. |

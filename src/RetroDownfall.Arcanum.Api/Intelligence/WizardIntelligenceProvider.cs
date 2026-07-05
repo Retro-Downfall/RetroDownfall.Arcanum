@@ -1,17 +1,18 @@
 using System.Buffers;
-using System.Collections.Concurrent;
+using System.ClientModel;
+using System.Data;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
-using OllamaSharp;
-using OllamaSharp.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -25,8 +26,11 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -48,16 +52,17 @@ public sealed class WizardIntelligenceProvider(
     InferenceContextBuilder inferenceContextBuilder,
     ISanctumGuard sanctumGuard,
     IProcessResourceLimiter processResourceLimiter,
+    IWeaveService weaveService,
+    IDivinationService divinationService,
+    IWorkspaceIndexingService workspaceIndexingService,
+    ISagaMemoryStore sagaMemoryStore,
+    SagaExtractionService sagaExtractionService,
+    SemanticSpellRouter semanticSpellRouter,
+    ArcanumDbContext db,
     IProviderHealthTracker? healthTracker = null) : IArcanumIntelligenceProvider
 {
     private const string PublicInferenceFailureMessage =
-        "Inference failed. Ensure Ollama is running and reachable, then try again. See server logs for details.";
-
-    private const string PublicListLocalModelsFailureMessage =
-        "Could not list local Ollama models. Ensure Ollama is running and reachable. See server logs for details.";
-
-    private const string PublicModelPullFailureMessage =
-        "Model download failed. Ensure Ollama is running and has network access. See server logs for details.";
+        "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.";
 
     private const string PublicModelResolutionFailureMessage =
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
@@ -68,10 +73,6 @@ public sealed class WizardIntelligenceProvider(
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
     private static readonly ArcanumSystemInfoTool _systemInfoTool = new();
-
-    private static readonly ConcurrentDictionary<string, OllamaModelListCacheEntry> OllamaModelListCache = new(StringComparer.Ordinal);
-
-    private sealed record OllamaModelListCacheEntry(DateTime ExpiresUtc, IReadOnlyList<Model> Models);
 
     public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
     {
@@ -87,6 +88,13 @@ public sealed class WizardIntelligenceProvider(
         if (bounds.IsFailure)
         {
             return Result<PromptTurnResult>.Failure(bounds.Error);
+        }
+
+        Result scryingGate = ValidateScryingGate(request);
+
+        if (scryingGate.IsFailure)
+        {
+            return Result<PromptTurnResult>.Failure(scryingGate.Error);
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
@@ -170,7 +178,18 @@ public sealed class WizardIntelligenceProvider(
             }
             catch (Exception ex)
             {
-                healthTracker!.MarkFailed(provider.Name);
+                // Only mark the provider unhealthy for a genuine connectivity failure — matching
+                // the inference-failure handling below (attempt.IsConnectivityFailure). A lease
+                // construction error can also be a local misconfiguration or transient overload
+                // (e.g. "Llama.Overloaded" from the concurrency slot queue), neither of which means
+                // the provider itself is down; marking it failed regardless would incorrectly drain
+                // its health status and could take it out of rotation for unrelated reasons.
+                bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
+
+                if (isConnectivityFailure)
+                {
+                    healthTracker!.MarkFailed(provider.Name);
+                }
 
                 logger.LogWarning(
                     ex,
@@ -180,10 +199,10 @@ public sealed class WizardIntelligenceProvider(
                     maxAttempts);
 
                 lastFailure = Result<PromptTurnResult>.Failure(new Error(
-                    provider.Type == AiProviderKind.Ollama ? ErrorCodes.Ollama.Error : ErrorCodes.Hub.Error,
-                    BuildInferenceFailureMessage(provider, provider.Type == AiProviderKind.Ollama)));
+                    ErrorCodes.Hub.Error,
+                    BuildInferenceFailureMessage(provider)));
 
-                if (!IsConnectivityFailure(ex, callerToken) || isLastAttempt)
+                if (!isConnectivityFailure || isLastAttempt)
                 {
                     return lastFailure;
                 }
@@ -241,21 +260,6 @@ public sealed class WizardIntelligenceProvider(
 
             IChatClient chatClient = lease.ChatClient;
 
-            if (lease.IsOllama)
-            {
-                Result ensure = await EnsureModelExistsAsync(
-                    lease.OllamaApi!,
-                    lease.Provider.Endpoint,
-                    targetModel,
-                    inferenceToken,
-                    pullProgress: null).ConfigureAwait(false);
-
-                if (ensure.IsFailure)
-                {
-                    return new InferenceAttemptResult(Result<PromptTurnResult>.Failure(ensure.Error), IsConnectivityFailure: false);
-                }
-            }
-
             Session? thread = await inferenceContextBuilder
             .LoadThreadAsync(request, inferenceToken)
             .ConfigureAwait(false);
@@ -311,13 +315,21 @@ public sealed class WizardIntelligenceProvider(
 
         IReadOnlyList<ParsedSpell>? resonants = resolvedSpell?.Resonants;
 
+        Embedding<float>? queryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
+
+        SemanticContextChunk[]? semanticContext = await RetrieveSemanticContextAsync(request, queryEmbedding, inferenceToken).ConfigureAwait(false);
+
+        SagaMemory[]? sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, inferenceToken).ConfigureAwait(false);
+
         string builtSystemPrompt = SystemPromptBuilder.Build(
             request,
             codexContent,
             activeSpell,
             request.AttachedFiles,
             dependencySpells: resonants,
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes));
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
+            semanticContext: semanticContext,
+            sagaMemories: sagaMemories);
 
         List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, resolvedSpell, inferenceToken).ConfigureAwait(false);
 
@@ -438,6 +450,8 @@ public sealed class WizardIntelligenceProvider(
                     inferenceToken)
                     .ConfigureAwait(false);
 
+                TryEnqueueSagaExtraction(grimoireTurn.SessionId);
+
                 string finishReason = MapChatFinishReasonToOpenAi(response.FinishReason);
 
                 RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, accumulatedUsage);
@@ -489,7 +503,7 @@ public sealed class WizardIntelligenceProvider(
                 {
                     logger.LogInformation(
                         ex,
-                        "Model {ModelName} does not support tools in Ollama; retrying without local tools.",
+                        "Model {ModelName} does not support tools; retrying without local tools.",
                         targetModel);
 
                     inferenceUsesTools = false;
@@ -499,8 +513,7 @@ public sealed class WizardIntelligenceProvider(
 
                 logger.LogError(
                     ex,
-                    "{Provider} inference failed for model {ModelName}.",
-                    lease.IsOllama ? "Ollama" : "Hub",
+                    "Hub inference failed for model {ModelName}.",
                     targetModel);
 
                 if (!grimoireTurn.IsFinalized)
@@ -515,7 +528,7 @@ public sealed class WizardIntelligenceProvider(
                 return new InferenceAttemptResult(
                     Result<PromptTurnResult>.Failure(
                         new Error(
-                            lease.IsOllama ? ErrorCodes.Ollama.Error : ErrorCodes.Hub.Error,
+                            ErrorCodes.Hub.Error,
                             BuildInferenceFailureMessage(lease))),
                     IsConnectivityFailure: IsConnectivityFailure(ex, callerToken));
             }
@@ -541,6 +554,15 @@ public sealed class WizardIntelligenceProvider(
         if (streamBounds.IsFailure)
         {
             yield return new IntelligenceEvent(IntelligenceEventType.Error, streamBounds.Error.Message);
+
+            yield break;
+        }
+
+        Result streamScryingGate = ValidateScryingGate(request);
+
+        if (streamScryingGate.IsFailure)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamScryingGate.Error.Message);
 
             yield break;
         }
@@ -645,9 +667,16 @@ public sealed class WizardIntelligenceProvider(
 
             if (leaseBuildFailure is not null)
             {
-                healthTracker!.MarkFailed(candidateProvider.Name);
+                // Only mark the provider unhealthy for a genuine connectivity failure — a local
+                // misconfiguration or transient overload does not mean the provider itself is down.
+                bool buildFailureIsConnectivity = IsConnectivityFailure(leaseBuildFailure, callerToken);
 
-                bool retryableBuildFailure = IsConnectivityFailure(leaseBuildFailure, callerToken) && !isLastAttempt;
+                if (buildFailureIsConnectivity)
+                {
+                    healthTracker!.MarkFailed(candidateProvider.Name);
+                }
+
+                bool retryableBuildFailure = buildFailureIsConnectivity && !isLastAttempt;
 
                 logger.LogWarning(
                     leaseBuildFailure,
@@ -663,7 +692,7 @@ public sealed class WizardIntelligenceProvider(
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider, candidateProvider.Type == AiProviderKind.Ollama));
+                    BuildInferenceFailureMessage(candidateProvider));
 
                 yield break;
             }
@@ -697,9 +726,16 @@ public sealed class WizardIntelligenceProvider(
 
             if (moveNextFailure is not null)
             {
-                healthTracker!.MarkFailed(candidateProvider.Name);
+                // Only mark the provider unhealthy for a genuine connectivity failure — matches
+                // the lease-build-failure handling above and the buffered inference path.
+                bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
 
-                bool retryableMoveFailure = IsConnectivityFailure(moveNextFailure, callerToken) && !isLastAttempt;
+                if (moveFailureIsConnectivity)
+                {
+                    healthTracker!.MarkFailed(candidateProvider.Name);
+                }
+
+                bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt;
 
                 logger.LogWarning(
                     moveNextFailure,
@@ -719,7 +755,7 @@ public sealed class WizardIntelligenceProvider(
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider, candidateProvider.Type == AiProviderKind.Ollama));
+                    BuildInferenceFailureMessage(candidateProvider));
 
                 yield break;
             }
@@ -806,101 +842,6 @@ public sealed class WizardIntelligenceProvider(
 
             IChatClient chatClient = lease.ChatClient;
 
-            if (lease.IsOllama)
-            {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Status,
-                    $"Checking local availability for {targetModel}...");
-
-                Result<bool> localCheck = await IsModelLocalAsync(
-                    lease.OllamaApi!,
-                    lease.Provider.Endpoint,
-                    targetModel,
-                    inferenceToken).ConfigureAwait(false);
-
-                if (localCheck.IsFailure)
-                {
-                    classification.IsConnectivityFailure = true;
-
-                    yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicListLocalModelsFailureMessage);
-
-                    yield break;
-                }
-
-                if (!localCheck.Value)
-                {
-                    logger.LogInformation(
-                        "Model {ModelName} not found locally. Downloading from Ollama... This may take a moment.",
-                        targetModel);
-
-                    int lastReportedPercent = -1;
-
-                    IAsyncEnumerator<PullModelResponse> pullEnumerator = EnumeratePullModelAsync(lease.OllamaApi!, targetModel, inferenceToken).GetAsyncEnumerator(inferenceToken);
-
-                    bool pullMoveFailed = false;
-
-                    string? pullMoveError = null;
-
-                    try
-                    {
-                        while (true)
-                        {
-                            bool hasNext;
-
-                            try
-                            {
-                                hasNext = await pullEnumerator.MoveNextAsync().ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                throw;
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.LogError(ex, "Pull stream failed while downloading model {ModelName}.", targetModel);
-
-                                pullMoveFailed = true;
-
-                                pullMoveError = PublicModelPullFailureMessage;
-
-                                break;
-                            }
-
-                            if (!hasNext)
-                            {
-                                break;
-                            }
-
-                            PullModelResponse pull = pullEnumerator.Current;
-
-                            int rounded = (int)Math.Round(pull.Percent, MidpointRounding.AwayFromZero);
-
-                            if (rounded != lastReportedPercent)
-                            {
-                                lastReportedPercent = rounded;
-
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.Status,
-                                    $"Downloading model {targetModel}: {rounded}%");
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        await pullEnumerator.DisposeAsync().ConfigureAwait(false);
-                    }
-
-                    if (pullMoveFailed)
-                    {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Error,
-                            pullMoveError ?? PublicModelPullFailureMessage);
-
-                        yield break;
-                    }
-                }
-            }
-
             yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
 
         Session? thread = await inferenceContextBuilder
@@ -953,13 +894,21 @@ public sealed class WizardIntelligenceProvider(
 
         IReadOnlyList<ParsedSpell>? streamResonants = streamResolvedSpell?.Resonants;
 
+        Embedding<float>? streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
+
+        SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
+
+        SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
+
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
             request,
             streamCodexContent,
             streamActiveSpell,
             request.AttachedFiles,
             dependencySpells: streamResonants,
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes));
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
+            semanticContext: streamSemanticContext,
+            sagaMemories: streamSagaMemories);
 
         InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -1074,7 +1023,12 @@ public sealed class WizardIntelligenceProvider(
 
                             inferenceError = BuildInferenceFailureMessage(lease);
 
-                            classification.IsConnectivityFailure = true;
+                            // Matches the buffered inference path (AttemptBufferedInferenceAsync):
+                            // only a genuine connectivity failure should trigger provider fallback.
+                            // A blanket `true` here would also fall back on model/auth/400-class
+                            // errors (e.g. a bad request shape, an invalid API key, content-policy
+                            // rejections) that have nothing to do with the provider being reachable.
+                            classification.IsConnectivityFailure = IsConnectivityFailure(ex, callerToken);
 
                             break;
                         }
@@ -1117,12 +1071,12 @@ public sealed class WizardIntelligenceProvider(
                     {
                         logger.LogInformation(
                             streamingMoveNextFailure,
-                            "Model {ModelName} does not support tools in Ollama; retrying stream without local tools.",
+                            "Model {ModelName} does not support tools; retrying stream without local tools.",
                             targetModel);
 
                         yield return new IntelligenceEvent(
                             IntelligenceEventType.Status,
-                            "This Ollama model does not support tools; continuing without local tools.");
+                            "This model does not support tools; continuing without local tools.");
 
                         streamUsesTools = false;
 
@@ -1259,6 +1213,8 @@ public sealed class WizardIntelligenceProvider(
         await TryIncrementSessionTokensAsync(grimoireTurn.SessionId, streamAccumulatedUsage, inferenceToken)
             .ConfigureAwait(false);
 
+        TryEnqueueSagaExtraction(grimoireTurn.SessionId);
+
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
         RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
@@ -1278,124 +1234,6 @@ public sealed class WizardIntelligenceProvider(
                     streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null)
                 .ConfigureAwait(false);
         }
-    }
-
-    private static async IAsyncEnumerable<PullModelResponse> EnumeratePullModelAsync(
-        IOllamaApiClient ollamaClient,
-        string modelName,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (PullModelResponse? response in ollamaClient.PullModelAsync(new PullModelRequest { Model = modelName }, cancellationToken).ConfigureAwait(false))
-        {
-            if (response is null)
-            {
-                continue;
-            }
-
-            yield return response;
-        }
-    }
-
-    private async Task<Result> EnsureModelExistsAsync(
-        IOllamaApiClient ollamaClient,
-        string ollamaEndpoint,
-        string modelName,
-        CancellationToken cancellationToken,
-        IProgress<string>? pullProgress)
-    {
-        Result<bool> localCheck = await IsModelLocalAsync(ollamaClient, ollamaEndpoint, modelName, cancellationToken).ConfigureAwait(false);
-
-        if (localCheck.IsFailure)
-        {
-            return Result.Failure(localCheck.Error);
-        }
-
-        if (localCheck.Value)
-        {
-            return Result.Success();
-        }
-
-        logger.LogInformation(
-            "Model {ModelName} not found locally. Downloading from Ollama... This may take a moment.",
-            modelName);
-
-        try
-        {
-            int lastReportedPercent = -1;
-
-            await foreach (PullModelResponse pull in EnumeratePullModelAsync(ollamaClient, modelName, cancellationToken).ConfigureAwait(false))
-            {
-                int rounded = (int)Math.Round(pull.Percent, MidpointRounding.AwayFromZero);
-
-                if (rounded != lastReportedPercent)
-                {
-                    lastReportedPercent = rounded;
-
-                    pullProgress?.Report($"Downloading model {modelName}: {rounded}%");
-                }
-            }
-
-            return Result.Success();
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Model pull failed for {ModelName}.", modelName);
-
-            return Result.Failure(new Error(ErrorCodes.Ollama.Pull, PublicModelPullFailureMessage));
-        }
-    }
-
-    private async Task<Result<bool>> IsModelLocalAsync(
-        IOllamaApiClient ollamaClient,
-        string ollamaEndpoint,
-        string modelName,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            IReadOnlyList<Model> models = await ListOllamaModelsCachedAsync(ollamaClient, ollamaEndpoint, cancellationToken)
-                .ConfigureAwait(false);
-
-            return models.Any(m => ProviderResolver.ModelNameMatches(m.Name, modelName));
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to list local Ollama models while checking {ModelName}.", modelName);
-
-            return Result<bool>.Failure(new Error(ErrorCodes.Ollama.ListModels, PublicListLocalModelsFailureMessage));
-        }
-    }
-
-    private static async Task<IReadOnlyList<Model>> ListOllamaModelsCachedAsync(
-        IOllamaApiClient ollamaClient,
-        string ollamaEndpoint,
-        CancellationToken cancellationToken)
-    {
-        string cacheKey = string.IsNullOrWhiteSpace(ollamaEndpoint)
-            ? "_default"
-            : ollamaEndpoint.Trim();
-
-        if (OllamaModelListCache.TryGetValue(cacheKey, out OllamaModelListCacheEntry? cached)
-            && cached.ExpiresUtc > DateTime.UtcNow)
-        {
-            return cached.Models;
-        }
-
-        IEnumerable<Model> models = await ollamaClient.ListLocalModelsAsync(cancellationToken).ConfigureAwait(false);
-
-        IReadOnlyList<Model> modelList = models.ToList();
-
-        OllamaModelListCache[cacheKey] = new OllamaModelListCacheEntry(DateTime.UtcNow.AddSeconds(60), modelList);
-
-        return modelList;
     }
 
     private async Task<ToolExecutionPipeline.TurnContext> BuildTurnContextAsync(
@@ -1546,48 +1384,69 @@ public sealed class WizardIntelligenceProvider(
         }
         else
         {
-            TimeSpan spellPreflight = TimeSpan.FromSeconds(
-                ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
-
-            int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-                settings.Value.Intelligence.SemanticRouterMaxTokens);
-
-            float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
-                settings.Value.Intelligence.SemanticRouterTemperature);
-
             string semanticProbe = GetSemanticRouterUserProbe(request);
 
-            IChatClient routerClient = chatClient;
+            SpellRoutingDecision routingDecision = await semanticSpellRouter
+                .ResolveAsync(spellMetadata, semanticProbe, cancellationToken)
+                .ConfigureAwait(false);
 
-            ChatClientLease? routerLease = null;
-
-            try
+            if (routingDecision.Mode == SpellRoutingDecisionMode.DirectResonance)
             {
-                if (settings.Value.Intelligence.UseFastModelForSpellRouting
-                    && !string.IsNullOrWhiteSpace(settings.Value.FastModel))
-                {
-                    routerLease = await chatClientFactory
-                        .ResolveClientAsync(settings.Value.FastModel.Trim(), cancellationToken)
-                        .ConfigureAwait(false);
-
-                    routerClient = routerLease.ChatClient;
-                }
-
-                matchedMetadata = await SemanticRouter
-                    .DetermineActiveSpellAsync(
-                        routerClient,
-                        semanticProbe,
-                        spellMetadata,
-                        spellPreflight,
-                        routerMaxTokens,
-                        routerTemperature,
-                        cancellationToken,
-                        logger)
-                    .ConfigureAwait(false);
+                // RAG Phase 5 — pure embedding mode already resolved (or ruled out) an active spell by
+                // vector similarity alone; no LLM call is made.
+                matchedMetadata = routingDecision.ResolvedSpell;
             }
-            finally
+            else
             {
-                routerLease?.Dispose();
+                TimeSpan spellPreflight = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+
+                int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
+                    settings.Value.Intelligence.SemanticRouterMaxTokens);
+
+                float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
+                    settings.Value.Intelligence.SemanticRouterTemperature);
+
+                IChatClient routerClient = chatClient;
+
+                ChatClientLease? routerLease = null;
+
+                // RAG Phase 5 — FilteredDivination carries a pre-filtered top-K candidate list (hybrid
+                // mode); FullGrimoire (disabled, or any Phase 5 fallback) passes null, which is
+                // SemanticRouter's unchanged "use the full catalog" behavior.
+                IReadOnlyList<SpellMetadata>? candidates = routingDecision.Mode == SpellRoutingDecisionMode.FilteredDivination
+                    ? routingDecision.Candidates
+                    : null;
+
+                try
+                {
+                    if (settings.Value.Intelligence.UseFastModelForSpellRouting
+                        && !string.IsNullOrWhiteSpace(settings.Value.FastModel))
+                    {
+                        routerLease = await chatClientFactory
+                            .ResolveClientAsync(settings.Value.FastModel.Trim(), cancellationToken)
+                            .ConfigureAwait(false);
+
+                        routerClient = routerLease.ChatClient;
+                    }
+
+                    matchedMetadata = await SemanticRouter
+                        .DetermineActiveSpellAsync(
+                            routerClient,
+                            semanticProbe,
+                            spellMetadata,
+                            spellPreflight,
+                            routerMaxTokens,
+                            routerTemperature,
+                            cancellationToken,
+                            logger,
+                            candidates)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    routerLease?.Dispose();
+                }
             }
         }
 
@@ -1647,6 +1506,401 @@ public sealed class WizardIntelligenceProvider(
         }
 
         return "\u200b";
+    }
+
+    /// <summary>
+    /// RAG Phases 3-4 — embeds the current turn's probe prompt at most once, shared between
+    /// <see cref="RetrieveSemanticContextAsync"/> (Phase 3) and <see cref="RetrieveSagaMemoriesAsync"/>
+    /// (Phase 4) so a single turn never pays for the same embedding twice. Returns <c>null</c> when
+    /// neither feature needs an embedding this turn (both disabled), or when embedding fails for any
+    /// reason — callers treat <c>null</c> as "skip RAG retrieval for this turn", never as an error.
+    /// </summary>
+    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, CancellationToken cancellationToken)
+    {
+        EmbeddingSettings embeddings = settings.Value.Embeddings ?? new EmbeddingSettings();
+
+        bool needsCodebaseEmbedding = embeddings.Enabled
+            && embeddings.CodebaseRetrievalEnabled
+            && !string.IsNullOrWhiteSpace(request.WorkingDirectory);
+
+        bool needsSagaEmbedding = embeddings.Enabled && embeddings.SagaEnabled;
+
+        if (!needsCodebaseEmbedding && !needsSagaEmbedding)
+        {
+            return null;
+        }
+
+        return await EmbedQueryAsync(GetSemanticRouterUserProbe(request), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Embeds <paramref name="prompt"/> via The Weave. Never throws for expected failure modes (provider
+    /// unavailable, embedding call failure) — returns <c>null</c> instead, at Debug log level, so callers
+    /// can gracefully skip RAG retrieval for the turn.
+    /// </summary>
+    private async Task<Embedding<float>?> EmbedQueryAsync(string prompt, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!weaveService.IsAvailable)
+            {
+                return null;
+            }
+
+            Result<Embedding<float>> embedResult = await weaveService.EmbedAsync(prompt, cancellationToken).ConfigureAwait(false);
+
+            if (embedResult.IsFailure)
+            {
+                logger.LogDebug(
+                    "RAG query embedding failed ({Code}); semantic retrieval for this turn will be skipped.",
+                    embedResult.Error.Code);
+
+                return null;
+            }
+
+            return embedResult.Value;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "RAG query embedding threw; semantic retrieval for this turn will be skipped.");
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// RAG Phase 3 — retrieves semantically relevant workspace file chunks for the current turn's
+    /// prompt, for injection into the system prompt (see <c>SystemPromptBuilder.Build</c>'s
+    /// <c>semanticContext</c> parameter). Called from both <see cref="AttemptBufferedInferenceAsync"/>
+    /// and <see cref="StreamCommittedInferenceAsync"/> before the system prompt is built, sharing
+    /// <paramref name="queryEmbedding"/> with <see cref="RetrieveSagaMemoriesAsync"/> (see
+    /// <see cref="ResolveRagQueryEmbeddingAsync"/>) to avoid embedding the same prompt twice.
+    ///
+    /// Graceful degradation: returns <c>null</c> (never throws for expected failure modes) when the
+    /// feature is disabled, <see cref="PingRequest.WorkingDirectory"/> is empty, the query embedding is
+    /// unavailable, Divination fails, or no chunks are found above the similarity threshold — in every
+    /// case the inference turn proceeds with an unchanged system prompt (DESIGN.md §21.4).
+    /// </summary>
+    private async Task<SemanticContextChunk[]?> RetrieveSemanticContextAsync(
+        PingRequest request,
+        Embedding<float>? queryEmbedding,
+        CancellationToken cancellationToken)
+    {
+        EmbeddingSettings embeddings = settings.Value.Embeddings ?? new EmbeddingSettings();
+
+        if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled || string.IsNullOrWhiteSpace(request.WorkingDirectory))
+        {
+            return null;
+        }
+
+        // Normalized once here (rather than relying solely on RegisterWorkspace's internal
+        // normalization) so this exact string is also used for the WorkspacePath filter below —
+        // WorkspaceIndexingService persists chunks keyed by its own Path.GetFullPath-normalized form,
+        // and a mismatch (trailing slash, relative segments, casing) would silently return zero rows
+        // even though the workspace was indexed successfully.
+        string normalizedWorkingDirectory = request.WorkingDirectory;
+
+        try
+        {
+            normalizedWorkingDirectory = Path.GetFullPath(request.WorkingDirectory.Trim());
+
+            workspaceIndexingService.RegisterWorkspace(normalizedWorkingDirectory);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to register workspace {WorkingDirectory} for background indexing.", request.WorkingDirectory);
+        }
+
+        if (queryEmbedding is not { } embedding)
+        {
+            return null;
+        }
+
+        try
+        {
+            CodebaseEmbeddingSettings codebase = embeddings.Codebase ?? new CodebaseEmbeddingSettings();
+
+            int maxChunks = ArcanumSettingClamps.EmbeddingsCodebaseMaxRetrievedChunks(codebase.MaxRetrievedChunks);
+
+            float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold);
+
+            // Scoped to this workspace's chunks before ranking: an unscoped global KNN capped at
+            // maxChunks could be dominated by another registered workspace's chunks, starving out
+            // this workspace's genuinely-closest matches before the join below ever sees them.
+            Result<DivinationResult[]> searchResult = await divinationService
+                .SearchScopedAsync(
+                    "workspace_file_embeddings_vec",
+                    "ChunkId",
+                    "Embedding",
+                    "workspace_file_chunks",
+                    "ChunkId",
+                    "WorkspacePath",
+                    normalizedWorkingDirectory,
+                    embedding,
+                    maxChunks,
+                    similarityThreshold,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (searchResult.IsFailure || searchResult.Value.Length == 0)
+            {
+                return null;
+            }
+
+            SemanticContextChunk[] chunks = await JoinWorkspaceChunkMetadataAsync(
+                db,
+                searchResult.Value,
+                normalizedWorkingDirectory,
+                maxChunks,
+                cancellationToken).ConfigureAwait(false);
+
+            return chunks.Length == 0 ? null : chunks;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Semantic context retrieval failed; continuing without it.");
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// RAG Phase 4 — retrieves Saga memories relevant to the current turn's prompt, for injection into
+    /// the system prompt (see <c>SystemPromptBuilder.Build</c>'s <c>sagaMemories</c> parameter). Called
+    /// from both <see cref="AttemptBufferedInferenceAsync"/> and <see cref="StreamCommittedInferenceAsync"/>
+    /// alongside <see cref="RetrieveSemanticContextAsync"/>, sharing the same
+    /// <paramref name="queryEmbedding"/> (see <see cref="ResolveRagQueryEmbeddingAsync"/>).
+    ///
+    /// Graceful degradation: returns <c>null</c> (never throws for expected failure modes) when the
+    /// feature is disabled, the query embedding is unavailable, Divination fails, or no memories are
+    /// found above the similarity threshold — in every case the inference turn proceeds with an
+    /// unchanged system prompt (DESIGN.md §21.4).
+    /// </summary>
+    private async Task<SagaMemory[]?> RetrieveSagaMemoriesAsync(Embedding<float>? queryEmbedding, CancellationToken cancellationToken)
+    {
+        EmbeddingSettings embeddings = settings.Value.Embeddings ?? new EmbeddingSettings();
+
+        if (!embeddings.Enabled || !embeddings.SagaEnabled)
+        {
+            return null;
+        }
+
+        if (queryEmbedding is not { } embedding)
+        {
+            return null;
+        }
+
+        try
+        {
+            int maxResults = ArcanumSettingClamps.EmbeddingsMaxResults(embeddings.MaxResults);
+
+            float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold);
+
+            Result<DivinationResult[]> searchResult = await divinationService
+                .SearchAsync(
+                    "saga_memory_embeddings_vec",
+                    "MemoryId",
+                    "Embedding",
+                    embedding,
+                    maxResults,
+                    similarityThreshold,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (searchResult.IsFailure || searchResult.Value.Length == 0)
+            {
+                return null;
+            }
+
+            IReadOnlyDictionary<string, SagaMemoryDto> byId = await sagaMemoryStore
+                .GetByIdsAsync(
+                    [.. searchResult.Value.Select(static hit => hit.Id)],
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            List<SagaMemory> memories = new(searchResult.Value.Length);
+
+            foreach (DivinationResult hit in searchResult.Value)
+            {
+                if (byId.TryGetValue(hit.Id, out SagaMemoryDto? memory))
+                {
+                    memories.Add(new SagaMemory(memory.Content, hit.Similarity, memory.CreatedAt));
+                }
+            }
+
+            return memories.Count == 0 ? null : [.. memories];
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Saga memory retrieval failed; continuing without it.");
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Joins Divination hits (ChunkId + similarity) against <c>workspace_file_chunks</c>, scoped to
+    /// <paramref name="workspacePath"/>, to populate the retrieved chunk's file path/index/content, and
+    /// computes <see cref="SemanticContextChunk.TotalChunks"/> per file.
+    /// </summary>
+    private static async Task<SemanticContextChunk[]> JoinWorkspaceChunkMetadataAsync(
+        ArcanumDbContext db,
+        DivinationResult[] hits,
+        string workspacePath,
+        int maxChunks,
+        CancellationToken cancellationToken)
+    {
+        Dictionary<string, float> similarityByChunkId = new(StringComparer.Ordinal);
+
+        foreach (DivinationResult hit in hits)
+        {
+            similarityByChunkId[hit.Id] = hit.Similarity;
+        }
+
+        DbConnection connection = db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        List<(string ChunkId, string RelativePath, int ChunkIndex, string Content)> rows = [];
+
+        await using (DbCommand cmd = connection.CreateCommand())
+        {
+            StringBuilder sql = new(
+                """
+                SELECT "ChunkId", "RelativePath", "ChunkIndex", "Content"
+                FROM "workspace_file_chunks"
+                WHERE "WorkspacePath" = @workspacePath AND "ChunkId" IN (
+                """);
+
+            AddParameter(cmd, "@workspacePath", workspacePath);
+
+            for (int i = 0; i < hits.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sql.Append(", ");
+                }
+
+                string paramName = $"@id{i.ToString(CultureInfo.InvariantCulture)}";
+
+                sql.Append(paramName);
+
+                AddParameter(cmd, paramName, hits[i].Id);
+            }
+
+            sql.Append(')');
+
+            cmd.CommandText = sql.ToString();
+
+            await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rows.Add((reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3)));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        Dictionary<string, int> totalChunksByPath = await GetTotalChunksByPathAsync(
+            connection,
+            workspacePath,
+            rows.Select(static r => r.RelativePath).Distinct(StringComparer.Ordinal),
+            cancellationToken).ConfigureAwait(false);
+
+        return rows
+            .Select(r => new SemanticContextChunk(
+                r.RelativePath,
+                r.ChunkIndex,
+                totalChunksByPath.GetValueOrDefault(r.RelativePath, 1),
+                similarityByChunkId.GetValueOrDefault(r.ChunkId, 0f),
+                r.Content))
+            .OrderByDescending(static c => c.Similarity)
+            .Take(maxChunks)
+            .ToArray();
+    }
+
+    private static async Task<Dictionary<string, int>> GetTotalChunksByPathAsync(
+        DbConnection connection,
+        string workspacePath,
+        IEnumerable<string> relativePaths,
+        CancellationToken cancellationToken)
+    {
+        List<string> paths = [.. relativePaths];
+
+        Dictionary<string, int> result = new(StringComparer.Ordinal);
+
+        if (paths.Count == 0)
+        {
+            return result;
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        StringBuilder sql = new(
+            """
+            SELECT "RelativePath", COUNT(*)
+            FROM "workspace_file_chunks"
+            WHERE "WorkspacePath" = @workspacePath AND "RelativePath" IN (
+            """);
+
+        AddParameter(cmd, "@workspacePath", workspacePath);
+
+        for (int i = 0; i < paths.Count; i++)
+        {
+            if (i > 0)
+            {
+                sql.Append(", ");
+            }
+
+            string paramName = $"@path{i.ToString(CultureInfo.InvariantCulture)}";
+
+            sql.Append(paramName);
+
+            AddParameter(cmd, paramName, paths[i]);
+        }
+
+        sql.Append(") GROUP BY \"RelativePath\"");
+
+        cmd.CommandText = sql.ToString();
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result[reader.GetString(0)] = reader.GetInt32(1);
+        }
+
+        return result;
+    }
+
+    private static void AddParameter(DbCommand cmd, string name, object value)
+    {
+        DbParameter parameter = cmd.CreateParameter();
+
+        parameter.ParameterName = name;
+
+        parameter.Value = value;
+
+        cmd.Parameters.Add(parameter);
     }
 
     private static bool TryResolveOverrideSpellMetadata(
@@ -1885,15 +2139,6 @@ public sealed class WizardIntelligenceProvider(
     {
         var options = new ChatOptions();
 
-        if (lease.IsOllama)
-        {
-            int numCtx = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
-
-            options.AdditionalProperties ??= [];
-
-            options.AdditionalProperties["num_ctx"] = numCtx;
-        }
-
         ApplyInferenceParameters(options, request);
 
         if (!includeTools || tools is null)
@@ -2098,6 +2343,36 @@ public sealed class WizardIntelligenceProvider(
         }
     }
 
+    /// <summary>
+    /// RAG Phase 4 — enqueues Saga memory extraction for <paramref name="sessionId"/> after a
+    /// successful inference turn. Fire-and-forget: enqueue failures never affect the completed turn
+    /// (see <see cref="SagaExtractionService.EnqueueExtraction"/>, which itself never throws — the
+    /// try/catch here is defense in depth against unexpected failures resolving settings).
+    /// </summary>
+    private void TryEnqueueSagaExtraction(Guid? sessionId)
+    {
+        if (!sessionId.HasValue)
+        {
+            return;
+        }
+
+        try
+        {
+            EmbeddingSettings embeddings = settings.Value.Embeddings ?? new EmbeddingSettings();
+
+            if (!embeddings.Enabled || !embeddings.SagaEnabled || !embeddings.Saga.ExtractionEnabled)
+            {
+                return;
+            }
+
+            sagaExtractionService.EnqueueExtraction(sessionId.Value);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to enqueue Saga extraction for session {SessionId}.", sessionId);
+        }
+    }
+
     private static bool LooksLikeModelDoesNotSupportTools(string? message)
     {
         return !string.IsNullOrEmpty(message)
@@ -2147,6 +2422,47 @@ public sealed class WizardIntelligenceProvider(
 
     }
 
+
+    /// <summary>
+    /// Scrying — early capability/shape gate, run before any inference token is consumed (right
+    /// alongside the other request-shape validators, ahead of model-resolution/lease work). Validates
+    /// image count/MIME/size via <see cref="ScryingValidator"/>, then — only when the request
+    /// actually carries images — resolves the intended model (mirroring
+    /// <see cref="ProviderResolver.TryResolveProviderForModel"/>'s no-resilience resolution, since
+    /// vision support is a client-input mismatch, not a provider-connectivity concern, so it is never
+    /// retried across fallback candidates) and rejects with <see cref="ErrorCodes.Scrying.VisionNotSupported"/>
+    /// when that model does not declare vision support. Model-resolution failure here is not itself an
+    /// error — the existing Hub.Model failure path (single-lease or fallback resolution) reports it.
+    /// </summary>
+    private Result ValidateScryingGate(PingRequest request)
+    {
+
+        if (!ScryingValidator.RequestContainsImages(request))
+        {
+            return Result.Success();
+        }
+
+        ScryingSettings scrying = settings.Value.Scrying ?? new ScryingSettings();
+
+        Result shapeValidation = ScryingValidator.ValidateRequestImages(request, scrying);
+
+        if (shapeValidation.IsFailure)
+        {
+            return shapeValidation;
+        }
+
+        if (ProviderResolver.TryResolveProviderForModel(settings.Value, request.Model, out ProviderSettings? provider, out string resolvedModel)
+            && provider is not null
+            && !ProviderResolver.SupportsVision(provider, resolvedModel))
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Scrying.VisionNotSupported,
+                $"Model '{resolvedModel}' does not support vision. Use a vision-capable model."));
+        }
+
+        return Result.Success();
+
+    }
 
     private bool TryValidateAttachedFiles(PingRequest request, out Error error)
     {
@@ -2238,21 +2554,14 @@ public sealed class WizardIntelligenceProvider(
     }
 
     private static string BuildInferenceFailureMessage(ChatClientLease lease) =>
-        BuildInferenceFailureMessage(lease.Provider, lease.IsOllama);
+        BuildInferenceFailureMessage(lease.Provider);
 
-    private static string BuildInferenceFailureMessage(ProviderSettings provider, bool isOllama)
+    private static string BuildInferenceFailureMessage(ProviderSettings provider)
     {
 
         // W3.5: do NOT embed provider.Endpoint — this message surfaces to clients via the
         // native /api inference envelopes and the raw endpoint URL can leak internal hostnames/paths.
         // The operator-chosen provider name is retained; endpoint detail stays in server logs.
-        if (isOllama)
-        {
-
-            return $"Ollama provider '{provider.Name}' is unreachable. Ensure Ollama is running and the configured endpoint is correct.";
-
-        }
-
         return $"Provider '{provider.Name}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
 
     }
@@ -2264,10 +2573,18 @@ public sealed class WizardIntelligenceProvider(
     /// connectivity failure — it propagates immediately and is never retried. Model-not-found, token
     /// limit, content filter, and tool-loop-limit failures also do not count.
     /// </summary>
+    /// <summary>
+    /// Classifies an inference-call exception as a connectivity failure (triggers provider
+    /// fallback/health-tracking) purely by exception type/status — never by inspecting
+    /// <see cref="Exception.Message"/>. A substring match on the message text is both too broad
+    /// (any error whose text happens to contain "connection" — including some 4xx/5xx model errors —
+    /// would wrongly fall back) and too narrow (a real connectivity failure phrased differently would
+    /// be missed), and message text is not a stable contract across SDK/runtime versions.
+    /// </summary>
     private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken)
     {
 
-        if (ex is HttpRequestException)
+        if (ex is HttpRequestException or System.Net.Sockets.SocketException)
         {
             return true;
         }
@@ -2282,7 +2599,20 @@ public sealed class WizardIntelligenceProvider(
             return !callerToken.IsCancellationRequested;
         }
 
-        return ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase);
+        if (ex is ClientResultException clientResultEx)
+        {
+            // OpenAI-SDK-shaped providers (OpenAI, DeepSeek, most self-hosted OpenAI-compatible
+            // servers — see WeaveService's identical handling for the embedding path) surface HTTP
+            // error responses as ClientResultException, not HttpRequestException. A genuine
+            // connectivity failure (DNS, connection refused, TLS handshake failure) either never
+            // reaches an HTTP response (Status <= 0) or wraps the underlying transport exception; an
+            // actual HTTP response (400/401/404/429/5xx, ...) is a model/auth/rate-limit failure, not
+            // a connectivity one, and must not trigger provider fallback.
+            return clientResultEx.Status <= 0
+                || (clientResultEx.InnerException is { } clientInner && IsConnectivityFailure(clientInner, callerToken));
+        }
+
+        return ex.InnerException is { } inner && IsConnectivityFailure(inner, callerToken);
 
     }
 

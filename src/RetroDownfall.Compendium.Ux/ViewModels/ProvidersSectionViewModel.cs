@@ -85,11 +85,16 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private string _apiKey = string.Empty;
 
-        [ObservableProperty] private string _models = string.Empty;
-
         [ObservableProperty] private int _contextWindowLimit;
 
         [ObservableProperty] private string _llamaCppModelMap = string.Empty;
+
+        /// <summary>
+        /// Per-model rows (name + Scrying <c>supportsVision</c> flag). A real editable collection —
+        /// not a collapsed comma-separated string — so vision capability declared in
+        /// <c>Arcanum:Providers[].models</c> round-trips through the Compendium UI without loss.
+        /// </summary>
+        public ObservableCollection<ModelEntryViewModel> Models { get; } = [];
 
         private ProviderSettings _snapshot;
 
@@ -115,7 +120,14 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             ApiKey = snapshot.ApiKey ?? string.Empty;
 
-            Models = snapshot.Models.JoinCsv();
+            Models.Clear();
+
+            foreach (ModelEntry model in snapshot.Models)
+            {
+
+                Models.Add(new ModelEntryViewModel(model));
+
+            }
 
             ContextWindowLimit = snapshot.ContextWindowLimit;
 
@@ -136,13 +148,34 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             ApiKey = string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey,
 
-            Models = Models.SplitCsv(),
+            Models = [.. Models.Select(static m => m.Build())],
 
             ContextWindowLimit = ContextWindowLimit,
 
             LlamaCpp = ParseLlamaCppModelMap(),
 
         };
+
+        [RelayCommand]
+        private void AddModel()
+        {
+
+            Models.Add(new ModelEntryViewModel());
+
+        }
+
+        [RelayCommand]
+        private void RemoveModel(ModelEntryViewModel? model)
+        {
+
+            if (model is not null)
+            {
+
+                Models.Remove(model);
+
+            }
+
+        }
 
         private ProviderLlamaCppSettings? ParseLlamaCppModelMap()
         {
@@ -170,6 +203,34 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
             return map is null ? null : new ProviderLlamaCppSettings { ModelMap = map };
 
         }
+
+    }
+
+    /// <summary>
+    /// A single <c>Arcanum:Providers[].models</c> entry — model name plus Scrying
+    /// <c>supportsVision</c> declaration. See <see cref="ModelEntry"/>.
+    /// </summary>
+    public sealed partial class ModelEntryViewModel : ObservableObject
+    {
+
+        [ObservableProperty] private string _name = string.Empty;
+
+        [ObservableProperty] private bool _supportsVision;
+
+        public ModelEntryViewModel()
+        {
+        }
+
+        public ModelEntryViewModel(ModelEntry entry)
+        {
+
+            Name = entry.Name;
+
+            SupportsVision = entry.SupportsVision;
+
+        }
+
+        public ModelEntry Build() => new(Name, SupportsVision);
 
     }
 

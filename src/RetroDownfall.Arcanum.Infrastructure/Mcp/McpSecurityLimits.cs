@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -85,36 +86,11 @@ internal static class McpSecurityLimits
 
         }
 
-        int safeCharCount = ChooseSafeCharCount(text, maxUtf8Bytes);
+        int safeCharCount = Utf8Truncation.ChooseSafeCharCount(text, maxUtf8Bytes);
 
         string prefix = safeCharCount <= 0 ? string.Empty : text[..safeCharCount];
 
         return prefix + $"\n[truncated: exceeded {maxUtf8Bytes} bytes]";
-
-    }
-
-    private static int ChooseSafeCharCount(string text, long maxUtf8Bytes)
-    {
-
-        long running = 0L;
-
-        for (int i = 0; i < text.Length; i++)
-        {
-
-            int charByteSize = Encoding.UTF8.GetByteCount(text.AsSpan(i, 1));
-
-            if (running + charByteSize > maxUtf8Bytes)
-            {
-
-                return i;
-
-            }
-
-            running += charByteSize;
-
-        }
-
-        return text.Length;
 
     }
 

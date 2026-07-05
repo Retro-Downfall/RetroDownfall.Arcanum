@@ -308,6 +308,36 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
+    private static JsonElement BuildReadSagaSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "query",
+                "Natural-language query to semantically search Saga (long-term associative memory) for relevant past facts, decisions, and preferences.");
+
+            WriteIntegerProperty(
+                w,
+                "limit",
+                "Optional maximum number of memories to return (defaults to Arcanum:Embeddings:MaxResults).");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("query");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
     private static JsonElement BuildAdjustInitiativeSchema()
     {
         return BuildSchema(static w =>

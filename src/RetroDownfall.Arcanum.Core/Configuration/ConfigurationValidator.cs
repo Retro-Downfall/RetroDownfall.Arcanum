@@ -13,6 +13,8 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         ProviderSettings[] providers = settings.Providers ?? [];
 
+        HashSet<string> seenProviderNames = new(StringComparer.OrdinalIgnoreCase);
+
         for (int providerIndex = 0; providerIndex < providers.Length; providerIndex++)
         {
 
@@ -20,12 +22,12 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
             string providerPointer = $"providers[{providerIndex}]";
 
-            string[] models = provider.Models ?? [];
+            IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
             if (provider.Type == AiProviderKind.LlamaCppServer)
             {
 
-                bool hasModels = models.Length > 0;
+                bool hasModels = models.Count > 0;
 
                 bool hasMap = provider.LlamaCpp?.ModelMap is { Count: > 0 };
 
@@ -39,12 +41,47 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
                 }
 
             }
-            else if (models.Length == 0)
+            else if (models.Count == 0)
             {
 
                 errors.Add(new ConfigurationValidationError(
                     providerPointer,
                     $"Provider '{provider.Name}' has no configured models."));
+
+            }
+
+            // OpenAICompatible providers dial provider.Endpoint directly at inference time
+            // (ChatClientFactory/EmbeddingGeneratorFactory both do `new Uri(provider.Endpoint)`
+            // unguarded). An empty Endpoint is left as-is here (a provider mid-setup, not yet
+            // pointed anywhere, is a pre-existing accepted state throughout this validator's own
+            // test suite) — but when a value IS configured, it must be a well-formed absolute
+            // http/https URI, catching a typo as a clear startup error instead of a runtime
+            // UriFormatException on the first request, or the health probe silently reporting the
+            // provider unhealthy with no indication why. LlamaCppServer providers are dialed via
+            // their dynamically-assigned local endpoint instead — the configured Endpoint field is
+            // not used for them, so it is not validated here.
+            if (provider.Type == AiProviderKind.OpenAICompatible
+                && !string.IsNullOrWhiteSpace(provider.Endpoint)
+                && (!Uri.TryCreate(provider.Endpoint.Trim(), UriKind.Absolute, out Uri? endpointUri)
+                    || (endpointUri.Scheme != Uri.UriSchemeHttp && endpointUri.Scheme != Uri.UriSchemeHttps)))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    providerPointer,
+                    $"Provider '{provider.Name}' Endpoint '{provider.Endpoint}' must be an absolute http or https URI."));
+
+            }
+
+            if (!string.IsNullOrWhiteSpace(provider.Name) && !seenProviderNames.Add(provider.Name))
+            {
+
+                // Provider health is keyed by Name (ProviderHealthTracker), and ProviderResolver's
+                // by-name lookups (TryResolveProviderByName, used by embeddings config) return only
+                // the first match — a duplicate name would otherwise silently share health state and
+                // resolve to the wrong provider for the second entry.
+                errors.Add(new ConfigurationValidationError(
+                    providerPointer,
+                    $"Provider name '{provider.Name}' is configured more than once; provider names must be unique."));
 
             }
 
@@ -142,6 +179,8 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
         ValidateEventBus(settings);
 
         ValidateEmbeddings(settings, errors);
+
+        ValidateScrying(settings, errors);
 
         if (errors.Count > 0)
         {
@@ -324,6 +363,47 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             errors.Add(new ConfigurationValidationError(
                 "embeddings.semanticSpellRoutingEnabled",
                 "Arcanum:Embeddings:SemanticSpellRoutingEnabled requires Arcanum:Embeddings:Enabled to be true."));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Scrying — vision/multimodality. Validates <c>Arcanum:Scrying</c> clamp ranges (mirroring the
+    /// <see cref="ValidateResilience"/> raw-vs-clamp equality pattern) and that
+    /// <see cref="ScryingSettings.AllowedMimeTypes"/> is non-empty when the feature is enabled —
+    /// an empty allow-list would silently reject every image even though the operator turned
+    /// Scrying on.
+    /// </summary>
+    private static void ValidateScrying(ArcanumSettings settings, List<ConfigurationValidationError> errors)
+    {
+
+        ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
+
+        if (scrying.MaxImageBytes != ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "scrying.maxImageBytes",
+                $"Scrying.MaxImageBytes ({scrying.MaxImageBytes}) must be within the 1,024-20,971,520 byte clamp range."));
+
+        }
+
+        if (scrying.MaxImagesPerRequest != ArcanumSettingClamps.ScryingMaxImagesPerRequest(scrying.MaxImagesPerRequest))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "scrying.maxImagesPerRequest",
+                $"Scrying.MaxImagesPerRequest ({scrying.MaxImagesPerRequest}) must be within the 1-100 clamp range."));
+
+        }
+
+        if (scrying.Enabled && (scrying.AllowedMimeTypes is null || scrying.AllowedMimeTypes.Length == 0))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "scrying.allowedMimeTypes",
+                "Scrying.AllowedMimeTypes must not be empty when Scrying.Enabled is true."));
 
         }
 

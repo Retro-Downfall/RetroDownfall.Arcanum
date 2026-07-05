@@ -27,7 +27,7 @@ public sealed class ConfigurationStartupValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 
@@ -49,7 +49,7 @@ public sealed class ConfigurationStartupValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 

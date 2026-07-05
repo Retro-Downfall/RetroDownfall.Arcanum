@@ -52,6 +52,8 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["search_archives"] = ExecuteSearchArchivesAsync,
 
+            ["read_saga"] = ExecuteReadSagaAsync,
+
         };
 
         return handlers;

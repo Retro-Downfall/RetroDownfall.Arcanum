@@ -86,6 +86,13 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     /// </summary>
     public Func<ArcanumSettings, ArcanumSettings>? SettingsOverride { get; set; }
 
+    /// <summary>
+    /// Optional hook to replace/add DI registrations (e.g. swap <c>IWeaveService</c> for a hand-written
+    /// fake in RAG Phase 2/3 tests) on a dedicated, independently-constructed factory. Same
+    /// "must be set before the first client/host access" rule as <see cref="SettingsOverride"/>.
+    /// </summary>
+    public Action<IServiceCollection>? ServiceOverrides { get; set; }
+
     public HttpClient CreateAuthenticatedClient()
     {
 
@@ -186,6 +193,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
             services.AddSingleton<IOptionsSnapshot<ArcanumSettings>>(sp =>
                 new TestOptionsSnapshot<ArcanumSettings>(
                     sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue));
+
+            ServiceOverrides?.Invoke(services);
 
         });
 

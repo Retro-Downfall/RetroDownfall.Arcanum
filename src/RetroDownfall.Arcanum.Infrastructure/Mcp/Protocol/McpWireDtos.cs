@@ -244,6 +244,14 @@ public sealed record DeleteLoreParams([property: JsonPropertyName("key")] string
 public sealed record SearchArchivesParams([property: JsonPropertyName("query")] string Query);
 
 /// <summary>
+/// Arguments accepted by the in-process <c>read_saga</c> tool (RAG Phase 4 — semantic search over
+/// Saga long-term associative memory).
+/// </summary>
+public sealed record ReadSagaParams(
+    [property: JsonPropertyName("query")] string Query,
+    [property: JsonPropertyName("limit")] int? Limit = null);
+
+/// <summary>
 /// Arguments accepted by the in-process <c>adjust_initiative</c> tool (Unseen Servant dynamic polling).
 /// </summary>
 public sealed record AdjustInitiativeArgs

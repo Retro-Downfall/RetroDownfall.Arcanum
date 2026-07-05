@@ -115,7 +115,7 @@ public sealed class OpenAiV1ParityTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        _factory.FakeIntelligence.NextFailure = new Error("Ollama.Pull", "pull failed");
+        _factory.FakeIntelligence.NextFailure = new Error("Hub.Model", "model resolution failed");
 
         HttpClient client = _factory.CreateAuthenticatedClient();
 

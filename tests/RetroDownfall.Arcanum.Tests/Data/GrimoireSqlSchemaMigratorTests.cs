@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 {
 
-    private const int ExpectedMigrationCount = 12;
+    private const int ExpectedMigrationCount = 1;
 
     private readonly GrimoireFixture _fixture;
 
@@ -136,13 +136,13 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             InvokeApplyMigrationInTransactionAsync(
                 connection,
-                "20260508212137_InitialCreate",
+                "20260705171559_InitialCreate",
                 "CREATE TABLE broken_syntax (;",
                 CancellationToken.None));
 
         Assert.False(await HistoryTableExistsAsync(connection, CancellationToken.None));
 
-        Assert.False(await TableExistsAsync(connection, "Conversations", CancellationToken.None));
+        Assert.False(await TableExistsAsync(connection, "broken_syntax", CancellationToken.None));
 
     }
 
@@ -156,7 +156,7 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
 
-        const string lastMigrationId = "20260616020000_AddSessionQueryIndexes";
+        const string lastMigrationId = "20260705171559_InitialCreate";
 
         await using (SqliteCommand deleteHistory = connection.CreateCommand())
         {

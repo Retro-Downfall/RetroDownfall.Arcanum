@@ -16,6 +16,8 @@ internal static class ChildProcessEnvironmentScrubber
 
                 RemoveArcanumSecretVariables(startInfo.Environment);
 
+                RemoveHijackableEnvironmentVariables(startInfo.Environment);
+
                 break;
 
             case ChildProcessEnvironmentProfile.SpellScript:
@@ -62,6 +64,44 @@ internal static class ChildProcessEnvironmentScrubber
         {
 
             if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
+            {
+
+                environment.Remove(key);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Removes environment variables that can hijack a spawned tool's behavior — dynamic
+    /// linker/interpreter preload hooks (<c>LD_*</c>, <c>DYLD_*</c>, <c>PYTHONPATH</c>,
+    /// <c>NODE_OPTIONS</c>, ...), credential-phishing SSH/Git helpers (<c>GIT_SSH_COMMAND</c>,
+    /// <c>*_ASKPASS</c>), TLS key logging, and proxy redirection — mirroring the same denylist MCP
+    /// child processes are scrubbed against by default (see
+    /// <see cref="McpSecurityLimits.IsBlockedEnvironmentVariable"/>). <c>PATH</c> is deliberately
+    /// preserved: unlike an MCP server (a single operator-configured executable), <c>execute_command</c>'s
+    /// entire purpose is running arbitrary shell commands that need normal PATH resolution to work at all.
+    /// </summary>
+    internal static void RemoveHijackableEnvironmentVariables(IDictionary<string, string?> environment)
+    {
+
+        ArgumentNullException.ThrowIfNull(environment);
+
+        string[] keys = environment.Keys.ToArray();
+
+        foreach (string key in keys)
+        {
+
+            if (key.Equals("PATH", StringComparison.OrdinalIgnoreCase))
+            {
+
+                continue;
+
+            }
+
+            if (McpSecurityLimits.IsBlockedEnvironmentVariable(key))
             {
 
                 environment.Remove(key);

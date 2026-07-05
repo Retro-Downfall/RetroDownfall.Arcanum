@@ -14,18 +14,7 @@ internal static class GrimoireSqlSchemaMigrator
 
     private static readonly string[] MigrationOrder =
     [
-        "20260508212137_InitialCreate",
-        "20260508215834_AddChatMessagesFts",
-        "20260509005818_AddCampaignLogFields",
-        "20260509195722_EvolveWorkspaceContextForChronosync",
-        "20260510205005_AddTotalTokensUsed",
-        "20260615225822_AddTheForgeCampaignsAndPrompts",
-        "20260615234706_AddApprentices",
-        "20260616001002_AddCampaignSanctumConfig",
-        "20260616010843_RenameSessionAndEntry",
-        "20260616020000_AddSessionQueryIndexes",
-        "20260703150000_AddUnseenServantWatermarks",
-        "20260703160000_AddSanctumBreaches",
+        "20260705171559_InitialCreate",
     ];
 
     private const string ResourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.SqlMigrations.";

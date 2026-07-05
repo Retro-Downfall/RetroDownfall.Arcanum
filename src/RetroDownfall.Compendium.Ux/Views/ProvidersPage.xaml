@@ -50,13 +50,13 @@
                                                        Placeholder="Local Ollama" />
 
                                 <controls:LabeledPicker Label="Type"
-                                                        Description="Backend kind: Ollama (local OllamaSharp), OpenAI Compatible (any OpenAI-shaped HTTP API), or Llama Cpp Server (spawned local llama-server)."
+                                                        Description="Backend kind: OpenAI Compatible (any OpenAI-shaped HTTP API, including Ollama via its /v1 endpoint), or Llama Cpp Server (spawned local llama-server)."
                                                         PickerTitle="Select type"
                                                         ItemsSource="{Binding Source={RelativeSource AncestorType={x:Type ContentPage}}, Path=BindingContext.ProviderKinds}"
                                                         SelectedItem="{Binding Type, Mode=TwoWay}" />
 
                                 <controls:LabeledEntry Label="Endpoint"
-                                                       Description="Base URL for the provider API. Ollama: http://localhost:11434. OpenAI-compatible usually includes /v1. Ignored for LlamaCppServer."
+                                                       Description="Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1). Ignored for LlamaCppServer."
                                                        Text="{Binding Endpoint, Mode=TwoWay}"
                                                        Placeholder="https://api.openai.com/v1" />
 
@@ -66,9 +66,54 @@
                                                        IsPassword="True"
                                                        Placeholder="sk-..." />
 
-                                <controls:ChipsEditor Label="Models"
-                                                      Description="Model IDs advertised by this provider. Must include the DefaultModel and FastModel if those reference this provider."
-                                                      Text="{Binding Models, Mode=TwoWay}" />
+                                <Label Text="Models"
+                                       FontAttributes="Bold" />
+
+                                <Label Text="Model IDs advertised by this provider, and whether each supports vision (Scrying). Must include the DefaultModel and FastModel if those reference this provider."
+                                       FontSize="12"
+                                       TextColor="{AppThemeBinding Light={StaticResource LightMuted}, Dark={StaticResource DarkMuted}}" />
+
+                                <CollectionView ItemsSource="{Binding Models}">
+
+                                    <CollectionView.ItemTemplate>
+
+                                        <DataTemplate>
+
+                                            <Grid ColumnDefinitions="*,Auto,Auto"
+                                                  ColumnSpacing="8"
+                                                  Padding="0,4">
+
+                                                <Entry Grid.Column="0"
+                                                       Text="{Binding Name, Mode=TwoWay}"
+                                                       Placeholder="gpt-4o" />
+
+                                                <HorizontalStackLayout Grid.Column="1"
+                                                                      Spacing="4"
+                                                                      VerticalOptions="Center">
+
+                                                    <Label Text="Vision"
+                                                           FontSize="12"
+                                                           VerticalOptions="Center" />
+
+                                                    <Switch IsToggled="{Binding SupportsVision, Mode=TwoWay}" />
+
+                                                </HorizontalStackLayout>
+
+                                                <Button Grid.Column="2"
+                                                        Text="Remove"
+                                                        Command="{Binding Source={RelativeSource AncestorType={x:Type Border}}, Path=BindingContext.RemoveModelCommand}"
+                                                        CommandParameter="{Binding .}" />
+
+                                            </Grid>
+
+                                        </DataTemplate>
+
+                                    </CollectionView.ItemTemplate>
+
+                                </CollectionView>
+
+                                <Button Text="Add Model"
+                                        Command="{Binding AddModelCommand}" />
 
                                 <controls:LabeledStepper Label="Context window limit"
                                                          Description="Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152."

@@ -39,8 +39,6 @@ public sealed class EnumToStringConverterTests
 
         EnumToStringConverter converter = new();
 
-        Assert.Equal("Ollama", (string)converter.Convert(AiProviderKind.Ollama, null, null, null));
-
         Assert.Equal("OpenAI Compatible", (string)converter.Convert(AiProviderKind.OpenAICompatible, null, null, null));
 
         Assert.Equal("Llama Cpp Server", (string)converter.Convert(AiProviderKind.LlamaCppServer, null, null, null));

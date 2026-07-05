@@ -198,6 +198,134 @@ public sealed class SemanticRouterTests
         Assert.Contains("it`s fine", user.Text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task DetermineActiveSpellAsync_NullCandidates_OffersFullCatalogToLlm()
+    {
+        FakeChatClient client = new()
+        {
+            NextText = """{"spellName":"NONE"}""",
+        };
+
+        List<SpellMetadata> spells =
+        [
+            new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md"),
+            new SpellMetadata("Beta", "beta desc", "/b/SPELL.md"),
+        ];
+
+        await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "any prompt",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None,
+            candidates: null);
+
+        MeAiChatMessage user = client.Calls[0].Messages[0];
+
+        Assert.Contains("Alpha", user.Text, StringComparison.Ordinal);
+
+        Assert.Contains("Beta", user.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DetermineActiveSpellAsync_NonNullCandidates_OffersOnlyCandidatesToLlm()
+    {
+        FakeChatClient client = new()
+        {
+            NextText = """{"spellName":"Alpha"}""",
+        };
+
+        List<SpellMetadata> spells =
+        [
+            new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md"),
+            new SpellMetadata("Beta", "beta desc", "/b/SPELL.md"),
+            new SpellMetadata("Gamma", "gamma desc", "/g/SPELL.md"),
+        ];
+
+        List<SpellMetadata> candidates = [spells[0]];
+
+        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "any prompt",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None,
+            candidates: candidates);
+
+        MeAiChatMessage user = client.Calls[0].Messages[0];
+
+        Assert.Contains("Alpha", user.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Beta", user.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Gamma", user.Text, StringComparison.Ordinal);
+
+        // Name resolution runs against the offered candidate set, so a match within that set still
+        // resolves correctly.
+        Assert.Equal("Alpha", result!.Name);
+    }
+
+    [Fact]
+    public async Task DetermineActiveSpellAsync_ResponseNamesSpellOutsideCandidates_ReturnsNull()
+    {
+
+        // A hallucinated (or otherwise out-of-set) response naming a real spell that exists in the
+        // full catalog but was never offered to the LLM (not in `candidates`) must not resolve —
+        // otherwise the whole point of the top-K candidate filter would be silently defeated.
+        FakeChatClient client = new()
+        {
+            NextText = """{"spellName":"Gamma"}""",
+        };
+
+        List<SpellMetadata> spells =
+        [
+            new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md"),
+            new SpellMetadata("Beta", "beta desc", "/b/SPELL.md"),
+            new SpellMetadata("Gamma", "gamma desc", "/g/SPELL.md"),
+        ];
+
+        List<SpellMetadata> candidates = [spells[0], spells[1]];
+
+        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "any prompt",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None,
+            candidates: candidates);
+
+        Assert.Null(result);
+
+    }
+
+    [Fact]
+    public async Task DetermineActiveSpellAsync_EmptyCandidatesList_ReturnsNullWithoutCallingLlm()
+    {
+        FakeChatClient client = new();
+
+        List<SpellMetadata> spells = [new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md")];
+
+        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "any prompt",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None,
+            candidates: []);
+
+        Assert.Null(result);
+
+        Assert.Empty(client.Calls);
+    }
+
     private sealed class FakeChatClient : IChatClient
     {
 

@@ -11,7 +11,6 @@ ALLOWED=(
   'Spectre.Console.Cli'
   'Microsoft.EntityFrameworkCore'
   'Serilog'
-  'OllamaSharp'
   'Microsoft.AspNetCore.Mvc'
   'SpatialiteLoader'
   'DependencyContext'

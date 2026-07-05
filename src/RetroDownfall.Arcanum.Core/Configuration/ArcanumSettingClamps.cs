@@ -299,5 +299,31 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsRequestTimeoutSeconds(int value) => Math.Clamp(value, 5, 300);
 
+    public static int EmbeddingsEmbeddingQueueIntervalSeconds(int value) => Math.Clamp(value, 1, 300);
+
+    public static int EmbeddingsCodebaseMaxFilesToIndex(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int EmbeddingsCodebaseMaxFileSizeChars(int value) => Math.Clamp(value, 1_000, 500_000);
+
+    public static int EmbeddingsCodebaseIndexingIntervalMinutes(int value) => Math.Clamp(value, 5, 1_440);
+
+    public static int EmbeddingsCodebaseMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
+
+    public static int EmbeddingsSagaMaxMemoriesPerSession(int value) => Math.Clamp(value, 1, 1_000);
+
+    public static int EmbeddingsSagaMaxMemoriesTotal(int value) => Math.Clamp(value, 100, 1_000_000);
+
+    public static int EmbeddingsSagaExtractionMaxTokens(int value) => Math.Clamp(value, 100, 4_096);
+
+    public static int EmbeddingsSagaExtractionIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);
+
+    public static int EmbeddingsSagaExtractionWindowEntries(int value) => Math.Clamp(value, 2, 50);
+
+    public static int EmbeddingsSpellRoutingHybridTopK(int value) => Math.Clamp(value, 1, 20);
+
+    public static long ScryingMaxImageBytes(long value) => Math.Clamp(value, 1024L, 20L * 1024L * 1024L);
+
+    public static int ScryingMaxImagesPerRequest(int value) => Math.Clamp(value, 1, 100);
+
 }
 

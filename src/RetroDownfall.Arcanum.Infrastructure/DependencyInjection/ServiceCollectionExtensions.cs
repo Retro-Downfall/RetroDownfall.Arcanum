@@ -203,7 +203,26 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
         services.AddSingleton<WeaveIndexAvailability>();
         services.AddScoped<IDivinationService, DivinationService>();
+        services.AddSingleton<SpellWeaveCache>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
+
+        // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until their feature
+        // flags are enabled (Arcanum:Embeddings:SessionSearchEnabled / CodebaseRetrievalEnabled), so
+        // registering them unconditionally is safe on the hot path. Registered after
+        // GrimoireDatabaseHostedService so the Grimoire (and The Weave's schema) is guaranteed ready
+        // before either service's first tick can run any query.
+        services.AddHostedService<EntryWeavingService>();
+
+        services.AddSingleton<WorkspaceIndexingService>();
+        services.AddSingleton<IWorkspaceIndexingService>(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
+        services.AddHostedService(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
+
+        // RAG Phase 4 — Saga extraction is event-driven (enqueued by WizardIntelligenceProvider after a
+        // successful turn), not polling, so registering it unconditionally is safe on the hot path.
+        // Registered as a singleton (not just a hosted service) so the hub can resolve it directly to
+        // call EnqueueExtraction, mirroring WorkspaceIndexingService's singleton+hosted-factory pattern.
+        services.AddSingleton<SagaExtractionService>();
+        services.AddHostedService(static sp => sp.GetRequiredService<SagaExtractionService>());
 
         services.AddHostedService<ArcanumSettingsClampStartupLogger>();
 
@@ -214,6 +233,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();
 
         services.AddScoped<ISanctumBreachRepository, SanctumBreachRepository>();
+
+        services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();

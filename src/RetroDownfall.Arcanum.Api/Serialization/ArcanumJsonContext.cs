@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -106,6 +107,11 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(Result<RetroDownfall.Arcanum.Core.TheForge.SessionExportResult>))]
 [JsonSerializable(typeof(Result<RetroDownfall.Arcanum.Core.TheForge.SessionQueryResult>))]
 [JsonSerializable(typeof(Result<RetroDownfall.Arcanum.Core.TheForge.EntryDto>))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.SemanticSearchRequest))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.SemanticSessionSearchResult))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.SemanticSessionSearchResult[]))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.SemanticSearchResult))]
+[JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.TheForge.SemanticSearchResult>))]
 [JsonSerializable(typeof(SessionSettings))]
 [JsonSerializable(typeof(LoreDto))]
 [JsonSerializable(typeof(List<LoreDto>))]
@@ -184,6 +190,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(OpenAiModel))]
 [JsonSerializable(typeof(OpenAiModelListResponse))]
 [JsonSerializable(typeof(List<OpenAiModel>))]
+[JsonSerializable(typeof(ChronicleFrameWire))]
 [JsonSerializable(typeof(PromptResponseDto))]
 [JsonSerializable(typeof(PromptToolCall))]
 [JsonSerializable(typeof(List<PromptToolCall>))]
@@ -249,6 +256,18 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(Result<FileEntry>))]
 [JsonSerializable(typeof(Result<FileListResult>))]
 [JsonSerializable(typeof(Result<FileReadResult>))]
+[JsonSerializable(typeof(WorkspaceSemanticSearchRequest))]
+[JsonSerializable(typeof(WorkspaceSearchResult))]
+[JsonSerializable(typeof(WorkspaceSearchResult[]))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceSearchResult[]>))]
+[JsonSerializable(typeof(SagaMemoryDto))]
+[JsonSerializable(typeof(SagaMemoryDto[]))]
+[JsonSerializable(typeof(SagaSearchRequest))]
+[JsonSerializable(typeof(SagaSearchResult))]
+[JsonSerializable(typeof(SagaStats))]
+[JsonSerializable(typeof(ApiResponse<SagaMemoryDto[]>))]
+[JsonSerializable(typeof(ApiResponse<SagaSearchResult>))]
+[JsonSerializable(typeof(ApiResponse<SagaStats>))]
 [JsonSerializable(typeof(FileWriteRequest))]
 [JsonSerializable(typeof(FileWriteResult))]
 [JsonSerializable(typeof(TextBlockReplaceRequest))]
@@ -268,6 +287,10 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ProviderSettings))]
 [JsonSerializable(typeof(ProviderSettings[]))]
 [JsonSerializable(typeof(AiProviderKind))]
+[JsonSerializable(typeof(ModelEntry))]
+[JsonSerializable(typeof(ScryingSettings))]
+[JsonSerializable(typeof(ScryingFocusDto))]
+[JsonSerializable(typeof(List<ScryingFocusDto>))]
 [JsonSerializable(typeof(ModelInfoDto))]
 [JsonSerializable(typeof(ModelInfoDto[]))]
 [JsonSerializable(typeof(ApiResponse<ModelInfoDto[]>))]

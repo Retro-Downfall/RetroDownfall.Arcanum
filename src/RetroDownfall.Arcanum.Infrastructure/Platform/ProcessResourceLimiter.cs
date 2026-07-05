@@ -153,7 +153,63 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
             ? null
             : _ => DeleteCgroupAsync(cgroupPath);
 
-        return new ProcessResourceLimiterResult(null, cleanup);
+        Func<Task<bool>>? wasOomKilled = cgroupPath is null
+            ? null
+            : () => Task.FromResult(WasOomKilled(cgroupPath));
+
+        return new ProcessResourceLimiterResult(null, cleanup, wasOomKilled);
+
+    }
+
+    /// <summary>
+    /// Reads the cgroup's <c>memory.events</c> file (present for the lifetime of the cgroup
+    /// directory, even after its last process has exited) and checks whether the kernel's OOM
+    /// killer actually fired for this scope. This is the authoritative signal that a SIGKILL exit
+    /// was actually caused by the configured <c>memory.max</c> limit, as opposed to an unrelated
+    /// external <c>kill -9</c> or a system-wide OOM event outside this cgroup.
+    /// </summary>
+    private bool WasOomKilled(string cgroupPath)
+    {
+
+        try
+        {
+
+            string eventsPath = Path.Combine(cgroupPath, "memory.events");
+
+            if (!File.Exists(eventsPath))
+            {
+
+                return false;
+
+            }
+
+            foreach (string line in File.ReadLines(eventsPath))
+            {
+
+                string[] parts = line.Split(' ', 2, StringSplitOptions.TrimEntries);
+
+                if (parts.Length == 2
+                    && parts[0].Equals("oom_kill", StringComparison.Ordinal)
+                    && long.TryParse(parts[1], CultureInfo.InvariantCulture, out long oomKillCount))
+                {
+
+                    return oomKillCount > 0;
+
+                }
+
+            }
+
+            return false;
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            logger?.LogDebug(ex, "Could not read cgroups v2 memory.events to confirm an OOM kill.");
+
+            return false;
+
+        }
 
     }
 

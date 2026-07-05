@@ -36,9 +36,19 @@ public sealed record ResourceLimitError(string Message);
 /// with the started child's PID in a <c>finally</c> block once the process has exited. Null on
 /// macOS, Windows, and the setrlimit/ulimit fallback paths, which have nothing to clean up.
 /// </param>
+/// <param name="WasOomKilledAsync">
+/// Non-null only when the limiter enforces memory via a mechanism that records authoritative OOM
+/// evidence (a Linux cgroups v2 scope's <c>memory.events</c> <c>oom_kill</c> counter). When present,
+/// callers observing a SIGKILL/SIGSEGV exit code should use this to confirm the configured memory
+/// limit was the actual cause before attributing the kill to it — a bare exit code alone cannot
+/// distinguish a Sanctum-enforced OOM kill from an unrelated external <c>kill -9</c> or a
+/// system-wide OOM event. Null when no such evidence is available (macOS/Windows setrlimit-only
+/// enforcement), in which case callers fall back to exit-code heuristics alone.
+/// </param>
 public sealed record ProcessResourceLimiterResult(
     ResourceLimitError? Error,
-    Func<int, Task>? CleanupAsync);
+    Func<int, Task>? CleanupAsync,
+    Func<Task<bool>>? WasOomKilledAsync = null);
 
 /// <summary>
 /// Applies OS-enforced resource limits (CPU time, memory, open file descriptors) to a child

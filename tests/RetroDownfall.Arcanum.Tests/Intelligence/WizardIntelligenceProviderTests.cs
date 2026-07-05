@@ -1,9 +1,11 @@
+using System.Data;
+using System.Data.Common;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
-using OllamaSharp;
-using OllamaSharp.Models;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -16,10 +18,15 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -1292,250 +1299,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario42_OllamaBuffered_ModelAlreadyLocal_Succeeds()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueText("ollama local");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            LocalModels = [new Model { Name = ModelName }],
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11442")));
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true },
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.Equal("ollama local", result.Value!.Text);
-
-        Assert.Equal(1, ollama.ListLocalModelsCallCount);
-
-        Assert.Equal(0, ollama.PullCallCount);
-
-    }
-
-    [Fact]
-    public async Task Scenario43_OllamaBuffered_ModelPullSucceeds_DownloadsThenInfers()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueText("pulled ok");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            LocalModels = [],
-            PullResponses =
-            [
-                new PullModelResponse { Status = "pulling", Completed = 50, Total = 100 },
-                new PullModelResponse { Status = "success", Completed = 100, Total = 100 },
-            ],
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11443")));
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with { Prompt = "pull", SkipSpellRouting = true, DisableMcpTools = true },
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.Equal("pulled ok", result.Value!.Text);
-
-        Assert.Equal(1, ollama.PullCallCount);
-
-    }
-
-    [Fact]
-    public async Task Scenario44_OllamaBuffered_ModelPullFails_ReturnsOllamaPullError()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueText("unused");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            LocalModels = [],
-            PullException = new InvalidOperationException("network down"),
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11444")));
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with { Prompt = "pull fail", SkipSpellRouting = true, DisableMcpTools = true },
-            CancellationToken.None);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal("Ollama.Pull", result.Error.Code);
-
-    }
-
-    [Fact]
-    public async Task Scenario45_OllamaBuffered_ListModelsFails_ReturnsListModelsError()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueText("unused");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            ListModelsException = new HttpRequestException("ollama offline"),
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11445")));
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with { Prompt = "list fail", SkipSpellRouting = true, DisableMcpTools = true },
-            CancellationToken.None);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal("Ollama.ListModels", result.Error.Code);
-
-    }
-
-    [Fact]
-    public async Task Scenario46_OllamaStream_ModelAlreadyLocal_EmitsCheckingStatus()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueStreamTokens("stream local");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            LocalModels = [new Model { Name = ModelName }],
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11446")));
-
-        List<IntelligenceEvent> events = await CollectStreamAsync(
-            wizard,
-            BaseRequest() with { Prompt = "stream", SkipSpellRouting = true, DisableMcpTools = true });
-
-        Assert.Contains(
-            events,
-            static e => e.Type == IntelligenceEventType.Status
-                && e.Message.Contains("Checking local availability", StringComparison.Ordinal));
-
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
-
-        Assert.Equal(0, ollama.PullCallCount);
-
-    }
-
-    [Fact]
-    public async Task Scenario47_OllamaStream_ModelPull_EmitsDownloadProgress()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueStreamTokens("after pull");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            LocalModels = [],
-            PullResponses =
-            [
-                new PullModelResponse { Status = "pulling", Completed = 25, Total = 100 },
-                new PullModelResponse { Status = "pulling", Completed = 100, Total = 100 },
-            ],
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11447")));
-
-        List<IntelligenceEvent> events = await CollectStreamAsync(
-            wizard,
-            BaseRequest() with { Prompt = "pull stream", SkipSpellRouting = true, DisableMcpTools = true });
-
-        Assert.Contains(
-            events,
-            static e => e.Type == IntelligenceEventType.Status
-                && e.Message.Contains("Downloading model", StringComparison.Ordinal)
-                && e.Message.Contains('%'));
-
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
-
-    }
-
-    [Fact]
-    public async Task Scenario48_OllamaStream_ModelPullMoveNextFails_EmitsPullError()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueStreamTokens("unused");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            LocalModels = [],
-            PullMoveNextException = new InvalidOperationException("pull stream broke"),
-            ThrowOnFirstPullMove = true,
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11448")));
-
-        List<IntelligenceEvent> events = await CollectStreamAsync(
-            wizard,
-            BaseRequest() with { Prompt = "pull fail stream", SkipSpellRouting = true, DisableMcpTools = true });
-
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
-
-        Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Result);
-
-    }
-
-    [Fact]
-    public async Task Scenario49_OllamaStream_ListModelsFails_EmitsListModelsError()
-    {
-
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueStreamTokens("unused");
-
-        FakeOllamaApiClient ollama = new()
-        {
-            ListModelsException = new HttpRequestException("cannot list"),
-        };
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            factory: new OllamaScriptingChatClientFactory(chat, ollama, OllamaProvider("http://127.0.0.1:11449")));
-
-        List<IntelligenceEvent> events = await CollectStreamAsync(
-            wizard,
-            BaseRequest() with { Prompt = "list fail stream", SkipSpellRouting = true, DisableMcpTools = true });
-
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
-
-        Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Result);
-
-    }
-
-    [Fact]
     public async Task Scenario50_SanctumStrict_BlocksWriteFile()
     {
 
@@ -2070,6 +1833,875 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    // --- RAG Phase 3 — semantic context injection scenarios ---
+
+    [Fact]
+    public async Task ScenarioRag01_CodebaseRetrievalEnabled_InjectsSemanticContextIntoSystemPrompt()
+    {
+        string dbPath = Path.Combine(_workspace.Root, $"rag-{Guid.NewGuid():N}.db");
+
+        await using ArcanumDbContext db = CreateWorkspaceChunksDbContext(dbPath);
+
+        await SeedWorkspaceFileChunkAsync(db, _workspace.Root, "src/Foo.cs", chunkId: "chunk-1", content: "public class Foo {}");
+
+        FakeRagWeaveService weave = new() { Available = true };
+
+        FakeRagDivinationService divination = new()
+        {
+            Results = [new DivinationResult("chunk-1", 0.95f, EmptyDivinationMetadata)],
+        };
+
+        FakeRagWorkspaceIndexingService indexing = new();
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, CodebaseRetrievalEnabled = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            weaveService: weave,
+            divinationService: divination,
+            workspaceIndexingService: indexing,
+            db: db);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "how does Foo work?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.Contains("### Semantic Context (Retrieved Codebase)", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains("src/Foo.cs", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains("public class Foo {}", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains(_workspace.Root, indexing.RegisteredPaths);
+
+    }
+
+    [Fact]
+    public async Task ScenarioRag02_EmbeddingFailure_DegradesGracefully_NoSemanticContext()
+    {
+        FakeRagWeaveService weave = new() { Available = true, FailEmbed = true };
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, CodebaseRetrievalEnabled = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, weaveService: weave);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.DoesNotContain("Semantic Context", systemPrompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ScenarioRag03_Disabled_NeverRegistersWorkspace_NoSemanticContext()
+    {
+        FakeRagWorkspaceIndexingService indexing = new();
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        // DefaultSettings() leaves Embeddings at its all-false default.
+        WizardIntelligenceProvider wizard = CreateWizard(chat, workspaceIndexingService: indexing);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.DoesNotContain("Semantic Context", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Empty(indexing.RegisteredPaths);
+
+    }
+
+    [Fact]
+    public async Task ScenarioRag04_EmptyWorkingDirectory_NoSemanticContext_EvenWhenEnabled()
+    {
+        FakeRagWorkspaceIndexingService indexing = new();
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, CodebaseRetrievalEnabled = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, workspaceIndexingService: indexing);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = string.Empty },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.DoesNotContain("Semantic Context", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Empty(indexing.RegisteredPaths);
+
+    }
+
+    [Fact]
+    public async Task ScenarioSaga01_SagaEnabled_InjectsSagaMemoriesIntoSystemPrompt()
+    {
+        FakeRagWeaveService weave = new() { Available = true };
+
+        FakeRagDivinationService divination = new()
+        {
+            Results = [new DivinationResult("memory-1", 0.88f, EmptyDivinationMetadata)],
+        };
+
+        FakeSagaMemoryStore store = new();
+
+        store.Memories["memory-1"] = new SagaMemoryDto(
+            "memory-1",
+            "The operator prefers dark mode.",
+            new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+            SessionId: null,
+            Tags: null,
+            Source: "extraction");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, SagaEnabled = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            weaveService: weave,
+            divinationService: divination,
+            sagaMemoryStore: store);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "what theme do I like?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.Contains("### Saga (Associative Memory)", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains("The operator prefers dark mode.", systemPrompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ScenarioSaga02_EmbeddingFailure_DegradesGracefully_NoSagaMemories()
+    {
+        FakeRagWeaveService weave = new() { Available = true, FailEmbed = true };
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, SagaEnabled = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, weaveService: weave);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.DoesNotContain("Saga (Associative Memory)", systemPrompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ScenarioSaga03_Disabled_NoSagaMemories_NoEmbedCall()
+    {
+        FakeRagWeaveService weave = new() { Available = true };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        // DefaultSettings() leaves Embeddings at its all-false default (Saga disabled too).
+        WizardIntelligenceProvider wizard = CreateWizard(chat, weaveService: weave);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.DoesNotContain("Saga (Associative Memory)", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Equal(0, weave.EmbedCallCount);
+
+    }
+
+    [Fact]
+    public async Task ScenarioSaga04_CodebaseAndSagaBothEnabled_EmbedsQueryOnceNotTwice()
+    {
+        string dbPath = Path.Combine(_workspace.Root, $"rag-{Guid.NewGuid():N}.db");
+
+        await using ArcanumDbContext db = CreateWorkspaceChunksDbContext(dbPath);
+
+        await SeedWorkspaceFileChunkAsync(db, _workspace.Root, "src/Foo.cs", chunkId: "chunk-1", content: "public class Foo {}");
+
+        FakeRagWeaveService weave = new() { Available = true };
+
+        FakeRagDivinationService divination = new()
+        {
+            Results = [new DivinationResult("chunk-1", 0.95f, EmptyDivinationMetadata)],
+        };
+
+        FakeSagaMemoryStore store = new();
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, CodebaseRetrievalEnabled = true, SagaEnabled = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            weaveService: weave,
+            divinationService: divination,
+            sagaMemoryStore: store,
+            db: db);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "how does Foo work?", SkipSpellRouting = true, DisableMcpTools = true, WorkingDirectory = _workspace.Root },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        // Both RetrieveSemanticContextAsync (Phase 3) and RetrieveSagaMemoriesAsync (Phase 4) need the
+        // same query embedding this turn — ResolveRagQueryEmbeddingAsync/EmbedQueryAsync must compute
+        // it exactly once and share it, never embedding the same prompt twice.
+        Assert.Equal(1, weave.EmbedCallCount);
+
+    }
+
+    [Fact]
+    public async Task ScenarioSpell01_PureEmbeddingRouting_SelectsSpellWithoutLlmRouterCall()
+    {
+        await CreateSpellWithDescriptionAsync("alpha", "Alpha", "Alpha spell for testing dark mode preferences", body: "alpha body");
+
+        await CreateSpellWithDescriptionAsync("beta", "Beta", "Beta spell unrelated to anything", body: "beta body");
+
+        FakeRagWeaveService weave = new() { Available = true, QueryVector = [1f, 0f, 0f] };
+
+        weave.BatchVectorsByText["Alpha spell for testing dark mode preferences"] = [1f, 0f, 0f];
+
+        weave.BatchVectorsByText["Beta spell unrelated to anything"] = [0f, 1f, 0f];
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Embeddings = new EmbeddingSettings
+            {
+                Enabled = true,
+                SemanticSpellRoutingEnabled = true,
+                SpellRoutingHybridMode = false,
+                SimilarityThreshold = 0.5f,
+            },
+        };
+
+        ScriptingChatClient chat = new();
+
+        // Only the final answer is scripted: if SemanticSpellRouter fell back to the LLM router, that
+        // fallback call would consume this response and the real inference call would fail with "No
+        // scripted buffered response remaining" instead of succeeding.
+        chat.EnqueueText("alpha answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, weaveService: weave);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "what theme do I like?",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = false,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.Contains("### Active Operational Spell (Alpha)", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains("alpha body", systemPrompt, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Beta", systemPrompt, StringComparison.Ordinal);
+
+    }
+
+    // === Scrying (vision/multimodality) capability gate ===
+
+    [Fact]
+    public async Task ScenarioScrying01_NonVisionModel_RejectsWithVisionNotSupported()
+    {
+
+        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient());
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "describe this",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Scrying.VisionNotSupported, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying02_VisionCapableModel_AcceptsImageAndSucceeds()
+    {
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsVision: true)] }],
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("I see a red square");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "describe this",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("I see a red square", result.Value!.Text);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying03_FeatureDisabled_RejectsEvenForVisionCapableModel()
+    {
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsVision: true)] }],
+            Scrying = new ScryingSettings { Enabled = false },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient(), settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "describe this",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Scrying.FeatureDisabled, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying04_TooManyImages_ReturnsValidationError()
+    {
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsVision: true)] }],
+            Scrying = new ScryingSettings { MaxImagesPerRequest = 1 },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient(), settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "describe these",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci =
+                [
+                    new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png"),
+                    new ScryingFocusDto(Convert.ToBase64String([4, 5, 6]), "image/png"),
+                ],
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Scrying.TooManyImages, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying05_ImageTooLarge_ReturnsValidationError()
+    {
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsVision: true)] }],
+            Scrying = new ScryingSettings { MaxImageBytes = 1024 },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient(), settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "describe this",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci = [new ScryingFocusDto(new string('A', 4000), "image/png")],
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Scrying.ImageTooLarge, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying06_UnsupportedMimeType_ReturnsValidationError()
+    {
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers = [DefaultProvider() with { Models = [new ModelEntry(ModelName, SupportsVision: true)] }],
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient(), settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "describe this",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/tiff")],
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Scrying.UnsupportedMimeType, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying07_StreamNonVisionModel_EmitsErrorEvent()
+    {
+
+        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient());
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "describe this",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ScryingFoci = [new ScryingFocusDto(Convert.ToBase64String([1, 2, 3]), "image/png")],
+            });
+
+        IntelligenceEvent errorEvent = Assert.Single(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Contains("vision", errorEvent.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ScenarioScrying08_NoImages_SkipsGateEntirely()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("no images here");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyDivinationMetadata = new Dictionary<string, string>(0);
+
+    private static string ExtractSystemPromptText(IReadOnlyList<MeAiChatMessage> messages)
+    {
+        MeAiChatMessage? systemMessage = messages.FirstOrDefault(static m => m.Role == ChatRole.System);
+
+        Assert.NotNull(systemMessage);
+
+        return systemMessage.Text;
+    }
+
+    private static ArcanumDbContext CreateWorkspaceChunksDbContext(string dbPath)
+    {
+        DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
+            .UseSqlite($"Data Source={dbPath}")
+            .UseModel(ArcanumDbContextModel.Instance)
+            .Options;
+
+        return new ArcanumDbContext(options, new UnusedSecretStore(), new UnusedPassphraseSource());
+    }
+
+    private static async Task SeedWorkspaceFileChunkAsync(
+        ArcanumDbContext db,
+        string workspacePath,
+        string relativePath,
+        string chunkId,
+        string content)
+    {
+        DbConnection connection = db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using DbCommand createCmd = connection.CreateCommand();
+
+        createCmd.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS workspace_file_chunks (
+                ChunkId TEXT PRIMARY KEY,
+                WorkspacePath TEXT NOT NULL,
+                RelativePath TEXT NOT NULL,
+                ChunkIndex INTEGER NOT NULL,
+                Content TEXT NOT NULL,
+                CharOffset INTEGER NOT NULL,
+                CharLength INTEGER NOT NULL,
+                FileLastWriteTime TEXT NOT NULL,
+                IndexedAt TEXT NOT NULL
+            );
+            """;
+
+        _ = await createCmd.ExecuteNonQueryAsync();
+
+        await using DbCommand insertCmd = connection.CreateCommand();
+
+        insertCmd.CommandText =
+            """
+            INSERT INTO workspace_file_chunks
+                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset, CharLength, FileLastWriteTime, IndexedAt)
+            VALUES
+                (@chunkId, @workspacePath, @relativePath, 0, @content, 0, @charLength, @now, @now)
+            """;
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        AddParameter(insertCmd, "@chunkId", chunkId);
+
+        AddParameter(insertCmd, "@workspacePath", workspacePath);
+
+        AddParameter(insertCmd, "@relativePath", relativePath);
+
+        AddParameter(insertCmd, "@content", content);
+
+        AddParameter(insertCmd, "@charLength", content.Length);
+
+        AddParameter(insertCmd, "@now", now.ToString("o"));
+
+        _ = await insertCmd.ExecuteNonQueryAsync();
+
+    }
+
+    private static void AddParameter(DbCommand cmd, string name, object value)
+    {
+        DbParameter parameter = cmd.CreateParameter();
+
+        parameter.ParameterName = name;
+
+        parameter.Value = value;
+
+        cmd.Parameters.Add(parameter);
+    }
+
+    private sealed class FakeRagWeaveService : IWeaveService
+    {
+
+        public bool Available { get; set; } = true;
+
+        public bool FailEmbed { get; set; }
+
+        public float[] QueryVector { get; set; } = [1f, 0f, 0f];
+
+        public int EmbedCallCount { get; private set; }
+
+        public bool IsAvailable => Available;
+
+        public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
+        {
+            EmbedCallCount++;
+
+            if (FailEmbed)
+            {
+                return Task.FromResult(Result<Embedding<float>>.Failure(
+                    new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure.")));
+            }
+
+            return Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(QueryVector)));
+        }
+
+        /// <summary>RAG Phase 5 — per-description vectors for <see cref="SpellWeaveCache"/> scenarios; falls back to <see cref="QueryVector"/> for any text not registered here.</summary>
+        public Dictionary<string, float[]> BatchVectorsByText { get; } = new(StringComparer.Ordinal);
+
+        public bool FailEmbedBatch { get; set; }
+
+        public int EmbedBatchCallCount { get; private set; }
+
+        public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
+        {
+            EmbedBatchCallCount++;
+
+            if (FailEmbedBatch)
+            {
+                return Task.FromResult(Result<Embedding<float>[]>.Failure(
+                    new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated batch embedding failure.")));
+            }
+
+            Embedding<float>[] result = new Embedding<float>[texts.Count];
+
+            for (int i = 0; i < texts.Count; i++)
+            {
+                float[] vector = BatchVectorsByText.TryGetValue(texts[i], out float[]? registered) ? registered : QueryVector;
+
+                result[i] = new Embedding<float>(vector);
+            }
+
+            return Task.FromResult(Result<Embedding<float>[]>.Success(result));
+        }
+
+        public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Not used by WizardIntelligenceProvider's semantic context retrieval.");
+
+    }
+
+    private sealed class FakeRagDivinationService : IDivinationService
+    {
+
+        public DivinationResult[] Results { get; set; } = [];
+
+        public bool Fail { get; set; }
+
+        public Task<Result<DivinationResult[]>> SearchAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken)
+        {
+
+            if (Fail)
+            {
+                return Task.FromResult(Result<DivinationResult[]>.Failure(
+                    new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated search failure.")));
+            }
+
+            return Task.FromResult(Result<DivinationResult[]>.Success(Results));
+
+        }
+
+        public Task<Result<DivinationResult[]>> SearchScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            string scopeTableName,
+            string scopeJoinColumn,
+            string scopeFilterColumn,
+            string scopeFilterValue,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
+
+    }
+
+    private sealed class FakeRagWorkspaceIndexingService : IWorkspaceIndexingService
+    {
+
+        public List<string> RegisteredPaths { get; } = [];
+
+        public void RegisterWorkspace(string workspacePath)
+        {
+
+            RegisteredPaths.Add(workspacePath);
+
+        }
+
+        public Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+    }
+
+    /// <summary>RAG Phase 4 — in-memory <see cref="ISagaMemoryStore"/> fake; no raw SQL needed for hub-level scenario tests.</summary>
+    private sealed class FakeSagaMemoryStore : ISagaMemoryStore
+    {
+
+        public Dictionary<string, SagaMemoryDto> Memories { get; } = new(StringComparer.Ordinal);
+
+        public Task InsertAsync(
+            string id,
+            string content,
+            DateTimeOffset createdAt,
+            Guid? sessionId,
+            string? tags,
+            string? source,
+            float[] embedding,
+            CancellationToken cancellationToken)
+        {
+
+            Memories[id] = new SagaMemoryDto(id, content, createdAt, sessionId, tags, source);
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task<int> CountAsync(CancellationToken cancellationToken) => Task.FromResult(Memories.Count);
+
+        public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(Memories.Values.Count(m => m.SessionId == sessionId));
+
+        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, int limit, int offset, CancellationToken cancellationToken) =>
+            Task.FromResult(Memories.Values.Skip(offset).Take(limit).ToArray());
+
+        public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
+            IReadOnlyList<string> ids,
+            CancellationToken cancellationToken)
+        {
+
+            Dictionary<string, SagaMemoryDto> result = new(StringComparer.Ordinal);
+
+            foreach (string id in ids)
+            {
+
+                if (Memories.TryGetValue(id, out SagaMemoryDto? memory))
+                {
+
+                    result[id] = memory;
+
+                }
+
+            }
+
+            return Task.FromResult((IReadOnlyDictionary<string, SagaMemoryDto>)result);
+
+        }
+
+        public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) => Task.FromResult(Memories.Remove(id));
+
+        public Task DeleteAllAsync(CancellationToken cancellationToken)
+        {
+
+            Memories.Clear();
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new SagaStats(Memories.Count, Memories.Values.Select(static m => m.SessionId).Distinct().Count(), null, null));
+
+        public Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult<DateTimeOffset?>(null);
+
+        public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+    }
+
+    private sealed class UnusedSecretStore : ISecretStore
+    {
+
+        public Task<string?> GetApiKeyAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task SaveApiKeyAsync(string apiKey) => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+    }
+
+    private sealed class UnusedPassphraseSource : IGrimoireDbPassphraseSource
+    {
+
+        public string Passphrase => throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
+
+        public void SetPassphrase(string passphrase) =>
+            throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
+
+    }
+
     private WizardIntelligenceProvider CreateWizard(
         ScriptingChatClient chatClient,
         ArcanumSettings? settings = null,
@@ -2078,7 +2710,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         FakeMcpConnectionManager? mcp = null,
         IChatClientFactory? factory = null,
         ICampaignRepository? campaignRepository = null,
-        ISanctumGuard? sanctumGuard = null)
+        ISanctumGuard? sanctumGuard = null,
+        IWeaveService? weaveService = null,
+        IDivinationService? divinationService = null,
+        IWorkspaceIndexingService? workspaceIndexingService = null,
+        ISagaMemoryStore? sagaMemoryStore = null,
+        SagaExtractionService? sagaExtractionService = null,
+        SemanticSpellRouter? semanticSpellRouter = null,
+        ArcanumDbContext? db = null)
     {
         settings ??= DefaultSettings();
 
@@ -2093,6 +2732,34 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         campaignRepository ??= new FakeCampaignRepository();
 
         sanctumGuard ??= new ConfigurableSanctumGuard();
+
+        // RAG Phase 3 — most scenarios keep Embeddings.Enabled/CodebaseRetrievalEnabled false (the
+        // DefaultSettings() default), so RetrieveSemanticContextAsync short-circuits before ever
+        // touching weaveService/divinationService/workspaceIndexingService/db; these fakes exist only
+        // so the constructor can be satisfied, and RAG-specific scenarios supply their own.
+        weaveService ??= new FakeRagWeaveService { Available = false };
+
+        divinationService ??= new FakeRagDivinationService();
+
+        workspaceIndexingService ??= new FakeRagWorkspaceIndexingService();
+
+        sagaMemoryStore ??= new FakeSagaMemoryStore();
+
+        // RAG Phase 4 — SagaExtractionService and SemanticSpellRouter are concrete classes (not
+        // interfaces); the hub only ever calls EnqueueExtraction/ResolveAsync on them, so a real
+        // instance backed by an empty scope factory and the same settings is sufficient here.
+        sagaExtractionService ??= new SagaExtractionService(
+            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance);
+
+        semanticSpellRouter ??= new SemanticSpellRouter(
+            new SpellWeaveCache(weaveService, new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
+            weaveService,
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            NullLogger<SemanticSpellRouter>.Instance);
+
+        db ??= CreateUnusedDbContext();
 
         return new WizardIntelligenceProvider(
             factory,
@@ -2117,7 +2784,30 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
                 new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
             sanctumGuard,
-            new ProcessResourceLimiter());
+            new ProcessResourceLimiter(),
+            weaveService,
+            divinationService,
+            workspaceIndexingService,
+            sagaMemoryStore,
+            sagaExtractionService,
+            semanticSpellRouter,
+            db);
+    }
+
+    /// <summary>
+    /// A syntactically-valid but never-opened <see cref="ArcanumDbContext"/> for scenarios where RAG
+    /// is disabled (the default) and the db dependency is never touched. Pre-configuring
+    /// <c>DbContextOptions</c> means <c>OnConfiguring</c> returns immediately without needing a real
+    /// secret store or passphrase source (see <c>ArcanumDbContext.OnConfiguring</c>).
+    /// </summary>
+    private static ArcanumDbContext CreateUnusedDbContext()
+    {
+        DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .UseModel(ArcanumDbContextModel.Instance)
+            .Options;
+
+        return new ArcanumDbContext(options, new UnusedSecretStore(), new UnusedPassphraseSource());
     }
 
     private static PingRequest BaseRequest() =>
@@ -2142,16 +2832,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             Name = "test",
             Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1",
-            Models = [ModelName],
-            ContextWindowLimit = 8192,
-        };
-
-    private static ProviderSettings OllamaProvider(string endpoint = "http://127.0.0.1:11434") =>
-        new()
-        {
-            Name = "ollama-test",
-            Type = AiProviderKind.Ollama,
-            Endpoint = endpoint,
             Models = [ModelName],
             ContextWindowLimit = 8192,
         };
@@ -2270,6 +2950,37 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
               "tags": [],
               "declaredTools": [],
               "dependencies": {{dependenciesJson}}
+            }
+
+            """.Trim();
+
+        await File.WriteAllTextAsync(Path.Combine(dir, "SKILL.json"), skillJson);
+    }
+
+    /// <summary>RAG Phase 5 — like <see cref="CreateSpellAsync"/> but with a caller-supplied description, needed for embedding-similarity-based spell routing scenarios (the shared helper hardcodes description "test" for every spell).</summary>
+    private async Task CreateSpellWithDescriptionAsync(
+        string folderName,
+        string spellName,
+        string description,
+        string body)
+    {
+        string dir = Path.Combine(_workspace.Root, folderName);
+
+        Directory.CreateDirectory(dir);
+
+        string spellMd = $"---\nname: {spellName}\ndescription: {description}\n---\n{body}\n";
+
+        await File.WriteAllTextAsync(Path.Combine(dir, "SPELL.md"), spellMd);
+
+        string skillJson = $$"""
+
+            {
+              "name": "{{spellName}}",
+              "version": "1.0.0",
+              "description": "{{description}}",
+              "tags": [],
+              "declaredTools": [],
+              "dependencies": []
             }
 
             """.Trim();
@@ -2602,144 +3313,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
-    private sealed class OllamaScriptingChatClientFactory(
-        ScriptingChatClient client,
-        FakeOllamaApiClient ollama,
-        ProviderSettings provider) : IChatClientFactory
-    {
-
-        public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
-        {
-
-            ChatClientLease lease = new(
-                client,
-                ollama,
-                provider,
-                provider.Models[0],
-                isOllama: true,
-                ownedHttpClient: null);
-
-            return Task.FromResult(lease);
-
-        }
-
-        public Task<ChatClientLease> ResolveClientAsync(ProviderSettings resolvedProvider, string resolvedModel, CancellationToken cancellationToken) =>
-            ResolveClientAsync(resolvedModel, cancellationToken);
-
-    }
-
-    private sealed class FakeOllamaApiClient : IOllamaApiClient
-    {
-
-        public IReadOnlyList<Model> LocalModels { get; init; } = [];
-
-        public IReadOnlyList<PullModelResponse> PullResponses { get; init; } = [];
-
-        public Exception? ListModelsException { get; init; }
-
-        public Exception? PullException { get; init; }
-
-        public Exception? PullMoveNextException { get; init; }
-
-        public bool ThrowOnFirstPullMove { get; init; }
-
-        public int ListLocalModelsCallCount { get; private set; }
-
-        public int PullCallCount { get; private set; }
-
-        public string SelectedModel { get; set; } = string.Empty;
-
-        public Uri Uri { get; } = new("http://127.0.0.1:11434");
-
-        public Task<IEnumerable<Model>> ListLocalModelsAsync(CancellationToken cancellationToken = default)
-        {
-
-            ListLocalModelsCallCount++;
-
-            if (ListModelsException is not null)
-            {
-                throw ListModelsException;
-            }
-
-            return Task.FromResult<IEnumerable<Model>>(LocalModels);
-
-        }
-
-        public async IAsyncEnumerable<PullModelResponse?> PullModelAsync(
-            PullModelRequest request,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-
-            PullCallCount++;
-
-            if (ThrowOnFirstPullMove)
-            {
-                throw PullMoveNextException ?? new InvalidOperationException("pull failed");
-            }
-
-            if (PullException is not null)
-            {
-                throw PullException;
-            }
-
-            foreach (PullModelResponse response in PullResponses)
-            {
-
-                if (PullMoveNextException is not null)
-                {
-                    throw PullMoveNextException;
-                }
-
-                yield return response;
-
-                await Task.Yield();
-
-            }
-
-        }
-
-        public IAsyncEnumerable<OllamaSharp.Models.Chat.ChatResponseStream?> ChatAsync(
-            OllamaSharp.Models.Chat.ChatRequest request,
-            CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task CopyModelAsync(CopyModelRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public IAsyncEnumerable<CreateModelResponse?> CreateModelAsync(CreateModelRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task DeleteModelAsync(DeleteModelRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task<EmbedResponse> EmbedAsync(EmbedRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public IAsyncEnumerable<GenerateResponseStream?> GenerateAsync(GenerateRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task<string> GetVersionAsync(CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task<bool> IsBlobExistsAsync(string digest, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task<bool> IsRunningAsync(CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task<IEnumerable<RunningModel>> ListRunningModelsAsync(CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task PushBlobAsync(string digest, byte[] bytes, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public IAsyncEnumerable<PushModelResponse?> PushModelAsync(PushModelRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-        public Task<ShowModelResponse> ShowModelAsync(ShowModelRequest request, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-
-    }
     private sealed class FakeChatClientFactory(ScriptingChatClient client, ProviderSettings provider) : IChatClientFactory
     {
 
@@ -2747,10 +3320,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             ChatClientLease lease = new(
                 client,
-                ollamaApi: null,
                 provider,
-                provider.Models[0],
-                isOllama: false,
+                provider.Models[0].Name,
                 ownedHttpClient: null);
 
             return Task.FromResult(lease);

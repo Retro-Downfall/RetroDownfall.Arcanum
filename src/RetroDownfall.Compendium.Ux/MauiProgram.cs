@@ -51,6 +51,8 @@ public static class MauiProgram
 
         RegisterSection<CliPage, CliSectionViewModel>(builder.Services);
 
+        RegisterSection<ScryingPage, ScryingSectionViewModel>(builder.Services);
+
         return builder.Build();
     }
 

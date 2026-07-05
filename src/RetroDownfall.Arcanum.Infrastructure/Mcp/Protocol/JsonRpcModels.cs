@@ -105,6 +105,7 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(ScribeLoreParams))]
 [JsonSerializable(typeof(DeleteLoreParams))]
 [JsonSerializable(typeof(SearchArchivesParams))]
+[JsonSerializable(typeof(ReadSagaParams))]
 [JsonSerializable(typeof(AdjustInitiativeArgs))]
 [JsonSerializable(typeof(UseCommlinkParams))]
 [JsonSerializable(typeof(PetitionDungeonMasterParams))]

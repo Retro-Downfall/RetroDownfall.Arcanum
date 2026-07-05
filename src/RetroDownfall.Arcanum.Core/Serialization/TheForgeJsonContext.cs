@@ -28,5 +28,6 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(Storage.Entities.Entry))]
 [JsonSerializable(typeof(List<Storage.Entities.Entry>))]
 [JsonSerializable(typeof(Storage.SanctumBreachDetails))]
+[JsonSerializable(typeof(Weave.SagaExtractionResponse))]
 
 public partial class TheForgeJsonContext : JsonSerializerContext;

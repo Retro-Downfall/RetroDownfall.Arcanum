@@ -72,6 +72,8 @@ public partial class AppShell : ContentPage
 
             ConfigSection.Cli => _services.GetRequiredService<CliPage>(),
 
+            ConfigSection.Scrying => _services.GetRequiredService<ScryingPage>(),
+
             _ => _services.GetRequiredService<HostPage>(),
 
         };

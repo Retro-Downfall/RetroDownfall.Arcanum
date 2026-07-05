@@ -31,6 +31,8 @@ public enum ConfigSection
 
     Resilience,
 
+    Scrying,
+
 }
 
 public sealed record SectionDescriptor(
@@ -49,7 +51,7 @@ public static class SectionDescriptors
 
         new(ConfigSection.Server, "Server", "\ue7a1", "PID file and runtime paths"),
 
-        new(ConfigSection.Providers, "AI Providers", "\ue7c5", "Ollama, OpenAI, LlamaCpp"),
+        new(ConfigSection.Providers, "AI Providers", "\ue7c5", "OpenAI-compatible (incl. Ollama), LlamaCpp"),
 
         new(ConfigSection.Intelligence, "Intelligence & Context", "\ue7c8", "Inference, tokens, compression"),
 
@@ -72,6 +74,8 @@ public static class SectionDescriptors
         new(ConfigSection.Cli, "CLI", "\ue7c7", "Terminal client options and theme"),
 
         new(ConfigSection.Resilience, "Resilience", "\ue7c9", "Provider health probing and fallback"),
+
+        new(ConfigSection.Scrying, "Scrying", "\ue7ca", "Vision/multimodality image gate"),
 
     ];
 

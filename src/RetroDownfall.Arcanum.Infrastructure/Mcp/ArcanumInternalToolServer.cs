@@ -72,6 +72,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _searchArchivesSchema;
 
+    private readonly JsonElement _readSagaSchema;
+
     private readonly JsonElement _adjustInitiativeSchema;
 
     private readonly JsonElement _useCommlinkSchema;
@@ -85,6 +87,8 @@ internal sealed partial class ArcanumInternalToolServer
     private readonly long _maxFileReadSizeBytes;
 
     private readonly bool _conclaveEnabled;
+
+    private readonly bool _sagaEnabled;
 
     private readonly McpRequestCancellationBroker _requestCancellationBroker;
 
@@ -105,6 +109,7 @@ internal sealed partial class ArcanumInternalToolServer
         IntelligenceSettings intelligenceSettings,
         long maxFileReadSizeBytes,
         bool conclaveEnabled,
+        bool sagaEnabled,
         McpRequestCancellationBroker requestCancellationBroker,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
@@ -173,6 +178,8 @@ internal sealed partial class ArcanumInternalToolServer
 
         _conclaveEnabled = conclaveEnabled;
 
+        _sagaEnabled = sagaEnabled;
+
         _requestCancellationBroker = requestCancellationBroker;
 
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
@@ -196,6 +203,8 @@ internal sealed partial class ArcanumInternalToolServer
         _deleteLoreSchema = BuildDeleteLoreSchema();
 
         _searchArchivesSchema = BuildSearchArchivesSchema();
+
+        _readSagaSchema = BuildReadSagaSchema();
 
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
@@ -495,6 +504,18 @@ internal sealed partial class ArcanumInternalToolServer
                 });
         }
 
+        if (_sagaEnabled)
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "read_saga",
+                    Description =
+                        "Semantically search Saga (Arcanum's long-term associative memory) for durable facts, decisions, and preferences extracted from past sessions. Read-only — there is no scribe_saga or delete_saga tool; Saga memories are auto-extracted and operator-deletable only.",
+                    InputSchema = _readSagaSchema,
+                });
+        }
+
         McpToolsListResultWire body = new() { Tools = tools.ToArray() };
 
         JsonElement result = JsonSerializer.SerializeToElement(body, _json.McpToolsListResultWire);
@@ -538,6 +559,11 @@ internal sealed partial class ArcanumInternalToolServer
         if (call.Name == "search_archives" && !_settings.EnableArchiveSearch)
         {
             return BuildToolsCallResponse(rpcId, ToolError("Archive search is disabled in configuration."));
+        }
+
+        if (call.Name == "read_saga" && !_sagaEnabled)
+        {
+            return BuildToolsCallResponse(rpcId, ToolError("Saga is disabled in configuration."));
         }
 
         if (call.Name == "cast_sending" && !_conclaveEnabled)

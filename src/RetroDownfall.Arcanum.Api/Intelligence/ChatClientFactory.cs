@@ -4,7 +4,6 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OllamaSharp;
 using OpenAI;
 using OpenAI.Chat;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -48,9 +47,20 @@ public sealed class ChatClientFactory(
 
     private const int MaxCachedEndpointClients = 32;
 
+    /// <summary>
+    /// Hard backpressure ceiling: when every eviction candidate is currently leased (RefCount > 0)
+    /// and the cache has grown to this many distinct endpoints, new endpoints are refused outright
+    /// rather than allowed to grow without bound. Set well above <see cref="MaxCachedEndpointClients"/>
+    /// so normal soft-cap operation (logged warnings, eviction of idle entries) is never affected —
+    /// this only trips when the soft cap has been persistently exceeded by leased entries alone.
+    /// </summary>
+    private const int HardCapEndpointClients = MaxCachedEndpointClients * 4;
+
     private readonly ConcurrentDictionary<string, EndpointHttpClientEntry> _endpointHttpClients = new(StringComparer.Ordinal);
 
     private readonly object _endpointLock = new();
+
+    private long _endpointAccessCounter;
 
     private sealed class EndpointHttpClientEntry
     {
@@ -58,6 +68,13 @@ public sealed class ChatClientFactory(
         public required HttpClient Client { get; init; }
 
         public int RefCount;
+
+        /// <summary>
+        /// Monotonic access counter (not a wall-clock timestamp — cheaper and immune to clock
+        /// adjustments) updated on every acquire, so <see cref="EvictExcessEndpointClients"/> can
+        /// evict the true least-recently-used idle entry instead of an arbitrary one.
+        /// </summary>
+        public long LastAccessed;
 
     }
 
@@ -82,34 +99,10 @@ public sealed class ChatClientFactory(
     public async Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken) =>
         provider.Type switch
         {
-            AiProviderKind.Ollama => CreateOllamaLease(provider, resolvedModel),
             AiProviderKind.OpenAICompatible => CreateOpenAiCompatibleLease(provider, resolvedModel),
             AiProviderKind.LlamaCppServer => await CreateLlamaCppLeaseAsync(provider, resolvedModel, cancellationToken).ConfigureAwait(false),
             _ => throw new InvalidOperationException($"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'."),
         };
-
-    private ChatClientLease CreateOllamaLease(ProviderSettings provider, string resolvedModel)
-    {
-
-        (HttpClient http, string cacheKey) = AcquireEndpointHttpClient(provider.Endpoint);
-
-        // OllamaSharp 5.4.25 owns an internal source-generated context
-        // (OllamaSharp.Models.JsonSourceGenerationContext, not public) that it consults when this
-        // argument is null. AOT publish is clean against that path; do not switch to a custom
-        // context here without an upstream change that exposes the type.
-        var ollama = new OllamaApiClient(http, resolvedModel, jsonSerializerContext: null);
-
-        return new ChatClientLease(
-            ollama,
-            ollama,
-            provider,
-            resolvedModel,
-            isOllama: true,
-            ownedHttpClient: null,
-            endpointCacheKey: cacheKey,
-            endpointCacheOwner: this);
-
-    }
 
     private ChatClientLease CreateOpenAiCompatibleLease(ProviderSettings provider, string resolvedModel)
     {
@@ -135,7 +128,7 @@ public sealed class ChatClientFactory(
 
         IChatClient meAi = chatClient.AsIChatClient();
 
-        return new ChatClientLease(meAi, ollamaApi: null, provider, resolvedModel, isOllama: false, ownedHttpClient: null);
+        return new ChatClientLease(meAi, provider, resolvedModel, ownedHttpClient: null);
 
     }
 
@@ -189,10 +182,8 @@ public sealed class ChatClientFactory(
 
             return new ChatClientLease(
                 meAi,
-                ollamaApi: null,
                 provider,
                 resolvedModel,
-                isOllama: false,
                 ownedHttpClient: null,
                 concurrencySlot: slot,
                 endpointCacheKey: endpointCacheKey,
@@ -217,6 +208,19 @@ public sealed class ChatClientFactory(
         lock (_endpointLock)
         {
 
+            if (!_endpointHttpClients.ContainsKey(key)
+                && _endpointHttpClients.Count >= HardCapEndpointClients)
+            {
+
+                // Real backpressure: unlike the soft-cap warning below (which only logs), refuse a
+                // brand-new endpoint outright once the cache has grown this large with every existing
+                // entry still leased — growing without bound would otherwise accumulate one pooled
+                // HttpClient/handler (and its connections) per distinct llama-server endpoint forever.
+                throw new InvalidOperationException(
+                    $"Too many distinct llama-server endpoints are concurrently in use ({_endpointHttpClients.Count} >= {HardCapEndpointClients}); rejecting a new endpoint client until existing ones are released.");
+
+            }
+
             EndpointHttpClientEntry entry = _endpointHttpClients.GetOrAdd(
                 key,
                 static cacheKey => new EndpointHttpClientEntry
@@ -226,6 +230,8 @@ public sealed class ChatClientFactory(
                 });
 
             Interlocked.Increment(ref entry.RefCount);
+
+            entry.LastAccessed = ++_endpointAccessCounter;
 
             EvictExcessEndpointClients();
 
@@ -270,15 +276,24 @@ public sealed class ChatClientFactory(
 
             KeyValuePair<string, EndpointHttpClientEntry>? victim = null;
 
+            // True LRU: scan every idle (RefCount == 0) entry and keep the one with the smallest
+            // LastAccessed counter, rather than evicting the first idle entry ConcurrentDictionary
+            // happens to enumerate first (an arbitrary, implementation-defined order unrelated to
+            // actual usage recency).
             foreach (KeyValuePair<string, EndpointHttpClientEntry> pair in _endpointHttpClients)
             {
 
-                if (Volatile.Read(ref pair.Value.RefCount) == 0)
+                if (Volatile.Read(ref pair.Value.RefCount) != 0)
+                {
+
+                    continue;
+
+                }
+
+                if (victim is null || pair.Value.LastAccessed < victim.Value.Value.LastAccessed)
                 {
 
                     victim = pair;
-
-                    break;
 
                 }
 
@@ -385,8 +400,6 @@ public sealed class ChatClientFactory(
 public sealed class ChatClientLease : IDisposable
 {
 
-    private readonly OllamaApiClient? _ollama;
-
     // Non-null only for per-lease HttpClient instances; cached endpoint clients are never stored here.
     private readonly HttpClient? _ownedHttpClient;
 
@@ -400,10 +413,8 @@ public sealed class ChatClientLease : IDisposable
 
     public ChatClientLease(
         IChatClient chatClient,
-        IOllamaApiClient? ollamaApi,
         ProviderSettings provider,
         string resolvedModel,
-        bool isOllama,
         HttpClient? ownedHttpClient,
         IDisposable? concurrencySlot = null,
         string? endpointCacheKey = null,
@@ -412,15 +423,9 @@ public sealed class ChatClientLease : IDisposable
 
         ChatClient = chatClient;
 
-        OllamaApi = ollamaApi;
-
         Provider = provider;
 
         ResolvedModel = resolvedModel;
-
-        IsOllama = isOllama;
-
-        _ollama = ollamaApi as OllamaApiClient;
 
         _ownedHttpClient = ownedHttpClient;
 
@@ -434,13 +439,9 @@ public sealed class ChatClientLease : IDisposable
 
     public IChatClient ChatClient { get; }
 
-    public IOllamaApiClient? OllamaApi { get; }
-
     public ProviderSettings Provider { get; }
 
     public string ResolvedModel { get; }
-
-    public bool IsOllama { get; }
 
     public void Dispose()
     {
@@ -452,20 +453,10 @@ public sealed class ChatClientLease : IDisposable
 
         _disposed = true;
 
-        if (IsOllama)
-        {
-            _ollama?.Dispose();
+        (ChatClient as IDisposable)?.Dispose();
 
-            // Cached endpoint HttpClients are process-lifetime singletons; only dispose per-lease owned clients.
-            _ownedHttpClient?.Dispose();
-        }
-        else
-        {
-            (ChatClient as IDisposable)?.Dispose();
-
-            // Cached endpoint HttpClients are process-lifetime singletons; only dispose per-lease owned clients.
-            _ownedHttpClient?.Dispose();
-        }
+        // Cached endpoint HttpClients are process-lifetime singletons; only dispose per-lease owned clients.
+        _ownedHttpClient?.Dispose();
 
         _concurrencySlot?.Dispose();
 

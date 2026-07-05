@@ -1,9 +1,11 @@
 using System.ComponentModel;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Chronosync;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern;
@@ -21,7 +23,8 @@ public sealed class AskCommand(
     CliSessionManager session,
     IGrimoireCliInitialization grimoireBootstrapper,
     IServiceScopeFactory scopeFactory,
-    ICliEnvironment cliEnvironment) : AsyncCommand<AskCommand.Settings>
+    ICliEnvironment cliEnvironment,
+    IOptions<ArcanumSettings> arcanumSettings) : AsyncCommand<AskCommand.Settings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
@@ -41,6 +44,65 @@ public sealed class AskCommand(
         if (!InferenceFlagBinder.TryParse(settings, palette, out InferenceFlagBinder.Parsed flags, out int flagsExit))
         {
             return flagsExit == 0 ? 1 : flagsExit;
+        }
+
+        List<ScryingFocusDto>? scryingFoci = null;
+
+        if (settings.Image is { Length: > 0 } imagePaths)
+        {
+            long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(arcanumSettings.Value.Scrying.MaxImageBytes);
+
+            string[] allowedMimeTypes = arcanumSettings.Value.Scrying.AllowedMimeTypes ?? [];
+
+            List<ScryingFocusDto> foci = new(imagePaths.Length);
+
+            foreach (string imagePath in imagePaths)
+            {
+                string fullPath;
+
+                try
+                {
+                    fullPath = Path.GetFullPath(imagePath);
+                }
+                catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+                {
+                    AnsiConsole.MarkupLine(
+                        palette.ErrorLabelMarkup(
+                            Markup.Escape("Error:"),
+                            Markup.Escape($"--image '{imagePath}' could not be resolved as a path ({ex.GetType().Name}).")));
+
+                    return 1;
+                }
+
+                if (!File.Exists(fullPath))
+                {
+                    AnsiConsole.MarkupLine(
+                        palette.ErrorLabelMarkup(
+                            Markup.Escape("Error:"),
+                            Markup.Escape($"--image '{fullPath}' not found.")));
+
+                    return 1;
+                }
+
+                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(fullPath, maxImageBytes, allowedMimeTypes);
+
+                if (staged.Error is not null)
+                {
+                    AnsiConsole.MarkupLine(
+                        palette.ErrorLabelMarkup(
+                            Markup.Escape($"--image '{Path.GetFileName(fullPath)}':"),
+                            Markup.Escape(staged.Error)));
+
+                    return 1;
+                }
+
+                foci.Add(staged.Focus!);
+
+                AnsiConsole.MarkupLine(
+                    $"{palette.HighlightMarkup(Markup.Escape("Scrying focus:"))} {palette.TextMarkup(Markup.Escape($"{Path.GetFileName(fullPath)} ({ScryingFocusStager.FormatByteCount(staged.FileSizeBytes ?? 0)})"))}");
+            }
+
+            scryingFoci = foci;
         }
 
         Guid? campaignId = null;
@@ -143,7 +205,8 @@ public sealed class AskCommand(
                 ResponseFormat: flags.ResponseFormat,
                 PresencePenalty: flags.PresencePenalty,
                 FrequencyPenalty: flags.FrequencyPenalty,
-                CampaignId: campaignId);
+                CampaignId: campaignId,
+                ScryingFoci: scryingFoci);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
@@ -355,5 +418,9 @@ public sealed class AskCommand(
         [CommandOption("--frequency-penalty <VALUE>")]
         [Description("Frequency penalty \u22122..2 (positive penalizes frequent tokens).")]
         public string? FrequencyPenalty { get; init; }
+
+        [CommandOption("--image <PATH>")]
+        [Description("Attach an image (Scrying focus) for this turn; repeatable. Requires a vision-capable model.")]
+        public string[]? Image { get; init; }
     }
 }

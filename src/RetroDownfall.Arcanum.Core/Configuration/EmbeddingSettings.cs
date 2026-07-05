@@ -9,10 +9,10 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// before doing any embedding or vector work — when either is <c>false</c>, behavior is unchanged from
 /// pre-RAG Arcanum (graceful degradation, never a functional regression).
 ///
-/// Phase 1 scope only: this record intentionally does not yet carry the nested <c>Saga</c> or
-/// <c>Codebase</c> sub-records described for Phases 3/4 of the RAG design — those arrive with their
-/// own phases so the Compendium setting-descriptor coverage walk never sees orphaned,
-/// not-yet-implemented settings.
+/// Phases 1–5 are all implemented: shared foundation, session semantic search, semantic codebase
+/// retrieval (see <see cref="Codebase"/>), Saga long-term associative memory (see <see cref="Saga"/>),
+/// and embedding-based semantic spell routing (see <see cref="SpellRoutingHybridMode"/> and
+/// <see cref="SpellRoutingHybridTopK"/>).
 /// </summary>
 public sealed record EmbeddingSettings
 {
@@ -83,10 +83,25 @@ public sealed record EmbeddingSettings
     public bool SessionSearchEnabled { get; init; }
 
     /// <summary>
+    /// RAG Phase 2 — interval, in seconds, between <c>EntryWeavingService</c> embedding queue
+    /// processing ticks (imprinting not-yet-embedded Grimoire entries into <c>entry_embeddings</c>).
+    /// Default <c>10</c>; clamped 1–300 at runtime. Only relevant when <see cref="SessionSearchEnabled"/>
+    /// is <c>true</c> — the service idles otherwise.
+    /// </summary>
+    public int EmbeddingQueueIntervalSeconds { get; init; } = 10;
+
+    /// <summary>
     /// Feature flag for Phase 3 (semantic codebase retrieval). When <c>true</c>, <see cref="Enabled"/>
     /// must also be <c>true</c> (enforced by <see cref="ConfigurationValidator"/>).
     /// </summary>
     public bool CodebaseRetrievalEnabled { get; init; }
+
+    /// <summary>
+    /// RAG Phase 3 — semantic codebase retrieval tuning (file indexing bounds, extensions, background
+    /// re-index interval, and per-turn retrieval cap). Only relevant when
+    /// <see cref="CodebaseRetrievalEnabled"/> is <c>true</c>.
+    /// </summary>
+    public CodebaseEmbeddingSettings Codebase { get; init; } = new();
 
     /// <summary>
     /// Feature flag for Phase 4 (Saga — long-term associative memory). When <c>true</c>,
@@ -95,10 +110,33 @@ public sealed record EmbeddingSettings
     public bool SagaEnabled { get; init; }
 
     /// <summary>
+    /// RAG Phase 4 — Saga (long-term associative memory) tuning (extraction cadence, caps, model, and
+    /// window size). Only relevant when <see cref="SagaEnabled"/> is <c>true</c>.
+    /// </summary>
+    public SagaEmbeddingSettings Saga { get; init; } = new();
+
+    /// <summary>
     /// Feature flag for Phase 5 (embedding-based spell routing pre-filter). When <c>false</c> (default),
     /// the existing LLM-based <c>SemanticRouter</c> is used unchanged. When <c>true</c>,
     /// <see cref="Enabled"/> must also be <c>true</c> (enforced by <see cref="ConfigurationValidator"/>).
     /// </summary>
     public bool SemanticSpellRoutingEnabled { get; init; }
+
+    /// <summary>
+    /// RAG Phase 5 — when <c>true</c> and <see cref="SemanticSpellRoutingEnabled"/> is also <c>true</c>,
+    /// embedding similarity pre-filters the spell catalog to the top
+    /// <see cref="SpellRoutingHybridTopK"/> candidates before the existing LLM-based
+    /// <c>SemanticRouter</c> picks from that reduced set (hybrid mode). When <c>false</c> (default),
+    /// the highest-similarity spell above <see cref="SimilarityThreshold"/> wins outright with no LLM
+    /// call (pure embedding mode).
+    /// </summary>
+    public bool SpellRoutingHybridMode { get; init; }
+
+    /// <summary>
+    /// RAG Phase 5 — number of top candidates passed to the LLM router in hybrid mode. Default
+    /// <c>3</c>; clamped 1–20 at runtime. Only relevant when <see cref="SemanticSpellRoutingEnabled"/>
+    /// and <see cref="SpellRoutingHybridMode"/> are both <c>true</c>.
+    /// </summary>
+    public int SpellRoutingHybridTopK { get; init; } = 3;
 
 }

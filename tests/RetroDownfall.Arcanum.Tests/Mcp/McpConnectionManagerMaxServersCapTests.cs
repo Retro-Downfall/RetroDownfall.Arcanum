@@ -112,6 +112,43 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
 
     }
 
+    // Regression guard: a canceled StartAsync (e.g. the caller's HTTP request aborted mid-handshake)
+    // must reset the entry off McpServerState.Starting rather than leaving it stuck there forever,
+    // which would otherwise make every future StartAsync call for this entry short-circuit into a
+    // false "already starting" success (see the state check at the top of StartAsync) without ever
+    // actually starting anything.
+    [Fact]
+    public async Task StartAsync_CanceledDuringHandshake_ResetsEntryState_NotStuckStarting()
+    {
+
+        // /bin/sleep is spawned directly (an absolute path, bypassing PATH resolution, which MCP
+        // subprocesses do not inherit by default) and never speaks the MCP JSON-RPC handshake, so
+        // InitializeAsync hangs until this test's own cancellation fires.
+        McpConfig config = new()
+        {
+            McpServers = new Dictionary<string, McpServerConfig>
+            {
+                ["hang-server"] = new() { Command = "/bin/sleep", Args = ["30"] },
+            },
+        };
+
+        await _manager.RegisterFromConfigAsync(config, scopeWorkingDirectory: null, CancellationToken.None);
+
+        using CancellationTokenSource cts = new(TimeSpan.FromMilliseconds(300));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _manager.StartAsync("hang-server", null, cts.Token));
+
+        McpServerInfo? status = await _manager.GetStatusAsync("hang-server", null, CancellationToken.None);
+
+        Assert.NotNull(status);
+
+        Assert.NotEqual(McpServerState.Starting, status!.State);
+
+        Assert.Equal(McpServerState.Error, status.State);
+
+    }
+
     private sealed class UntrustedWorkspaceStore : ITrustedMcpWorkspaceStore
     {
 

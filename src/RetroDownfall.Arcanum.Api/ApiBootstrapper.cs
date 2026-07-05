@@ -316,6 +316,8 @@ public static class ApiBootstrapper
 
         services.AddScoped<ToolExecutionPipeline>();
 
+        services.AddScoped<SemanticSpellRouter>();
+
         services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();
 
         services.AddScoped<IProvingGroundsArbiter, ProvingGroundsArbiter>();
@@ -478,6 +480,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapLoreEndpoints();
 
+        apiGroup.MapSagaEndpoints();
+
         apiGroup.MapSpellEndpoints();
 
         apiGroup.MapSpellForgeEndpoints();
@@ -487,6 +491,8 @@ public static class ApiBootstrapper
         apiGroup.MapCampaignEndpoints();
 
         apiGroup.MapSessionEndpoints();
+
+        apiGroup.MapSessionDivinationEndpoints();
 
         apiGroup.MapSanctumEndpoints();
 
@@ -503,6 +509,8 @@ public static class ApiBootstrapper
         apiGroup.MapProvingGroundsEndpoints();
 
         apiGroup.MapWorkspaceEndpoints();
+
+        apiGroup.MapWorkspaceDivinationEndpoints();
 
         apiGroup.MapEventEndpoints();
 

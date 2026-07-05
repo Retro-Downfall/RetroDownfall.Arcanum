@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 
@@ -145,10 +147,19 @@ public sealed class LlamaServerManager : ILlamaServerManager
                 "llama-server executable was not found. Install llama.cpp or set Arcanum:LlamaCpp:ServerExecutablePath."));
         }
 
+        // The factory delegate runs at most once (LazyThreadSafetyMode.ExecutionAndPublication) and
+        // is shared by every caller racing to start this cache key — not just the first one whose
+        // EnsureServerAsync call happens to win the GetOrAdd. It must therefore use a server-lifetime
+        // token (CancellationToken.None), never this specific call's cancellationToken: otherwise the
+        // first caller cancelling their own request (e.g. an aborted HTTP request) would cancel the
+        // spawn/health-check for every other concurrent or later caller waiting on the same lazy
+        // value, even though they never asked to cancel anything. Each caller's own cancellationToken
+        // still governs only their own wait below via WaitAsync. StartManagedServerAsync's own
+        // start/health-probe timeouts (not this token) bound how long the spawn attempt can run.
         Lazy<Task<ManagedLlamaServer>> lazy = _servers.GetOrAdd(
             cacheKey,
             _ => new Lazy<Task<ManagedLlamaServer>>(
-                () => StartManagedServerAsync(cacheKey, executable, gpuLayersOverride, portOverride, cancellationToken),
+                () => StartManagedServerAsync(cacheKey, executable, gpuLayersOverride, portOverride, CancellationToken.None),
                 LazyThreadSafetyMode.ExecutionAndPublication));
 
         try
@@ -159,22 +170,12 @@ public sealed class LlamaServerManager : ILlamaServerManager
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _ = _servers.TryRemove(new KeyValuePair<string, Lazy<Task<ManagedLlamaServer>>>(cacheKey, lazy));
-
-            if (lazy.IsValueCreated)
-            {
-                try
-                {
-                    ManagedLlamaServer partial = await lazy.Value.ConfigureAwait(false);
-
-                    await partial.StopAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception cleanupEx)
-                {
-                    _logger.LogDebug(cleanupEx, "Cleanup after cancelled llama-server startup for {CacheKey}.", cacheKey);
-                }
-            }
-
+            // The shared startup task is governed by a server-lifetime token, not this caller's
+            // token (see the factory above) — it is deliberately NOT removed or stopped here. Other
+            // concurrent or future callers may be waiting on, or depending on, that same in-flight
+            // (or already-succeeded) startup; tearing it down just because this one caller's own
+            // request was cancelled would wrongly take the server away from everyone else. This
+            // simply lets this caller's own wait observe its own cancellation.
             throw;
         }
         catch (Exception ex)
@@ -782,6 +783,11 @@ public sealed class LlamaServerManager : ILlamaServerManager
                 process.BeginErrorReadLine();
             }
 
+            // Recorded outside the process's own lifecycle so a future Arcanum run can sweep this
+            // process if the host is killed before StopAsync/DetachAndDisposeProcess ever runs — see
+            // LlamaProcessRegistry and LlamaServerLifecycleHostedService.StartAsync.
+            LlamaProcessRegistry.Record(process, CacheKey, _logger);
+
         }
 
         public void SetState(LlamaServerState state, string? error = null)
@@ -901,15 +907,11 @@ public sealed class LlamaServerManager : ILlamaServerManager
 
                     if (OperatingSystem.IsWindows())
                     {
-                        try
-                        {
-                            process.CloseMainWindow();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogDebug(ex, "CloseMainWindow failed for llama-server {CacheKey}.", CacheKey);
-                        }
-
+                        // llama-server is always spawned with CreateNoWindow=true (see StartProcess),
+                        // so it never has a window handle — CloseMainWindow() is a guaranteed no-op
+                        // here, not a graceful-shutdown request. There is nothing extra to signal on
+                        // Windows beyond waiting for the process to exit within the full configured
+                        // timeout before falling back to a forceful tree kill.
                         using CancellationTokenSource killCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
                         killCts.CancelAfter(TimeSpan.FromSeconds(shutdownSeconds));
@@ -920,7 +922,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
                         }
                         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                         {
-                            process.Kill(entireProcessTree: true);
+                            ProcessTreeKiller.TryKillEntireTree(process, _logger, $"llama-server {CacheKey}");
                         }
                     }
                     else
@@ -932,7 +934,10 @@ public sealed class LlamaServerManager : ILlamaServerManager
                             if (!process.HasExited)
                             {
 
-                                process.Kill(entireProcessTree: false);
+                                // entireProcessTree: true — a single-process kill only signals the
+                                // root pid, leaving any llama-server worker/child processes running
+                                // until the timeout below forces a full-tree kill anyway.
+                                process.Kill(entireProcessTree: true);
 
                             }
 
@@ -940,13 +945,16 @@ public sealed class LlamaServerManager : ILlamaServerManager
                         catch (Exception ex)
                         {
 
-                            _logger.LogDebug(ex, "SIGTERM failed for llama-server {CacheKey}.", CacheKey);
+                            _logger.LogDebug(ex, "Graceful process-tree kill failed for llama-server {CacheKey}.", CacheKey);
 
                         }
 
                         using CancellationTokenSource killCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-                        killCts.CancelAfter(TimeSpan.FromSeconds(Math.Min(5, shutdownSeconds)));
+                        // Uses the full configured shutdown timeout (not an arbitrary 5s cap) so a
+                        // slower-to-exit llama-server is not force-killed sooner than the operator
+                        // configured, matching the Windows branch above.
+                        killCts.CancelAfter(TimeSpan.FromSeconds(shutdownSeconds));
 
                         try
                         {
@@ -957,12 +965,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
                         catch (OperationCanceledException)
                         {
 
-                            if (!process.HasExited)
-                            {
-
-                                process.Kill(entireProcessTree: true);
-
-                            }
+                            ProcessTreeKiller.TryKillEntireTree(process, _logger, $"llama-server {CacheKey}");
 
                         }
 
@@ -973,17 +976,7 @@ public sealed class LlamaServerManager : ILlamaServerManager
             {
                 _logger.LogWarning(ex, "Error during llama-server shutdown for {CacheKey}.", CacheKey);
 
-                try
-                {
-                    if (!process.HasExited)
-                    {
-                        process.Kill(entireProcessTree: true);
-                    }
-                }
-                catch
-                {
-                    // best effort
-                }
+                ProcessTreeKiller.TryKillEntireTree(process, _logger, $"llama-server {CacheKey}");
             }
 
             SetState(LlamaServerState.Stopped);
@@ -1015,6 +1008,8 @@ public sealed class LlamaServerManager : ILlamaServerManager
                 _processDetached = true;
 
             }
+
+            LlamaProcessRegistry.Remove(process.Id, _logger);
 
             try
             {

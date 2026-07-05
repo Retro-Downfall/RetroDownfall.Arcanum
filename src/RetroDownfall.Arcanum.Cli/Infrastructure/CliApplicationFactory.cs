@@ -173,6 +173,16 @@ internal static class CliApplicationFactory
 
         services.AddTransient<CampaignSessionsCommand>();
 
+        services.AddTransient<SessionDivinationCommand>();
+
+        services.AddTransient<SagaListCommand>();
+
+        services.AddTransient<SagaDivineCommand>();
+
+        services.AddTransient<SagaDeleteCommand>();
+
+        services.AddTransient<SagaStatsCommand>();
+
         services.AddTransient<SpellListCommand>();
 
         services.AddTransient<SpellGetCommand>();
@@ -418,6 +428,33 @@ internal static class CliApplicationFactory
 
             campaign.AddCommand<CampaignSessionsCommand>("sessions")
                 .WithDescription("List sessions scoped to a campaign (GET /api/campaigns/{id}/sessions).");
+        });
+
+        config.AddBranch("session", session =>
+        {
+            session.SetDescription("Session semantic search (requires arcanum serve).");
+
+            session.AddCommand<SessionDivinationCommand>("divine")
+                .WithDescription(
+                    "Semantic search over Grimoire entries (POST /api/sessions/divine; requires Arcanum:Embeddings:Enabled and SessionSearchEnabled).");
+        });
+
+        config.AddBranch("saga", saga =>
+        {
+            saga.SetDescription("Saga long-term associative memory (requires arcanum serve).");
+
+            saga.AddCommand<SagaListCommand>("list")
+                .WithDescription("Paginated listing of Saga memories (GET /api/saga).");
+
+            saga.AddCommand<SagaDivineCommand>("divine")
+                .WithDescription(
+                    "Semantic search over Saga memories (POST /api/saga/divine; requires Arcanum:Embeddings:Enabled and SagaEnabled).");
+
+            saga.AddCommand<SagaDeleteCommand>("delete")
+                .WithDescription("Delete a single Saga memory (DELETE /api/saga/{id}).");
+
+            saga.AddCommand<SagaStatsCommand>("stats")
+                .WithDescription("Aggregate summary of Saga memory storage (GET /api/saga/stats).");
         });
 
         config.AddBranch("spell", spell =>

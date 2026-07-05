@@ -57,6 +57,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public CommLinkSectionViewModel CommLink { get; } = new();
 
+    public ScryingSectionViewModel Scrying { get; } = new();
+
     public IReadOnlyList<AiProviderKind> ProviderKinds { get; } = Enum.GetValues<AiProviderKind>();
 
     public IReadOnlyList<ArcanumTheme> CliThemes { get; } = Enum.GetValues<ArcanumTheme>();
@@ -160,6 +162,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         Server.LoadFrom(settings.Server);
 
         CommLink.LoadFrom(settings.CommLink);
+
+        Scrying.LoadFrom(settings.Scrying);
 
         IsDirty = false;
 
@@ -339,6 +343,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
             CommLink = CommLink.Build(),
 
+            Scrying = Scrying.Build(),
+
         };
 
     }
@@ -388,6 +394,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         yield return Server;
 
         yield return CommLink;
+
+        yield return Scrying;
 
     }
 

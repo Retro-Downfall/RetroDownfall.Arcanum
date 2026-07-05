@@ -37,7 +37,7 @@
                                      Maximum="1000"
                                      Increment="1" />
 
-            <controls:LabeledStepper Label="Default lore list limit"
+            <controls:LabeledStepper Label="Default Lore list limit"
                                      Description="Default page size for GET /api/lore when limit is omitted."
                                      Key="grimoire.defaultLoreListLimit"
                                      ValidationErrors="{Binding ValidationErrorsByPointer}"

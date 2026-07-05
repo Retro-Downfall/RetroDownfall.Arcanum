@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -376,48 +377,7 @@ internal sealed class McpProcessTransport : IMcpTransport
         if (process is not null && Interlocked.CompareExchange(ref _processDisposed, 1, 0) == 0)
         {
 
-            try
-            {
-
-                if (!process.HasExited)
-                {
-
-                    process.Kill(entireProcessTree: true);
-
-                }
-
-            }
-
-            catch (InvalidOperationException)
-            {
-
-                // Process may already be torn down.
-
-            }
-
-            catch (NotSupportedException)
-            {
-
-                // entireProcessTree not supported on some targets; best-effort single process.
-
-                try
-                {
-
-                    if (!process.HasExited)
-                    {
-
-                        process.Kill();
-
-                    }
-
-                }
-
-                catch (InvalidOperationException)
-                {
-
-                }
-
-            }
+            ProcessTreeKiller.TryKillEntireTree(process, context: $"MCP server process {_fileName}");
 
             process.Dispose();
 

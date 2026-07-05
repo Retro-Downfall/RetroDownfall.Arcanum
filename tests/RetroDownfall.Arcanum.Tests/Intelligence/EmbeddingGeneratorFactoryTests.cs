@@ -52,7 +52,7 @@ public sealed class EmbeddingGeneratorFactoryTests
             Embeddings = new EmbeddingSettings { Enabled = true, Provider = "missing", Model = "nomic-embed-text" },
             Providers =
             [
-                new ProviderSettings { Name = "local", Type = AiProviderKind.Ollama, Endpoint = "http://127.0.0.1:11434", Models = ["nomic-embed-text"] },
+                new ProviderSettings { Name = "local", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://127.0.0.1:11434/v1", Models = ["nomic-embed-text"] },
             ],
         };
 
@@ -66,17 +66,17 @@ public sealed class EmbeddingGeneratorFactoryTests
     }
 
     [Fact]
-    public async Task ResolveGeneratorAsync_OllamaProvider_TreatedAsOpenAiCompatible_ReturnsLease()
+    public async Task ResolveGeneratorAsync_OllamaViaOpenAiCompatibleProvider_ReturnsLease()
     {
 
-        // Clarified scope: Ollama has no bespoke embedding integration — it is routed through the same
-        // OpenAI-compatible EmbeddingClient path as AiProviderKind.OpenAICompatible.
+        // Ollama has no bespoke embedding integration — it is routed through the same
+        // OpenAI-compatible EmbeddingClient path as any other AiProviderKind.OpenAICompatible provider.
         ArcanumSettings settings = new()
         {
             Embeddings = new EmbeddingSettings { Enabled = true, Provider = "local", Model = "nomic-embed-text" },
             Providers =
             [
-                new ProviderSettings { Name = "local", Type = AiProviderKind.Ollama, Endpoint = "http://127.0.0.1:11434/v1", Models = ["nomic-embed-text"] },
+                new ProviderSettings { Name = "local", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://127.0.0.1:11434/v1", Models = ["nomic-embed-text"] },
             ],
         };
 
@@ -129,6 +129,72 @@ public sealed class EmbeddingGeneratorFactoryTests
         using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
         Assert.Same(first.Generator, second.Generator);
+
+    }
+
+    [Fact]
+    public async Task ResolveGeneratorAsync_EndpointChangedViaHotReload_BuildsNewGenerator()
+    {
+
+        MutableOptionsMonitor<ArcanumSettings> monitor = new(new ArcanumSettings
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "compat", Model = "text-embedding-3-small" },
+            Providers =
+            [
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", Models = ["text-embedding-3-small"] },
+            ],
+        });
+
+        EmbeddingGeneratorFactory factory = CreateFactoryWithMonitor(monitor);
+
+        using EmbeddingGeneratorLease first = await factory.ResolveGeneratorAsync(CancellationToken.None);
+
+        // Hot-reload: the operator changes the endpoint for the same provider name/model, without
+        // an app restart. A cache keyed only on "providerName::model" would keep serving `first`'s
+        // generator (built against the OLD endpoint) forever.
+        monitor.CurrentValue = monitor.CurrentValue with
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://changed.example.test/v1", Models = ["text-embedding-3-small"] },
+            ],
+        };
+
+        using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
+
+        Assert.NotSame(first.Generator, second.Generator);
+
+    }
+
+    [Fact]
+    public async Task ResolveGeneratorAsync_ApiKeyChangedViaHotReload_BuildsNewGenerator()
+    {
+
+        MutableOptionsMonitor<ArcanumSettings> monitor = new(new ArcanumSettings
+        {
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "compat", Model = "text-embedding-3-small" },
+            Providers =
+            [
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", ApiKey = "sk-old", Models = ["text-embedding-3-small"] },
+            ],
+        });
+
+        EmbeddingGeneratorFactory factory = CreateFactoryWithMonitor(monitor);
+
+        using EmbeddingGeneratorLease first = await factory.ResolveGeneratorAsync(CancellationToken.None);
+
+        // Hot-reload: the operator rotates the API key for the same provider name/model/endpoint.
+        monitor.CurrentValue = monitor.CurrentValue with
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", ApiKey = "sk-new", Models = ["text-embedding-3-small"] },
+            ],
+        };
+
+        using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
+
+        Assert.NotSame(first.Generator, second.Generator);
 
     }
 
@@ -188,15 +254,45 @@ public sealed class EmbeddingGeneratorFactoryTests
         ILlamaServerManager? llama = null)
     {
 
+        return CreateFactoryWithMonitor(new TestOptionsMonitor<ArcanumSettings>(settings), llama);
+
+    }
+
+    private static EmbeddingGeneratorFactory CreateFactoryWithMonitor(
+        Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> monitor,
+        ILlamaServerManager? llama = null)
+    {
+
         IDataProtectionProvider protection = DataProtectionProvider.Create("Arcanum.Tests");
 
         ConfigurationSecretProtector secretProtector = new(protection);
 
         return new EmbeddingGeneratorFactory(
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(settings),
+            monitor,
             llama ?? new TrackingLlamaServerManager(),
             secretProtector);
+
+    }
+
+    /// <summary>Simulates <c>IOptionsMonitor&lt;T&gt;.CurrentValue</c> changing across calls (hot-reload), unlike the fixed-snapshot <see cref="TestOptionsMonitor{T}"/>.</summary>
+    private sealed class MutableOptionsMonitor<T>(T current) : Microsoft.Extensions.Options.IOptionsMonitor<T>
+    {
+
+        public T CurrentValue { get; set; } = current;
+
+        public T Get(string? name) => CurrentValue;
+
+        public IDisposable OnChange(Action<T, string?> listener) => new NoopDisposable();
+
+        private sealed class NoopDisposable : IDisposable
+        {
+
+            public void Dispose()
+            {
+            }
+
+        }
 
     }
 

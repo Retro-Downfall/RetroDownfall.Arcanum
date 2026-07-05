@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Globalization;
 using System.Reflection;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
@@ -29,7 +30,7 @@ public sealed class ChatClientFactoryOverCapWarningTests
 
             DefaultModel = "m0",
 
-            Providers = BuildManyOllamaProviders(33),
+            Providers = BuildManyLlamaCppProviders(33),
 
         };
 
@@ -106,7 +107,7 @@ public sealed class ChatClientFactoryOverCapWarningTests
 
     }
 
-    private static ProviderSettings[] BuildManyOllamaProviders(int count)
+    private static ProviderSettings[] BuildManyLlamaCppProviders(int count)
     {
 
         ProviderSettings[] providers = new ProviderSettings[count];
@@ -117,9 +118,9 @@ public sealed class ChatClientFactoryOverCapWarningTests
             providers[i] = new ProviderSettings
             {
 
-                Name = $"ollama-{i}",
+                Name = $"llama-{i}",
 
-                Type = AiProviderKind.Ollama,
+                Type = AiProviderKind.LlamaCppServer,
 
                 Endpoint = $"http://127.0.0.1:{11434 + i}",
 
@@ -143,7 +144,7 @@ public sealed class ChatClientFactoryOverCapWarningTests
         return new ChatClientFactory(
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            new UnsupportedLlamaServerManager(),
+            new SequencedLlamaServerManager(),
             secretProtector,
             logger);
 
@@ -156,7 +157,21 @@ public sealed class ChatClientFactoryOverCapWarningTests
 
     }
 
-    private sealed class UnsupportedLlamaServerManager : ILlamaServerManager
+    private sealed class NoopSlotDisposable : IDisposable
+    {
+
+        public void Dispose()
+        {
+        }
+
+    }
+
+    /// <summary>
+    /// Assigns each <c>"m{i}"</c> model key a distinct endpoint (port <c>11434 + i</c>) so the
+    /// endpoint-HttpClient cache — now exercised only by LlamaCppServer leases — gets one cache entry
+    /// per provider.
+    /// </summary>
+    private sealed class SequencedLlamaServerManager : ILlamaServerManager
     {
 
         public Task<Result<LlamaServerInfo>> EnsureServerAsync(
@@ -164,20 +179,32 @@ public sealed class ChatClientFactoryOverCapWarningTests
             string? sourceUrl,
             int? gpuLayersOverride,
             int? portOverride,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+
+            int index = int.Parse(modelKey.TrimStart('m'), CultureInfo.InvariantCulture);
+
+            int port = 11434 + index;
+
+            return Task.FromResult(Result<LlamaServerInfo>.Success(new LlamaServerInfo
+            {
+                Endpoint = $"http://127.0.0.1:{port}",
+                Port = port,
+            }));
+
+        }
 
         public Task<IDisposable> AcquireSlotAsync(string modelKey, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            Task.FromResult<IDisposable>(new NoopSlotDisposable());
 
         public bool IsModelInUse(string cacheKey) => false;
 
-        public bool IsLlamaServerAvailable() => false;
+        public bool IsLlamaServerAvailable() => true;
 
         public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
 
         public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            Task.FromResult(Result.Success());
 
         public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 

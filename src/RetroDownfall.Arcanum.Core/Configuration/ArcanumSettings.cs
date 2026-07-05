@@ -61,6 +61,8 @@ public sealed record ArcanumSettings
 
     public EmbeddingSettings Embeddings { get; init; } = new();
 
+    public ScryingSettings Scrying { get; init; } = new();
+
 }
 
 

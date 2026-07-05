@@ -1,6 +1,8 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using OpenAI;
@@ -19,14 +21,11 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 // resolves the Arcanum:Embeddings:Provider by name via ProviderResolver, and builds an
 // IEmbeddingGenerator<string, Embedding<float>> per AiProviderKind.
 //
-// Clarified scope (per explicit direction, superseding the original RAG spec's Ollama-specific
-// OllamaSharp plan): Ollama is not given any bespoke embedding integration. AiProviderKind.Ollama is
-// treated identically to AiProviderKind.OpenAICompatible — both go through the OpenAI-compatible
-// EmbeddingClient against the provider's configured Endpoint. Operators pointing an Ollama provider at
-// this factory must configure Endpoint as Ollama's OpenAI-compatible base (typically ending in /v1).
-// AiProviderKind.LlamaCppServer keeps its dedicated lifecycle: EnsureServerAsync + AcquireSlotAsync
-// against the locally spawned llama-server, then the same OpenAI-compatible client shape against the
-// resolved dynamic endpoint.
+// AiProviderKind.OpenAICompatible providers go through the OpenAI-compatible EmbeddingClient against
+// the provider's configured Endpoint — this covers any OpenAI-shaped embeddings API, including Ollama
+// via its own OpenAI-compatible /v1 endpoint. AiProviderKind.LlamaCppServer keeps its dedicated
+// lifecycle: EnsureServerAsync + AcquireSlotAsync against the locally spawned llama-server, then the
+// same OpenAI-compatible client shape against the resolved dynamic endpoint.
 public interface IEmbeddingGeneratorFactory
 {
 
@@ -51,8 +50,8 @@ public sealed class EmbeddingGeneratorFactory(
 
     private const string KeylessOpenAiPlaceholder = "no-key";
 
-    // Ollama and OpenAICompatible generators are process-lifetime cached, keyed by "providerName::model"
-    // — the same shape ChatClientFactory's endpoint HttpClient cache uses, applied here to the thin
+    // OpenAICompatible generators are process-lifetime cached, keyed by "providerName::model" — the
+    // same shape ChatClientFactory's endpoint HttpClient cache uses, applied here to the thin
     // IEmbeddingGenerator wrapper itself since constructing it has no per-call cost worth avoiding
     // beyond object churn. LlamaCppServer generators are NOT cached here (see CreateLlamaCppLeaseAsync)
     // because the server's dynamic endpoint can change across restarts, mirroring ChatClientFactory's
@@ -100,20 +99,30 @@ public sealed class EmbeddingGeneratorFactory(
     private EmbeddingGeneratorLease CreateOpenAiStyleLease(ProviderSettings provider, string model)
     {
 
-        string cacheKey = CacheKey(provider.Name, model);
+        string resolvedApiKey = ResolveApiKeyValue(provider);
+
+        // Includes the endpoint and a credential fingerprint (not the raw secret — see
+        // ComputeCredentialFingerprint) so an operator hot-reloading Arcanum:Providers[].Endpoint or
+        // ApiKey for this same provider name/model actually takes effect: a cache key of just
+        // "providerName::model" would keep serving a generator built against the OLD endpoint/key
+        // forever, since GetOrAdd only ever calls the factory once per key.
+        string cacheKey = CacheKey(provider, model, resolvedApiKey);
 
         IEmbeddingGenerator<string, Embedding<float>> generator = _generators.GetOrAdd(
             cacheKey,
-            _ => BuildOpenAiStyleGenerator(provider, model));
+            _ => BuildOpenAiStyleGenerator(provider, model, resolvedApiKey));
 
         return new EmbeddingGeneratorLease(generator, ownsGenerator: false);
 
     }
 
-    private IEmbeddingGenerator<string, Embedding<float>> BuildOpenAiStyleGenerator(ProviderSettings provider, string model)
+    private IEmbeddingGenerator<string, Embedding<float>> BuildOpenAiStyleGenerator(
+        ProviderSettings provider,
+        string model,
+        string resolvedApiKey)
     {
 
-        ApiKeyCredential credential = ResolveCredential(provider);
+        ApiKeyCredential credential = new(resolvedApiKey);
 
         HttpClient http = httpClientFactory.CreateClient(OpenAiCompatibleHttpClientName);
 
@@ -195,18 +204,22 @@ public sealed class EmbeddingGeneratorFactory(
 
     }
 
-    private ApiKeyCredential ResolveCredential(ProviderSettings provider)
-    {
-
-        string key = string.IsNullOrEmpty(provider.ApiKey)
+    private string ResolveApiKeyValue(ProviderSettings provider) =>
+        string.IsNullOrEmpty(provider.ApiKey)
             ? KeylessOpenAiPlaceholder
             : secretProtector.ResolveApiKey(provider.ApiKey) ?? KeylessOpenAiPlaceholder;
 
-        return new ApiKeyCredential(key);
+    private static string CacheKey(ProviderSettings provider, string model, string resolvedApiKey) =>
+        $"{provider.Name}::{model}::{provider.Endpoint}::{ComputeCredentialFingerprint(resolvedApiKey)}";
 
-    }
-
-    private static string CacheKey(string providerName, string model) => providerName + "::" + model;
+    /// <summary>
+    /// A one-way fingerprint (never the raw secret itself) so the cache key changes whenever the
+    /// resolved API key changes, without holding the plaintext credential in an additional place
+    /// (a dictionary key that could end up in a debugger view, dump, or an incidental log/exception
+    /// message referencing the key).
+    /// </summary>
+    private static string ComputeCredentialFingerprint(string resolvedApiKey) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(resolvedApiKey)));
 
     private static string? TryResolveModelMapUrl(ProviderSettings provider, string resolvedModel)
     {
@@ -239,8 +252,8 @@ public sealed class EmbeddingGeneratorFactory(
 /// Owns a resolved <see cref="IEmbeddingGenerator{String, Embedding}"/> for one embedding call (or
 /// batch of calls within one turn). Disposal order mirrors <c>ChatClientLease</c>: dispose the
 /// generator only if this lease owns it (LlamaCppServer — freshly built per lease, never cached), then
-/// release the concurrency slot last. Ollama/OpenAICompatible generators are process-lifetime cached
-/// and neither owned nor disposed by the lease.
+/// release the concurrency slot last. OpenAICompatible generators are process-lifetime cached and
+/// neither owned nor disposed by the lease.
 /// </summary>
 public sealed class EmbeddingGeneratorLease : IDisposable
 {

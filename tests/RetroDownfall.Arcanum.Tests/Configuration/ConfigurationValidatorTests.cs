@@ -9,7 +9,7 @@ public sealed class ConfigurationValidatorTests
     private readonly ConfigurationValidator _validator = new();
 
     [Fact]
-    public void Validate_ValidOllamaProvider_ReturnsSuccess()
+    public void Validate_ValidOpenAiCompatibleProvider_ReturnsSuccess()
     {
 
         ArcanumSettings settings = new()
@@ -19,7 +19,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -32,7 +32,7 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_OllamaProviderWithoutModels_ReturnsFailure()
+    public void Validate_OpenAiCompatibleProviderWithoutModels_ReturnsFailure()
     {
 
         ArcanumSettings settings = new()
@@ -42,7 +42,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = [],
                 },
             ],
@@ -59,6 +59,169 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("ollama", StringComparison.OrdinalIgnoreCase));
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("no configured models", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public void Validate_OpenAiCompatibleProviderWithMalformedEndpoint_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "not a valid uri",
+                    Models = ["llama3"],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.NotNull(result.Error.Details);
+
+        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("Endpoint", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public void Validate_OpenAiCompatibleProviderWithNonHttpEndpointScheme_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "ftp://example.test/v1",
+                    Models = ["llama3"],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+    }
+
+    [Fact]
+    public void Validate_OpenAiCompatibleProviderWithValidHttpsEndpoint_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://example.test/v1",
+                    Models = ["llama3"],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_LlamaCppProviderWithEmptyEndpoint_ReturnsSuccess()
+    {
+
+        // The configured Endpoint field is not used for LlamaCppServer providers (they are dialed
+        // via their dynamically-assigned local endpoint instead), so it is never validated.
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "local",
+                    Type = AiProviderKind.LlamaCppServer,
+                    Endpoint = "not a valid uri",
+                    Models = ["local.gguf"],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_DuplicateProviderNames_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "shared", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://one.example.test/v1", Models = ["m1"] },
+                new ProviderSettings { Name = "shared", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://two.example.test/v1", Models = ["m2"] },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.NotNull(result.Error.Details);
+
+        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("unique", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public void Validate_DuplicateProviderNamesCaseInsensitive_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "Shared", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://one.example.test/v1", Models = ["m1"] },
+                new ProviderSettings { Name = "shared", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://two.example.test/v1", Models = ["m2"] },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+    }
+
+    [Fact]
+    public void Validate_UniqueProviderNames_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "one", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://one.example.test/v1", Models = ["m1"] },
+                new ProviderSettings { Name = "two", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://two.example.test/v1", Models = ["m2"] },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
 
     }
 
@@ -134,7 +297,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -164,7 +327,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -183,18 +346,18 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_DefaultModelWithTagMatch_ReturnsSuccess()
+    public void Validate_DefaultModelExactMatch_ReturnsSuccess()
     {
 
         ArcanumSettings settings = new()
         {
-            DefaultModel = "llama3",
+            DefaultModel = "llama3:latest",
             Providers =
             [
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3:latest"],
                 },
             ],
@@ -219,7 +382,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "empty",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = [],
                 },
             ],
@@ -252,7 +415,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -287,7 +450,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -318,7 +481,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -353,7 +516,7 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings
                 {
                     Name = "ollama",
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
                     Models = ["llama3"],
                 },
             ],
@@ -422,13 +585,13 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_FastModelWithTagMatch_ReturnsSuccess()
+    public void Validate_FastModelExactMatch_ReturnsSuccess()
     {
 
         ArcanumSettings settings = new()
         {
 
-            FastModel = "llama3",
+            FastModel = "llama3:latest",
 
             Providers =
             [
@@ -438,7 +601,7 @@ public sealed class ConfigurationValidatorTests
 
                     Name = "ollama",
 
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3:latest"],
 
@@ -469,7 +632,7 @@ public sealed class ConfigurationValidatorTests
 
                     Name = "ollama",
 
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3"],
 
@@ -509,7 +672,7 @@ public sealed class ConfigurationValidatorTests
 
                     Name = "ollama",
 
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3"],
 
@@ -556,7 +719,7 @@ public sealed class ConfigurationValidatorTests
 
                         Name = "ollama",
 
-                        Type = AiProviderKind.Ollama,
+                        Type = AiProviderKind.OpenAICompatible,
 
                         Models = ["llama3"],
 
@@ -602,7 +765,7 @@ public sealed class ConfigurationValidatorTests
 
                     Name = "ollama",
 
-                    Type = AiProviderKind.Ollama,
+                    Type = AiProviderKind.OpenAICompatible,
 
                     Models = ["llama3"],
 
@@ -639,7 +802,7 @@ public sealed class ConfigurationValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 
@@ -663,7 +826,7 @@ public sealed class ConfigurationValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 
@@ -685,7 +848,7 @@ public sealed class ConfigurationValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = null! },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = null! },
 
             ],
 
@@ -717,7 +880,7 @@ public sealed class ConfigurationValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 
@@ -739,7 +902,7 @@ public sealed class ConfigurationValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 
@@ -765,7 +928,7 @@ public sealed class ConfigurationValidatorTests
             Providers =
             [
 
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] },
+                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
 
@@ -785,7 +948,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = new EmbeddingSettings { Enabled = false },
         };
 
@@ -801,7 +964,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = new EmbeddingSettings { Enabled = true, Model = "nomic-embed-text" },
         };
 
@@ -819,7 +982,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = new EmbeddingSettings { Enabled = true, Provider = "ollama" },
         };
 
@@ -837,7 +1000,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = new EmbeddingSettings { Enabled = true, Provider = "does-not-exist", Model = "nomic-embed-text" },
         };
 
@@ -857,7 +1020,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = new EmbeddingSettings { Enabled = true, Provider = "ollama", Model = "nomic-embed-text" },
         };
 
@@ -886,7 +1049,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = embeddings,
         };
 
@@ -904,7 +1067,7 @@ public sealed class ConfigurationValidatorTests
 
         ArcanumSettings settings = new()
         {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.Ollama, Models = ["llama3"] }],
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
             Embeddings = new EmbeddingSettings
             {
                 Enabled = true,
@@ -915,6 +1078,114 @@ public sealed class ConfigurationValidatorTests
                 SagaEnabled = true,
                 SemanticSpellRoutingEnabled = true,
             },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_ScryingDefaults_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_ScryingMaxImageBytesOutOfClampRange_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+            Scrying = new ScryingSettings { MaxImageBytes = 10 },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "scrying.maxImageBytes");
+
+    }
+
+    [Fact]
+    public void Validate_ScryingMaxImagesPerRequestOutOfClampRange_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+            Scrying = new ScryingSettings { MaxImagesPerRequest = 0 },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "scrying.maxImagesPerRequest");
+
+    }
+
+    [Fact]
+    public void Validate_ScryingEnabledWithEmptyAllowedMimeTypes_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+            Scrying = new ScryingSettings { Enabled = true, AllowedMimeTypes = [] },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "scrying.allowedMimeTypes");
+
+    }
+
+    [Fact]
+    public void Validate_ScryingDisabledWithEmptyAllowedMimeTypes_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+            Scrying = new ScryingSettings { Enabled = false, AllowedMimeTypes = [] },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_ProviderModelsWithVisionCapableEntry_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "openai",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = [new ModelEntry("gpt-4o", SupportsVision: true), "gpt-4o-mini"],
+                },
+            ],
         };
 
         Result result = _validator.Validate(settings);

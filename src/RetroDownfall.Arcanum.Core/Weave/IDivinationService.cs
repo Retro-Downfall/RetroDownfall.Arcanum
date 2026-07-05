@@ -35,4 +35,27 @@ public interface IDivinationService
         float similarityThreshold,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Like <see cref="SearchAsync"/>, but restricted to rows whose <paramref name="primaryKeyColumn"/>
+    /// value appears in <c>SELECT <paramref name="scopeJoinColumn"/> FROM <paramref name="scopeTableName"/>
+    /// WHERE <paramref name="scopeFilterColumn"/> = <paramref name="scopeFilterValue"/></c> — for example
+    /// restricting a codebase-chunk search to one workspace's chunks. The vec0 KNN path has no
+    /// per-row partition key in its current schema, so this always ranks via the managed brute-force
+    /// cosine path (see the Infrastructure implementation) — bounded by the scope's row count, not the
+    /// whole table, so it is not the "full managed scan" <see cref="SearchAsync"/> falls back to when
+    /// vec0 is unavailable. Returns an empty result (not a failure) when the scope matches no rows.
+    /// </summary>
+    Task<Result<DivinationResult[]>> SearchScopedAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        string scopeTableName,
+        string scopeJoinColumn,
+        string scopeFilterColumn,
+        string scopeFilterValue,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken);
+
 }

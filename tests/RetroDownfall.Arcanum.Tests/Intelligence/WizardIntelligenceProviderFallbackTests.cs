@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
@@ -15,11 +17,16 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -133,6 +140,45 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         chatA.EnqueueException(new InvalidOperationException("content filter rejected the request"));
 
         factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueText("should never be reached");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker();
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+
+        Assert.True(tracker.IsHealthy(providerA.Name));
+
+    }
+
+    [Fact]
+    public async Task ExecutePromptAsync_LeaseBuildFailure_NonConnectivity_DoesNotMarkProviderUnhealthy_OrRetry()
+    {
+
+        // A lease-construction failure that is not a connectivity error (e.g. a local
+        // misconfiguration or a transient concurrency-slot overload) must not mark the provider
+        // unhealthy or trigger fallback to the next candidate — mirrors
+        // ExecutePromptAsync_does_not_retry_on_model_error, but for the lease-build step
+        // (ResolveClientAsync) rather than the inference call itself.
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateExceptions[providerA.Name] = new InvalidOperationException("Llama.Overloaded");
 
         ScriptingChatClient chatB = new();
 
@@ -307,7 +353,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     };
 
     private static ChatClientLease MakeLease(ScriptingChatClient chatClient, ProviderSettings provider) =>
-        new(chatClient, ollamaApi: null, provider, ModelName, isOllama: false, ownedHttpClient: null);
+        new(chatClient, provider, ModelName, ownedHttpClient: null);
 
     private static PingRequest BaseRequest() =>
         new(Prompt: "hello", Model: ModelName, WorkingDirectory: string.Empty, SkipSpellRouting: true, DisableMcpTools: true);
@@ -389,8 +435,39 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
             sanctumGuard,
             new ProcessResourceLimiter(),
+            new NoopWeaveService(),
+            new NoopDivinationService(),
+            new NoopWorkspaceIndexingService(),
+            new NoopSagaMemoryStore(),
+            new SagaExtractionService(
+                new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                new TestOptionsMonitor<ArcanumSettings>(settings),
+                NullLogger<SagaExtractionService>.Instance),
+            new SemanticSpellRouter(
+                new SpellWeaveCache(new NoopWeaveService(), new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
+                new NoopWeaveService(),
+                new TestOptionsSnapshot<ArcanumSettings>(settings),
+                NullLogger<SemanticSpellRouter>.Instance),
+            CreateUnusedDbContext(),
             healthTracker);
 
+    }
+
+    /// <summary>
+    /// RAG Phase 3 — this fallback-loop test file never enables
+    /// <c>Arcanum:Embeddings</c>, so <c>WizardIntelligenceProvider.RetrieveSemanticContextAsync</c>
+    /// short-circuits before ever touching these dependencies. A syntactically-valid but never-opened
+    /// <see cref="ArcanumDbContext"/> is sufficient (see the identical pattern and rationale in
+    /// <c>WizardIntelligenceProviderTests.CreateUnusedDbContext</c>).
+    /// </summary>
+    private static ArcanumDbContext CreateUnusedDbContext()
+    {
+        DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .UseModel(ArcanumDbContextModel.Instance)
+            .Options;
+
+        return new ArcanumDbContext(options, new NoopSecretStore(), new NoopPassphraseSource());
     }
 
     private static async Task<List<IntelligenceEvent>> CollectStreamAsync(
@@ -408,6 +485,131 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     // ===== Test doubles =====
+
+    private sealed class NoopWeaveService : IWeaveService
+    {
+
+        public bool IsAvailable => false;
+
+        public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
+        public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
+        public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
+    }
+
+    private sealed class NoopDivinationService : IDivinationService
+    {
+
+        public Task<Result<DivinationResult[]>> SearchAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
+        public Task<Result<DivinationResult[]>> SearchScopedAsync(
+            string tableName,
+            string primaryKeyColumn,
+            string embeddingColumn,
+            string scopeTableName,
+            string scopeJoinColumn,
+            string scopeFilterColumn,
+            string scopeFilterValue,
+            Embedding<float> queryEmbedding,
+            int maxResults,
+            float similarityThreshold,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Embeddings stays disabled in this test file.");
+
+    }
+
+    private sealed class NoopWorkspaceIndexingService : IWorkspaceIndexingService
+    {
+
+        public void RegisterWorkspace(string workspacePath)
+        {
+        }
+
+        public Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+    }
+
+    /// <summary>RAG Phase 4 — Saga stays disabled in this test file, so <see cref="ISagaMemoryStore"/> is never touched.</summary>
+    private sealed class NoopSagaMemoryStore : ISagaMemoryStore
+    {
+
+        public Task InsertAsync(
+            string id,
+            string content,
+            DateTimeOffset createdAt,
+            Guid? sessionId,
+            string? tags,
+            string? source,
+            float[] embedding,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<int> CountAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaMemoryDto[]> ListAsync(string? query, Guid? sessionId, int limit, int offset, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<bool> DeleteAsync(string id, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task DeleteAllAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+        public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Unused: Saga stays disabled in this test file.");
+
+    }
+
+    private sealed class NoopSecretStore : ISecretStore
+    {
+
+        public Task<string?> GetApiKeyAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task SaveApiKeyAsync(string apiKey) => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => throw new NotSupportedException("Unused in RAG-disabled scenarios.");
+
+    }
+
+    private sealed class NoopPassphraseSource : IGrimoireDbPassphraseSource
+    {
+
+        public string Passphrase => throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
+
+        public void SetPassphrase(string passphrase) =>
+            throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
+
+    }
 
     private sealed class RecordingChatClientFactory : IChatClientFactory
     {
