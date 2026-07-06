@@ -355,6 +355,15 @@ public sealed class InferenceContextBuilder(
 
     }
 
+    /// <summary>
+    /// Maps stateless <see cref="CoreChatMessage"/> transcripts to <c>Microsoft.Extensions.AI</c>
+    /// chat messages. Shared entry point for the buffered/streaming inference paths above and for
+    /// diagnostic callers (for example <c>POST /api/intelligence/tokens</c>) that need the exact
+    /// same role/tool-call/content-part mapping without duplicating it.
+    /// </summary>
+    internal static List<MeAiChatMessage> MapToAiChatMessages(IReadOnlyList<CoreChatMessage> messages) =>
+        MapStatelessMessagesToMeAi(messages);
+
     private static List<MeAiChatMessage> MapStatelessMessagesToMeAi(IReadOnlyList<CoreChatMessage> messages)
     {
 

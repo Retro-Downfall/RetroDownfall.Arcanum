@@ -21,14 +21,46 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
     public string? LastPrompt { get; private set; }
 
+    /// <summary>
+    /// The full <see cref="PingRequest"/> passed to the most recent <see cref="ExecutePromptAsync"/>
+    /// call — lets tests inspect <see cref="PingRequest.StatelessMessages"/> (for example to verify
+    /// client tool-call/tool-result replay was mapped correctly by <c>OpenAiChatCompletionMapper</c>)
+    /// beyond just the flattened <see cref="LastPrompt"/> string.
+    /// </summary>
+    public PingRequest? LastRequest { get; private set; }
+
+    /// <summary>The <see cref="InferenceAuditContext"/> passed to the most recent call, if any.</summary>
+    public InferenceAuditContext? LastAuditContext { get; private set; }
+
     public bool StreamCancellationObserved { get; private set; }
+
+    /// <summary>Number of times <see cref="ExecutePromptAsync"/> has been invoked — lets idempotency-replay tests assert the handler was not re-executed on a cache hit.</summary>
+    public int ExecutePromptCallCount { get; private set; }
+
+    /// <summary>Number of times <see cref="StreamPromptAsync"/> has been invoked — see <see cref="ExecutePromptCallCount"/>.</summary>
+    public int StreamPromptCallCount { get; private set; }
+
+    /// <summary>
+    /// When set, <see cref="StreamPromptAsync"/> yields one <see cref="IntelligenceEventType.ToolCall"/>
+    /// event per entry (in order) before the final <see cref="IntelligenceEventType.Token"/>/
+    /// <see cref="IntelligenceEventType.Result"/> events — simulates Arcanum's server-side tool loop
+    /// for testing the <c>/v1</c> streaming <c>delta.tool_calls</c> bridge.
+    /// </summary>
+    public List<IntelligenceToolCallEvent>? NextStreamToolCalls { get; set; }
 
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        InferenceAuditContext? auditContext = null)
     {
 
+        ExecutePromptCallCount++;
+
         LastPrompt = request.Prompt;
+
+        LastRequest = request;
+
+        LastAuditContext = auditContext;
 
         if (NextFailure is Error failure)
         {
@@ -44,8 +76,15 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
     public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
         PingRequest request,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+        InferenceAuditContext? auditContext = null)
     {
+
+        StreamPromptCallCount++;
+
+        LastRequest = request;
+
+        LastAuditContext = auditContext;
 
         await Task.CompletedTask.ConfigureAwait(false);
 
@@ -69,6 +108,23 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
         {
 
             throw ex;
+
+        }
+
+        if (NextStreamToolCalls is { Count: > 0 } toolCalls)
+        {
+
+            foreach (IntelligenceToolCallEvent toolCall in toolCalls)
+            {
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.ToolCall,
+                    toolCall.Name,
+                    toolCall.ArgumentsJson,
+                    null,
+                    toolCall);
+
+            }
 
         }
 

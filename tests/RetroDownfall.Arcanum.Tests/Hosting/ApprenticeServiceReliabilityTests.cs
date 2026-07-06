@@ -1025,12 +1025,14 @@ public sealed class ApprenticeServiceReliabilityTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null) =>
             throw new NotImplementedException();
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null) =>
             throw new InvalidOperationException("Branch fault injection.");
 
     }
@@ -1044,7 +1046,8 @@ public sealed class ApprenticeServiceReliabilityTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
         {
 
             return Task.FromResult(
@@ -1054,7 +1057,8 @@ public sealed class ApprenticeServiceReliabilityTests
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null) =>
             throw new NotImplementedException();
 
     }

@@ -718,7 +718,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public string LastStatelessUserContent { get; private set; } = string.Empty;
 
-        public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null)
         {
 
             CallCount++;
@@ -738,7 +738,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         }
 
-        public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, CancellationToken cancellationToken = default) =>
+        public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null) =>
             throw new NotSupportedException("SagaExtractionService only calls ExecutePromptAsync.");
 
     }

@@ -39,11 +39,22 @@ internal sealed class UnseenServantService(
 
     private readonly DateTimeOffset _startupUtc = DateTimeOffset.UtcNow;
 
+    /// <summary>
+    /// Cleanup cadence for expired <c>IdempotencyKeys</c> rows. Piggybacks on this service's
+    /// existing 1-minute scheduler tick instead of standing up a dedicated <see cref="BackgroundService"/>
+    /// — see DESIGN.md §11.17.
+    /// </summary>
+    private static readonly TimeSpan IdempotencyCleanupInterval = TimeSpan.FromHours(1);
+
+    private DateTimeOffset _lastIdempotencyCleanupUtc = DateTimeOffset.MinValue;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
 
         await HydrateWatermarksAsync(stoppingToken).ConfigureAwait(false);
+
+        await CleanupExpiredIdempotencyKeysAsync(stoppingToken).ConfigureAwait(false);
 
         using PeriodicTimer timer = new(TimeSpan.FromMinutes(1));
 
@@ -57,6 +68,11 @@ internal sealed class UnseenServantService(
                 }
 
                 DispatchDueJobs(stoppingToken);
+
+                if (DateTimeOffset.UtcNow - _lastIdempotencyCleanupUtc >= IdempotencyCleanupInterval)
+                {
+                    await CleanupExpiredIdempotencyKeysAsync(stoppingToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -67,6 +83,36 @@ internal sealed class UnseenServantService(
                 logger.LogError(ex, "Unseen Servant scheduler tick failed; continuing.");
             }
         }
+    }
+
+    private async Task CleanupExpiredIdempotencyKeysAsync(CancellationToken stoppingToken)
+    {
+
+        _lastIdempotencyCleanupUtc = DateTimeOffset.UtcNow;
+
+        try
+        {
+            using IServiceScope scope = scopeFactory.CreateScope();
+
+            IIdempotencyStore store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
+
+            int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(
+                optionsMonitor.CurrentValue.Security?.IdempotencyTtlHours ?? new SecuritySettings().IdempotencyTtlHours);
+
+            int removed = await store.DeleteExpiredAsync(
+                DateTimeOffset.UtcNow.AddHours(-ttlHours),
+                stoppingToken).ConfigureAwait(false);
+
+            if (removed > 0)
+            {
+                logger.LogDebug("Idempotency cache sweep removed {Removed} expired row(s).", removed);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Idempotency cache sweep failed; will retry on the next scheduled cleanup.");
+        }
+
     }
 
     private async Task HydrateWatermarksAsync(CancellationToken stoppingToken)

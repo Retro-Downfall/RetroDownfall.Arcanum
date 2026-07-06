@@ -63,6 +63,12 @@ public sealed record ArcanumSettings
 
     public ScryingSettings Scrying { get; init; } = new();
 
+    public ModerationsSettings Moderations { get; init; } = new();
+
+    public FilesSettings Files { get; init; } = new();
+
+    public BatchesSettings Batches { get; init; } = new();
+
 }
 
 

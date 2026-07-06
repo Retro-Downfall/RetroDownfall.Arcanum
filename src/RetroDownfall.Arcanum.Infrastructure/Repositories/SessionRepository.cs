@@ -372,6 +372,182 @@ public sealed class SessionRepository(
         return Result<Entry>.Success(entry);
     }
 
+    public async Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct)
+    {
+
+        Session? source = await db.Sessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sourceId, ct)
+            .ConfigureAwait(false);
+
+        if (source is null)
+        {
+
+            return Result<Session>.Failure(new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
+
+        }
+
+        Entry? cutoffEntry = null;
+
+        if (request.UpToEntryId is Guid cutoffId)
+        {
+
+            cutoffEntry = await db.Entries
+                .AsNoTracking()
+                .FirstOrDefaultAsync(e => e.SessionId == sourceId && e.Id == cutoffId, ct)
+                .ConfigureAwait(false);
+
+            if (cutoffEntry is null)
+            {
+
+                return Result<Session>.Failure(new Error(
+                    ErrorCodes.Session.EntryNotFound,
+                    "upToEntryId does not identify an entry in the source session."));
+
+            }
+
+        }
+
+        SessionSettings sessionSettings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
+
+        int maxForkDepth = ArcanumSettingClamps.MaxForkDepth(sessionSettings.MaxForkDepth);
+
+        int sourceDepth = await ComputeForkDepthAsync(source.ForkedFromSessionId, ct).ConfigureAwait(false);
+
+        if (sourceDepth + 1 > maxForkDepth)
+        {
+
+            return Result<Session>.Failure(new Error(
+                ErrorCodes.Session.ForkDepthExceeded,
+                $"Forking this session would exceed the maximum fork depth of {maxForkDepth}."));
+
+        }
+
+        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(sessionSettings.MaxEntriesPerSession);
+
+        int entriesToCopy = cutoffEntry is null
+            ? await db.Entries.AsNoTracking().CountAsync(e => e.SessionId == sourceId, ct).ConfigureAwait(false)
+            : await EntryTemporalQueries
+                .CountAtOrBeforeKeyset(db, sourceId, cutoffEntry.CreatedAt, cutoffEntry.Id)
+                .FirstAsync(ct)
+                .ConfigureAwait(false);
+
+        if (entriesToCopy > maxEntries)
+        {
+
+            // Checked before touching the change tracker — nothing to roll back on this path.
+            return Result<Session>.Failure(new Error(
+                ErrorCodes.Session.TooManyEntries,
+                $"Session cannot exceed {maxEntries} entries; the source has {entriesToCopy} up to the requested cutoff."));
+
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Session fork = new()
+        {
+            Id = Guid.NewGuid(),
+            CampaignId = request.CampaignId ?? source.CampaignId,
+            Title = string.IsNullOrWhiteSpace(request.Title) ? BuildForkTitle(source.Title) : request.Title.Trim(),
+            Status = "active",
+            CreatedAt = now,
+            UpdatedAt = now,
+            Summary = null,
+            LastSummarizedMessageAt = null,
+            // The fork has performed no inference of its own yet — token usage is attributed to the
+            // turns that actually produced it (on the source session), not to inheriting a transcript.
+            TotalTokensUsed = 0,
+            UnsummarizedEntryCount = entriesToCopy,
+            ForkedFromSessionId = sourceId,
+        };
+
+        db.Sessions.Add(fork);
+
+        await foreach (List<Entry> batch in ReadEntryBatchesAsync(sourceId, ct).ConfigureAwait(false))
+        {
+
+            bool reachedCutoff = false;
+
+            foreach (Entry sourceEntry in batch)
+            {
+
+                Entry copy = new()
+                {
+                    Id = Guid.NewGuid(),
+                    SessionId = fork.Id,
+                    Role = sourceEntry.Role,
+                    Content = sourceEntry.Content,
+                    ModelUsed = sourceEntry.ModelUsed,
+                    CreatedAt = sourceEntry.CreatedAt,
+                    ToolCallId = sourceEntry.ToolCallId,
+                    ToolName = sourceEntry.ToolName,
+                    ToolArguments = sourceEntry.ToolArguments,
+                };
+
+                db.Entries.Add(copy);
+
+                if (cutoffEntry is not null && sourceEntry.Id == cutoffEntry.Id)
+                {
+
+                    reachedCutoff = true;
+
+                    break;
+
+                }
+
+            }
+
+            if (reachedCutoff)
+            {
+
+                break;
+
+            }
+
+        }
+
+        await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+
+        return Result<Session>.Success(fork);
+
+    }
+
+    /// <summary>
+    /// Walks the fork lineage chain starting from <paramref name="forkedFromSessionId"/>, counting
+    /// hops to the root — mirrors <c>ConclaveLineage</c>'s role for Apprentice delegation trees. A
+    /// session that was never forked has depth <c>0</c>. Capped defensively at 64 hops (well above
+    /// any realistic <c>MaxForkDepth</c>) so a corrupted/cyclic chain cannot loop forever.
+    /// </summary>
+    private async Task<int> ComputeForkDepthAsync(Guid? forkedFromSessionId, CancellationToken ct)
+    {
+
+        const int safetyCap = 64;
+
+        int depth = 0;
+
+        Guid? currentId = forkedFromSessionId;
+
+        while (currentId is Guid id && depth < safetyCap)
+        {
+
+            depth++;
+
+            currentId = await db.Sessions
+                .AsNoTracking()
+                .Where(s => s.Id == id)
+                .Select(s => s.ForkedFromSessionId)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+        }
+
+        return depth;
+
+    }
+
+    private static string BuildForkTitle(string? sourceTitle) =>
+        string.IsNullOrWhiteSpace(sourceTitle) ? "Forked session" : $"Fork of {sourceTitle}";
+
     public async Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default)
     {
         int clampedTake = EntryWindowPolicy.ResolveTake(

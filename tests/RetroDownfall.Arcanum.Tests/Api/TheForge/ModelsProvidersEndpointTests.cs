@@ -74,6 +74,80 @@ public sealed class ModelsProvidersEndpointTests
     }
 
     [SkippableFact]
+    public async Task GetModels_ReportsSupportsVisionFromModelEntry()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ProviderSettings visionProvider = new()
+        {
+            Name = "vision-provider",
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://example.test/v1",
+            Models = [new ModelEntry("vision-model", SupportsVision: true), new ModelEntry("text-model")],
+        };
+
+        await using ArcanumWebApplicationFactory isolatedFactory = new();
+
+        await using WebApplicationFactory<Program> scoped = isolatedFactory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+
+                services.RemoveAll<IOptionsMonitor<ArcanumSettings>>();
+
+                services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(sp =>
+                {
+
+                    ArcanumSettings built = sp.GetRequiredService<IOptionsFactory<ArcanumSettings>>().Create(Options.DefaultName);
+
+                    ArcanumSettings patched = built with
+                    {
+                        DefaultModel = "vision-model",
+                        Providers = [visionProvider],
+                        Spells = built.Spells with { AllowedWorkspaceRoots = [isolatedFactory.TempHome] },
+                        Campaigns = built.Campaigns with { AllowedRoots = [isolatedFactory.TempHome] },
+                        Host = built.Host with { Workspace = isolatedFactory.TempHome },
+                    };
+
+                    return new TestOptionsMonitor<ArcanumSettings>(patched);
+
+                });
+
+                services.RemoveAll<IOptions<ArcanumSettings>>();
+
+                services.AddSingleton<IOptions<ArcanumSettings>>(sp =>
+                    Options.Create(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue));
+
+                services.RemoveAll<IOptionsSnapshot<ArcanumSettings>>();
+
+                services.AddSingleton<IOptionsSnapshot<ArcanumSettings>>(sp =>
+                    new TestOptionsSnapshot<ArcanumSettings>(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue));
+
+            });
+        });
+
+        HttpClient client = scoped.CreateClient();
+
+        client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, ArcanumWebApplicationFactory.TestApiKey);
+
+        HttpResponseMessage response = await client.GetAsync("/api/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<ModelInfoDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.True(body!.Data!.Single(m => m.Model == "vision-model").SupportsVision);
+
+        Assert.False(body.Data!.Single(m => m.Model == "text-model").SupportsVision);
+
+    }
+
+    [SkippableFact]
     public async Task GetProviders_returns_provider_list()
     {
 

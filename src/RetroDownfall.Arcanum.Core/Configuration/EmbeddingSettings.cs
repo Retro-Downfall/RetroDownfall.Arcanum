@@ -76,6 +76,14 @@ public sealed record EmbeddingSettings
     public int RequestTimeoutSeconds { get; init; } = 30;
 
     /// <summary>
+    /// Maximum total UTF-8 character count across all inputs in a single <c>POST /v1/embeddings</c>
+    /// request. Default <c>1,000,000</c>; clamped 1,000–10,000,000 at runtime. Exceeding this returns
+    /// <c>400 invalid_request_error</c> — distinct from <see cref="ChunkSizeChars"/>, which bounds a
+    /// single string sent to the provider per call (oversized single inputs are chunked, not rejected).
+    /// </summary>
+    public int MaxEmbeddingInputChars { get; init; } = 1_000_000;
+
+    /// <summary>
     /// Feature flag for Phase 2 (session semantic search / Divination over the Grimoire). When
     /// <c>true</c>, <see cref="Enabled"/> must also be <c>true</c> (enforced by
     /// <see cref="ConfigurationValidator"/>).

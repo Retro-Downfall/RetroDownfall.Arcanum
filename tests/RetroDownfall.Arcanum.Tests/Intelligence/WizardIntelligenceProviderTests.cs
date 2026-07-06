@@ -27,6 +27,7 @@ using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -1175,10 +1176,22 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.ToolCall);
 
+        // A distinct toolError event is emitted (in addition to, and before, the ToolResult carrying
+        // the same synthesized message) so streaming clients can observe the tolerated failure.
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.ToolError);
+
+        int toolErrorIndex = events.FindIndex(static e => e.Type == IntelligenceEventType.ToolError);
+
+        int toolResultIndexForFailure = events.FindIndex(static e => e.Type == IntelligenceEventType.ToolResult);
+
+        Assert.True(toolErrorIndex < toolResultIndexForFailure, "toolError must be emitted before the corresponding toolResult.");
+
         Assert.Contains(
             events,
             static e => e.Type == IntelligenceEventType.ToolResult
-                && e.Data!.Contains("tool invocation failed", StringComparison.OrdinalIgnoreCase));
+                && e.Data!.Contains(
+                    "[Tool error: failing_tool failed with an internal error. The operator has been notified.]",
+                    StringComparison.Ordinal));
 
     }
 
@@ -1665,15 +1678,50 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task LoopContract_BufferedToolInvocationFailure_PropagatesAsHubError()
+    public async Task LoopContract_BufferedToolInvocationFailure_StrictMode_PropagatesAsHubError()
     {
 
-        // Buffered uses suppressInvocationFailures=false, so a throwing tool aborts the turn with
-        // Hub.Error — the deliberate counterpart to streaming (Scenario37) which suppresses the
-        // failure into a ToolResult event.
+        // Arcanum:Intelligence:TolerateToolFailures = false (opt-in strict mode) restores the
+        // pre-existing behavior: suppressInvocationFailures=false, so a throwing tool aborts the
+        // whole turn with Hub.Error.
         ScriptingChatClient chat = new();
 
         chat.EnqueueToolCall("failing_tool");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateThrowingMcpTool("failing_tool"));
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { TolerateToolFailures = false },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings: settings, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "tool fail", SkipSpellRouting = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Hub.Error", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task LoopContract_BufferedToolInvocationFailure_DefaultTolerates_ReturnsSyntheticResultAndContinues()
+    {
+
+        // Arcanum:Intelligence:TolerateToolFailures defaults to true: a throwing tool is caught and
+        // synthesized into a tool result the model can see and react to, instead of failing the
+        // whole turn with Hub.Error — the buffered counterpart to streaming's pre-existing tolerant
+        // behavior (Scenario37).
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueToolCall("failing_tool");
+
+        chat.EnqueueText("recovered after tool failure");
 
         FakeMcpConnectionManager mcp = new();
 
@@ -1685,9 +1733,115 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             BaseRequest() with { Prompt = "tool fail", SkipSpellRouting = true },
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess);
 
-        Assert.Equal("Hub.Error", result.Error.Code);
+        Assert.Equal("recovered after tool failure", result.Value!.Text);
+
+        Assert.NotNull(result.Value.ToolCalls);
+
+        Assert.Single(result.Value.ToolCalls!);
+
+        MeAiChatMessage toolMessage = chat.LastBufferedMessages.Single(static m => m.Role == ChatRole.Tool);
+
+        Assert.Equal(
+            "[Tool error: failing_tool failed with an internal error. The operator has been notified.]",
+            GetMessageText(toolMessage));
+
+    }
+
+    [Fact]
+    public async Task AuditLog_BufferedTurn_WithAuditContext_RecordsCompletedTurn()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueToolCall(ArcanumLocalTimeTool.ToolName);
+
+        chat.EnqueueText("time retrieved");
+
+        FakeInferenceAuditLogger auditLogger = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, auditLogger: auditLogger);
+
+        InferenceAuditContext auditContext = new() { RequestType = "ping", ClientIp = "127.0.0.1" };
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "what time is it?", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None,
+            auditContext);
+
+        Assert.True(result.IsSuccess);
+
+        InferenceAuditRecord record = Assert.Single(auditLogger.Records);
+
+        Assert.Equal("ping", record.RequestType);
+
+        Assert.Equal("127.0.0.1", record.ClientIp);
+
+        Assert.Equal(ModelName, record.Model);
+
+        Assert.Equal(1, record.ToolCalls);
+
+        Assert.Contains(ArcanumLocalTimeTool.ToolName, record.ToolNames);
+
+        Assert.Equal("stop", record.FinishReason);
+
+        Assert.True(record.LatencyMs >= 0);
+
+    }
+
+    [Fact]
+    public async Task AuditLog_BufferedTurn_WithoutAuditContext_DoesNotRecord()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("done");
+
+        FakeInferenceAuditLogger auditLogger = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, auditLogger: auditLogger);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "hello", SkipSpellRouting = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Empty(auditLogger.Records);
+
+    }
+
+    [Fact]
+    public async Task AuditLog_StreamingTurn_WithAuditContext_RecordsCompletedTurn()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(ArcanumLocalTimeTool.ToolName);
+
+        chat.EnqueueStreamTokens("time retrieved");
+
+        FakeInferenceAuditLogger auditLogger = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, auditLogger: auditLogger);
+
+        InferenceAuditContext auditContext = new() { RequestType = "ping-stream", ClientIp = "10.0.0.5" };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "what time is it?", SkipSpellRouting = true, DisableMcpTools = true },
+            auditContext);
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        InferenceAuditRecord record = Assert.Single(auditLogger.Records);
+
+        Assert.Equal("ping-stream", record.RequestType);
+
+        Assert.Equal("10.0.0.5", record.ClientIp);
+
+        Assert.Contains(ArcanumLocalTimeTool.ToolName, record.ToolNames);
 
     }
 
@@ -2717,9 +2871,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ISagaMemoryStore? sagaMemoryStore = null,
         SagaExtractionService? sagaExtractionService = null,
         SemanticSpellRouter? semanticSpellRouter = null,
-        ArcanumDbContext? db = null)
+        ArcanumDbContext? db = null,
+        IInferenceAuditLogger? auditLogger = null)
     {
         settings ??= DefaultSettings();
+
+        auditLogger ??= new FakeInferenceAuditLogger();
 
         grimoire ??= new FakeGrimoireRepository();
 
@@ -2791,7 +2948,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             sagaMemoryStore,
             sagaExtractionService,
             semanticSpellRouter,
-            db);
+            db,
+            auditLogger);
     }
 
     /// <summary>
@@ -3060,11 +3218,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     private static async Task<List<IntelligenceEvent>> CollectStreamAsync(
         WizardIntelligenceProvider wizard,
-        PingRequest request)
+        PingRequest request,
+        InferenceAuditContext? auditContext = null)
     {
         List<IntelligenceEvent> events = [];
 
-        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, CancellationToken.None))
+        await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, CancellationToken.None, auditContext))
         {
             events.Add(evt);
         }

@@ -19,9 +19,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Session",
                 typeof(Session),
                 baseEntityType,
-                propertyCount: 10,
+                propertyCount: 11,
                 navigationCount: 1,
-                unnamedIndexCount: 7,
+                unnamedIndexCount: 8,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -46,6 +46,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Session).GetProperty("CreatedAt", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Session).GetField("<CreatedAt>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 sentinel: new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)));
+
+            var forkedFromSessionId = runtimeEntityType.AddProperty(
+                "ForkedFromSessionId",
+                typeof(Guid?),
+                propertyInfo: typeof(Session).GetProperty("ForkedFromSessionId", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Session).GetField("<ForkedFromSessionId>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
 
             var lastSummarizedMessageAt = runtimeEntityType.AddProperty(
                 "LastSummarizedMessageAt",
@@ -114,18 +121,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 new[] { createdAt });
 
             var index1 = runtimeEntityType.AddIndex(
-                new[] { status });
+                new[] { forkedFromSessionId });
 
             var index2 = runtimeEntityType.AddIndex(
-                new[] { unsummarizedEntryCount });
+                new[] { status });
 
             var index3 = runtimeEntityType.AddIndex(
-                new[] { updatedAt });
+                new[] { unsummarizedEntryCount });
 
             var index4 = runtimeEntityType.AddIndex(
-                new[] { status, updatedAt });
+                new[] { updatedAt });
 
             var index5 = runtimeEntityType.AddIndex(
+                new[] { status, updatedAt });
+
+            var index6 = runtimeEntityType.AddIndex(
                 new[] { campaignId, status, updatedAt });
 
             return runtimeEntityType;

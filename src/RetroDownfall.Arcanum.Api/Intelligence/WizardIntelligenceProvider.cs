@@ -59,6 +59,7 @@ public sealed class WizardIntelligenceProvider(
     SagaExtractionService sagaExtractionService,
     SemanticSpellRouter semanticSpellRouter,
     ArcanumDbContext db,
+    IInferenceAuditLogger inferenceAuditLogger,
     IProviderHealthTracker? healthTracker = null) : IArcanumIntelligenceProvider
 {
     private const string PublicInferenceFailureMessage =
@@ -74,7 +75,10 @@ public sealed class WizardIntelligenceProvider(
 
     private static readonly ArcanumSystemInfoTool _systemInfoTool = new();
 
-    public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
+        PingRequest request,
+        CancellationToken cancellationToken = default,
+        InferenceAuditContext? auditContext = null)
     {
         string prompt = request.Prompt;
 
@@ -127,19 +131,20 @@ public sealed class WizardIntelligenceProvider(
 
             using (singleLease)
             {
-                InferenceAttemptResult single = await AttemptBufferedInferenceAsync(singleLease, request, inferenceToken, callerToken).ConfigureAwait(false);
+                InferenceAttemptResult single = await AttemptBufferedInferenceAsync(singleLease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
 
                 return single.Result;
             }
         }
 
-        return await ExecutePromptWithFallbackAsync(request, inferenceToken, callerToken).ConfigureAwait(false);
+        return await ExecutePromptWithFallbackAsync(request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
     }
 
     private async Task<Result<PromptTurnResult>> ExecutePromptWithFallbackAsync(
         PingRequest request,
         CancellationToken inferenceToken,
-        CancellationToken callerToken)
+        CancellationToken callerToken,
+        InferenceAuditContext? auditContext)
     {
 
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
@@ -212,7 +217,7 @@ public sealed class WizardIntelligenceProvider(
 
             using (lease)
             {
-                InferenceAttemptResult attempt = await AttemptBufferedInferenceAsync(lease, request, inferenceToken, callerToken).ConfigureAwait(false);
+                InferenceAttemptResult attempt = await AttemptBufferedInferenceAsync(lease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
 
                 if (attempt.Result.IsSuccess)
                 {
@@ -248,7 +253,8 @@ public sealed class WizardIntelligenceProvider(
         ChatClientLease lease,
         PingRequest request,
         CancellationToken inferenceToken,
-        CancellationToken callerToken)
+        CancellationToken callerToken,
+        InferenceAuditContext? auditContext)
     {
 
         string prompt = request.Prompt;
@@ -415,11 +421,15 @@ public sealed class WizardIntelligenceProvider(
                                 activeSpell,
                                 grimoireTurn.SessionId?.ToString(),
                                 turnContext,
-                                suppressInvocationFailures: false,
+                                suppressInvocationFailures: settings.Value.Intelligence.TolerateToolFailures,
                                 inferenceToken)
                             .ConfigureAwait(false);
 
                         (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
+
+                        auditContext?.ToolNames.Add(processed.ToolName);
+
+                        auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
 
                         ToolExecutionPipeline.AppendToolExchangeToMessages(
                             chatMessages,
@@ -455,6 +465,21 @@ public sealed class WizardIntelligenceProvider(
                 string finishReason = MapChatFinishReasonToOpenAi(response.FinishReason);
 
                 RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, accumulatedUsage);
+
+                if (auditContext is not null)
+                {
+                    await TryLogInferenceAuditAsync(
+                        auditContext,
+                        grimoireTurn.SessionId,
+                        lease.Provider.Name,
+                        targetModel,
+                        accumulatedUsage,
+                        finishReason,
+                        activeSpell?.Name,
+                        request.CampaignId,
+                        inferenceStopwatch.Elapsed,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
 
                 return new InferenceAttemptResult(
                     Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)),
@@ -538,7 +563,8 @@ public sealed class WizardIntelligenceProvider(
 
     public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
         PingRequest request,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default,
+        InferenceAuditContext? auditContext = null)
     {
         string prompt = request.Prompt;
 
@@ -612,7 +638,7 @@ public sealed class WizardIntelligenceProvider(
 
             try
             {
-                await foreach (IntelligenceEvent evt in StreamCommittedInferenceAsync(singleLease, request, prompt, singleClassification, inferenceToken, callerToken).ConfigureAwait(false))
+                await foreach (IntelligenceEvent evt in StreamCommittedInferenceAsync(singleLease, request, prompt, singleClassification, inferenceToken, callerToken, auditContext).ConfigureAwait(false))
                 {
                     yield return evt;
                 }
@@ -701,7 +727,7 @@ public sealed class WizardIntelligenceProvider(
 
             StreamFailureClassification classification = new();
 
-            IAsyncEnumerator<IntelligenceEvent> enumerator = StreamCommittedInferenceAsync(lease, request, prompt, classification, inferenceToken, callerToken).GetAsyncEnumerator();
+            IAsyncEnumerator<IntelligenceEvent> enumerator = StreamCommittedInferenceAsync(lease, request, prompt, classification, inferenceToken, callerToken, auditContext).GetAsyncEnumerator();
 
             Exception? moveNextFailure = null;
 
@@ -826,7 +852,8 @@ public sealed class WizardIntelligenceProvider(
         string prompt,
         StreamFailureClassification classification,
         CancellationToken inferenceToken,
-        CancellationToken callerToken)
+        CancellationToken callerToken,
+        InferenceAuditContext? auditContext)
 #pragma warning restore CS8425
     {
 
@@ -1152,12 +1179,26 @@ public sealed class WizardIntelligenceProvider(
                         yield return wardEvent;
                     }
 
+                    if (processed.Failed)
+                    {
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.ToolError,
+                            processed.ToolName,
+                            "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                            null,
+                            new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
+                    }
+
                     yield return new IntelligenceEvent(
                         IntelligenceEventType.ToolResult,
                         processed.ToolName,
                         processed.ResultText,
                         null,
                         new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
+
+                    auditContext?.ToolNames.Add(processed.ToolName);
+
+                    auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
 
                     ToolExecutionPipeline.AppendToolExchangeToMessages(
                         chatMessages,
@@ -1218,6 +1259,21 @@ public sealed class WizardIntelligenceProvider(
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
         RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
+
+        if (auditContext is not null)
+        {
+            await TryLogInferenceAuditAsync(
+                auditContext,
+                grimoireTurn.SessionId,
+                lease.Provider.Name,
+                targetModel,
+                streamAccumulatedUsage,
+                streamFinishReason ?? "stop",
+                streamActiveSpell?.Name,
+                request.CampaignId,
+                inferenceStopwatch.Elapsed,
+                CancellationToken.None).ConfigureAwait(false);
+        }
 
         yield return new IntelligenceEvent(
             IntelligenceEventType.Result,
@@ -2312,6 +2368,71 @@ public sealed class WizardIntelligenceProvider(
                 new KeyValuePair<string, object?>("provider", providerName),
                 new KeyValuePair<string, object?>("model", model),
                 new KeyValuePair<string, object?>("direction", "completion"));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Writes one <see cref="InferenceAuditRecord"/> to the persisted inference audit log (§8.26) for
+    /// a successfully completed turn. Called from both the buffered and streaming success paths,
+    /// mirroring <see cref="TryIncrementSessionTokensAsync"/>'s call sites and error-tolerance
+    /// contract: never throws, and a failure here must never surface as a failure of the inference
+    /// turn it is recording (the turn has already succeeded by the time this runs).
+    /// </summary>
+    private async Task TryLogInferenceAuditAsync(
+        InferenceAuditContext auditContext,
+        Guid? sessionId,
+        string providerName,
+        string model,
+        ChatCompletionUsage? usage,
+        string finishReason,
+        string? spellName,
+        Guid? campaignId,
+        TimeSpan elapsed,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            List<string>? toolArgumentsJson = settings.Value.Host.AuditLog.RedactToolArguments
+                ? null
+                : [.. auditContext.ToolArgumentsJson];
+
+            InferenceAuditRecord record = new(
+                Timestamp: DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                SessionId: sessionId?.ToString(),
+                RequestType: auditContext.RequestType,
+                Model: model,
+                Provider: providerName,
+                PromptTokens: usage?.PromptTokens ?? 0,
+                CompletionTokens: usage?.CompletionTokens ?? 0,
+                TotalTokens: usage?.TotalTokens ?? 0,
+                LatencyMs: (long)elapsed.TotalMilliseconds,
+                ToolCalls: auditContext.ToolNames.Count,
+                ToolNames: [.. auditContext.ToolNames],
+                ToolArgumentsJson: toolArgumentsJson,
+                FinishReason: finishReason,
+                ClientIp: auditContext.ClientIp,
+                SpellName: spellName,
+                CampaignId: campaignId?.ToString());
+
+            await inferenceAuditLogger.LogAsync(record, cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            // Defense-in-depth: IInferenceAuditLogger.LogAsync itself promises never to throw, but a
+            // failure while building the record (should not happen) must still never fail the turn.
+            logger.LogWarning(ex, "Failed to write inference audit record; continuing without it.");
 
         }
 

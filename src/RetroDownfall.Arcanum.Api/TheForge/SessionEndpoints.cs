@@ -352,6 +352,37 @@ internal static class SessionEndpoints
         .WithName("ExportSession");
 
         apiGroup.MapPost(
+            "/sessions/{id:guid}/fork",
+            async (Guid id, ForkSessionRequest? request, ISessionRepository repo, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Result<Session> result = await repo
+                    .ForkAsync(id, request ?? new ForkSessionRequest(), ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Failure(result.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                Session fork = result.Value;
+
+                int entryCount = await repo.GetEntryCountAsync(fork.Id, ctx.RequestAborted).ConfigureAwait(false);
+
+                SessionDetailDto dto = SessionMapping.ToDetailDto(fork, entryCount);
+
+                return Results.Created(
+                    $"/api/sessions/{fork.Id:D}",
+                    ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Success(dto), traceId));
+            })
+        .WithName("ForkSession")
+        .WithLargeRequestBody();
+
+        apiGroup.MapPost(
             "/sessions/{id:guid}/rest",
             async (Guid id, IGrimoireRepository grimoire, ICampaignLoggerQueue queue, HttpContext ctx) =>
             {

@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
@@ -18,7 +20,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Api;
 
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible HTTP streaming endpoints; covered via OpenAiV1EndpointTests integration smoke.
-internal static class OpenAiV1Endpoints
+internal static partial class OpenAiV1Endpoints
 {
 
     private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
@@ -48,7 +50,8 @@ internal static class OpenAiV1Endpoints
     {
         _ = v1.MapPost("/chat/completions", HandleChatCompletionsAsync)
             .WithName("PostOpenAiChatCompletions")
-            .WithLargeRequestBody();
+            .WithLargeRequestBody()
+            .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
     }
 
     internal static void MapOpenAiV1Models(this RouteGroupBuilder v1)
@@ -56,36 +59,40 @@ internal static class OpenAiV1Endpoints
         _ = v1.MapGet("/models", HandleListModels).WithName("GetOpenAiModels");
     }
 
+    // Enrichment fields are additive: Arcanum runs its own server-side tool layer regardless of the
+    // resolved model/provider, so every model reports the same tool/streaming capability.
+    private const bool AllModelsSupportTools = true;
+
+    private const bool AllModelsSupportStreaming = true;
+
     private static IResult HandleListModels(IOptionsSnapshot<ArcanumSettings> settings)
     {
-        ArcanumSettings arc = settings.Value;
-
-        ProviderSettings[] providers = arc.Providers;
+        List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(settings.Value);
 
         List<OpenAiModel> data = [];
 
-        Dictionary<string, bool> seen = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-        foreach (ProviderSettings provider in providers)
+        foreach (ModelInfoDto model in models)
         {
-            string ownedBy = string.IsNullOrWhiteSpace(provider.Name) ? "system" : provider.Name;
-
-            foreach (ModelEntry model in provider.Models)
+            if (string.IsNullOrWhiteSpace(model.Model) || !seen.Add(model.Model))
             {
-                if (string.IsNullOrWhiteSpace(model.Name))
-                {
-                    continue;
-                }
-
-                string id = model.Name.Trim();
-
-                if (!seen.TryAdd(id, true))
-                {
-                    continue;
-                }
-
-                data.Add(new OpenAiModel(id, "model", ProcessStartUnix, ownedBy));
+                continue;
             }
+
+            string ownedBy = string.IsNullOrWhiteSpace(model.ProviderName) ? "system" : model.ProviderName;
+
+            data.Add(new OpenAiModel(
+                model.Model,
+                "model",
+                ProcessStartUnix,
+                ownedBy,
+                model.ContextWindowLimit,
+                model.SupportsVision,
+                model.ProviderName,
+                ModelInfoBuilder.ToSnakeCaseProviderType(model.ProviderType),
+                AllModelsSupportTools,
+                AllModelsSupportStreaming));
         }
 
         OpenAiModelListResponse response = new(data);
@@ -325,6 +332,12 @@ internal static class OpenAiV1Endpoints
 
         string systemFingerprint = ResolveSystemFingerprint(settings.Value);
 
+        InferenceAuditContext auditContext = new()
+        {
+            RequestType = "v1-completion",
+            ClientIp = httpContext.Connection.RemoteIpAddress?.ToString(),
+        };
+
         if (!body.Stream)
         {
             return await HandleBufferedAsync(
@@ -334,7 +347,8 @@ internal static class OpenAiV1Endpoints
                 created,
                 echoModel,
                 systemFingerprint,
-                cancellationToken)
+                cancellationToken,
+                auditContext)
                 .ConfigureAwait(false);
         }
 
@@ -352,7 +366,8 @@ internal static class OpenAiV1Endpoints
             systemFingerprint,
             includeUsage,
             streamLogger,
-            cancellationToken)
+            cancellationToken,
+            auditContext)
             .ConfigureAwait(false);
     }
 
@@ -363,9 +378,10 @@ internal static class OpenAiV1Endpoints
         long created,
         string echoModel,
         string systemFingerprint,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        InferenceAuditContext? auditContext = null)
     {
-        Result<PromptTurnResult> result = await intelligence.ExecutePromptAsync(ping, cancellationToken).ConfigureAwait(false);
+        Result<PromptTurnResult> result = await intelligence.ExecutePromptAsync(ping, cancellationToken, auditContext).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -384,7 +400,7 @@ internal static class OpenAiV1Endpoints
         OpenAiChatAssistantMessage message = new(
             Role: "assistant",
             Content: turn.Text,
-            ToolCalls: null,
+            ToolCalls: MapBufferedToolCalls(turn.ToolCalls),
             Refusal: null);
 
         OpenAiChatResponse response = new(
@@ -407,6 +423,54 @@ internal static class OpenAiV1Endpoints
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiChatResponse);
     }
 
+    /// <summary>
+    /// Maps the assistant-issued tool calls Arcanum already executed server-side during this turn
+    /// (§8.8.1) into OpenAI-shaped <c>message.tool_calls</c> for observability/replay. Returns
+    /// <see langword="null"/> (rather than an empty array) when there were none, matching OpenAI's
+    /// own wire shape for a turn that never called a tool.
+    /// </summary>
+    private static OpenAiToolCall[]? MapBufferedToolCalls(List<PromptToolCall>? toolCalls)
+    {
+
+        if (toolCalls is not { Count: > 0 })
+        {
+
+            return null;
+
+        }
+
+        OpenAiToolCall[] mapped = new OpenAiToolCall[toolCalls.Count];
+
+        for (int i = 0; i < toolCalls.Count; i++)
+        {
+
+            PromptToolCall call = toolCalls[i];
+
+            mapped[i] = new OpenAiToolCall(
+                Id: GenerateOpenAiToolCallId(),
+                Type: "function",
+                Function: new OpenAiFunctionCall(call.Name, call.ArgumentsJson));
+
+        }
+
+        return mapped;
+
+    }
+
+    /// <summary>
+    /// Generates an OpenAI-shaped tool call id (<c>call_</c> + 24 hex characters, mirroring the
+    /// ~29-character length of real OpenAI ids). Arcanum's internal <c>PromptToolCall.CallId</c> /
+    /// <c>IntelligenceToolCallEvent.CallId</c> are not guaranteed to be in this shape across every
+    /// provider (some fall back to the tool name — see <c>ToolExecutionPipeline.ResolveCallId</c>),
+    /// so a fresh id is minted for the wire response rather than exposing the internal one. This is
+    /// safe for client replay (§8.8, "client-supplied tool replay in message history") because the
+    /// client only needs the id to correlate its own echoed <c>tool_calls[].id</c> with a subsequent
+    /// <c>role: "tool"</c> message's <c>tool_call_id</c> in the *next* stateless request — Arcanum
+    /// does not need to recognize the id as one it minted internally.
+    /// </summary>
+    private static string GenerateOpenAiToolCallId() =>
+        "call_" + Guid.NewGuid().ToString("N")[..24];
+
     private static async Task<IResult> HandleStreamingAsync(
         HttpContext httpContext,
         IArcanumIntelligenceProvider intelligence,
@@ -417,7 +481,8 @@ internal static class OpenAiV1Endpoints
         string systemFingerprint,
         bool includeUsage,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        InferenceAuditContext? auditContext = null)
     {
         httpContext.Response.ContentType = "text/event-stream; charset=utf-8";
 
@@ -443,6 +508,12 @@ internal static class OpenAiV1Endpoints
 
         bool disconnected = false;
 
+        // Monotonically increasing across the whole response (not reset per hub tool round, unlike
+        // IntelligenceToolCallEvent.Index — see WriteToolCallChunksAsync remarks) so a multi-round
+        // Arcanum tool loop never emits two distinct calls under the same `index`, which would be
+        // ambiguous to an OpenAI SDK's index-keyed delta accumulator.
+        int nextToolCallDeltaIndex = 0;
+
         try
         {
             await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
@@ -453,7 +524,7 @@ internal static class OpenAiV1Endpoints
             // is kept across keep-alive cycles — re-issuing MoveNextAsync while one is pending would
             // be an invalid concurrent enumeration).
             await using IAsyncEnumerator<IntelligenceEvent> enumerator =
-                intelligence.StreamPromptAsync(ping, ct).GetAsyncEnumerator(ct);
+                intelligence.StreamPromptAsync(ping, ct, auditContext).GetAsyncEnumerator(ct);
 
             Task<bool> move = enumerator.MoveNextAsync().AsTask();
 
@@ -487,7 +558,26 @@ internal static class OpenAiV1Endpoints
                         await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
                         break;
 
+                    case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCallPayload:
+                        await WriteToolCallChunksAsync(
+                            httpContext,
+                            sseBuffer,
+                            completionId,
+                            created,
+                            echoModel,
+                            systemFingerprint,
+                            toolCallPayload,
+                            nextToolCallDeltaIndex,
+                            ct).ConfigureAwait(false);
+
+                        nextToolCallDeltaIndex++;
+
+                        break;
+
                     case IntelligenceEventType.ToolCall:
+                        // ToolCall event without a structured payload (should not happen from
+                        // WizardIntelligenceProvider today, but tolerated defensively) — nothing to
+                        // surface on /v1 without a name/arguments/call id.
                         break;
 
                     case IntelligenceEventType.Result:
@@ -653,6 +743,103 @@ internal static class OpenAiV1Endpoints
             SystemFingerprint: systemFingerprint);
 
         await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The full argument JSON string is available all-at-once from
+    /// <see cref="IntelligenceToolCallEvent.ArgumentsJson"/> (Arcanum executes each tool call to
+    /// completion — sequentially, one at a time — before advancing to the next, unlike a model
+    /// literally streaming argument tokens as it generates them). To still match OpenAI's observed
+    /// wire behavior — an id/name delta followed by several small <c>function.arguments</c>
+    /// fragments the client concatenates — the string is artificially re-chunked into
+    /// <see cref="ToolCallArgumentChunkChars"/>-sized pieces here.
+    ///
+    /// Because tool calls within one Arcanum turn can span multiple server-side rounds (an
+    /// OpenAI-native single-shot streaming response never does this), <paramref name="deltaIndex"/>
+    /// is a caller-maintained counter that increases once per distinct call for the whole HTTP
+    /// response — not <see cref="IntelligenceToolCallEvent.Index"/>, which the hub resets every
+    /// round and would otherwise let two unrelated calls collide on the same <c>index</c>, which is
+    /// ambiguous for an index-keyed OpenAI SDK delta accumulator.
+    ///
+    /// Parallel tool calls in one round are inherently emitted as one complete chunk-burst per call
+    /// (not literally interleaved token-by-token across calls) because
+    /// <see cref="WizardIntelligenceProvider"/> executes — and awaits the result of — each call
+    /// before yielding the next <see cref="IntelligenceEventType.ToolCall"/> event; each call still
+    /// gets its own correct, stable <paramref name="deltaIndex"/>, which is all an accumulating
+    /// client keys on.
+    /// </summary>
+    private const int ToolCallArgumentChunkChars = 40;
+
+    private static async Task WriteToolCallChunksAsync(
+        HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
+        string completionId,
+        long created,
+        string echoModel,
+        string systemFingerprint,
+        IntelligenceToolCallEvent toolCall,
+        int deltaIndex,
+        CancellationToken ct)
+    {
+
+        string id = GenerateOpenAiToolCallId();
+
+        string arguments = toolCall.ArgumentsJson ?? string.Empty;
+
+        int firstChunkLength = Math.Min(ToolCallArgumentChunkChars, arguments.Length);
+
+        OpenAiStreamToolCall firstDelta = new(
+            Index: deltaIndex,
+            Id: id,
+            Type: "function",
+            Function: new OpenAiFunctionCall(toolCall.Name, arguments[..firstChunkLength]));
+
+        await WriteToolCallDeltaChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, firstDelta, ct).ConfigureAwait(false);
+
+        for (int offset = firstChunkLength; offset < arguments.Length; offset += ToolCallArgumentChunkChars)
+        {
+
+            int length = Math.Min(ToolCallArgumentChunkChars, arguments.Length - offset);
+
+            OpenAiStreamToolCall nextDelta = new(
+                Index: deltaIndex,
+                Function: new OpenAiFunctionCall(Name: null, Arguments: arguments.Substring(offset, length)));
+
+            await WriteToolCallDeltaChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, nextDelta, ct).ConfigureAwait(false);
+
+        }
+
+    }
+
+    private static async Task WriteToolCallDeltaChunkAsync(
+        HttpContext httpContext,
+        ArrayBufferWriter<byte> sseBuffer,
+        string completionId,
+        long created,
+        string echoModel,
+        string systemFingerprint,
+        OpenAiStreamToolCall toolCallDelta,
+        CancellationToken ct)
+    {
+
+        OpenAiChatChunk chunk = new(
+            Id: completionId,
+            ObjectKind: "chat.completion.chunk",
+            Created: created,
+            Model: echoModel,
+            Choices:
+            [
+                new OpenAiChatStreamChoice(
+                    Index: 0,
+                    Delta: new OpenAiDelta(ToolCalls: [toolCallDelta]),
+                    FinishReason: null,
+                    Logprobs: null),
+            ],
+            Usage: null,
+            SystemFingerprint: systemFingerprint);
+
+        await WriteSseJsonAsync(httpContext, sseBuffer, chunk, ArcanumJsonContext.Default.OpenAiChatChunk, ct).ConfigureAwait(false);
+
     }
 
     private static async Task WriteFinalContentChunkAsync(

@@ -5,4 +5,5 @@ public sealed record ModelInfoDto(
     string ProviderName,
     string ProviderType,
     string Endpoint,
-    int ContextWindowLimit);
+    int ContextWindowLimit,
+    bool SupportsVision = false);

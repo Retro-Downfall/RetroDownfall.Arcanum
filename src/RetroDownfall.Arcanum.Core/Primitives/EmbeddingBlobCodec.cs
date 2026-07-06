@@ -1,15 +1,24 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Weave;
+namespace RetroDownfall.Arcanum.Core.Primitives;
 
 /// <summary>
 /// RAG Phase 1 — shared little-endian <c>float32[]</c> &lt;-&gt; <c>BLOB</c> conversion for The Weave's
-/// durable storage tables (for example <c>entry_embeddings.Embedding</c>) and for binding a query
-/// vector to a sqlite-vec <c>MATCH</c> parameter. All realistic Arcanum deployment targets (x64, Arm64)
-/// are little-endian, so no explicit byte-swapping is performed — see DESIGN.md §21.
+/// durable storage tables (for example <c>entry_embeddings.Embedding</c>), for binding a query
+/// vector to a sqlite-vec <c>MATCH</c> parameter, and for OpenAI-compatible <c>base64</c>
+/// <c>encoding_format</c> on <c>POST /v1/embeddings</c> (§8.24). All realistic Arcanum deployment
+/// targets (x64, Arm64) are little-endian, so no explicit byte-swapping is performed — see
+/// DESIGN.md §21.
 /// </summary>
-internal static class EmbeddingBlobCodec
+/// <remarks>
+/// Lives in Core (rather than Infrastructure, where it originated) because it is a pure,
+/// dependency-free numeric utility consumed by both Infrastructure (The Weave/Divination storage)
+/// and Api (the OpenAI <c>/v1/embeddings</c> endpoint and <c>SemanticSpellRouter</c>) — Infrastructure
+/// has no project reference from Api that would let an Infrastructure-`internal` type be shared
+/// the other way.
+/// </remarks>
+public static class EmbeddingBlobCodec
 {
 
     public static byte[] Encode(ReadOnlySpan<float> vector) =>

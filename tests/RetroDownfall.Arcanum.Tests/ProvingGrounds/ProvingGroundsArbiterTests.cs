@@ -270,7 +270,8 @@ public sealed class ProvingGroundsArbiterTests
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
         {
 
             if (NextFailure is Error failure)
@@ -285,7 +286,8 @@ public sealed class ProvingGroundsArbiterTests
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
             PingRequest request,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
         {
 
             await Task.CompletedTask.ConfigureAwait(false);

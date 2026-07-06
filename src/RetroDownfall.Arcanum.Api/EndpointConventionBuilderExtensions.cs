@@ -19,4 +19,21 @@ public static class EndpointConventionBuilderExtensions
 
     }
 
+    /// <summary>
+    /// Raises the Kestrel request body size limit for this endpoint to the ceiling of
+    /// <c>Arcanum:Files:MaxUploadSizeBytes</c>'s clamp range (10 GiB — see
+    /// <c>ArcanumSettingClamps.FilesMaxUploadSizeBytes</c>) so the configured upload cap is always
+    /// enforced by the handler itself (returning a structured <c>413</c> JSON error), never by an
+    /// abrupt Kestrel-level connection reset below the configured limit.
+    /// </summary>
+    public static TBuilder WithFileUploadRequestBody<TBuilder>(this TBuilder builder)
+        where TBuilder : IEndpointConventionBuilder
+    {
+
+        const long TenGibibytes = 10L * 1024L * 1024L * 1024L;
+
+        return builder.WithMetadata(new RequestSizeLimitAttribute(TenGibibytes));
+
+    }
+
 }

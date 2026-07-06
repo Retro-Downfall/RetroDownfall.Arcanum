@@ -26,6 +26,7 @@ internal static class SessionMapping
             session.CreatedAt,
             session.UpdatedAt,
             session.Summary,
-            session.TotalTokensUsed);
+            session.TotalTokensUsed,
+            session.ForkedFromSessionId);
 
 }

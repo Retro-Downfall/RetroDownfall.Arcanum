@@ -72,6 +72,7 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.LastSummarizedMessageAt);
             entity.Property(e => e.TotalTokensUsed).HasDefaultValue(0L);
             entity.Property(e => e.UnsummarizedEntryCount).HasDefaultValue(0);
+            entity.Property(e => e.ForkedFromSessionId);
             entity.HasIndex(e => e.CreatedAt);
             entity.HasIndex(e => e.UpdatedAt);
             entity.HasIndex(e => e.Status);
@@ -79,6 +80,7 @@ public sealed class ArcanumDbContext(
             entity.HasIndex(e => new { e.Status, e.UpdatedAt });
             entity.HasIndex(e => new { e.CampaignId, e.Status, e.UpdatedAt });
             entity.HasIndex(e => e.UnsummarizedEntryCount);
+            entity.HasIndex(e => e.ForkedFromSessionId);
             entity.HasMany(e => e.Entries)
                 .WithOne(m => m.Session!)
                 .HasForeignKey(m => m.SessionId)

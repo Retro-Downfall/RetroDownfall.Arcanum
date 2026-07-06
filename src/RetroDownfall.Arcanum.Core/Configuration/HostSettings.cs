@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Storage;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed record HostSettings
@@ -56,6 +58,62 @@ public sealed record HostSettings
     /// Optional request rate-limit configuration applied to <c>/api</c> and <c>/v1</c> groups.
     /// </summary>
     public HostRateLimitSettings RateLimit { get; init; } = new();
+
+    /// <summary>
+    /// Persisted inference audit log configuration (§8.26). Disabled by default — zero behavior
+    /// change (no file writes, no <c>GET /api/audit</c> results) until an operator opts in.
+    /// </summary>
+    public HostAuditLogSettings AuditLog { get; init; } = new();
+
+}
+
+/// <summary>
+/// Configuration for the persisted inference audit log — a durable, append-only JSONL trail of
+/// completed inference turns (model, provider, token counts, latency, tool activity, finish
+/// reason), independent of the Grimoire (which stores conversation content). Bound from
+/// <c>Arcanum:Host:AuditLog</c>. See DESIGN.md §8.26.
+/// </summary>
+public sealed record HostAuditLogSettings
+{
+
+    /// <summary>
+    /// Master toggle. When <c>false</c> (default), <c>InferenceAuditLogger</c> is a complete no-op —
+    /// no file I/O, no directory creation — and <c>GET /api/audit</c> returns an empty list.
+    /// </summary>
+    public bool Enabled { get; init; } = false;
+
+    /// <summary>
+    /// Base file path. The directory portion is where dated log files are written; the filename
+    /// stem (default <c>audit</c>) is combined with a UTC date to produce each day's file, e.g.
+    /// <c>audit-20260115.jsonl</c> — one file per UTC day, never a single ever-growing file.
+    /// </summary>
+    public string FilePath { get; init; } = DefaultFilePath;
+
+    /// <summary>
+    /// Soft per-file size cap in megabytes. Once a day's file reaches this size, further writes for
+    /// that day are dropped (logged once, not per-write) rather than growing the file unbounded —
+    /// an unusually chatty day degrades gracefully instead of filling the disk. Default <c>100</c>;
+    /// clamped 10–1,000.
+    /// </summary>
+    public int MaxSizeMb { get; init; } = 100;
+
+    /// <summary>
+    /// Dated log files older than this many days are deleted automatically the first time a new
+    /// UTC day's file is created. Default <c>7</c>; clamped 1–365.
+    /// </summary>
+    public int RetentionDays { get; init; } = 7;
+
+    /// <summary>
+    /// When <c>true</c> (default), per-tool-call argument JSON is never captured — only tool
+    /// <em>names</em> (always present regardless of this setting). When <c>false</c>, each record
+    /// also carries <c>toolArgumentsJson</c> (parallel to <c>toolNames</c>) with the raw argument
+    /// JSON for deeper debugging, at the operator's explicit risk (tool arguments can carry file
+    /// contents, command lines, or other sensitive data).
+    /// </summary>
+    public bool RedactToolArguments { get; init; } = true;
+
+    private static string DefaultFilePath =>
+        Path.Combine(ArcanumPaths.GrimoireDirectory, "audit.jsonl");
 
 }
 

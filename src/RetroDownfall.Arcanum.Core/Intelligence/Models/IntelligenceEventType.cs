@@ -39,4 +39,14 @@ public enum IntelligenceEventType
 
     [JsonStringEnumMemberName("wardResolved")]
     WardResolved,
+
+    /// <summary>
+    /// Emitted alongside (immediately before) <see cref="ToolResult"/> on the streaming path when an
+    /// unexpected tool exception was tolerated (<c>Arcanum:Intelligence:TolerateToolFailures</c>) —
+    /// lets clients observe and surface the failure distinctly from a normal tool result, even though
+    /// the turn continues. Native-NDJSON only; not surfaced on the OpenAI <c>/v1</c> streaming bridge
+    /// (falls through its default/no-op case, matching how <c>toolResult</c> is also hidden there).
+    /// </summary>
+    [JsonStringEnumMemberName("toolError")]
+    ToolError,
 }

@@ -296,6 +296,130 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
+    public async Task GetModels_WithValidApiKey_IncludesCapabilityEnrichment()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiModelListResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiModelListResponse);
+
+        Assert.NotNull(body?.Data);
+
+        // Shared "ApiHost" factory default provider: name "test", OpenAICompatible, model
+        // "mistral:latest", default ContextWindowLimit (8192), no SupportsVision declared.
+        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "mistral:latest");
+
+        Assert.Equal(8192, model.ContextWindow);
+
+        Assert.False(model.SupportsVision);
+
+        Assert.Equal("test", model.ProviderName);
+
+        Assert.Equal("openai_compatible", model.ProviderType);
+
+        Assert.True(model.SupportsTools);
+
+        Assert.True(model.SupportsStreaming);
+
+        Assert.Equal("test", model.OwnedBy);
+
+    }
+
+    [SkippableFact]
+    public async Task GetModels_VisionCapableModel_ReportsSupportsVisionTrue()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "vision-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "vision-provider",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiModelListResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiModelListResponse);
+
+        Assert.NotNull(body?.Data);
+
+        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "vision-model");
+
+        Assert.True(model.SupportsVision);
+
+        Assert.Equal("vision-provider", model.ProviderName);
+
+    }
+
+    [SkippableFact]
+    public async Task GetModels_LlamaCppServerProvider_ReportsSnakeCaseProviderType()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "local-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "local-llama",
+                        Type = AiProviderKind.LlamaCppServer,
+                        Endpoint = "http://localhost:9000",
+                        Models = ["local-model"],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiModelListResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiModelListResponse);
+
+        Assert.NotNull(body?.Data);
+
+        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "local-model");
+
+        Assert.Equal("llama_cpp_server", model.ProviderType);
+
+    }
+
+    [SkippableFact]
     public async Task GetModels_WithoutApiKey_Returns401()
     {
 

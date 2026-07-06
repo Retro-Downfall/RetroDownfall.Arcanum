@@ -1,0 +1,328 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
+namespace RetroDownfall.Arcanum.Api;
+
+/// <summary>
+/// OpenAI-compatible <c>/v1/files</c> upload storage (DESIGN.md §11.20). File bytes live on disk
+/// under <see cref="ArcanumPaths.FilesDirectory"/>, named by a fresh <see cref="Guid"/> (never the
+/// client-supplied filename) — path traversal and filename collisions are structurally impossible.
+/// The database row is metadata only.
+/// (<see cref="ExcludeFromCodeCoverageAttribute"/> is applied once on the primary
+/// <c>OpenAiV1Endpoints.cs</c> partial declaration and covers this file too.)
+/// </summary>
+internal static partial class OpenAiV1Endpoints
+{
+
+    private const int MaxUploadFilenameChars = 255;
+
+    private const string FileIdPrefix = "file-";
+
+    internal static void MapOpenAiV1Files(this RouteGroupBuilder v1)
+    {
+
+        _ = v1.MapPost("/files", HandleUploadAsync)
+            .WithName("PostOpenAiFiles")
+            .WithFileUploadRequestBody()
+            .DisableAntiforgery();
+
+        _ = v1.MapGet("/files", HandleListAsync)
+            .WithName("GetOpenAiFiles");
+
+        _ = v1.MapGet("/files/{id}", HandleGetAsync)
+            .WithName("GetOpenAiFile");
+
+        _ = v1.MapDelete("/files/{id}", HandleDeleteAsync)
+            .WithName("DeleteOpenAiFile");
+
+        _ = v1.MapGet("/files/{id}/content", HandleContentAsync)
+            .WithName("GetOpenAiFileContent");
+
+    }
+
+    private static async Task<IResult> HandleUploadAsync(
+        IFormFile? file,
+        [FromForm] string? purpose,
+        IUploadedFileRepository repository,
+        IOptionsSnapshot<ArcanumSettings> settings,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+
+        if (file is null || file.Length == 0)
+        {
+
+            return JsonError("Missing required parameter: 'file'.", "invalid_request_error", "missing_required_parameter", "file", StatusCodes.Status400BadRequest);
+
+        }
+
+        if (string.IsNullOrWhiteSpace(purpose))
+        {
+
+            return JsonError("Missing required parameter: 'purpose'.", "invalid_request_error", "missing_required_parameter", "purpose", StatusCodes.Status400BadRequest);
+
+        }
+
+        string filename = string.IsNullOrWhiteSpace(file.FileName) ? "upload.bin" : file.FileName;
+
+        if (filename.Contains('\0', StringComparison.Ordinal))
+        {
+
+            return JsonError("'file' filename must not contain embedded null bytes.", "invalid_request_error", "invalid_value", "file", StatusCodes.Status400BadRequest);
+
+        }
+
+        if (filename.Length > MaxUploadFilenameChars)
+        {
+
+            return JsonError($"'file' filename must not exceed {MaxUploadFilenameChars} characters.", "invalid_request_error", "invalid_value", "file", StatusCodes.Status400BadRequest);
+
+        }
+
+        FilesSettings filesSettings = settings.Value.Files ?? new FilesSettings();
+
+        long maxUploadBytes = ArcanumSettingClamps.FilesMaxUploadSizeBytes(filesSettings.MaxUploadSizeBytes);
+
+        if (file.Length > maxUploadBytes)
+        {
+
+            return JsonError(
+                $"'file' ({file.Length} bytes) exceeds the configured limit ({maxUploadBytes} bytes, Arcanum:Files:MaxUploadSizeBytes).",
+                "invalid_request_error",
+                "invalid_value",
+                "file",
+                StatusCodes.Status413PayloadTooLarge);
+
+        }
+
+        string declaredMimeType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType;
+
+        if (UploadedFileMimeValidator.IsExtensionMimeMismatch(filename, declaredMimeType))
+        {
+
+            return JsonError(
+                $"'file' extension does not match its declared content type ('{declaredMimeType}').",
+                "invalid_request_error",
+                "invalid_value",
+                "file",
+                StatusCodes.Status400BadRequest);
+
+        }
+
+        if (filesSettings.AllowedMimeTypes.Length > 0
+            && !Array.Exists(filesSettings.AllowedMimeTypes, m => string.Equals(m, declaredMimeType, StringComparison.OrdinalIgnoreCase)))
+        {
+
+            return JsonError(
+                $"Content type '{declaredMimeType}' is not permitted by this server's Arcanum:Files:AllowedMimeTypes configuration.",
+                "invalid_request_error",
+                "invalid_value",
+                "file",
+                StatusCodes.Status400BadRequest);
+
+        }
+
+        Guid id = Guid.NewGuid();
+
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.FilesDirectory);
+
+        string path = UploadedFileStorage.ResolvePath(id);
+
+        try
+        {
+
+            await using (FileStream destination = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+
+                await file.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+
+            }
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
+        }
+        catch (Exception ex)
+        {
+
+            ILogger logger = loggerFactory.CreateLogger(typeof(OpenAiV1Endpoints));
+
+            logger.LogError(ex, "Failed to persist uploaded file {FileId} to disk.", id);
+
+            TryDeleteFile(path);
+
+            return JsonError("Failed to store the uploaded file.", "server_error", "internal_error", param: null, StatusCodes.Status500InternalServerError);
+
+        }
+
+        UploadedFileRecord record = new(id, filename, file.Length, purpose.Trim(), declaredMimeType, DateTimeOffset.UtcNow);
+
+        await repository.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+
+        return Results.Json(OpenAiFileObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiFileObject, statusCode: StatusCodes.Status201Created);
+
+    }
+
+    private static async Task<IResult> HandleListAsync(
+        string? purpose,
+        IUploadedFileRepository repository,
+        CancellationToken cancellationToken)
+    {
+
+        IReadOnlyList<UploadedFileRecord> records = await repository.ListAsync(purpose, cancellationToken).ConfigureAwait(false);
+
+        List<OpenAiFileObject> data = new(records.Count);
+
+        foreach (UploadedFileRecord record in records)
+        {
+
+            data.Add(OpenAiFileObject.FromRecord(record));
+
+        }
+
+        return Results.Json(new OpenAiFileListResponse(data), ArcanumJsonContext.Default.OpenAiFileListResponse);
+
+    }
+
+    private static async Task<IResult> HandleGetAsync(string id, IUploadedFileRepository repository, CancellationToken cancellationToken)
+    {
+
+        if (!TryParseFileId(id, out Guid fileGuid))
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        UploadedFileRecord? record = await repository.GetByIdAsync(fileGuid, cancellationToken).ConfigureAwait(false);
+
+        if (record is null)
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        return Results.Json(OpenAiFileObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiFileObject);
+
+    }
+
+    private static async Task<IResult> HandleDeleteAsync(string id, IUploadedFileRepository repository, CancellationToken cancellationToken)
+    {
+
+        if (!TryParseFileId(id, out Guid fileGuid))
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        UploadedFileRecord? record = await repository.GetByIdAsync(fileGuid, cancellationToken).ConfigureAwait(false);
+
+        if (record is null)
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        await repository.DeleteAsync(fileGuid, cancellationToken).ConfigureAwait(false);
+
+        TryDeleteFile(UploadedFileStorage.ResolvePath(fileGuid));
+
+        return Results.Json(new OpenAiFileDeleteResponse(id, Deleted: true), ArcanumJsonContext.Default.OpenAiFileDeleteResponse);
+
+    }
+
+    private static async Task<IResult> HandleContentAsync(string id, IUploadedFileRepository repository, CancellationToken cancellationToken)
+    {
+
+        if (!TryParseFileId(id, out Guid fileGuid))
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        UploadedFileRecord? record = await repository.GetByIdAsync(fileGuid, cancellationToken).ConfigureAwait(false);
+
+        if (record is null)
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        string path = UploadedFileStorage.ResolvePath(fileGuid);
+
+        if (!File.Exists(path))
+        {
+
+            return FileNotFoundResult(id);
+
+        }
+
+        // Always `attachment`, never `inline` — the primary XSS mitigation for arbitrary uploaded
+        // content (an uploaded .html/.svg mislabeled as an image must never be rendered by a browser
+        // that happens to fetch this endpoint directly).
+        string mimeType = string.IsNullOrWhiteSpace(record.MimeType) ? "application/octet-stream" : record.MimeType;
+
+        return Results.File(path, mimeType, fileDownloadName: record.Filename, enableRangeProcessing: false);
+
+    }
+
+    private static bool TryParseFileId(string wireId, out Guid id)
+    {
+
+        id = Guid.Empty;
+
+        if (string.IsNullOrEmpty(wireId) || !wireId.StartsWith(FileIdPrefix, StringComparison.Ordinal))
+        {
+
+            return false;
+
+        }
+
+        return Guid.TryParseExact(wireId.AsSpan(FileIdPrefix.Length), "N", out id);
+
+    }
+
+    private static IResult FileNotFoundResult(string wireId) =>
+        JsonError($"No such file: '{wireId}'.", "invalid_request_error", "not_found", param: "id", StatusCodes.Status404NotFound);
+
+    private static void TryDeleteFile(string path)
+    {
+
+        try
+        {
+
+            if (File.Exists(path))
+            {
+
+                File.Delete(path);
+
+            }
+
+        }
+        catch (IOException)
+        {
+
+            // Best-effort cleanup; a stray orphaned file is preferable to throwing from a cleanup path.
+
+        }
+        catch (UnauthorizedAccessException)
+        {
+
+        }
+
+    }
+
+}

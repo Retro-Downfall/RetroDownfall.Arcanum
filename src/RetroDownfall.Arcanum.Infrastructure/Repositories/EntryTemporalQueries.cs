@@ -103,4 +103,27 @@ internal static class EntryTemporalQueries
         db.Database.SqlQuery<int>(
             $"""SELECT COUNT(*) AS "Value" FROM "Entries" WHERE "SessionId" = {sessionId} AND "CreatedAt" > {afterExclusive}""");
 
+    /// <summary>
+    /// Count entries at or before an inclusive <c>(CreatedAt, Id)</c> cursor — used by session
+    /// fork's "up to and including this entry" cutoff to pre-check
+    /// <c>Arcanum:Sessions:MaxEntriesPerSession</c> before copying anything.
+    /// </summary>
+    public static IQueryable<int> CountAtOrBeforeKeyset(
+        ArcanumDbContext db,
+        Guid sessionId,
+        DateTimeOffset atOrBeforeCreatedAt,
+        Guid atOrBeforeId)
+    {
+
+        DateTimeOffset atOrBeforeUtc = atOrBeforeCreatedAt.ToUniversalTime();
+
+        return db.Database.SqlQuery<int>(
+            $"""
+            SELECT COUNT(*) AS "Value" FROM "Entries"
+            WHERE "SessionId" = {sessionId}
+              AND ("CreatedAt" < {atOrBeforeUtc} OR ("CreatedAt" = {atOrBeforeUtc} AND "Id" <= {atOrBeforeId}))
+            """);
+
+    }
+
 }

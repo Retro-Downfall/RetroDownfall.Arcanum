@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -118,6 +119,32 @@ public static class ApiBootstrapper
         System.Net.IPAddress? ip = context.Connection.RemoteIpAddress;
 
         return "ip:" + (ip?.ToString() ?? "unknown");
+    }
+
+    /// <summary>
+    /// Gzip + Brotli response compression for large JSON responses (Kestrel built-in — no new NuGet
+    /// dependency). <see cref="ResponseCompressionOptions.EnableForHttps"/> is left at its framework
+    /// default (<see langword="false"/>) — Arcanum typically serves over loopback HTTP, or behind a
+    /// reverse proxy that terminates TLS and can compress itself; the default conservatively avoids
+    /// any BREACH/CRIME-style compression-oracle risk on an HTTPS listener until there is a concrete
+    /// need for it. <see cref="ResponseCompressionDefaults.MimeTypes"/> already excludes
+    /// <c>text/event-stream</c> and <c>application/x-ndjson</c>, but they are explicitly subtracted
+    /// here too so streaming endpoints (SSE, NDJSON) stay uncompressed by contract, not by accident of
+    /// today's defaults — compressing an incrementally-flushed stream would buffer frames and defeat
+    /// the anti-buffering headers those endpoints already set (§8.9).
+    /// </summary>
+    private static void RegisterResponseCompression(IServiceCollection services)
+    {
+        services.AddResponseCompression(options =>
+        {
+            options.Providers.Add<BrotliCompressionProvider>();
+
+            options.Providers.Add<GzipCompressionProvider>();
+
+            options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Except(
+                ["text/event-stream", "application/x-ndjson"],
+                StringComparer.OrdinalIgnoreCase);
+        });
     }
 
     private static bool ReadConfiguredListenAny(IConfiguration configuration)
@@ -264,6 +291,8 @@ public static class ApiBootstrapper
 
         RegisterRateLimiter(services, configuration);
 
+        RegisterResponseCompression(services);
+
         services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
 
         services.AddHttpClient(
@@ -299,6 +328,10 @@ public static class ApiBootstrapper
 
         services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();
 
+        services.AddSingleton<BatchProcessingService>();
+
+        services.AddHostedService(static sp => sp.GetRequiredService<BatchProcessingService>());
+
         services.AddScoped<IProvingGroundsArbiter, ProvingGroundsArbiter>();
 
         services.AddScoped<ProvingGroundsRunner>();
@@ -315,6 +348,19 @@ public static class ApiBootstrapper
     {
 
         app.UseExceptionHandler();
+
+    }
+
+    /// <summary>
+    /// Activates Gzip/Brotli response compression. Placed early in the pipeline (right after the
+    /// exception handler, before CORS/rate limiting/endpoints) so it wraps everything — including
+    /// error responses — matching ASP.NET Core's own middleware-ordering guidance for
+    /// <c>UseResponseCompression</c>.
+    /// </summary>
+    public static void UseArcanumResponseCompression(this WebApplication app)
+    {
+
+        app.UseResponseCompression();
 
     }
 
@@ -389,7 +435,19 @@ public static class ApiBootstrapper
 
         openAiV1.MapOpenAiV1ChatCompletions();
 
+        openAiV1.MapOpenAiV1Embeddings();
+
         openAiV1.MapOpenAiV1Models();
+
+        openAiV1.MapOpenAiV1Moderations();
+
+        openAiV1.MapOpenAiV1ImagesStubs();
+
+        openAiV1.MapOpenAiV1AudioStubs();
+
+        openAiV1.MapOpenAiV1Files();
+
+        openAiV1.MapOpenAiV1Batches();
 
         var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
 
@@ -452,6 +510,8 @@ public static class ApiBootstrapper
         apiGroup.MapConfigurationEndpoints();
 
         apiGroup.MapIntelligenceEndpoints();
+
+        apiGroup.MapAuditEndpoints();
 
         apiGroup.MapMcpEndpoints();
 

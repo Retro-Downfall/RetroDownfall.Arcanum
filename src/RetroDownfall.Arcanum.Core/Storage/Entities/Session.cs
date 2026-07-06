@@ -26,6 +26,14 @@ public sealed class Session
     /// </summary>
     public int UnsummarizedEntryCount { get; set; }
 
+    /// <summary>
+    /// When this session was created by <c>POST /api/sessions/{id}/fork</c>, the source session's id.
+    /// <see langword="null"/> for a "root" session (never forked, or the very first session in a
+    /// fork lineage). Used by <c>SessionRepository.ComputeForkDepthAsync</c> to walk the lineage
+    /// chain and enforce <c>Arcanum:Sessions:MaxForkDepth</c>.
+    /// </summary>
+    public Guid? ForkedFromSessionId { get; set; }
+
     public ICollection<Entry> Entries { get; set; } = new List<Entry>();
 
     /// <summary>
@@ -47,6 +55,7 @@ public sealed class Session
             LastSummarizedMessageAt = LastSummarizedMessageAt,
             TotalTokensUsed = TotalTokensUsed,
             UnsummarizedEntryCount = UnsummarizedEntryCount,
+            ForkedFromSessionId = ForkedFromSessionId,
             Entries = new List<Entry>(),
         };
 

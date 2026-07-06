@@ -1600,6 +1600,12 @@ public sealed class ChatCommand(
 
                         goto case IntelligenceEventType.ToolResult;
 
+                    case IntelligenceEventType.ToolError:
+
+                        stderrConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"⚠ Tool {evt.Message} failed (tolerated)")));
+
+                        break;
+
                     case IntelligenceEventType.ToolResult:
 
                         stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));

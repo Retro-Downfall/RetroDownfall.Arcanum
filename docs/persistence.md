@@ -1,6 +1,8 @@
 # Persistence strategy
 
-Arcanum has one persistent store — the **Grimoire**, an encrypted SQLite (SQLCipher) database managed through EF Core with a compiled model, AOT-safe source-generated JSON contexts, and embedded hand-authored SQL migrations. This document tracks which operational state lives in the Grimoire, which still lives in memory, and the conventions each subsystem follows when it moves from one to the other.
+Arcanum's primary persistent store is the **Grimoire**, an encrypted SQLite (SQLCipher) database managed through EF Core with a compiled model, AOT-safe source-generated JSON contexts, and embedded hand-authored SQL migrations. This document tracks which operational state lives in the Grimoire, which still lives in memory, and the conventions each subsystem follows when it moves from one to the other.
+
+One deliberately **non-Grimoire** persisted artifact exists alongside it: the **persisted inference audit log** (`Arcanum:Host:AuditLog`, disabled by default, DESIGN.md §8.26) — plain dated JSONL files (`~/.config/arcanum/audit-YYYYMMDD.jsonl` by default), not a SQLite table. It records operational metadata about completed inference turns (model, tokens, latency, tool activity), not conversation content, and is intentionally kept out of the encrypted Grimoire so operators can `tail`/`grep`/ship it with standard log tooling without needing the Grimoire's decryption key. It is out of scope for the rest of this document, which covers only Grimoire-backed state.
 
 This is a living document. It is updated each time an in-memory subsystem gains Grimoire persistence (see `docs/DESIGN.md` §2.2 for the tracked backlog of remaining amnesiac gaps).
 
@@ -13,6 +15,9 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 | **Unseen Servant watermarks** (last-run timestamp + dynamic interval override, per job) | `UnseenServantWatermarks` | Existing |
 | Daemon execution history | — | Deferred (in-memory, `InMemoryDaemonExecutionRepository`) |
 | **Sanctum breach history** (per-campaign audit trail: tool, breach type, description, JSON details) | `SanctumBreaches` | **New (this change)** — replaces the former in-memory ring buffer (`SanctumBreachStore`, retired) |
+| **Idempotency-Key cache** (cached responses for replayed side-effecting inference requests; DESIGN.md §11.17) | `IdempotencyKeys` | Existing — TTL-expired rows swept hourly by `UnseenServantService` |
+| **Uploaded file metadata** (`POST /v1/files`; DESIGN.md §11.20) | `UploadedFiles` | Existing — row is metadata only; file bytes live on disk under `ArcanumPaths.FilesDirectory`, named by a fresh GUID (never the client filename) |
+| **Batch job metadata** (`/v1/batches`; DESIGN.md §11.21) | `Batches` | Existing — no request-count columns; `GET` computes `request_counts` on the fly by reading the input/output/error files off disk (all three are themselves `UploadedFiles` rows) |
 | Apprentice Chronicle (lifecycle/execution events) | — | Deferred (in-memory bounded channel, `ChronicleHub`) |
 | Active Wards | — | **Not persisted by design** (see §7) |
 | A2A task id ↔ Apprentice id mapping (§5.7.1) | — | **Not persisted by design** (see §7) |

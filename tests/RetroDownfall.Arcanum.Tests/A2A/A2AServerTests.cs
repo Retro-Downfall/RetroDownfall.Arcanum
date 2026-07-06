@@ -547,6 +547,9 @@ public sealed class A2AServerTests
         public Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct) =>
             throw new NotSupportedException();
 
+        public Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct) =>
+            throw new NotSupportedException();
+
         public Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default) =>
             Task.FromResult(Entries);
 

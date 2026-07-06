@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -167,25 +168,7 @@ internal static class ConfigurationEndpoints
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            List<ModelInfoDto> models = [];
-
-            foreach (ProviderSettings provider in settings.Value.Providers ?? [])
-            {
-                string redactedEndpoint = RedactRequired(provider.Endpoint);
-
-                foreach (ModelEntry model in provider.Models)
-                {
-                    models.Add(new ModelInfoDto(model.Name, provider.Name, provider.Type.ToString(), redactedEndpoint, provider.ContextWindowLimit));
-                }
-
-                if (provider.Type == AiProviderKind.LlamaCppServer && provider.LlamaCpp?.ModelMap is { Count: > 0 } modelMap)
-                {
-                    foreach (string modelKey in modelMap.Keys)
-                    {
-                        models.Add(new ModelInfoDto(modelKey, provider.Name, provider.Type.ToString(), redactedEndpoint, provider.ContextWindowLimit));
-                    }
-                }
-            }
+            List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(settings.Value);
 
             ApiResponse<ModelInfoDto[]> response = ApiResponse<ModelInfoDto[]>.FromResult(
                 Result<ModelInfoDto[]>.Success(models.ToArray()),

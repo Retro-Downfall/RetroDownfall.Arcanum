@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -26,6 +28,8 @@ public sealed class GrimoireFixture : IDisposable
     private readonly string _templatePath;
 
     private readonly string _templateSidecarPath;
+
+    private readonly string _templateFingerprintPath;
 
     private readonly string _passphrase;
 
@@ -98,6 +102,8 @@ public sealed class GrimoireFixture : IDisposable
 
         _templateSidecarPath = _templatePath + ".kdf";
 
+        _templateFingerprintPath = _templatePath + ".fingerprint";
+
         if (!SqlCipherAvailable)
         {
             return;
@@ -106,8 +112,12 @@ public sealed class GrimoireFixture : IDisposable
         lock (BuildLock)
         {
 
+            string currentFingerprint = ComputeSchemaFingerprint();
+
             if (File.Exists(_templatePath)
                 && File.Exists(_templateSidecarPath)
+                && File.Exists(_templateFingerprintPath)
+                && File.ReadAllText(_templateFingerprintPath) == currentFingerprint
                 && CanOpenTemplateAsync(_templatePath, _passphrase, CancellationToken.None).GetAwaiter().GetResult())
             {
                 return;
@@ -115,8 +125,40 @@ public sealed class GrimoireFixture : IDisposable
 
             DeleteTemplateFiles();
             BuildTemplateAsync(CancellationToken.None).GetAwaiter().GetResult();
+            File.WriteAllText(_templateFingerprintPath, currentFingerprint);
 
         }
+
+    }
+
+    /// <summary>
+    /// Hashes every embedded Grimoire SQL migration script so the cached template database
+    /// (which persists across test process invocations under the OS temp directory) is rebuilt
+    /// whenever a migration script changes, instead of silently serving a stale schema.
+    /// </summary>
+    private static string ComputeSchemaFingerprint()
+    {
+
+        Assembly assembly = typeof(GrimoireSqlSchemaMigrator).Assembly;
+
+        StringBuilder combined = new();
+
+        foreach (string resourceName in assembly.GetManifestResourceNames()
+            .Where(name => name.EndsWith(".sql", StringComparison.Ordinal))
+            .OrderBy(name => name, StringComparer.Ordinal))
+        {
+
+            using Stream stream = assembly.GetManifestResourceStream(resourceName)!;
+
+            using StreamReader reader = new(stream, Encoding.UTF8);
+
+            combined.Append(resourceName).Append('\n').Append(reader.ReadToEnd()).Append("\n---\n");
+
+        }
+
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined.ToString()));
+
+        return Convert.ToHexString(hash);
 
     }
 
@@ -247,7 +289,7 @@ public sealed class GrimoireFixture : IDisposable
     private void DeleteTemplateFiles()
     {
 
-        string[] suffixes = ["", "-wal", "-shm", ".kdf"];
+        string[] suffixes = ["", "-wal", "-shm", ".kdf", ".fingerprint"];
 
         foreach (string suffix in suffixes)
         {

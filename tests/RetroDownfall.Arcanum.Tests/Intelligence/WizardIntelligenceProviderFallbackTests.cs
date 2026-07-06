@@ -27,6 +27,7 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -449,6 +450,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 NullLogger<SemanticSpellRouter>.Instance),
             CreateUnusedDbContext(),
+            new FakeInferenceAuditLogger(),
             healthTracker);
 
     }

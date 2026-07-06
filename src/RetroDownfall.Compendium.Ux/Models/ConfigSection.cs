@@ -33,6 +33,8 @@ public enum ConfigSection
 
     Scrying,
 
+    Moderations,
+
 }
 
 public sealed record SectionDescriptor(
@@ -76,6 +78,8 @@ public static class SectionDescriptors
         new(ConfigSection.Resilience, "Resilience", "\ue7c9", "Provider health probing and fallback"),
 
         new(ConfigSection.Scrying, "Scrying", "\ue7ca", "Vision/multimodality image gate"),
+
+        new(ConfigSection.Moderations, "Moderations", "\ue7cb", "OpenAI-compatible content moderation"),
 
     ];
 

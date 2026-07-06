@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Hosting;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
@@ -191,6 +192,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<SerilogLogRingBufferSink>();
 
+        services.AddSingleton<IInferenceAuditLogger, InferenceAuditLogger>();
+
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
             .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
@@ -235,6 +238,12 @@ public static class ServiceCollectionExtensions
         services.AddDbContextPool<ArcanumDbContext>(_ => { }, poolSize: 32);
 
         services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();
+
+        services.AddScoped<IIdempotencyStore, IdempotencyStore>();
+
+        services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
+
+        services.AddScoped<IBatchRepository, BatchRepository>();
 
         services.AddScoped<ISanctumBreachRepository, SanctumBreachRepository>();
 

@@ -37,6 +37,18 @@ public static class SettingDescriptors
 
         new("host.rateLimit.queueLimit", ConfigSection.Host, "Rate limit queue limit", "Maximum queued requests per partition (served once the window resets). Default 0: excess requests are rejected with HTTP 429.", SettingKind.Int, 0, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.RateLimitQueueLimit)),
 
+        // ===== Host — Audit log =====
+
+        new("host.auditLog.enabled", ConfigSection.Host, "Audit log enabled", "Master toggle for the persisted inference audit log. When false (default), no file I/O occurs and GET /api/audit returns an empty list.", SettingKind.Bool),
+
+        new("host.auditLog.filePath", ConfigSection.Host, "Audit log file path", "Base path; the directory is where dated audit-YYYYMMDD.jsonl files are written (one per UTC day).", SettingKind.Path, Placeholder: "~/.config/arcanum/audit.jsonl"),
+
+        new("host.auditLog.maxSizeMb", ConfigSection.Host, "Audit log max size (MB)", "Soft per-day-file size cap; further writes for that day are dropped once reached. Default 100; clamped 10-1,000.", SettingKind.Int, 10, 1_000, 10, ClampName: nameof(ArcanumSettingClamps.HostAuditLogMaxSizeMb)),
+
+        new("host.auditLog.retentionDays", ConfigSection.Host, "Audit log retention (days)", "Dated log files older than this are deleted automatically. Default 7; clamped 1-365.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays)),
+
+        new("host.auditLog.redactToolArguments", ConfigSection.Host, "Redact tool arguments", "When true (default), only tool names are captured. When false, raw tool argument JSON is also recorded — at the operator's risk, since arguments can carry file contents or command lines.", SettingKind.Bool),
+
         // ===== Host — Metrics =====
 
         new("metrics.enabled", ConfigSection.Host, "Enable metrics endpoint", "When true (default), GET /metrics renders Prometheus text format; when false, the endpoint returns 404.", SettingKind.Bool),
@@ -104,6 +116,8 @@ public static class SettingDescriptors
         new("intelligence.toolOutputCapBytes", ConfigSection.Intelligence, "Tool output cap (bytes)", "Hard cap on captured stdout/stderr for in-process execute_command and run_spell_script. Output beyond this is truncated.", SettingKind.Long, 65_536, 67_108_864, 65_536, ClampName: nameof(ArcanumSettingClamps.ToolOutputCapBytes)),
 
         new("intelligence.maxToolInferenceRounds", ConfigSection.Intelligence, "Max tool inference rounds", "Maximum agentic tool rounds per inference turn. Beyond this the turn fails with Hub.ToolLoop.", SettingKind.Int, 1, 64, 1, ClampName: nameof(ArcanumSettingClamps.MaxToolInferenceRounds)),
+
+        new("intelligence.tolerateToolFailures", ConfigSection.Intelligence, "Tolerate tool failures", "When true (default), an unexpected tool exception during a buffered turn is caught and synthesized into a tool result instead of failing the whole turn with Hub.Error. Streaming already tolerates failures unconditionally.", SettingKind.Bool),
 
         new("intelligence.compressionPreflightMinMessages", ConfigSection.Intelligence, "Compression preflight min messages", "Minimum assembled-message count before context-compression preflight runs. Short threads skip tokenizer cost.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.CompressionPreflightMinMessages)),
 
@@ -235,6 +249,28 @@ public static class SettingDescriptors
 
         new("conclave.maxDescendantsPerRoot", ConfigSection.Orchestration, "Max descendants per root", "Maximum total descendant Apprentices allowed under one Conclave root.", SettingKind.Int, 1, 200, 1, ClampName: nameof(ArcanumSettingClamps.MaxDescendantsPerRoot)),
 
+        // ===== Orchestration — Conclave A2A (Agent-to-Agent) =====
+
+        new("conclave.a2A.enabled", ConfigSection.Orchestration, "A2A enabled", "Master toggle gating both the A2A server and client surfaces. Also requires Conclave enabled to be true.", SettingKind.Bool),
+
+        new("conclave.a2A.serverEnabled", ConfigSection.Orchestration, "A2A server enabled", "Exposes Arcanum Apprentices as an A2A server (inbound tasks from external agents).", SettingKind.Bool),
+
+        new("conclave.a2A.serverPath", ConfigSection.Orchestration, "A2A server path", "HTTP path under which the A2A server endpoints and authenticated Agent Card (\"Heraldry\") are mapped.", SettingKind.String, Placeholder: "/api/conclave/a2a"),
+
+        new("conclave.a2A.agentCardName", ConfigSection.Orchestration, "Agent Card name", "Display name advertised on the A2A Agent Card (\"Heraldry\").", SettingKind.String),
+
+        new("conclave.a2A.agentCardDescription", ConfigSection.Orchestration, "Agent Card description", "Display description advertised on the A2A Agent Card (\"Heraldry\").", SettingKind.String),
+
+        new("conclave.a2A.clientEnabled", ConfigSection.Orchestration, "A2A client enabled", "Advertises and enables the in-process dispatch_sending MCP tool so an Apprentice can delegate to an external A2A agent.", SettingKind.Bool),
+
+        new("conclave.a2A.maxExternalTasks", ConfigSection.Orchestration, "Max external tasks", "Maximum number of concurrently in-flight external (client-side) A2A delegations.", SettingKind.Int, 1, 500, 1, ClampName: nameof(ArcanumSettingClamps.MaxExternalTasks)),
+
+        new("conclave.a2A.externalTaskTimeoutMinutes", ConfigSection.Orchestration, "External task timeout (min)", "Per-delegation timeout, in minutes, for a client-side dispatch_sending call.", SettingKind.Int, 5, 1440, 5, ClampName: nameof(ArcanumSettingClamps.ExternalTaskTimeoutMinutes)),
+
+        new("conclave.a2A.allowedRemoteAgents", ConfigSection.Orchestration, "Allowed remote agents", "Allowlist of remote Agent Card URLs (or origins) that dispatch_sending may target. Empty means any URL is a candidate, subject to the outbound SSRF guard, which always applies regardless of this allowlist.", SettingKind.StringArray),
+
+        new("conclave.a2A.defaultWorkspace", ConfigSection.Orchestration, "Default workspace", "Fallback workspace path for inbound A2A tasks (server side) when the request carries no workspace or campaign hint. Empty falls back to Arcanum:Host:Workspace, then the process's current directory.", SettingKind.String),
+
         // ===== Security — Ward =====
 
         new("ward.enabled", ConfigSection.Security, "Wards enabled", "Master toggle for the Forbidden Arts approval gate.", SettingKind.Bool),
@@ -252,6 +288,10 @@ public static class SettingDescriptors
         new("security.maxApiKeyHeaderUtf16Chars", ConfigSection.Security, "Max API key header chars", "Maximum UTF-16 char length accepted in the X-Arcanum-Key / Authorization header.", SettingKind.Int, 128, 8192, 16, ClampName: nameof(ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars)),
 
         new("security.apiKeyCacheTtlSeconds", ConfigSection.Security, "API key cache TTL (s)", "TTL for the in-memory cache of the expected API key digest. After this window, on-disk rotation takes effect without a restart.", SettingKind.Int, 1, 3600, 1, ClampName: nameof(ArcanumSettingClamps.ApiKeyCacheTtlSeconds)),
+
+        new("security.idempotencyTtlHours", ConfigSection.Security, "Idempotency-Key TTL (hours)", "How long a cached Idempotency-Key response is replayed before it is treated as expired.", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.SecurityIdempotencyTtlHours)),
+
+        new("security.idempotencyMaxResponseBytes", ConfigSection.Security, "Idempotency-Key max cached response (bytes)", "Maximum buffered response size cached for an Idempotency-Key request; larger responses still stream fully to the client but are never cached.", SettingKind.Int, 1024 * 1024, 100 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes)),
 
         // ===== CommLink =====
 
@@ -280,6 +320,20 @@ public static class SettingDescriptors
         new("sessions.maxEntriesPerSession", ConfigSection.Storage, "Max entries per session", "Maximum entries allowed in a single session before inserts are rejected.", SettingKind.Int, 100, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.MaxEntriesPerSession)),
 
         new("sessions.maxEntryContentBytes", ConfigSection.Storage, "Max entry content (bytes)", "Maximum byte size of a single session entry's content.", SettingKind.Int, 1024, 16_777_216, 1024, ClampName: nameof(ArcanumSettingClamps.MaxEntryContentBytes)),
+
+        new("sessions.maxForkDepth", ConfigSection.Storage, "Max fork depth", "Maximum number of ancestor forks allowed in a session's lineage chain before further forking is rejected.", SettingKind.Int, 0, 20, 1, ClampName: nameof(ArcanumSettingClamps.MaxForkDepth)),
+
+        new("files.maxUploadSizeBytes", ConfigSection.Storage, "Max file upload size (bytes)", "Maximum upload size for POST /v1/files.", SettingKind.Long, 1024 * 1024, 10L * 1024 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.FilesMaxUploadSizeBytes)),
+
+        new("files.allowedMimeTypes", ConfigSection.Storage, "Allowed upload MIME types", "Allowed Content-Type values for POST /v1/files uploads. Empty (default) means no operator-configured restriction.", SettingKind.StringArray),
+
+        new("batches.maxConcurrentBatches", ConfigSection.Storage, "Max concurrent batches", "Maximum number of /v1/batches processed concurrently across the whole server.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentBatches)),
+
+        new("batches.maxRequestsPerBatch", ConfigSection.Storage, "Max requests per batch", "Maximum JSONL request lines accepted in a single /v1/batches input file.", SettingKind.Int, 1, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxRequestsPerBatch)),
+
+        new("batches.batchExpiryHours", ConfigSection.Storage, "Batch expiry (hours)", "How long after creation a non-terminal batch is force-expired (input/output files deleted).", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.BatchesBatchExpiryHours)),
+
+        new("batches.maxConcurrentRequestsPerBatch", ConfigSection.Storage, "Max concurrent requests per batch", "Maximum chat-completion requests run concurrently within a single batch.", SettingKind.Int, 1, 10, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentRequestsPerBatch)),
 
         // ===== Storage — EventBus =====
 
@@ -436,6 +490,8 @@ public static class SettingDescriptors
 
         new("embeddings.requestTimeoutSeconds", ConfigSection.Intelligence, "Embeddings request timeout (s)", "Timeout for a single embedding API call.", SettingKind.Int, 5, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsRequestTimeoutSeconds)),
 
+        new("embeddings.maxEmbeddingInputChars", ConfigSection.Intelligence, "Max embedding input (chars)", "Maximum total character count across all inputs in a single POST /v1/embeddings request; exceeding it returns 400 invalid_request_error.", SettingKind.Int, 1000, 10_000_000, 1000, ClampName: nameof(ArcanumSettingClamps.EmbeddingsMaxEmbeddingInputChars)),
+
         new("embeddings.sessionSearchEnabled", ConfigSection.Intelligence, "Session search enabled", "Phase 2 feature flag: session semantic search (Divination over the Grimoire). Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
         new("embeddings.embeddingQueueIntervalSeconds", ConfigSection.Intelligence, "Embedding queue interval (s)", "Phase 2: interval between EntryWeavingService embedding queue processing ticks. Only relevant when Session search enabled is true.", SettingKind.Int, 1, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsEmbeddingQueueIntervalSeconds)),
@@ -483,6 +539,8 @@ public static class SettingDescriptors
         new("scrying.maxImagesPerRequest", ConfigSection.Scrying, "Max images per request", "Maximum images per inference request (native Scrying foci and /v1 image_url parts combined).", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.ScryingMaxImagesPerRequest)),
 
         new("scrying.allowedMimeTypes", ConfigSection.Scrying, "Allowed MIME types", "Allowed image MIME types. Non-matching types are rejected. Only enforced for data: URI images; not enforced for http(s) URLs.", SettingKind.StringArray),
+
+        new("moderations.enabled", ConfigSection.Moderations, "Moderations enabled", "When false (default), POST /v1/moderations returns 404. When true, it returns a pass-through result (always unflagged) — Arcanum runs no local or remote moderation model yet.", SettingKind.Bool),
 
     ];
 

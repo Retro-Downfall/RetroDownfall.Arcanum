@@ -48,6 +48,21 @@ public sealed record IntelligenceSettings
     public int MaxToolInferenceRounds { get; init; } = 8;
 
     /// <summary>
+    /// When <see langword="true"/> (default), an unexpected exception from a single tool
+    /// invocation during a <em>buffered</em> (<c>/api/intelligence/ping</c>, forge execute)
+    /// inference turn is caught and synthesized into a tool result
+    /// (<c>ToolExecutionPipeline.PublicToolFailureMessage</c>) so the model can see the failure and
+    /// decide how to proceed, instead of the whole turn failing with <c>Hub.Error</c>. Only
+    /// unexpected (infrastructure-fault) exceptions are affected — expected tool errors (validation,
+    /// ward/Sanctum denial) already return a structured tool result regardless of this setting.
+    /// Set to <see langword="false"/> to restore the strict pre-existing behavior (fail the whole
+    /// turn on any tool exception). The streaming path (<c>/api/intelligence/ping-stream</c>,
+    /// <c>/v1</c> streaming) already tolerates tool failures unconditionally and is not affected by
+    /// this setting.
+    /// </summary>
+    public bool TolerateToolFailures { get; init; } = true;
+
+    /// <summary>
     /// Minimum assembled-message count before context-compression preflight runs. Short threads
     /// are assumed to fit and skip tokenizer cost. Default 6.
     /// </summary>

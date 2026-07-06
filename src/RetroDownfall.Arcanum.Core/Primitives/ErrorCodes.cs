@@ -63,6 +63,12 @@ public static class ErrorCodes
 
         public const string EmptyContent = "Session.EmptyContent";
 
+        /// <summary>The source session's fork lineage already reached <c>Arcanum:Sessions:MaxForkDepth</c>.</summary>
+        public const string ForkDepthExceeded = "Session.ForkDepthExceeded";
+
+        /// <summary>The optional <c>upToEntryId</c> fork cutoff does not identify an entry belonging to the source session.</summary>
+        public const string EntryNotFound = "Session.EntryNotFound";
+
     }
 
     /// <summary>Grimoire — lore and knowledge store.</summary>
@@ -215,6 +221,12 @@ public static class ErrorCodes
 
         public const string ModelNotCached = "Llama.ModelNotCached";
 
+        /// <summary>No running <c>llama-server</c> process for the requested cache key — distinct
+        /// from <see cref="ModelNotCached"/> (the GGUF isn't downloaded at all). Returned by
+        /// <c>POST /api/llama/servers/{cacheKey}/warmup</c> when the server must already be running
+        /// (warmup does not start one).</summary>
+        public const string ServerNotRunning = "Llama.ServerNotRunning";
+
     }
 
     /// <summary>Daemon — background job orchestration.</summary>
@@ -266,6 +278,33 @@ public static class ErrorCodes
         public const string MissingApiKey = "Security.MissingApiKey";
 
         public const string BlockedOutboundUrl = "Security.BlockedOutboundUrl";
+
+        /// <summary>The <c>Idempotency-Key</c> request header exceeds the maximum allowed length.</summary>
+        public const string IdempotencyKeyTooLong = "Security.IdempotencyKeyTooLong";
+
+    }
+
+    /// <summary>Files — OpenAI-compatible <c>/v1/files</c> upload storage.</summary>
+    public static class Files
+    {
+
+        public const string NotFound = "Files.NotFound";
+
+        public const string TooLarge = "Files.TooLarge";
+
+        public const string InvalidMimeType = "Files.InvalidMimeType";
+
+    }
+
+    /// <summary>Batches — OpenAI-compatible <c>/v1/batches</c> asynchronous bulk chat completion.</summary>
+    public static class Batches
+    {
+
+        public const string NotFound = "Batches.NotFound";
+
+        public const string InvalidEndpoint = "Batches.InvalidEndpoint";
+
+        public const string InputFileNotFound = "Batches.InputFileNotFound";
 
     }
 

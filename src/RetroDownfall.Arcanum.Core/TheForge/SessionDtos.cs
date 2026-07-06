@@ -34,7 +34,19 @@ public sealed record SessionDetailDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     string? Summary,
-    long TotalTokensUsed);
+    long TotalTokensUsed,
+    Guid? ForkedFromSessionId = null);
+
+/// <summary>
+/// Body for <c>POST /api/sessions/{id}/fork</c>. All fields optional: <paramref name="Title"/>
+/// defaults to <c>"Fork of {source title}"</c>; <paramref name="UpToEntryId"/> copies only entries
+/// up to and including that entry (must belong to the source session) instead of the full
+/// transcript; <paramref name="CampaignId"/> defaults to the source session's campaign.
+/// </summary>
+public sealed record ForkSessionRequest(
+    string? Title = null,
+    Guid? UpToEntryId = null,
+    Guid? CampaignId = null);
 
 public sealed record EntryDto(
     Guid Id,

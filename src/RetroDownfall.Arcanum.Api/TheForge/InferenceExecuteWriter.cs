@@ -64,7 +64,8 @@ internal static class InferenceExecuteWriter
         HttpContext httpContext,
         IArcanumIntelligenceProvider intelligence,
         PingRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        InferenceAuditContext? auditContext = null)
     {
         using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
             httpContext.RequestAborted,
@@ -94,7 +95,7 @@ internal static class InferenceExecuteWriter
 
         try
         {
-            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct).ConfigureAwait(false))
+            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct, auditContext).ConfigureAwait(false))
             {
 
                 eventBuffer.ResetWrittenCount();

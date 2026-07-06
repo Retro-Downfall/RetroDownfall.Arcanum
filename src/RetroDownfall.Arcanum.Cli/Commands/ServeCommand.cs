@@ -148,6 +148,8 @@ public sealed class ServeCommand(IThemePalette themePalette)
 
         app.UseArcanumExceptionHandler();
 
+        app.UseArcanumResponseCompression();
+
         app.UseArcanumCors();
 
         app.UseArcanumRateLimiter();

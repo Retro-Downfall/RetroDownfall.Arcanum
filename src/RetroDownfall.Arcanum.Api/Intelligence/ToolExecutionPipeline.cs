@@ -49,8 +49,16 @@ public sealed class ToolExecutionPipeline(
     ILogger<ToolExecutionPipeline> logger)
 {
 
-    public const string PublicToolFailureMessageForGrimoire =
-        "A tool invocation failed. See server logs for details.";
+    /// <summary>
+    /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated
+    /// rather than failing the whole turn — see <c>Arcanum:Intelligence:TolerateToolFailures</c>
+    /// (default <see langword="true"/>). The model sees this text as the tool's result and can decide
+    /// how to proceed (retry, apologize, try a different approach) instead of the turn failing
+    /// outright with <c>Hub.Error</c>. Exact wording is a contract with the model prompt, not just a
+    /// log message — do not change casually.
+    /// </summary>
+    public static string PublicToolFailureMessage(string toolName) =>
+        $"[Tool error: {toolName} failed with an internal error. The operator has been notified.]";
 
     private const string WardTimeoutReason =
         "The ward held until timeout — action was not allowed";
@@ -80,14 +88,19 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    public sealed record WardedToolExecutionResult(string ResultText, IReadOnlyList<IntelligenceEvent> WardEvents, bool Denied = false);
+    public sealed record WardedToolExecutionResult(
+        string ResultText,
+        IReadOnlyList<IntelligenceEvent> WardEvents,
+        bool Denied = false,
+        bool Failed = false);
 
     public sealed record ProcessedToolCall(
         string CallId,
         string ToolName,
         string ArgsSnapshot,
         string ResultText,
-        IReadOnlyList<IntelligenceEvent> WardEvents);
+        IReadOnlyList<IntelligenceEvent> WardEvents,
+        bool Failed = false);
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
@@ -224,9 +237,9 @@ public sealed class ToolExecutionPipeline(
             catch (Exception ex)
             {
 
-                logger.LogError(ex, "Tool {ToolName} failed during streaming inference.", toolName);
+                logger.LogError(ex, "Tool {ToolName} failed during inference (tolerated — Arcanum:Intelligence:TolerateToolFailures).", toolName);
 
-                wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessageForGrimoire, []);
+                wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessage(toolName), [], Failed: true);
 
                 RecordToolInvocationMetric(toolName, "error");
 
@@ -278,7 +291,8 @@ public sealed class ToolExecutionPipeline(
             toolName,
             argsSnapshot,
             wardedExecution.ResultText,
-            wardedExecution.WardEvents);
+            wardedExecution.WardEvents,
+            wardedExecution.Failed);
 
     }
 

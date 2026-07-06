@@ -290,6 +290,12 @@ public sealed class AskCommand(
 
                         goto case IntelligenceEventType.ToolResult;
 
+                    case IntelligenceEventType.ToolError:
+
+                        stderrConsole.MarkupLine(palette.ErrorMarkup(Markup.Escape($"⚠ Tool {evt.Message} failed (tolerated)")));
+
+                        break;
+
                     case IntelligenceEventType.ToolResult:
 
                         stderrConsole.MarkupLine(palette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));

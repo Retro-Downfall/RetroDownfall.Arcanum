@@ -67,6 +67,8 @@ WebApplication app = builder.Build();
 
 app.UseArcanumExceptionHandler();
 
+app.UseArcanumResponseCompression();
+
 app.UseArcanumCors();
 
 app.UseArcanumRateLimiter();

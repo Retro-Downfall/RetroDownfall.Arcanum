@@ -86,6 +86,23 @@ public static class ArcanumSettingClamps
 
     public static int ApiKeyCacheTtlSeconds(int value) => Math.Clamp(value, 1, 3_600);
 
+    public static int SecurityIdempotencyTtlHours(int value) => Math.Clamp(value, 1, 168);
+
+    public static int SecurityIdempotencyMaxResponseBytes(int value) => Math.Clamp(value, 1024 * 1024, 100 * 1024 * 1024);
+
+    /// <summary>Hard cap on the raw <c>Idempotency-Key</c> header value length (not configurable — a fixed guardrail, not a tunable setting).</summary>
+    public const int SecurityIdempotencyKeyMaxChars = 256;
+
+    public static long FilesMaxUploadSizeBytes(long value) => Math.Clamp(value, 1024L * 1024L, 10L * 1024L * 1024L * 1024L);
+
+    public static int BatchesMaxConcurrentBatches(int value) => Math.Clamp(value, 1, 20);
+
+    public static int BatchesMaxRequestsPerBatch(int value) => Math.Clamp(value, 1, 1_000_000);
+
+    public static int BatchesBatchExpiryHours(int value) => Math.Clamp(value, 1, 168);
+
+    public static int BatchesMaxConcurrentRequestsPerBatch(int value) => Math.Clamp(value, 1, 10);
+
     public static long ToolOutputCapBytes(long value) => Math.Clamp(value, 64L * 1024L, 64L * 1024L * 1024L);
 
     public const int JsonRpcEnvelopeUtf8MarginBytes = 8_192;
@@ -303,6 +320,8 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsRequestTimeoutSeconds(int value) => Math.Clamp(value, 5, 300);
 
+    public static int EmbeddingsMaxEmbeddingInputChars(int value) => Math.Clamp(value, 1_000, 10_000_000);
+
     public static int EmbeddingsEmbeddingQueueIntervalSeconds(int value) => Math.Clamp(value, 1, 300);
 
     public static int EmbeddingsCodebaseMaxFilesToIndex(int value) => Math.Clamp(value, 1, 10_000);
@@ -328,6 +347,12 @@ public static class ArcanumSettingClamps
     public static long ScryingMaxImageBytes(long value) => Math.Clamp(value, 1024L, 20L * 1024L * 1024L);
 
     public static int ScryingMaxImagesPerRequest(int value) => Math.Clamp(value, 1, 100);
+
+    public static int HostAuditLogMaxSizeMb(int value) => Math.Clamp(value, 10, 1_000);
+
+    public static int HostAuditLogRetentionDays(int value) => Math.Clamp(value, 1, 365);
+
+    public static int MaxForkDepth(int value) => Math.Clamp(value, 0, 20);
 
 }
 

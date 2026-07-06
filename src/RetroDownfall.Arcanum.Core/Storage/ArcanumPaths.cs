@@ -43,4 +43,12 @@ public static class ArcanumPaths
     /// </summary>
     public static string ModelCacheDirectory => Path.Combine(GrimoireDirectory, "models");
 
+    /// <summary>
+    /// <c>POST /v1/files</c> upload storage root: <c>~/.config/arcanum/files/</c>. Each uploaded
+    /// file is stored under its own GUID-named path (see <c>UploadedFileRepository.ResolvePath</c>) —
+    /// never the client-supplied filename — so path traversal and filename collisions are structurally
+    /// impossible; the original filename is retained only as row metadata.
+    /// </summary>
+    public static string FilesDirectory => Path.Combine(GrimoireDirectory, "files");
+
 }

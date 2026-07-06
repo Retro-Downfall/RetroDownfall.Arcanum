@@ -5,9 +5,11 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Models;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
@@ -22,6 +24,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -78,7 +81,13 @@ internal static class IntelligenceEndpoints
                     statusCode: ArcanumErrorMapper.ResolveStatusCode(resolvedRequest.Error.Code));
             }
 
-            Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(resolvedRequest.Value, cancellationToken).ConfigureAwait(false);
+            InferenceAuditContext pingAuditContext = new()
+            {
+                RequestType = "ping",
+                ClientIp = httpContext.Connection.RemoteIpAddress?.ToString(),
+            };
+
+            Result<PromptTurnResult> turn = await intelligence.ExecutePromptAsync(resolvedRequest.Value, cancellationToken, pingAuditContext).ConfigureAwait(false);
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
@@ -99,7 +108,8 @@ internal static class IntelligenceEndpoints
                 : Results.Json(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
         })
         .WithName("PostIntelligencePing")
-        .WithLargeRequestBody();
+        .WithLargeRequestBody()
+        .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.PingRequest));
 
         apiGroup.MapPost(
             "/intelligence/human-response",
@@ -253,13 +263,20 @@ internal static class IntelligenceEndpoints
 
             IArcanumIntelligenceProvider intelligence = httpContext.RequestServices.GetRequiredService<IArcanumIntelligenceProvider>();
 
+            InferenceAuditContext pingStreamAuditContext = new()
+            {
+                RequestType = "ping-stream",
+                ClientIp = httpContext.Connection.RemoteIpAddress?.ToString(),
+            };
+
             await InferenceExecuteWriter
-                .WriteStreamAsync(httpContext, intelligence, resolvedRequest.Value, ct)
+                .WriteStreamAsync(httpContext, intelligence, resolvedRequest.Value, ct, pingStreamAuditContext)
                 .ConfigureAwait(false);
 
         })
         .WithName("PostIntelligencePingStream")
-        .WithLargeRequestBody();
+        .WithLargeRequestBody()
+        .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
 
         apiGroup.MapPost("/intelligence/arsenal", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext, CancellationToken ct) =>
         {
@@ -294,7 +311,103 @@ internal static class IntelligenceEndpoints
         })
         .WithName("PostIntelligenceArsenal");
 
+        apiGroup.MapPost("/intelligence/mana", HandleCountManaAsync)
+            .WithName("PostIntelligenceMana");
+
         return apiGroup;
+    }
+
+    /// <summary>
+    /// Read-only diagnostic Mana (token) counter. Reuses <see cref="InferenceTokenizerResolver"/>
+    /// and <see cref="ManaPreflight"/> (the same pre-flight counting machinery used for context
+    /// compression, DESIGN.md §10.2.3) so results match what the intelligence hub actually
+    /// budgets against. Performs no Grimoire writes and no inference.
+    /// </summary>
+    private static async Task<IResult> HandleCountManaAsync(
+        ManaCountRequest? body,
+        InferenceTokenizerResolver tokenizerResolver,
+        ManaPreflight manaPreflight,
+        IMcpConnectionManager mcp,
+        IOptionsSnapshot<ArcanumSettings> settings,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        bool hasMessages = body?.Messages is { Count: > 0 };
+
+        bool hasPrompt = !string.IsNullOrEmpty(body?.Prompt);
+
+        if (body is null || (!hasMessages && !hasPrompt))
+        {
+
+            Result<ManaCountResult> invalid = Result<ManaCountResult>.Failure(
+                new Error(ErrorCodes.Validation.InvalidBody, "Either 'messages' or 'prompt' is required."));
+
+            return Results.Json(
+                ApiResponse<ManaCountResult>.FromResult(invalid, traceId),
+                ArcanumJsonContext.Default.ApiResponseManaCountResult,
+                statusCode: StatusCodes.Status400BadRequest);
+
+        }
+
+        string encodingName = string.IsNullOrWhiteSpace(settings.Value.Intelligence.TokenizerEncoding)
+            ? InferenceTokenizerResolver.DefaultEncodingName
+            : settings.Value.Intelligence.TokenizerEncoding;
+
+        Tokenizer tokenizer = tokenizerResolver.ResolveTokenizer(encodingName);
+
+        int perMessageOverhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
+            settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
+
+        int manaCount;
+
+        List<int>? perMessage = null;
+
+        if (hasMessages)
+        {
+
+            List<MeAiChatMessage> chatMessages = InferenceContextBuilder.MapToAiChatMessages(body!.Messages!);
+
+            manaCount = manaPreflight.CountTokens(chatMessages, tokenizer, perMessageOverhead, encodingName);
+
+            perMessage = new List<int>(chatMessages.Count);
+
+            foreach (MeAiChatMessage message in chatMessages)
+            {
+
+                List<MeAiChatMessage> single = [message];
+
+                perMessage.Add(manaPreflight.CountTokens(single, tokenizer, perMessageOverhead, encodingName));
+
+            }
+
+        }
+        else
+        {
+
+            manaCount = tokenizer.CountTokens(body!.Prompt!);
+
+        }
+
+        int? toolManaEstimate = null;
+
+        if (body.Tools)
+        {
+
+            toolManaEstimate = await ToolSchemaManaEstimator
+                .EstimateAsync(mcp, tokenizer, perMessageOverhead, workingDirectory: null, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        ManaCountResult result = new(manaCount, encodingName, perMessage, toolManaEstimate);
+
+        Result<ManaCountResult> ok = Result<ManaCountResult>.Success(result);
+
+        return Results.Ok(ApiResponse<ManaCountResult>.FromResult(ok, traceId));
+
     }
 
 }

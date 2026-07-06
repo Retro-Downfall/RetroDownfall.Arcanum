@@ -1,6 +1,6 @@
-using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Core.Primitives;
 
-namespace RetroDownfall.Arcanum.Tests.Weave;
+namespace RetroDownfall.Arcanum.Tests.Primitives;
 
 /// <summary>
 /// Hardening pass — <see cref="EmbeddingBlobCodec.CosineSimilarity"/> is SIMD-vectorized via

@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS "Sessions" (
     "Summary" TEXT NULL,
     "LastSummarizedMessageAt" TEXT NULL,
     "TotalTokensUsed" INTEGER NOT NULL DEFAULT 0,
-    "UnsummarizedEntryCount" INTEGER NOT NULL DEFAULT 0
+    "UnsummarizedEntryCount" INTEGER NOT NULL DEFAULT 0,
+    "ForkedFromSessionId" TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_CreatedAt" ON "Sessions" ("CreatedAt");
@@ -89,6 +90,8 @@ CREATE INDEX IF NOT EXISTS "IX_Sessions_Status_UpdatedAt" ON "Sessions" ("Status
 CREATE INDEX IF NOT EXISTS "IX_Sessions_CampaignId_Status_UpdatedAt" ON "Sessions" ("CampaignId", "Status", "UpdatedAt");
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_UnsummarizedEntryCount" ON "Sessions" ("UnsummarizedEntryCount");
+
+CREATE INDEX IF NOT EXISTS "IX_Sessions_ForkedFromSessionId" ON "Sessions" ("ForkedFromSessionId");
 
 CREATE TABLE IF NOT EXISTS "Entries" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Entries" PRIMARY KEY,
@@ -175,3 +178,41 @@ CREATE TABLE IF NOT EXISTS "SanctumBreaches" (
 
 CREATE INDEX IF NOT EXISTS "IX_SanctumBreaches_CampaignId_OccurredAt"
     ON "SanctumBreaches" ("CampaignId", "OccurredAt" DESC);
+
+CREATE TABLE IF NOT EXISTS "IdempotencyKeys" (
+    "KeyHash" TEXT NOT NULL CONSTRAINT "PK_IdempotencyKeys" PRIMARY KEY,
+    "ResponseBody" TEXT NOT NULL,
+    "StatusCode" INTEGER NOT NULL,
+    "ContentType" TEXT NULL,
+    "CreatedAt" TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "IX_IdempotencyKeys_CreatedAt" ON "IdempotencyKeys" ("CreatedAt");
+
+CREATE TABLE IF NOT EXISTS "UploadedFiles" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_UploadedFiles" PRIMARY KEY,
+    "Filename" TEXT NOT NULL,
+    "Bytes" INTEGER NOT NULL,
+    "Purpose" TEXT NOT NULL,
+    "MimeType" TEXT NOT NULL,
+    "CreatedAt" TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "IX_UploadedFiles_Purpose" ON "UploadedFiles" ("Purpose");
+
+CREATE INDEX IF NOT EXISTS "IX_UploadedFiles_CreatedAt" ON "UploadedFiles" ("CreatedAt");
+
+CREATE TABLE IF NOT EXISTS "Batches" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_Batches" PRIMARY KEY,
+    "InputFileId" TEXT NOT NULL,
+    "Endpoint" TEXT NOT NULL,
+    "Status" TEXT NOT NULL,
+    "CreatedAt" TEXT NOT NULL,
+    "CompletedAt" TEXT NULL,
+    "OutputFileId" TEXT NULL,
+    "ErrorFileId" TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS "IX_Batches_Status" ON "Batches" ("Status");
+
+CREATE INDEX IF NOT EXISTS "IX_Batches_CreatedAt" ON "Batches" ("CreatedAt");

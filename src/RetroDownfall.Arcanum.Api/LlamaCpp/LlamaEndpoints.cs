@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.ClientModel;
+using System.ClientModel.Primitives;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
@@ -6,13 +8,19 @@ using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using OpenAI;
+using OpenAI.Chat;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.LlamaCpp;
 
@@ -22,6 +30,14 @@ internal static class LlamaEndpoints
 
     private const string PublicPullFailureMessage =
         "Model download failed. See server logs for details.";
+
+    /// <summary>
+    /// Matches <c>ChatClientFactory</c>'s placeholder credential for keyless local llama-server
+    /// endpoints — reused here rather than hardcoded independently so both call sites stay in sync.
+    /// </summary>
+    private const string KeylessOpenAiPlaceholder = "no-key";
+
+    private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
 
     private static readonly byte[] NewlineBytes = "\n"u8.ToArray();
 
@@ -39,6 +55,8 @@ internal static class LlamaEndpoints
         apiGroup.MapPost("/llama/servers/{cacheKey}/stop", HandleStopServerAsync).WithName("PostLlamaServerStop");
 
         apiGroup.MapPost("/llama/servers/stop", HandleStopAllServersAsync).WithName("PostLlamaServersStopAll");
+
+        apiGroup.MapPost("/llama/servers/{cacheKey}/warmup", HandleWarmupServerAsync).WithName("PostLlamaServerWarmup");
 
     }
 
@@ -330,6 +348,188 @@ internal static class LlamaEndpoints
         Result<bool> ok = true;
 
         return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
+
+    }
+
+    /// <summary>
+    /// Sends a minimal dummy chat request to a running <c>llama-server</c> to prime its KV-cache and
+    /// verify the server actually responds to inference — distinct from <c>GET /api/health</c>, which
+    /// only checks the process/port is alive. Does not start a server: warm-up requires one already
+    /// running (<c>POST .../start</c> first).
+    /// </summary>
+    private static async Task<IResult> HandleWarmupServerAsync(
+        string cacheKey,
+        HttpContext httpContext,
+        ILlamaServerManager manager,
+        IOptionsSnapshot<ArcanumSettings> settings,
+        IHttpClientFactory httpClientFactory,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        if (string.IsNullOrWhiteSpace(cacheKey))
+        {
+
+            return ValidationError(httpContext, "Cache key is required.");
+
+        }
+
+        string normalizedKey = LlamaCacheKey.NormalizeModelKey(cacheKey);
+
+        WarmupRequestDto? body;
+
+        IResult? jsonError;
+
+        (body, jsonError) = await ApiRequestJson.ReadAsync(
+            httpContext,
+            ArcanumJsonContext.Default.WarmupRequestDto,
+            static ctx => ValidationError(ctx, ApiRequestJson.MalformedJsonMessage),
+            cancellationToken).ConfigureAwait(false);
+
+        if (jsonError is not null)
+        {
+
+            return jsonError;
+
+        }
+
+        body ??= new WarmupRequestDto();
+
+        LlamaServerInfo? running = manager.TryGetRunningServer(normalizedKey);
+
+        if (running is null)
+        {
+
+            Result<WarmupResultDto> notRunning = Result<WarmupResultDto>.Failure(
+                new Error(
+                    ErrorCodes.Llama.ServerNotRunning,
+                    $"No running llama-server for cache key '{normalizedKey}'. Start it first via POST /api/llama/servers/{normalizedKey}/start."));
+
+            return Results.Json(
+                ApiResponse<WarmupResultDto>.FromResult(notRunning, traceId),
+                ArcanumJsonContext.Default.ApiResponseWarmupResultDto,
+                statusCode: StatusCodes.Status400BadRequest);
+
+        }
+
+        string modelName = ResolveWarmupModelName(settings.Value, normalizedKey);
+
+        HttpClient http = httpClientFactory.CreateClient(OpenAiCompatibleHttpClientName);
+
+        ApiKeyCredential credential = new(KeylessOpenAiPlaceholder);
+
+        OpenAIClientOptions options = new()
+        {
+            Endpoint = new Uri(running.Endpoint),
+            Transport = new HttpClientPipelineTransport(http),
+        };
+
+        ChatClient rawChatClient = new(modelName, credential, options);
+
+        IChatClient chatClient = rawChatClient.AsIChatClient();
+
+        int maxTokens = Math.Max(1, body.MaxTokens);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+
+            ChatOptions warmupOptions = new() { MaxOutputTokens = maxTokens };
+
+            _ = await chatClient.GetResponseAsync(
+                [new MeAiChatMessage(ChatRole.User, body.Prompt)],
+                warmupOptions,
+                cancellationToken).ConfigureAwait(false);
+
+            stopwatch.Stop();
+
+            WarmupResultDto success = new(true, (int)stopwatch.ElapsedMilliseconds, running.Endpoint);
+
+            return Results.Ok(ApiResponse<WarmupResultDto>.FromResult(Result<WarmupResultDto>.Success(success), traceId));
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            stopwatch.Stop();
+
+            ILogger logger = loggerFactory.CreateLogger(typeof(LlamaEndpoints));
+
+            logger.LogWarning(ex, "Llama warm-up request failed for {CacheKey} at {Endpoint}.", normalizedKey, running.Endpoint);
+
+            // The HTTP call to the diagnostic endpoint itself succeeded (isSuccess: true); the
+            // underlying warm-up inference attempt's outcome is reported via WarmupResultDto.Success
+            // so operators get latency-so-far and the server endpoint either way.
+            WarmupResultDto failed = new(false, (int)stopwatch.ElapsedMilliseconds, running.Endpoint);
+
+            return Results.Ok(ApiResponse<WarmupResultDto>.FromResult(Result<WarmupResultDto>.Success(failed), traceId));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Resolves a model name to send on the warm-up chat request. Prefers a configured model whose
+    /// normalized cache key matches <paramref name="normalizedCacheKey"/> (the most accurate match
+    /// for the server actually running), then <c>Arcanum:DefaultModel</c>, then the cache key itself
+    /// — llama.cpp's OpenAI-compatible server does not validate <c>model</c> against the single GGUF
+    /// it has loaded, so any non-empty string is functionally safe as a last resort.
+    /// </summary>
+    internal static string ResolveWarmupModelName(ArcanumSettings settings, string normalizedCacheKey)
+    {
+
+        foreach (ProviderSettings provider in settings.Providers ?? [])
+        {
+
+            if (provider.Type != AiProviderKind.LlamaCppServer)
+            {
+
+                continue;
+
+            }
+
+            foreach (ModelEntry model in provider.Models)
+            {
+
+                if (!string.IsNullOrWhiteSpace(model.Name)
+                    && string.Equals(LlamaCacheKey.NormalizeModelKey(model.Name), normalizedCacheKey, StringComparison.Ordinal))
+                {
+
+                    return model.Name;
+
+                }
+
+            }
+
+            if (provider.LlamaCpp?.ModelMap is { Count: > 0 } modelMap)
+            {
+
+                foreach (string modelKey in modelMap.Keys)
+                {
+
+                    if (string.Equals(LlamaCacheKey.NormalizeModelKey(modelKey), normalizedCacheKey, StringComparison.Ordinal))
+                    {
+
+                        return modelKey;
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        return string.IsNullOrWhiteSpace(settings.DefaultModel) ? normalizedCacheKey : settings.DefaultModel;
 
     }
 
