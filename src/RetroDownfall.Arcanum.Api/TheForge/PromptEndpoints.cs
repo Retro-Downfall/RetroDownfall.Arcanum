@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
@@ -140,7 +141,7 @@ internal static class PromptEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<PromptDetailDto>.FromResult(
-                            Result<PromptDetailDto>.Failure(new Error("Prompt.InvalidRequest", "Name and version are required.")),
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.InvalidRequest, "Name and version are required.")),
                             traceId));
                 }
 
@@ -752,7 +753,8 @@ internal static class PromptEndpoints
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
         .WithName("Prompt_Execute")
-        .WithLargeRequestBody();
+        .WithLargeRequestBody()
+        .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(2, ArcanumJsonContext.Default.PromptExecuteRequest));
 
         apiGroup.MapPost(
             "/prompts/{id:guid}/execute-stream",
@@ -876,7 +878,8 @@ internal static class PromptEndpoints
                     .ConfigureAwait(false);
             })
         .WithName("Prompt_ExecuteStream")
-        .WithLargeRequestBody();
+        .WithLargeRequestBody()
+        .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(2, ArcanumJsonContext.Default.PromptExecuteRequest));
 
         return apiGroup;
     }

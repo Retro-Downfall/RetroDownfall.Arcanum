@@ -17,6 +17,15 @@ public sealed record ProviderSettings
 
     public int ContextWindowLimit { get; init; } = 8192;
 
+    /// <summary>
+    /// When <see langword="true"/>, Arcanum records <c>arcanum_prompt_cache_tokens</c> metrics for
+    /// this provider when the response usage reports cached prompt tokens. Defaults to <see langword="true"/>
+    /// for OpenAI-compatible providers (which cache automatically) and <see langword="false"/> for
+    /// LlamaCppServer (caching is opt-in via <c>Arcanum:Cache:Enabled</c>). Operators can force this off
+    /// for providers that do not support caching to avoid misleading metrics.
+    /// </summary>
+    public bool? SupportsPromptCaching { get; init; }
+
     public ProviderLlamaCppSettings? LlamaCpp { get; init; }
 
     public override string ToString()

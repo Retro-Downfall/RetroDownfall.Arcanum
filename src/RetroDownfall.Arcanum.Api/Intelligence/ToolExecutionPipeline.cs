@@ -924,6 +924,32 @@ public sealed class ToolExecutionPipeline(
 
             }
 
+            case "browse_web":
+            {
+
+                if (!TryGetJsonStringProperty(argsRoot, "url", out string? targetUrl)
+                    || string.IsNullOrWhiteSpace(targetUrl))
+                {
+
+                    break;
+
+                }
+
+                SanctumResult networkResult = await sanctumGuard
+                    .ValidateNetworkAsync(campaignId, targetUrl, toolName, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!networkResult.Allowed)
+                {
+
+                    return networkResult;
+
+                }
+
+                break;
+
+            }
+
         }
 
         return null;

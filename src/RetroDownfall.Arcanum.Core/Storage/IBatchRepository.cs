@@ -56,4 +56,7 @@ public static class BatchStatuses
     public static bool IsTerminal(string status) =>
         status is Completed or Failed or Cancelled or Expired;
 
+    public static bool IsStuck(string status) =>
+        status == InProgress;
+
 }

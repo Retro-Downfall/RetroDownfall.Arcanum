@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
@@ -38,13 +39,3 @@ public sealed record OpenAiStreamOptions(
 public sealed record OpenAiResponseFormat(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("json_schema")] JsonElement? JsonSchema = null);
-
-public sealed record OpenAiToolDefinition(
-    [property: JsonPropertyName("type")] string Type,
-    [property: JsonPropertyName("function")] OpenAiFunctionDefinition? Function = null);
-
-public sealed record OpenAiFunctionDefinition(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("description")] string? Description = null,
-    [property: JsonPropertyName("parameters")] JsonElement? Parameters = null,
-    [property: JsonPropertyName("strict")] bool? Strict = null);

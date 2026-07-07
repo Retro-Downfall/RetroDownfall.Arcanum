@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -282,7 +284,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
-    private BatchProcessingService CreateService(FakeIntelligenceProvider intelligence, int? batchExpiryHours = null)
+    private BatchProcessingService CreateService(IArcanumIntelligenceProvider intelligence, int? batchExpiryHours = null)
     {
 
         BatchesSettings batches = new()
@@ -302,7 +304,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
-    private IServiceScopeFactory BuildScopeFactory(FakeIntelligenceProvider intelligence)
+    private IServiceScopeFactory BuildScopeFactory(IArcanumIntelligenceProvider intelligence)
     {
 
         ServiceCollection services = new();
@@ -313,7 +315,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 
-        services.AddSingleton<IArcanumIntelligenceProvider>(intelligence);
+        services.AddSingleton(intelligence);
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 

@@ -6,7 +6,11 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -171,6 +175,173 @@ public sealed class IdempotencyEndpointFilterTests
     }
 
     [SkippableFact]
+    public async Task PostSpellExecute_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspaceRoot = _factory.TempHome;
+
+        string spellDir = Path.Combine(workspaceRoot, "test-spell");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: test-spell
+            description: test
+            ---
+            spell body
+            """);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "skill.json"),
+            """{"name":"test-spell","version":"1.0.0","description":"test","tags":[],"declaredTools":[],"dependencies":[]}""");
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "spell-first";
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        SpellExecuteRequest request = new(
+            Prompt: "idempotent spell",
+            Model: null,
+            Temperature: null,
+            TopP: null,
+            MaxOutputTokens: null,
+            Stop: null,
+            Seed: null,
+            ResponseFormat: null,
+            PresencePenalty: null,
+            FrequencyPenalty: null,
+            Workspace: workspaceRoot,
+            CampaignId: null,
+            SessionId: null,
+            ToolPolicy: null);
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.SpellExecuteRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/spells/test-spell/execute")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        _factory.FakeIntelligence.NextText = "spell-second-should-never-be-seen";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/spells/test-spell/execute")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(firstBody, secondBody);
+
+        Assert.DoesNotContain("spell-second-should-never-be-seen", secondBody);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    [SkippableFact]
+    public async Task PostPromptExecute_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "prompt-first";
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        PromptExecuteRequest request = new(
+            UserMessage: "idempotent prompt",
+            Parameters: new Dictionary<string, string>(),
+            Workspace: null,
+            CampaignId: null,
+            SessionId: null,
+            Model: null,
+            Temperature: null,
+            TopP: null,
+            MaxOutputTokens: null,
+            Stop: null,
+            Seed: null,
+            ResponseFormat: null,
+            PresencePenalty: null,
+            FrequencyPenalty: null,
+            ToolPolicy: null);
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PromptExecuteRequest);
+
+        Guid promptId = await CreatePromptInFactoryGrimoireAsync();
+
+        HttpRequestMessage first = new(HttpMethod.Post, $"/api/prompts/{promptId}/execute")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        _factory.FakeIntelligence.NextText = "prompt-second-should-never-be-seen";
+
+        HttpRequestMessage second = new(HttpMethod.Post, $"/api/prompts/{promptId}/execute")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(firstBody, secondBody);
+
+        Assert.DoesNotContain("prompt-second-should-never-be-seen", secondBody);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    [SkippableFact]
     public async Task PostPingStream_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
 
@@ -257,6 +428,38 @@ public sealed class IdempotencyEndpointFilterTests
 
         // The oversized key must be rejected before the handler ever runs.
         Assert.Equal(before, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    private async Task<Guid> CreatePromptInFactoryGrimoireAsync()
+    {
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        IServiceProvider sp = scope.ServiceProvider;
+
+        ArcanumDbContext db = sp.GetRequiredService<ArcanumDbContext>();
+
+        Prompt prompt = new()
+        {
+
+            Id = Guid.NewGuid(),
+            Name = "idempotent-test-prompt",
+            Version = "1.0.0",
+            Description = "test",
+            Tags = "[]",
+            Template = "be helpful\n\n{{userMessage}}",
+            Model = "mistral:latest",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+
+        };
+
+        db.Prompts.Add(prompt);
+
+        await db.SaveChangesAsync();
+
+        return prompt.Id;
 
     }
 

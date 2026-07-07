@@ -31,10 +31,16 @@ internal static class ToolSchemaManaEstimator
         Tokenizer tokenizer,
         int perToolOverheadTokens,
         string? workingDirectory,
+        ArcanumBrowseWebTool? browseTool,
         CancellationToken cancellationToken)
     {
 
         List<AITool> tools = [new ArcanumLocalTimeTool(), new ArcanumSystemInfoTool()];
+
+        if (browseTool is not null)
+        {
+            tools.Add(browseTool);
+        }
 
         IReadOnlyList<AITool> mcpTools = await mcp
             .GetAvailableToolsAsync(workingDirectory, cancellationToken)

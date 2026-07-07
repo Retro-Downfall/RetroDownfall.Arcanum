@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
@@ -238,27 +239,54 @@ internal static partial class OpenAiV1Endpoints
 
         if (body.Tools is { Length: > 0 })
         {
-            return JsonError(
-                "Client-supplied `tools` are not supported. Arcanum uses its own server-side MCP toolset.",
-                "invalid_request_error",
-                code: "unsupported_parameter",
-                param: "tools",
-                statusCode: StatusCodes.Status400BadRequest);
+            if (!settings.Value.ClientToolForwarding.Enabled)
+            {
+                return JsonError(
+                    "Client-supplied `tools` are not supported. Arcanum uses its own server-side MCP toolset.",
+                    "invalid_request_error",
+                    code: "unsupported_parameter",
+                    param: "tools",
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            Result toolsValidation = ValidateClientTools(body.Tools, settings.Value.ClientToolForwarding.MaxClientTools);
+
+            if (toolsValidation.IsFailure)
+            {
+                return JsonError(
+                    toolsValidation.Error.Message,
+                    "invalid_request_error",
+                    code: MapClientToolsErrorCode(toolsValidation.Error.Code),
+                    param: "tools",
+                    statusCode: ArcanumErrorMapper.ResolveStatusCode(toolsValidation.Error.Code));
+            }
         }
 
         if (body.ToolChoice is { } toolChoice
-            && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined
-            && !IsDefaultToolChoice(toolChoice))
+            && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
         {
-            return JsonError(
-                "Client-supplied `tool_choice` is not supported. Arcanum uses its own server-side MCP toolset.",
-                "invalid_request_error",
-                code: "unsupported_parameter",
-                param: "tool_choice",
-                statusCode: StatusCodes.Status400BadRequest);
+            if (!settings.Value.ClientToolForwarding.Enabled)
+            {
+                return JsonError(
+                    "Client-supplied `tool_choice` is not supported. Arcanum uses its own server-side MCP toolset.",
+                    "invalid_request_error",
+                    code: "unsupported_parameter",
+                    param: "tool_choice",
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (!IsValidClientToolChoice(toolChoice))
+            {
+                return JsonError(
+                    "Client-supplied `tool_choice` is not a valid shape; expected 'auto', 'none', 'required', or an object with type 'function' and function.name.",
+                    "invalid_request_error",
+                    code: "invalid_schema",
+                    param: "tool_choice",
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
         }
 
-        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body);
+        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body, settings.Value.ClientToolForwarding.Enabled);
 
         Result pingBounds = PingRequestBoundsValidator.Validate(ping, settings.Value);
 
@@ -341,6 +369,7 @@ internal static partial class OpenAiV1Endpoints
         if (!body.Stream)
         {
             return await HandleBufferedAsync(
+                httpContext,
                 intelligence,
                 ping,
                 completionId,
@@ -372,6 +401,7 @@ internal static partial class OpenAiV1Endpoints
     }
 
     private static async Task<IResult> HandleBufferedAsync(
+        HttpContext httpContext,
         IArcanumIntelligenceProvider intelligence,
         PingRequest ping,
         string completionId,
@@ -400,8 +430,12 @@ internal static partial class OpenAiV1Endpoints
         OpenAiChatAssistantMessage message = new(
             Role: "assistant",
             Content: turn.Text,
-            ToolCalls: MapBufferedToolCalls(turn.ToolCalls),
+            ToolCalls: MapBufferedToolCalls(turn.ToolCalls, turn.PreserveProviderToolCallIds),
             Refusal: null);
+
+        string responseSystemFingerprint = turn.Warnings.Count > 0
+            ? $"{systemFingerprint}:arcanum:structured-output-warning"
+            : systemFingerprint;
 
         OpenAiChatResponse response = new(
             Id: completionId,
@@ -417,8 +451,15 @@ internal static partial class OpenAiV1Endpoints
                     Logprobs: null),
             ],
             Usage: turn.Usage,
-            SystemFingerprint: systemFingerprint,
+            SystemFingerprint: responseSystemFingerprint,
             ServiceTier: null);
+
+        if (turn.Warnings.Count > 0)
+        {
+            httpContext.Response.Headers.Append(
+                "X-Arcanum-Structured-Output-Warning",
+                string.Join(" | ", turn.Warnings));
+        }
 
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiChatResponse);
     }
@@ -429,7 +470,7 @@ internal static partial class OpenAiV1Endpoints
     /// <see langword="null"/> (rather than an empty array) when there were none, matching OpenAI's
     /// own wire shape for a turn that never called a tool.
     /// </summary>
-    private static OpenAiToolCall[]? MapBufferedToolCalls(List<PromptToolCall>? toolCalls)
+    private static OpenAiToolCall[]? MapBufferedToolCalls(List<PromptToolCall>? toolCalls, bool preserveProviderIds)
     {
 
         if (toolCalls is not { Count: > 0 })
@@ -447,7 +488,7 @@ internal static partial class OpenAiV1Endpoints
             PromptToolCall call = toolCalls[i];
 
             mapped[i] = new OpenAiToolCall(
-                Id: GenerateOpenAiToolCallId(),
+                Id: preserveProviderIds ? call.CallId : GenerateOpenAiToolCallId(),
                 Type: "function",
                 Function: new OpenAiFunctionCall(call.Name, call.ArgumentsJson));
 
@@ -584,6 +625,17 @@ internal static partial class OpenAiV1Endpoints
                         sseUsage = ev.Usage;
 
                         sseFinishReason = ev.FinishReason;
+
+                        if (ev.Warnings.Count > 0)
+                        {
+
+                            // systemFingerprint can be null when Arcanum:Host:SystemFingerprint is unset; avoid a
+                            // leading-colon fingerprint in that case (the buffered path at :436 has the same edge).
+                            systemFingerprint = string.IsNullOrEmpty(systemFingerprint)
+                                ? "arcanum:structured-output-warning"
+                                : systemFingerprint + ":arcanum:structured-output-warning";
+
+                        }
 
                         break;
 
@@ -782,7 +834,9 @@ internal static partial class OpenAiV1Endpoints
         CancellationToken ct)
     {
 
-        string id = GenerateOpenAiToolCallId();
+        string id = toolCall.PreserveProviderCallId
+            ? toolCall.CallId
+            : GenerateOpenAiToolCallId();
 
         string arguments = toolCall.ArgumentsJson ?? string.Empty;
 
@@ -1101,7 +1155,7 @@ internal static partial class OpenAiV1Endpoints
         string.Equals(type, "text", StringComparison.OrdinalIgnoreCase)
         || string.Equals(type, "image_url", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsDefaultToolChoice(JsonElement toolChoice)
+    private static bool IsValidClientToolChoice(JsonElement toolChoice)
     {
 
         if (toolChoice.ValueKind == JsonValueKind.String)
@@ -1115,9 +1169,86 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
+        if (toolChoice.ValueKind == JsonValueKind.Object
+            && toolChoice.TryGetProperty("type", out JsonElement typeElement)
+            && string.Equals(typeElement.GetString(), "function", StringComparison.Ordinal)
+            && toolChoice.TryGetProperty("function", out JsonElement functionElement)
+            && functionElement.TryGetProperty("name", out JsonElement nameElement)
+            && nameElement.ValueKind == JsonValueKind.String)
+        {
+
+            return !string.IsNullOrWhiteSpace(nameElement.GetString());
+
+        }
+
         return false;
 
     }
+
+    private static Result ValidateClientTools(OpenAiToolDefinition[] tools, int configuredMaxClientTools)
+    {
+
+        int maxClientTools = ArcanumSettingClamps.ClientToolForwardingMaxClientTools(configuredMaxClientTools);
+
+        if (tools.Length > maxClientTools)
+        {
+
+            return Result.Failure(new Error(
+                ErrorCodes.ClientTools.TooMany,
+                $"Client-supplied tools exceed the maximum of {maxClientTools}."));
+
+        }
+
+        for (int i = 0; i < tools.Length; i++)
+        {
+
+            OpenAiToolDefinition tool = tools[i];
+
+            if (!string.Equals(tool.Type, "function", StringComparison.Ordinal))
+            {
+
+                return Result.Failure(new Error(
+                    ErrorCodes.ClientTools.InvalidSchema,
+                    $"tools[{i}].type must be 'function'."));
+
+            }
+
+            if (string.IsNullOrWhiteSpace(tool.Function?.Name))
+            {
+
+                return Result.Failure(new Error(
+                    ErrorCodes.ClientTools.InvalidSchema,
+                    $"tools[{i}].function.name is required."));
+
+            }
+
+            JsonElement? parameters = tool.Function?.Parameters;
+
+            if (parameters is { } parametersElement
+                && parametersElement.ValueKind is not JsonValueKind.Null
+                && parametersElement.ValueKind is not JsonValueKind.Undefined
+                && parametersElement.ValueKind is not JsonValueKind.Object)
+            {
+
+                return Result.Failure(new Error(
+                    ErrorCodes.ClientTools.InvalidSchema,
+                    $"tools[{i}].function.parameters must be a valid JSON Schema object."));
+
+            }
+
+        }
+
+        return Result.Success();
+
+    }
+
+    private static string MapClientToolsErrorCode(string internalCode) =>
+        internalCode switch
+        {
+            ErrorCodes.ClientTools.TooMany => "too_many_tools",
+            ErrorCodes.ClientTools.InvalidSchema => "invalid_schema",
+            _ => "invalid_value",
+        };
 
     private static int ResolveOpenAiInferenceFailureStatusCode(string internalCode) =>
         ArcanumErrorMapper.ResolveStatusCode(internalCode);

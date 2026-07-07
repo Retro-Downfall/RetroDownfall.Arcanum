@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Resilience;
@@ -28,6 +29,7 @@ using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -44,6 +46,7 @@ public sealed class WizardIntelligenceProvider(
     IChatClientFactory chatClientFactory,
     IOptionsSnapshot<ArcanumSettings> settings,
     ILogger<WizardIntelligenceProvider> logger,
+    IHttpClientFactory httpClientFactory,
     IGrimoireRepository grimoire,
     IMcpConnectionManager mcpConnectionManager,
     ICampaignRepository campaignRepository,
@@ -60,7 +63,11 @@ public sealed class WizardIntelligenceProvider(
     SemanticSpellRouter semanticSpellRouter,
     ArcanumDbContext db,
     IInferenceAuditLogger inferenceAuditLogger,
-    IProviderHealthTracker? healthTracker = null) : IArcanumIntelligenceProvider
+    StructuredOutputValidator structuredOutputValidator,
+    InferenceTokenizerResolver tokenizerResolver,
+    BudgetMonitor budgetMonitor,
+    IProviderHealthTracker? healthTracker = null,
+    GuardrailsPipeline? guardrailsPipeline = null) : IArcanumIntelligenceProvider
 {
     private const string PublicInferenceFailureMessage =
         "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.";
@@ -81,6 +88,13 @@ public sealed class WizardIntelligenceProvider(
         InferenceAuditContext? auditContext = null)
     {
         string prompt = request.Prompt;
+
+        Result guardrailsInput = await FilterGuardrailsInputAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (guardrailsInput.IsFailure)
+        {
+            return Result<PromptTurnResult>.Failure(guardrailsInput.Error);
+        }
 
         if (!TryValidateAttachedFiles(request, out Error attachedFilesError))
         {
@@ -104,6 +118,13 @@ public sealed class WizardIntelligenceProvider(
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
             return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
+        }
+
+        Result budgetGate = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);
+
+        if (budgetGate.IsFailure)
+        {
+            return Result<PromptTurnResult>.Failure(budgetGate.Error);
         }
 
         CancellationToken callerToken = cancellationToken;
@@ -337,7 +358,9 @@ public sealed class WizardIntelligenceProvider(
             semanticContext: semanticContext,
             sagaMemories: sagaMemories);
 
-        List<AITool> toolSet = await BuildToolSetWithMcpAsync(request, resolvedSpell, inferenceToken).ConfigureAwait(false);
+        List<AITool> toolSet = request.ForwardClientTools
+            ? BuildClientForwardedToolSet(request)
+            : await BuildToolSetWithMcpAsync(request, resolvedSpell, inferenceToken).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, inferenceToken).ConfigureAwait(false);
 
@@ -388,17 +411,30 @@ public sealed class WizardIntelligenceProvider(
 
                     accumulatedUsage = AccumulateUsage(accumulatedUsage, MapUsageDetails(response.Usage));
 
-                    List<FunctionCallContent> calls = ToolExecutionPipeline.CollectActionableFunctionCalls(response);
+                List<FunctionCallContent> calls = ToolExecutionPipeline.CollectActionableFunctionCalls(response);
 
-                    if (calls.Count == 0)
+                if (calls.Count == 0)
+                {
+                    break;
+                }
+
+                if (request.ForwardClientTools)
+                {
+                    foreach (FunctionCallContent fcc in calls)
                     {
-                        break;
+                        (observedToolCalls ??= []).Add(new PromptToolCall(
+                            ToolExecutionPipeline.ResolveCallId(fcc),
+                            fcc.Name ?? string.Empty,
+                            ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc)));
                     }
 
-                    toolRoundsExecuted++;
+                    break;
+                }
 
-                    if (toolRoundsExecuted > maxToolRounds)
-                    {
+                toolRoundsExecuted++;
+
+                if (toolRoundsExecuted > maxToolRounds)
+                {
                         if (!grimoireTurn.IsFinalized)
                         {
                             await grimoireTurnWriter
@@ -448,7 +484,119 @@ public sealed class WizardIntelligenceProvider(
                     }
                 }
 
+                IReadOnlyList<string> structuredOutputWarnings = [];
+
+                if (request.ResponseFormat is "json_schema"
+                    && request.ResponseFormatJsonSchema is { } jsonSchemaWrapper
+                    && settings.Value.StructuredOutput.Enabled)
+                {
+
+                    JsonElement schemaElement = jsonSchemaWrapper;
+
+                    if (jsonSchemaWrapper.ValueKind == JsonValueKind.Object
+                        && jsonSchemaWrapper.TryGetProperty("schema", out JsonElement nestedSchema))
+                    {
+
+                        schemaElement = nestedSchema;
+
+                    }
+
+                    using JsonDocument schema = JsonDocument.Parse(schemaElement.GetRawText());
+
+                    int maxRetries = ArcanumSettingClamps.StructuredOutputMaxValidationRetries(
+                        settings.Value.StructuredOutput.MaxValidationRetries);
+
+                    int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(
+                        settings.Value.StructuredOutput.SchemaMaxDepth);
+
+                    int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
+
+                    Func<string, int> estimateTokenCount = text =>
+                    {
+
+                        try
+                        {
+
+                            return tokenizerResolver
+                                .ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding)
+                                .CountTokens(text);
+
+                        }
+                        catch
+                        {
+
+                            return Math.Max(1, text.Length / 4);
+
+                        }
+
+                    };
+
+                    Result<StructuredOutputResult> validationResult = await structuredOutputValidator
+                        .ValidateAndRetryAsync(
+                            response,
+                            schema,
+                            maxRetries,
+                            settings.Value.StructuredOutput.StrictMode,
+                            schemaMaxDepth,
+                            contextWindowLimit,
+                            estimateTokenCount,
+                            async (errorMessage, ct) =>
+                            {
+
+                                chatMessages.Add(new ChatMessage(ChatRole.Assistant, response.Text));
+
+                                chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
+
+                                ChatResponse retryResponse = await chatClient
+                                    .GetResponseAsync(chatMessages, chatOptions, ct)
+                                    .ConfigureAwait(false);
+
+                                response = retryResponse;
+
+                                accumulatedUsage = AccumulateUsage(accumulatedUsage, MapUsageDetails(retryResponse.Usage));
+
+                                return retryResponse;
+
+                            },
+                            inferenceToken)
+                        .ConfigureAwait(false);
+
+                    if (validationResult.IsFailure)
+                    {
+
+                        return new InferenceAttemptResult(
+                            Result<PromptTurnResult>.Failure(validationResult.Error),
+                            IsConnectivityFailure: false);
+
+                    }
+
+                    response = validationResult.Value.Response;
+
+                    structuredOutputWarnings = validationResult.Value.Warnings;
+
+                }
+
                 string finalText = response.Text;
+
+                Result guardrailsOutput = await FilterGuardrailsOutputAsync(
+                    finalText,
+                    grimoireTurn.SessionId,
+                    targetModel,
+                    inferenceToken).ConfigureAwait(false);
+
+                if (guardrailsOutput.IsFailure)
+                {
+                    if (!grimoireTurn.IsFinalized)
+                    {
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+
+                    return new InferenceAttemptResult(
+                        Result<PromptTurnResult>.Failure(guardrailsOutput.Error),
+                        IsConnectivityFailure: false);
+                }
 
                 await grimoireTurnWriter
                     .TryFinalizeBufferedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
@@ -457,14 +605,17 @@ public sealed class WizardIntelligenceProvider(
                 await TryIncrementSessionTokensAsync(
                     grimoireTurn.SessionId,
                     accumulatedUsage,
+                    targetModel,
                     inferenceToken)
                     .ConfigureAwait(false);
 
                 TryEnqueueSagaExtraction(grimoireTurn.SessionId);
 
-                string finishReason = MapChatFinishReasonToOpenAi(response.FinishReason);
+                string finishReason = request.ForwardClientTools && observedToolCalls is { Count: > 0 }
+                    ? "tool_calls"
+                    : MapChatFinishReasonToOpenAi(response.FinishReason);
 
-                RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, accumulatedUsage);
+                RecordInferenceMetrics(lease.Provider, targetModel, inferenceStopwatch.Elapsed, accumulatedUsage);
 
                 if (auditContext is not null)
                 {
@@ -482,7 +633,7 @@ public sealed class WizardIntelligenceProvider(
                 }
 
                 return new InferenceAttemptResult(
-                    Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)),
+                    Result<PromptTurnResult>.Success(new PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason) { Warnings = structuredOutputWarnings, PreserveProviderToolCallIds = request.ForwardClientTools }),
                     IsConnectivityFailure: false);
             }
             catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
@@ -568,6 +719,15 @@ public sealed class WizardIntelligenceProvider(
     {
         string prompt = request.Prompt;
 
+        Result guardrailsInput = await FilterGuardrailsInputAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (guardrailsInput.IsFailure)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, guardrailsInput.Error.Message);
+
+            yield break;
+        }
+
         if (!TryValidateAttachedFiles(request, out Error streamAttachedError))
         {
             yield return new IntelligenceEvent(IntelligenceEventType.Error, streamAttachedError.Message);
@@ -596,6 +756,15 @@ public sealed class WizardIntelligenceProvider(
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
             yield return new IntelligenceEvent(IntelligenceEventType.Error, "Prompt is required.");
+
+            yield break;
+        }
+
+        Result streamBudgetGate = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);
+
+        if (streamBudgetGate.IsFailure)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamBudgetGate.Error.Message);
 
             yield break;
         }
@@ -976,7 +1145,9 @@ public sealed class WizardIntelligenceProvider(
             yield return new IntelligenceEvent(IntelligenceEventType.Status, IntelligenceStatusMessages.MemoryCompressionNotice);
         }
 
-        List<AITool> streamToolSet = await BuildToolSetWithMcpAsync(request, streamResolvedSpell, inferenceToken).ConfigureAwait(false);
+        List<AITool> streamToolSet = request.ForwardClientTools
+            ? BuildClientForwardedToolSet(request)
+            : await BuildToolSetWithMcpAsync(request, streamResolvedSpell, inferenceToken).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, inferenceToken).ConfigureAwait(false);
 
@@ -989,6 +1160,11 @@ public sealed class WizardIntelligenceProvider(
         ChatCompletionUsage? streamAccumulatedUsage = null;
 
         int streamMaxToolRounds = ArcanumSettingClamps.MaxToolInferenceRounds(settings.Value.Intelligence.MaxToolInferenceRounds);
+
+        string guardrailsStreamingMode = ArcanumSettingClamps.GuardrailsStreamingMode(
+            settings.Value.Guardrails.StreamingMode);
+
+        bool bufferTokens = guardrailsStreamingMode == "buffered" && settings.Value.Guardrails.Enabled;
 
         while (true)
         {
@@ -1078,7 +1254,12 @@ public sealed class WizardIntelligenceProvider(
 
                         _ = streamAccumulator.Append(update.Text);
 
-                        yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
+                        if (!bufferTokens)
+                        {
+
+                            yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
+
+                        }
                     }
                 }
                 finally
@@ -1128,6 +1309,33 @@ public sealed class WizardIntelligenceProvider(
                 if (toolCalls.Count == 0)
                 {
                     streamFinishReason = MapChatFinishReasonToOpenAi(combinedRound.FinishReason);
+
+                    break;
+                }
+
+                if (request.ForwardClientTools)
+                {
+                    int forwardToolCallIndex = 0;
+
+                    foreach (FunctionCallContent fcc in toolCalls)
+                    {
+                        string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
+
+                        string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
+
+                        string callId = ToolExecutionPipeline.ResolveCallId(fcc);
+
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.ToolCall,
+                            fcc.Name ?? string.Empty,
+                            toolCallData,
+                            null,
+                            new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, forwardToolCallIndex, PreserveProviderCallId: true));
+
+                        forwardToolCallIndex++;
+                    }
+
+                    streamFinishReason = "tool_calls";
 
                     break;
                 }
@@ -1247,18 +1455,119 @@ public sealed class WizardIntelligenceProvider(
 
         string finalText = streamAccumulator.ToString();
 
+        Result guardrailsStreamOutput = await FilterGuardrailsOutputAsync(
+            finalText,
+            grimoireTurn.SessionId,
+            targetModel,
+            inferenceToken).ConfigureAwait(false);
+
+        if (guardrailsStreamOutput.IsFailure)
+        {
+            if (!grimoireTurn.IsFinalized)
+            {
+                await grimoireTurnWriter
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            yield return new IntelligenceEvent(IntelligenceEventType.Error, guardrailsStreamOutput.Error.Message);
+
+            yield break;
+        }
+
+        if (bufferTokens)
+        {
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Token,
+                string.Empty,
+                finalText);
+
+        }
+
+        IReadOnlyList<string> streamWarnings = [];
+
+        if (request.ResponseFormat is "json_schema"
+            && request.ResponseFormatJsonSchema is { } streamJsonSchemaWrapper
+            && settings.Value.StructuredOutput.Enabled)
+        {
+
+            JsonElement streamSchemaElement = streamJsonSchemaWrapper;
+
+            if (streamJsonSchemaWrapper.ValueKind == JsonValueKind.Object
+                && streamJsonSchemaWrapper.TryGetProperty("schema", out JsonElement streamNestedSchema))
+            {
+
+                streamSchemaElement = streamNestedSchema;
+
+            }
+
+            using JsonDocument streamSchema = JsonDocument.Parse(streamSchemaElement.GetRawText());
+
+            Result<JsonSchemaDefinition> streamParseResult = JsonSchemaHelper.Parse(
+                streamSchema,
+                ArcanumSettingClamps.JsonSchemaMaxDepth(settings.Value.StructuredOutput.SchemaMaxDepth));
+
+            if (streamParseResult.IsSuccess)
+            {
+
+                ValidationResult streamValidation = JsonSchemaHelper.Validate(
+                    finalText,
+                    streamParseResult.Value,
+                    ArcanumSettingClamps.JsonSchemaMaxDepth(settings.Value.StructuredOutput.SchemaMaxDepth));
+
+                if (!streamValidation.IsValid)
+                {
+
+                    if (settings.Value.StructuredOutput.StrictMode)
+                    {
+
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Error,
+                            ErrorCodes.StructuredOutput.ValidationFailed + ": streamed response failed JSON schema validation after generation: "
+                                + string.Join("; ", streamValidation.Errors));
+
+                        yield break;
+
+                    }
+
+                    streamWarnings = ["streamed response failed JSON schema validation: " + string.Join("; ", streamValidation.Errors)];
+
+                }
+
+            }
+            else
+            {
+
+                if (settings.Value.StructuredOutput.StrictMode)
+                {
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        ErrorCodes.StructuredOutput.SchemaInvalid + ": invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message);
+
+                    yield break;
+
+                }
+
+                streamWarnings = ["invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message];
+
+            }
+
+        }
+
         await grimoireTurnWriter
             .TryFinalizeStreamedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
             .ConfigureAwait(false);
 
-        await TryIncrementSessionTokensAsync(grimoireTurn.SessionId, streamAccumulatedUsage, inferenceToken)
+        await TryIncrementSessionTokensAsync(grimoireTurn.SessionId, streamAccumulatedUsage, targetModel, inferenceToken)
             .ConfigureAwait(false);
 
         TryEnqueueSagaExtraction(grimoireTurn.SessionId);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
-        RecordInferenceMetrics(lease.Provider.Name, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
+        RecordInferenceMetrics(lease.Provider, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
 
         if (auditContext is not null)
         {
@@ -1280,7 +1589,10 @@ public sealed class WizardIntelligenceProvider(
             "Complete",
             usageData,
             streamAccumulatedUsage,
-            FinishReason: streamFinishReason ?? "stop");
+            FinishReason: streamFinishReason ?? "stop")
+        {
+            Warnings = streamWarnings
+        };
         }
         finally
         {
@@ -2048,6 +2360,11 @@ public sealed class WizardIntelligenceProvider(
                 workingDirectory));
         }
 
+        if (settings.Value.WebBrowsing.Enabled)
+        {
+            tools.Add(new ArcanumBrowseWebTool(httpClientFactory, settings, logger));
+        }
+
         if (ShouldDisableMcpTools(request))
         {
             return tools;
@@ -2078,6 +2395,30 @@ public sealed class WizardIntelligenceProvider(
         }
 
         return tools;
+    }
+
+    private List<AITool> BuildClientForwardedToolSet(PingRequest request)
+    {
+        if (request.ClientTools is not { Length: > 0 } tools)
+        {
+            return [];
+        }
+
+        logger.LogWarning("Client-supplied tools detected. These bypass Arcanum's tool loop and security controls.");
+
+        var forwarded = new List<AITool>(tools.Length);
+
+        foreach (OpenAiToolDefinition tool in tools)
+        {
+            if (tool.Function is null)
+            {
+                continue;
+            }
+
+            forwarded.Add(new ClientForwardedFunction(tool.Function));
+        }
+
+        return forwarded;
     }
 
     private static List<string> CollectScriptRoots(ResolvedSpell? resolvedSpell)
@@ -2197,6 +2538,8 @@ public sealed class WizardIntelligenceProvider(
 
         ApplyInferenceParameters(options, request);
 
+        ApplyClientToolMode(options, request);
+
         if (!includeTools || tools is null)
         {
             return options;
@@ -2205,6 +2548,51 @@ public sealed class WizardIntelligenceProvider(
         options.Tools = tools.ToList();
 
         return options;
+    }
+
+    private static void ApplyClientToolMode(ChatOptions options, PingRequest request)
+    {
+        if (!request.ForwardClientTools || request.ClientToolChoice is null)
+        {
+            return;
+        }
+
+        JsonElement choice = request.ClientToolChoice.Value;
+
+        if (choice.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return;
+        }
+
+        if (choice.ValueKind == JsonValueKind.String)
+        {
+            string? value = choice.GetString();
+
+            options.ToolMode = value?.Trim().ToLowerInvariant() switch
+            {
+                "auto" => ChatToolMode.Auto,
+                "none" => ChatToolMode.None,
+                "required" => ChatToolMode.RequireAny,
+                _ => options.ToolMode
+            };
+
+            return;
+        }
+
+        if (choice.ValueKind == JsonValueKind.Object
+            && choice.TryGetProperty("type", out JsonElement typeElement)
+            && string.Equals(typeElement.GetString(), "function", StringComparison.Ordinal)
+            && choice.TryGetProperty("function", out JsonElement functionElement)
+            && functionElement.TryGetProperty("name", out JsonElement nameElement)
+            && nameElement.ValueKind == JsonValueKind.String)
+        {
+            string? name = nameElement.GetString();
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                options.ToolMode = ChatToolMode.RequireSpecific(name);
+            }
+        }
     }
 
     private static void ApplyInferenceParameters(ChatOptions options, PingRequest request)
@@ -2302,7 +2690,19 @@ public sealed class WizardIntelligenceProvider(
 
         int total = ClampUsageToInt((long)prompt + completion);
 
-        return new ChatCompletionUsage(prompt, completion, total);
+        int cached = ReadCachedTokens(usage);
+
+        return new ChatCompletionUsage(prompt, completion, total, cached);
+    }
+
+    private static int ReadCachedTokens(UsageDetails usage)
+    {
+
+        // Microsoft.Extensions.AI.Abstractions (v10.6.0+) surfaces prompt-cache hits via the
+        // dedicated CachedInputTokenCount member. Cached input tokens are already included in
+        // InputTokenCount, so we record them separately here only for the cache-hit metric.
+        return ClampUsageToInt(usage.CachedInputTokenCount ?? 0L);
+
     }
 
     private static int ClampUsageToInt(long value)
@@ -2326,7 +2726,9 @@ public sealed class WizardIntelligenceProvider(
 
         int c = (running?.CompletionTokens ?? 0) + (round?.CompletionTokens ?? 0);
 
-        return new ChatCompletionUsage(p, c, p + c);
+        int cached = (running?.CachedTokens ?? 0) + (round?.CachedTokens ?? 0);
+
+        return new ChatCompletionUsage(p, c, p + c, cached);
     }
 
     /// <summary>
@@ -2334,8 +2736,10 @@ public sealed class WizardIntelligenceProvider(
     /// completed turn (buffered or streamed). Only called on the success path — a failed/cancelled/retried
     /// attempt does not represent a completed inference turn for latency purposes.
     /// </summary>
-    private static void RecordInferenceMetrics(string providerName, string model, TimeSpan elapsed, ChatCompletionUsage? usage)
+    private static void RecordInferenceMetrics(ProviderSettings provider, string model, TimeSpan elapsed, ChatCompletionUsage? usage)
     {
+
+        string providerName = provider.Name;
 
         ArcanumMetrics.InferenceDuration.Record(
             elapsed.TotalSeconds,
@@ -2368,6 +2772,26 @@ public sealed class WizardIntelligenceProvider(
                 new KeyValuePair<string, object?>("provider", providerName),
                 new KeyValuePair<string, object?>("model", model),
                 new KeyValuePair<string, object?>("direction", "completion"));
+
+        }
+
+        // Prompt-cache metrics: only record when the provider has not explicitly disabled caching
+        // (SupportsPromptCaching defaults to true for OpenAI-compatible providers). Labels are
+        // strictly low-cardinality provider + model to keep Prometheus cardinality bounded.
+        bool cachingSupported = provider.SupportsPromptCaching ?? provider.Type == AiProviderKind.OpenAICompatible;
+
+        if (cachingSupported && usage.CachedTokens > 0)
+        {
+
+            ArcanumMetrics.PromptCacheTokensTotal.Add(
+                usage.CachedTokens,
+                new KeyValuePair<string, object?>("provider", providerName),
+                new KeyValuePair<string, object?>("model", model));
+
+            ArcanumMetrics.PromptCacheHitsTotal.Add(
+                1,
+                new KeyValuePair<string, object?>("provider", providerName),
+                new KeyValuePair<string, object?>("model", model));
 
         }
 
@@ -2441,6 +2865,7 @@ public sealed class WizardIntelligenceProvider(
     private async Task TryIncrementSessionTokensAsync(
         Guid? sessionId,
         ChatCompletionUsage? usage,
+        string? model,
         CancellationToken cancellationToken)
     {
         if (!settings.Value.Intelligence.EnableTokenTracking || !sessionId.HasValue || usage is null || usage.TotalTokens <= 0)
@@ -2450,8 +2875,18 @@ public sealed class WizardIntelligenceProvider(
 
         try
         {
+            ModelPricingEntry pricing = settings.Value.Pricing.DefaultPricing;
+
+            if (model is not null
+                && settings.Value.Pricing.ModelPricing.TryGetValue(model, out ModelPricingEntry? explicitPricing))
+            {
+                pricing = explicitPricing;
+            }
+
+            decimal costUsd = CostCalculator.CalculateCost(usage.PromptTokens, usage.CompletionTokens, pricing);
+
             await grimoire
-                .IncrementSessionTokensAsync(sessionId.Value, usage.TotalTokens, cancellationToken)
+                .IncrementSessionTokensAndCostAsync(sessionId.Value, usage.TotalTokens, costUsd, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -2671,6 +3106,65 @@ public sealed class WizardIntelligenceProvider(
         error = Error.None;
 
         return true;
+
+    }
+
+    /// <summary>
+    /// Runs the guardrails input filter (Tier 3 Phase 4) when a <see cref="GuardrailsPipeline"/> is
+    /// injected. Stateless turns scan <see cref="PingRequest.StatelessMessages"/>; stateful turns
+    /// synthesize a single user message from <see cref="PingRequest.Prompt"/>. A <see langword="null"/>
+    /// pipeline (tests that don't opt in) is a no-op success — matching every other disabled-feature
+    /// convention in Arcanum.
+    /// </summary>
+    private async Task<Result> FilterGuardrailsInputAsync(PingRequest request, CancellationToken cancellationToken)
+    {
+
+        if (guardrailsPipeline is null)
+        {
+            return Result.Success();
+        }
+
+        IReadOnlyList<CoreChatMessage> messages = request.StatelessMessages is { Count: > 0 } stateless
+            ? stateless
+            : string.IsNullOrEmpty(request.Prompt)
+                ? []
+                : [new CoreChatMessage("user", request.Prompt)];
+
+        if (messages.Count == 0)
+        {
+            return Result.Success();
+        }
+
+        Result<GuardrailsResult> outcome = await guardrailsPipeline
+            .FilterInputAsync(messages, cancellationToken, new GuardrailAuditContext(null, request.Model))
+            .ConfigureAwait(false);
+
+        return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);
+
+    }
+
+    /// <summary>
+    /// Runs the guardrails output filter on the model's completed text. A blocked output is not
+    /// finalized as the assistant's reply (the caller resolves the grimoire turn as interrupted), and
+    /// the violation is recorded in the guardrails audit log by the pipeline itself.
+    /// </summary>
+    private async Task<Result> FilterGuardrailsOutputAsync(
+        string text,
+        Guid? sessionId,
+        string model,
+        CancellationToken cancellationToken)
+    {
+
+        if (guardrailsPipeline is null)
+        {
+            return Result.Success();
+        }
+
+        Result<GuardrailsResult> outcome = await guardrailsPipeline
+            .FilterOutputAsync(text, cancellationToken, new GuardrailAuditContext(sessionId?.ToString(), model))
+            .ConfigureAwait(false);
+
+        return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);
 
     }
 

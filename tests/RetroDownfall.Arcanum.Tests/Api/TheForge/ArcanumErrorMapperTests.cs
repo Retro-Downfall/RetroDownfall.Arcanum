@@ -90,6 +90,18 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Sending.Disabled, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Sending.AgentNotAllowed, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Sending.MaxTasksReached, StatusCodes.Status429TooManyRequests)]
+    [InlineData(ErrorCodes.StructuredOutput.ValidationFailed, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.StructuredOutput.SchemaInvalid, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Budget.Exceeded, StatusCodes.Status429TooManyRequests)]
+    [InlineData(ErrorCodes.WebBrowsing.SsrfBlocked, StatusCodes.Status403Forbidden)]
+    [InlineData(ErrorCodes.WebBrowsing.InvalidUrl, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.WebBrowsing.TooLarge, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.WebBrowsing.Timeout, StatusCodes.Status504GatewayTimeout)]
+    [InlineData(ErrorCodes.ClientTools.Disabled, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ClientTools.TooMany, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ClientTools.InvalidSchema, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Guardrails.PiiDetected, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Guardrails.Blocked, StatusCodes.Status400BadRequest)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {

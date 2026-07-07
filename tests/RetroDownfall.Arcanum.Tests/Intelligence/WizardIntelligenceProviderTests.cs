@@ -7,7 +7,9 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -83,6 +85,407 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "llo");
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_BudgetExceeded_YieldsErrorEventAndSkipsInference()
+    {
+
+        ScriptingChatClient chat = new();
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Budget = new BudgetSettings { Enabled = true, DailyLimitUsd = 10m, AlertThresholdPercent = 80 }
+        };
+
+        FakeGrimoireRepository budgetGrimoire = new() { TodaySpend = 15m };
+
+        BudgetMonitor monitor = new(
+            CreateBudgetMonitorScopeFactory(budgetGrimoire, new FakeBudgetAlertRepository()),
+            new FakeCommLinkDispatcher(),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<BudgetMonitor>.Instance);
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            budgetMonitor: monitor);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "anything", SkipSpellRouting = true, DisableMcpTools = true });
+
+        IntelligenceEvent error = Assert.Single(events);
+
+        Assert.Equal(IntelligenceEventType.Error, error.Type);
+
+        Assert.Contains("Daily budget limit", error.Message);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_StructuredOutputStrictMode_InvalidJson_YieldsErrorEventAndNoResult()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("not", " ", "json");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+            }
+        };
+
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        PingRequest request = BaseRequest() with
+        {
+            Prompt = "stream structured output",
+            ResponseFormat = "json_schema",
+            ResponseFormatJsonSchema = schema,
+            SkipSpellRouting = true,
+            DisableMcpTools = true
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token);
+
+        IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Contains("StructuredOutput.ValidationFailed", error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(events, e => e.Type == IntelligenceEventType.Result);
+
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_StructuredOutputBestEffort_InvalidJson_WarningsOnResult()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("not", " ", "json");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = false,
+            }
+        };
+
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        PingRequest request = BaseRequest() with
+        {
+            Prompt = "stream structured output",
+            ResponseFormat = "json_schema",
+            ResponseFormatJsonSchema = schema,
+            SkipSpellRouting = true,
+            DisableMcpTools = true
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+        IntelligenceEvent result = Assert.Single(events, e => e.Type == IntelligenceEventType.Result);
+
+        Assert.NotEmpty(result.Warnings);
+
+        Assert.Contains(result.Warnings, w => w.Contains("JSON schema validation", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task Guardrails_PiiInInput_BlocksBeforeInference()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("should not be reached");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings { Enabled = true, DetectPii = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "Email me at alice@example.com", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_ToxicityInOutput_BlocksAndDoesNotPersistAssistantReply()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("the model says bad-word here");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+            },
+        };
+
+        FakeGrimoireRepository grimoire = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire: grimoire, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "say something", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_Disabled_PassesThrough()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("alice@example.com is fine when guardrails are off");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings { Enabled = false, DetectPii = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "alice@example.com", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Contains("alice@example.com", result.Value!.Text);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_PiiInStatelessInput_BlocksBeforeInference()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("should not be reached");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings { Enabled = true, DetectPii = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = string.Empty,
+                StatelessMessages = [new CoreChatMessage("user", "My SSN is 123-45-6789")],
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_Streaming_BufferedToxicity_DeliversNoTokenBeforeFilter()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("the model says ", "bad-word here");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = "buffered",
+            },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "stream something", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.DoesNotContain(events, e => e.Type == IntelligenceEventType.Token);
+
+        IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Contains("content matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_Streaming_BufferedToxicity_DiscardsAssistantEntry()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("the model says ", "bad-word here");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = "buffered",
+            },
+        };
+
+        FakeGrimoireRepository grimoire = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire: grimoire,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "stream something",
+                SessionId = Guid.NewGuid(),
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            });
+
+        Assert.DoesNotContain(events, e => e.Type == IntelligenceEventType.Result);
+
+        IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Contains("content matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(1, grimoire.DiscardCallCount);
+
+        Assert.Equal(0, grimoire.FinalizeCallCount);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_Streaming_PassthroughToxicity_DeliversTokensThenError()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("the model says ", "bad-word here");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = "passthrough",
+            },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "stream something", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.Contains(events, e => e.Type == IntelligenceEventType.Token);
+
+        IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Contains("content matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task Guardrails_Streaming_BufferedMode_DisabledGuardrails_Passthrough()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("the model says ", "bad-word here");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = "buffered",
+            },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "stream something", SkipSpellRouting = true, DisableMcpTools = true });
+
+        Assert.Contains(events, e => e.Type == IntelligenceEventType.Token);
+
+        Assert.Contains(events, e => e.Type == IntelligenceEventType.Result);
+
     }
 
     [Fact]
@@ -1119,6 +1522,128 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(sessionId, grimoire.LastIncrementedSessionId);
 
         Assert.Equal(30, grimoire.LastIncrementedTokens);
+
+    }
+
+    [Fact]
+    public async Task Scenario35b_TokenTracking_IncrementsCostUsingModelPricing()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        FakeGrimoireRepository grimoire = new();
+
+        // 30 total tokens, split 15 in / 15 out by ScriptingChatClient.
+        ScriptingChatClient chat = new() { UsageTotalTokens = 30 };
+
+        chat.EnqueueText("tracked");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableTokenTracking = true },
+            Pricing = new PricingSettings
+            {
+                ModelPricing = new Dictionary<string, ModelPricingEntry>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [ModelName] = new() { InputPer1M = 10.00m, OutputPer1M = 30.00m },
+                },
+            },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "hello",
+                SessionId = sessionId,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(sessionId, grimoire.LastIncrementedSessionId);
+
+        Assert.Equal(30, grimoire.LastIncrementedTokens);
+
+        // 15 * 10 / 1_000_000 + 15 * 30 / 1_000_000
+        decimal expected = (15m * 10.00m / 1_000_000m) + (15m * 30.00m / 1_000_000m);
+
+        Assert.Equal(expected, grimoire.LastIncrementedCostUsd);
+
+    }
+
+    [Fact]
+    public async Task Scenario35c_CachedInputTokens_RecordsPromptCacheMetric()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        FakeGrimoireRepository grimoire = new();
+
+        ScriptingChatClient chat = new()
+        {
+            UsageTotalTokens = 30,
+            UsageCachedInputTokens = 12,
+        };
+
+        chat.EnqueueText("cached");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableTokenTracking = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire);
+
+        string marker = DefaultProvider().Name;
+
+        System.Collections.Concurrent.ConcurrentQueue<long> captured = new();
+
+        using System.Diagnostics.Metrics.MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) => activeListener.EnableMeasurementEvents(instrument),
+        };
+
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+
+            if (instrument.Name == "arcanum_prompt_cache_tokens_total")
+            {
+
+                foreach (KeyValuePair<string, object?> tag in tags)
+                {
+
+                    if (tag.Key == "provider" && tag.Value is string s && s == marker)
+                    {
+
+                        captured.Enqueue(measurement);
+
+                    }
+
+                }
+
+            }
+
+        });
+
+        listener.Start();
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "hello",
+                SessionId = sessionId,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(12, Assert.Single(captured));
 
     }
 
@@ -2872,7 +3397,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         SagaExtractionService? sagaExtractionService = null,
         SemanticSpellRouter? semanticSpellRouter = null,
         ArcanumDbContext? db = null,
-        IInferenceAuditLogger? auditLogger = null)
+        IInferenceAuditLogger? auditLogger = null,
+        GuardrailsPipeline? guardrailsPipeline = null,
+        BudgetMonitor? budgetMonitor = null)
     {
         settings ??= DefaultSettings();
 
@@ -2918,10 +3445,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         db ??= CreateUnusedDbContext();
 
+        budgetMonitor ??= CreateBudgetMonitor(settings);
+
         return new WizardIntelligenceProvider(
             factory,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<WizardIntelligenceProvider>.Instance,
+            new FakeHttpClientFactory(),
             grimoire,
             mcp,
             campaignRepository,
@@ -2934,12 +3464,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 grimoire,
                 new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
                 NullLogger<GrimoireTurnWriter>.Instance),
-            new InferenceContextBuilder(
-                grimoire,
-                new TestOptionsSnapshot<ArcanumSettings>(settings),
-                NullLogger<InferenceContextBuilder>.Instance,
-                new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
-                new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
+            CreateInferenceContextBuilder(grimoire, settings),
             sanctumGuard,
             new ProcessResourceLimiter(),
             weaveService,
@@ -2949,8 +3474,19 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             sagaExtractionService,
             semanticSpellRouter,
             db,
-            auditLogger);
+            auditLogger,
+            new StructuredOutputValidator(),
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
+            budgetMonitor,
+            null,
+            guardrailsPipeline);
     }
+
+    private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            audit ?? new FakeGuardrailAuditLogger(),
+            NullLogger<GuardrailsPipeline>.Instance);
 
     /// <summary>
     /// A syntactically-valid but never-opened <see cref="ArcanumDbContext"/> for scenarios where RAG
@@ -2966,6 +3502,67 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             .Options;
 
         return new ArcanumDbContext(options, new UnusedSecretStore(), new UnusedPassphraseSource());
+    }
+
+    private static InferenceContextBuilder CreateInferenceContextBuilder(
+        IGrimoireRepository grimoire,
+        ArcanumSettings settings)
+    {
+
+        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
+
+        IContextCompressionService compression = new ContextCompressionService(
+            grimoire,
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            manaPreflight,
+            tokenizerResolver,
+            NullLogger<ContextCompressionService>.Instance);
+
+        return new InferenceContextBuilder(
+            grimoire,
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            NullLogger<InferenceContextBuilder>.Instance,
+            manaPreflight,
+            compression);
+
+    }
+
+    private static BudgetMonitor CreateBudgetMonitor(ArcanumSettings? settings = null)
+    {
+
+        ArcanumSettings effective = settings ?? new ArcanumSettings();
+
+        IGrimoireRepository grimoire = new FakeGrimoireRepository();
+
+        IBudgetAlertRepository budgetAlerts = new FakeBudgetAlertRepository();
+
+        ICommLinkDispatcher commLink = new FakeCommLinkDispatcher();
+
+        IServiceScopeFactory scopeFactory = CreateBudgetMonitorScopeFactory(grimoire, budgetAlerts);
+
+        return new BudgetMonitor(
+            scopeFactory,
+            commLink,
+            new TestOptionsMonitor<ArcanumSettings>(effective),
+            NullLogger<BudgetMonitor>.Instance);
+
+    }
+
+    private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(
+        IGrimoireRepository grimoire,
+        IBudgetAlertRepository budgetAlerts)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddScoped(_ => grimoire);
+
+        services.AddScoped(_ => budgetAlerts);
+
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+
     }
 
     private static PingRequest BaseRequest() =>
@@ -3248,6 +3845,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public int? UsageTotalTokens { get; set; }
 
+        public int? UsageCachedInputTokens { get; set; }
+
         public void EnqueueText(string text) =>
             _buffered.Enqueue(_ => Task.FromResult(ResponseText(text)));
 
@@ -3359,6 +3958,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     InputTokenCount = total / 2,
                     OutputTokenCount = total - (total / 2),
                 };
+
+            }
+
+            if (UsageCachedInputTokens is { } cached)
+            {
+
+                response.Usage ??= new UsageDetails();
+
+                response.Usage.CachedInputTokenCount = cached;
 
             }
 
@@ -3517,6 +4125,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public long LastIncrementedTokens { get; private set; }
 
+        public decimal LastIncrementedCostUsd { get; private set; }
+
         public int DiscardCallCount { get; private set; }
 
         public int FinalizeCallCount { get; private set; }
@@ -3590,6 +4200,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
             Task.FromResult<GrimoireEntryDto?>(null);
 
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
         public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(int threshold, DateTime idleCutoff, CancellationToken cancellationToken = default) =>
             Task.FromResult(new List<Guid>());
 
@@ -3609,6 +4228,24 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.CompletedTask;
 
         }
+
+        public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default)
+        {
+
+            LastIncrementedSessionId = sessionId;
+
+            LastIncrementedTokens = totalTokens;
+
+            LastIncrementedCostUsd = costUsd;
+
+            return Task.CompletedTask;
+
+        }
+
+        public decimal TodaySpend { get; set; }
+
+        public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(TodaySpend);
 
         public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

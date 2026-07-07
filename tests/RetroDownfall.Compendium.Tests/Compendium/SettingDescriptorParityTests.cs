@@ -153,6 +153,14 @@ public sealed class SettingDescriptorParityTests
 
         }
 
+        if (type == typeof(decimal))
+
+        {
+
+            return decimal.MinValue;
+
+        }
+
         throw new NotSupportedException($"Unsupported clamp parameter type {type}");
 
     }
@@ -189,6 +197,14 @@ public sealed class SettingDescriptorParityTests
         {
 
             return double.PositiveInfinity;
+
+        }
+
+        if (type == typeof(decimal))
+
+        {
+
+            return decimal.MaxValue;
 
         }
 

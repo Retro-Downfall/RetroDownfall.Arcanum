@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -6,8 +5,10 @@ using ConsoleAppFramework;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -36,8 +37,9 @@ public sealed class DoctorCommand(
     /// Run environment diagnostics (version, paths, API health).
     /// </summary>
     /// <param name="fixPermissions">Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store.</param>
+    /// <param name="json">Emit the report as JSON to stdout for programmatic consumption.</param>
     [Command("")]
-    public async Task<int> Run(bool fixPermissions, CancellationToken cancellationToken)
+    public async Task<int> Run(bool fixPermissions, bool json, CancellationToken cancellationToken)
     {
 
         if (fixPermissions)
@@ -48,6 +50,19 @@ public sealed class DoctorCommand(
             AnsiConsole.MarkupLine(themePalette.HighlightMarkup("Applied owner-only permissions to sensitive Arcanum paths."));
 
             return 0;
+
+        }
+
+        if (json)
+        {
+
+            DoctorReport report = await BuildJsonReportAsync(cancellationToken).ConfigureAwait(false);
+
+            string output = JsonSerializer.Serialize(report, ArcanumJsonContext.Default.DoctorReport);
+
+            Console.WriteLine(output);
+
+            return report.Healthy ? 0 : 1;
 
         }
 
@@ -77,7 +92,54 @@ public sealed class DoctorCommand(
 
     }
 
+    private async Task<DoctorReport> BuildJsonReportAsync(CancellationToken cancellationToken)
+    {
+
+        List<DoctorCheck> checks = [];
+
+        bool healthy = true;
+
+        checks.Add(BuildVersionCheck());
+
+        (bool pathsHealthy, DoctorCheck pathsCheck) = BuildPathsCheck();
+
+        healthy &= pathsHealthy;
+        checks.Add(pathsCheck);
+
+        (bool configHealthy, DoctorCheck configCheck) = BuildArcanumConfigCheck();
+
+        healthy &= configHealthy;
+        checks.Add(configCheck);
+
+        (bool mcpHealthy, DoctorCheck mcpCheck) = BuildMcpConfigCheck();
+
+        healthy &= mcpHealthy;
+        checks.Add(mcpCheck);
+
+        (bool tokenizerHealthy, DoctorCheck tokenizerCheck) = BuildTokenizerCheck();
+
+        healthy &= tokenizerHealthy;
+        checks.Add(tokenizerCheck);
+
+        (bool apiHealthy, DoctorCheck apiCheck) = await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
+
+        healthy &= apiHealthy;
+        checks.Add(apiCheck);
+
+        return new DoctorReport(healthy, checks);
+
+    }
+
     private void WriteVersionPanel()
+    {
+
+        (string version, Table table) = BuildVersionPanelCore();
+
+        WritePanel("System", table);
+
+    }
+
+    private (string Version, Table Table) BuildVersionPanelCore()
     {
 
         string version = RetroDownfall.Arcanum.Core.ArcanumBuildInfo.InformationalVersion;
@@ -97,11 +159,34 @@ public sealed class DoctorCommand(
             ("Interactive TTY", cliEnvironment.IsInteractive ? "yes" : "no (piped)"),
             ("Color enabled", cliEnvironment.ColorEnabled ? "yes" : "no"));
 
-        WritePanel("System", table);
+        return (version, table);
+
+    }
+
+    private DoctorCheck BuildVersionCheck()
+    {
+
+        (string version, _) = BuildVersionPanelCore();
+
+        return new DoctorCheck(
+            "Version",
+            "ok",
+            $"Arcanum {version}, OS {RuntimeInformation.OSDescription}, Runtime {RuntimeInformation.FrameworkDescription}");
 
     }
 
     private bool WritePathsPanel()
+    {
+
+        (bool healthy, Table table) = BuildPathsPanelCore();
+
+        WritePanel("Paths", table);
+
+        return healthy;
+
+    }
+
+    private (bool Healthy, Table Table) BuildPathsPanelCore()
     {
 
         Table table = new();
@@ -137,13 +222,33 @@ public sealed class DoctorCommand(
 
         healthy &= AddPathRow(table, "API key store (Data Protection)", securityFile, File.Exists(securityFile), optional: false);
 
-        WritePanel("Paths", table);
+        return (healthy, table);
+
+    }
+
+    private (bool Healthy, DoctorCheck Check) BuildPathsCheck()
+    {
+
+        (bool healthy, Table table) = BuildPathsPanelCore();
+
+        string detail = healthy ? "All required paths present" : "One or more required paths missing";
+
+        return (healthy, new DoctorCheck("Paths", healthy ? "ok" : "fail", detail));
+
+    }
+
+    private bool WriteArcanumConfigPanel()
+    {
+
+        (bool healthy, Table table) = BuildArcanumConfigPanelCore();
+
+        WritePanel("Configuration", table);
 
         return healthy;
 
     }
 
-    private bool WriteArcanumConfigPanel()
+    private (bool Healthy, Table Table) BuildArcanumConfigPanelCore()
     {
 
         string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
@@ -168,9 +273,7 @@ public sealed class DoctorCommand(
                 themePalette.MutedMarkup(Markup.Escape("arcanum.json:")),
                 themePalette.MutedMarkup(Markup.Escape($"{configFile} (not found, optional)")));
 
-            WritePanel("Configuration", table);
-
-            return true;
+            return (true, table);
 
         }
 
@@ -225,13 +328,51 @@ public sealed class DoctorCommand(
                 themePalette.ErrorMarkup(Markup.Escape("access denied: " + ex.Message)));
         }
 
-        WritePanel("Configuration", table);
+        return (healthy, table);
+
+    }
+
+    private (bool Healthy, DoctorCheck Check) BuildArcanumConfigCheck()
+    {
+
+        string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        if (!File.Exists(configFile))
+        {
+
+            return (true, new DoctorCheck("Configuration", "warn", $"{configFile} not found (optional)"));
+
+        }
+
+        try
+        {
+
+            ConfigurationBootstrapper.ValidateArcanumConfigurationFile(configFile);
+
+            return (true, new DoctorCheck("Configuration", "ok", $"{configFile} valid JSON"));
+
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+
+            return (false, new DoctorCheck("Configuration", "fail", $"{configFile}: {ex.Message}"));
+
+        }
+
+    }
+
+    private bool WriteMcpConfigPanel()
+    {
+
+        (bool healthy, Table table) = BuildMcpConfigPanelCore();
+
+        WritePanel("MCP", table);
 
         return healthy;
 
     }
 
-    private bool WriteMcpConfigPanel()
+    private (bool Healthy, Table Table) BuildMcpConfigPanelCore()
     {
 
         string globalMcpPath = Path.Combine(
@@ -259,9 +400,7 @@ public sealed class DoctorCommand(
                 themePalette.MutedMarkup(Markup.Escape("Global mcp.json:")),
                 themePalette.MutedMarkup(Markup.Escape($"{globalMcpPath} (not found, optional)")));
 
-            WritePanel("MCP", table);
-
-            return true;
+            return (true, table);
         }
 
         bool healthy = true;
@@ -325,13 +464,65 @@ public sealed class DoctorCommand(
                 themePalette.ErrorMarkup(Markup.Escape("access denied: " + ex.Message)));
         }
 
-        WritePanel("MCP", table);
+        return (healthy, table);
+
+    }
+
+    private (bool Healthy, DoctorCheck Check) BuildMcpConfigCheck()
+    {
+
+        string globalMcpPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".config",
+            "arcanum",
+            "mcp.json");
+
+        if (!File.Exists(globalMcpPath))
+        {
+
+            return (true, new DoctorCheck("MCP", "warn", $"{globalMcpPath} not found (optional)"));
+
+        }
+
+        try
+        {
+            byte[] raw = File.ReadAllBytes(globalMcpPath);
+
+            using JsonDocument doc = JsonDocument.Parse(raw);
+
+            int serverCount = 0;
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("mcpServers", out JsonElement servers)
+                && servers.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty _ in servers.EnumerateObject())
+                {
+                    serverCount++;
+                }
+            }
+
+            return (true, new DoctorCheck("MCP", "ok", $"{serverCount} server entry/entries parsed"));
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return (false, new DoctorCheck("MCP", "fail", $"{globalMcpPath}: {ex.Message}"));
+        }
+
+    }
+
+    private bool WriteTokenizerPanel()
+    {
+
+        (bool healthy, Table table) = BuildTokenizerPanelCore();
+
+        WritePanel("Tokenizer", table);
 
         return healthy;
 
     }
 
-    private bool WriteTokenizerPanel()
+    private (bool Healthy, Table Table) BuildTokenizerPanelCore()
     {
 
         string encoding = string.IsNullOrWhiteSpace(options.Value.Intelligence.TokenizerEncoding)
@@ -379,13 +570,44 @@ public sealed class DoctorCommand(
                         $"failed ({ex.GetType().Name}: {ex.Message}). Confirm Microsoft.ML.Tokenizers.Data.O200kBase is referenced and the encoding name is valid.")));
         }
 
-        WritePanel("Tokenizer", table);
+        return (healthy, table);
+
+    }
+
+    private (bool Healthy, DoctorCheck Check) BuildTokenizerCheck()
+    {
+
+        string encoding = string.IsNullOrWhiteSpace(options.Value.Intelligence.TokenizerEncoding)
+            ? "o200k_base"
+            : options.Value.Intelligence.TokenizerEncoding.Trim();
+
+        try
+        {
+            Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding(encoding);
+
+            int tokenCount = tokenizer.CountTokens("arcanum doctor smoke test");
+
+            return (true, new DoctorCheck("Tokenizer", "ok", $"{encoding} smoke test counted {tokenCount} tokens"));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return (false, new DoctorCheck("Tokenizer", "fail", $"{encoding} failed: {ex.Message}"));
+        }
+
+    }
+
+    private async Task<bool> WriteApiReachabilityPanelAsync(CancellationToken cancellationToken)
+    {
+
+        (bool healthy, Table table) = await BuildApiReachabilityPanelCoreAsync(cancellationToken).ConfigureAwait(false);
+
+        WritePanel("API Health", table);
 
         return healthy;
 
     }
 
-    private async Task<bool> WriteApiReachabilityPanelAsync(CancellationToken cancellationToken)
+    private async Task<(bool Healthy, Table Table)> BuildApiReachabilityPanelCoreAsync(CancellationToken cancellationToken)
     {
 
         int port = ArcanumSettingClamps.HostPort(options.Value.Host.Port);
@@ -482,9 +704,41 @@ public sealed class DoctorCommand(
                 break;
         }
 
-        WritePanel("API Health", table);
+        return (healthy, table);
 
-        return healthy;
+    }
+
+    private async Task<(bool Healthy, DoctorCheck Check)> BuildApiReachabilityCheckAsync(CancellationToken cancellationToken)
+    {
+
+        int port = ArcanumSettingClamps.HostPort(options.Value.Host.Port);
+
+        int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
+            options.Value.Cli.DoctorHealthTimeoutSeconds);
+
+        string targetUrl = $"http://localhost:{port}/api/health";
+
+        HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
+
+        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+
+        DoctorProbeResult probe = await ProbeApiReachabilityAsync(
+                client,
+                apiKey,
+                timeoutSeconds,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return probe.Kind switch
+        {
+            DoctorProbeKind.Ok => (true, new DoctorCheck("API Health", "ok", $"Reachable: {targetUrl} (HTTP {probe.HttpStatus})")),
+            DoctorProbeKind.Unauthorized => (false, new DoctorCheck("API Health", "fail", $"Reached {targetUrl} but auth failed (HTTP {probe.HttpStatus})")),
+            DoctorProbeKind.UnexpectedStatus => (false, new DoctorCheck("API Health", "fail", $"{targetUrl} returned HTTP {probe.HttpStatus}")),
+            DoctorProbeKind.Timeout => (true, new DoctorCheck("API Health", "warn", $"Timed out after {timeoutSeconds}s: {targetUrl}")),
+            DoctorProbeKind.Unreachable => (true, new DoctorCheck("API Health", "warn", $"Not reachable: {targetUrl}")),
+            DoctorProbeKind.Cancelled => (true, new DoctorCheck("API Health", "warn", "Cancelled by operator")),
+            _ => (false, new DoctorCheck("API Health", "fail", "Unknown probe result")),
+        };
 
     }
 

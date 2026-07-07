@@ -36,7 +36,9 @@ public sealed class ChatClientFactory(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     ILlamaServerManager llamaServerManager,
     ConfigurationSecretProtector secretProtector,
-    ILogger<ChatClientFactory> logger) : IChatClientFactory
+    ILogger<ChatClientFactory> logger,
+    ILogger<LlamaCppRequestAugmentingHandler> llamaHandlerLogger,
+    InferenceTokenizerResolver tokenizerResolver) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
@@ -223,7 +225,7 @@ public sealed class ChatClientFactory(
 
             EndpointHttpClientEntry entry = _endpointHttpClients.GetOrAdd(
                 key,
-                static cacheKey => new EndpointHttpClientEntry
+                cacheKey => new EndpointHttpClientEntry
                 {
                     Client = CreateEndpointHttpClient(cacheKey),
                     RefCount = 0,
@@ -343,14 +345,21 @@ public sealed class ChatClientFactory(
 
     }
 
-    private static HttpClient CreateEndpointHttpClient(string endpointKey)
+    private HttpClient CreateEndpointHttpClient(string endpointKey)
     {
 
-        var handler = OutboundUrlGuard.CreateProviderEgressHandler();
+        var egressHandler = OutboundUrlGuard.CreateProviderEgressHandler();
 
-        handler.PooledConnectionLifetime = PooledConnectionLifetime;
+        egressHandler.PooledConnectionLifetime = PooledConnectionLifetime;
 
-        return new HttpClient(handler, disposeHandler: true)
+        var augmentingHandler = new LlamaCppRequestAugmentingHandler(optionsMonitor, llamaHandlerLogger, tokenizerResolver)
+        {
+
+            InnerHandler = egressHandler
+
+        };
+
+        return new HttpClient(augmentingHandler, disposeHandler: true)
         {
 
             BaseAddress = new Uri(endpointKey),

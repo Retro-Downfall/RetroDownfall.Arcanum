@@ -7,9 +7,11 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -148,6 +150,7 @@ internal static class SessionEndpoints
                 int? limit,
                 DateTimeOffset? beforeCreatedAt,
                 Guid? beforeId,
+                bool? countOnly,
                 ISessionRepository repo,
                 HttpContext ctx) =>
             {
@@ -163,6 +166,16 @@ internal static class SessionEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEntryDtoArray,
                         statusCode: StatusCodes.Status404NotFound);
+                }
+
+                if (countOnly is true)
+                {
+                    int count = await repo.GetEntryCountAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                    return Results.Ok(
+                        ApiResponse<SessionEntryCountDto>.FromResult(
+                            Result<SessionEntryCountDto>.Success(new SessionEntryCountDto(count)),
+                            traceId));
                 }
 
                 List<Entry> entries = await repo
@@ -283,7 +296,7 @@ internal static class SessionEndpoints
                         return Results.BadRequest(
                             ApiResponse<SessionDetailDto>.FromResult(
                                 Result<SessionDetailDto>.Failure(
-                                    new Error("Session.InvalidStatus", "Status must be 'active' or 'archived'.")),
+                                    new Error(ErrorCodes.Session.InvalidStatus, "Status must be 'active' or 'archived'.")),
                                 traceId));
                     }
 
@@ -576,6 +589,183 @@ internal static class SessionEndpoints
 
             })
         .WithName("StreamSession");
+
+        apiGroup.MapDelete(
+            "/sessions/{id:guid}/entries/{entryId:guid}",
+            async (Guid id, Guid entryId, IGrimoireRepository grimoire, IOptionsMonitor<ArcanumSettings> options, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+
+                if (!sessionSettings.AllowMemoryManagement)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                            traceId));
+                }
+
+                GrimoireEntryDto? entry = await grimoire
+                    .GetEntryByIdAsync(id, entryId, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (entry is null)
+                {
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "Entry was not found in this session.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                await grimoire.DeleteEntryAsync(id, entryId, ctx.RequestAborted).ConfigureAwait(false);
+
+                return Results.NoContent();
+            })
+        .WithName("DeleteSessionEntry");
+
+        apiGroup.MapPost(
+            "/sessions/{id:guid}/entries/{entryId:guid}/pin",
+            async (Guid id, Guid entryId, IGrimoireRepository grimoire, IOptionsMonitor<ArcanumSettings> options, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+
+                if (!sessionSettings.AllowMemoryManagement)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                            traceId));
+                }
+
+                GrimoireEntryDto? entry = await grimoire
+                    .GetEntryByIdAsync(id, entryId, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (entry is null)
+                {
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "Entry was not found in this session.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                if (!entry.IsPinned)
+                {
+                    int maxPinned = ArcanumSettingClamps.SessionMaxPinnedEntries(sessionSettings.MaxPinnedEntries);
+
+                    int currentPinned = await grimoire.GetPinnedEntryCountAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                    if (currentPinned >= maxPinned)
+                    {
+                        return Results.Json(
+                            ApiResponse<bool>.FromResult(
+                                Result<bool>.Failure(
+                                    new Error(ErrorCodes.Session.TooManyPinned, $"Cannot pin more than {maxPinned} entries in this session.")),
+                                traceId),
+                            ArcanumJsonContext.Default.ApiResponseBoolean,
+                            statusCode: StatusCodes.Status409Conflict);
+                    }
+                }
+
+                await grimoire.SetEntryPinnedAsync(id, entryId, true, ctx.RequestAborted).ConfigureAwait(false);
+
+                return Results.Ok(
+                    ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
+            })
+        .WithName("PinSessionEntry");
+
+        apiGroup.MapPost(
+            "/sessions/{id:guid}/compact",
+            async (Guid id, IContextCompressionService compression, IGrimoireRepository grimoire, IOptionsMonitor<ArcanumSettings> options, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+
+                if (!sessionSettings.AllowMemoryManagement)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<CompactResult>.FromResult(
+                            Result<CompactResult>.Failure(
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                            traceId));
+                }
+
+                if (!await grimoire.SessionExistsAsync(id, ctx.RequestAborted).ConfigureAwait(false))
+                {
+                    return Results.Json(
+                        ApiResponse<CompactResult>.FromResult(
+                            Result<CompactResult>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseCompactResult,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                ArcanumSettings settings = options.CurrentValue;
+
+                int contextWindowLimit = 8192; // Matches ContextCompressionService.DefaultContextWindowLimit.
+
+                if (ProviderResolver.TryResolveProviderForModel(settings, settings.DefaultModel, out ProviderSettings? provider, out _)
+                    && provider is not null)
+                {
+                    contextWindowLimit = provider.ContextWindowLimit;
+                }
+
+                CompactResult result = await compression
+                    .CompressSessionAsync(id, contextWindowLimit, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                return Results.Ok(
+                    ApiResponse<CompactResult>.FromResult(Result<CompactResult>.Success(result), traceId));
+            })
+        .WithName("CompactSession");
+
+        apiGroup.MapDelete(
+            "/sessions/{id:guid}/entries/{entryId:guid}/pin",
+            async (Guid id, Guid entryId, IGrimoireRepository grimoire, IOptionsMonitor<ArcanumSettings> options, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+
+                if (!sessionSettings.AllowMemoryManagement)
+                {
+                    return Results.BadRequest(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                            traceId));
+                }
+
+                GrimoireEntryDto? entry = await grimoire
+                    .GetEntryByIdAsync(id, entryId, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (entry is null)
+                {
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(
+                            Result<bool>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "Entry was not found in this session.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                await grimoire.SetEntryPinnedAsync(id, entryId, false, ctx.RequestAborted).ConfigureAwait(false);
+
+                return Results.Ok(
+                    ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
+            })
+        .WithName("UnpinSessionEntry");
 
         return apiGroup;
     }

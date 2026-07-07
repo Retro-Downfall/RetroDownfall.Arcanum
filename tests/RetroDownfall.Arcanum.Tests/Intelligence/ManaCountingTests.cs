@@ -6,6 +6,10 @@ using Microsoft.ML.Tokenizers;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 
+using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -13,6 +17,8 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -81,7 +87,7 @@ public sealed class ManaCountingTests
 
         Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
 
-        int estimate = await ToolSchemaManaEstimator.EstimateAsync(mcp, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, CancellationToken.None);
+        int estimate = await ToolSchemaManaEstimator.EstimateAsync(mcp, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, browseTool: null, CancellationToken.None);
 
         // Two built-in tools (get_local_system_time, get_arcanum_system_info), each contributing at
         // least its per-tool overhead plus non-zero name/description/schema tokens.
@@ -101,11 +107,32 @@ public sealed class ManaCountingTests
 
         Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
 
-        int baseline = await ToolSchemaManaEstimator.EstimateAsync(mcpWithoutTools, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, CancellationToken.None);
+        int baseline = await ToolSchemaManaEstimator.EstimateAsync(mcpWithoutTools, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, browseTool: null, CancellationToken.None);
 
-        int withMcpTool = await ToolSchemaManaEstimator.EstimateAsync(mcpWithTools, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, CancellationToken.None);
+        int withMcpTool = await ToolSchemaManaEstimator.EstimateAsync(mcpWithTools, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, browseTool: null, CancellationToken.None);
 
         Assert.True(withMcpTool > baseline);
+
+    }
+
+    [Fact]
+    public async Task ToolSchemaManaEstimator_IncludesBrowseWebToolWhenEnabled()
+    {
+
+        FakeMcpConnectionManager mcp = new();
+
+        Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding("o200k_base");
+
+        ArcanumBrowseWebTool browseTool = new(
+            new FakeHttpClientFactory(),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            NullLogger.Instance);
+
+        int baseline = await ToolSchemaManaEstimator.EstimateAsync(mcp, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, browseTool: null, CancellationToken.None);
+
+        int withBrowseTool = await ToolSchemaManaEstimator.EstimateAsync(mcp, tokenizer, perToolOverheadTokens: 4, workingDirectory: null, browseTool, CancellationToken.None);
+
+        Assert.True(withBrowseTool > baseline);
 
     }
 

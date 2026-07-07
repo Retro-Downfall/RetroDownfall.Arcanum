@@ -23,6 +23,13 @@ public sealed class Entry
 
     public string? ToolArguments { get; set; }
 
+    /// <summary>
+    /// Pinned entries are always included in the inference context even when context compression
+    /// would otherwise drop older entries. Controlled by <c>POST /api/sessions/{id}/entries/{entryId}/pin</c>
+    /// and the corresponding DELETE.
+    /// </summary>
+    public bool IsPinned { get; set; }
+
     [JsonIgnore]
     public Session? Session { get; set; }
 

@@ -130,12 +130,23 @@ public sealed class InferenceContextBuilderTests
 
         ArcanumSettings settings = new();
 
+        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
+
+        IContextCompressionService compression = new ContextCompressionService(
+            grimoire,
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            manaPreflight,
+            tokenizerResolver,
+            NullLogger<ContextCompressionService>.Instance);
+
         return new InferenceContextBuilder(
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
-            new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
-            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
+            manaPreflight,
+            compression);
 
     }
 
@@ -179,6 +190,15 @@ public sealed class InferenceContextBuilderTests
         public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
         public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(int threshold, DateTime idleCutoff, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
@@ -189,6 +209,12 @@ public sealed class InferenceContextBuilderTests
             throw new NotImplementedException();
 
         public Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
         public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>

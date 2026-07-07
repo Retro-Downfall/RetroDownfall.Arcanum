@@ -19,4 +19,17 @@ public sealed record SessionSettings
     /// </summary>
     public int MaxForkDepth { get; init; } = 3;
 
+    /// <summary>
+    /// When false (default), memory-management endpoints (<c>DELETE /entries</c>, pin/unpin, compact)
+    /// return <c>Session.MemoryManagementDisabled</c>. Gate remains off until an operator explicitly
+    /// enables it.
+    /// </summary>
+    public bool AllowMemoryManagement { get; init; } = false;
+
+    /// <summary>
+    /// Maximum pinned entries per session. Pinned entries are always included in inference context
+    /// even when compression would otherwise drop them. Default <c>10</c>; clamped 0–100.
+    /// </summary>
+    public int MaxPinnedEntries { get; init; } = 10;
+
 }

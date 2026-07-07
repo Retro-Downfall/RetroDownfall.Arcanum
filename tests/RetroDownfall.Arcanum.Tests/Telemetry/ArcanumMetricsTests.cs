@@ -94,6 +94,82 @@ public sealed class ArcanumMetricsTests
 
     }
 
+    [Fact]
+    public void PromptCacheTokensTotal_increments_with_low_cardinality_labels()
+    {
+
+        string marker = Guid.NewGuid().ToString("N");
+
+        ConcurrentQueue<long> captured = new();
+
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) => activeListener.EnableMeasurementEvents(instrument),
+        };
+
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+
+            if (instrument.Name == "arcanum_prompt_cache_tokens_total" && TagsContainMarker(tags, marker))
+            {
+
+                captured.Enqueue(measurement);
+
+            }
+
+        });
+
+        listener.Start();
+
+        ArcanumMetrics.PromptCacheTokensTotal.Add(
+            150,
+            new KeyValuePair<string, object?>("provider", marker),
+            new KeyValuePair<string, object?>("model", "test-model"));
+
+        long capturedValue = Assert.Single(captured);
+
+        Assert.Equal(150, capturedValue);
+
+    }
+
+    [Fact]
+    public void PromptCacheHitsTotal_increments_with_low_cardinality_labels()
+    {
+
+        string marker = Guid.NewGuid().ToString("N");
+
+        ConcurrentQueue<long> captured = new();
+
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) => activeListener.EnableMeasurementEvents(instrument),
+        };
+
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+
+            if (instrument.Name == "arcanum_prompt_cache_hits_total" && TagsContainMarker(tags, marker))
+            {
+
+                captured.Enqueue(measurement);
+
+            }
+
+        });
+
+        listener.Start();
+
+        ArcanumMetrics.PromptCacheHitsTotal.Add(
+            1,
+            new KeyValuePair<string, object?>("provider", marker),
+            new KeyValuePair<string, object?>("model", "test-model"));
+
+        long capturedValue = Assert.Single(captured);
+
+        Assert.Equal(1, capturedValue);
+
+    }
+
     private static bool TagsContainMarker(ReadOnlySpan<KeyValuePair<string, object?>> tags, string marker)
     {
 

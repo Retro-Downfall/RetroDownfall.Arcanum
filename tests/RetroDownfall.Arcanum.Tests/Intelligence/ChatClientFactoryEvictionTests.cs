@@ -194,7 +194,9 @@ public sealed class ChatClientFactoryEvictionTests
             new TestOptionsMonitor<ArcanumSettings>(settings),
             new SequencedLlamaServerManager(),
             secretProtector,
-            NullLogger<ChatClientFactory>.Instance);
+            NullLogger<ChatClientFactory>.Instance,
+            NullLogger<LlamaCppRequestAugmentingHandler>.Instance,
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
     }
 

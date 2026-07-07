@@ -209,6 +209,15 @@ public sealed class ChronosyncEngineTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
             int threshold,
             DateTime idleCutoff,
@@ -229,6 +238,16 @@ public sealed class ChronosyncEngineTests
             Guid sessionId,
             long totalTokens,
             CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task IncrementSessionTokensAndCostAsync(
+            Guid sessionId,
+            long totalTokens,
+            decimal costUsd,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>

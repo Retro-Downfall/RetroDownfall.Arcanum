@@ -22,6 +22,11 @@ public sealed class Session
     public long TotalTokensUsed { get; set; }
 
     /// <summary>
+    /// Accumulated USD spend for this session, updated atomically with <see cref="TotalTokensUsed"/>.
+    /// </summary>
+    public decimal TotalCostUsd { get; set; }
+
+    /// <summary>
     /// Count of entries after <see cref="LastSummarizedMessageAt"/>. <c>-1</c> means unknown (legacy row pending lazy backfill).
     /// </summary>
     public int UnsummarizedEntryCount { get; set; }
@@ -54,6 +59,7 @@ public sealed class Session
             Summary = Summary,
             LastSummarizedMessageAt = LastSummarizedMessageAt,
             TotalTokensUsed = TotalTokensUsed,
+            TotalCostUsd = TotalCostUsd,
             UnsummarizedEntryCount = UnsummarizedEntryCount,
             ForkedFromSessionId = ForkedFromSessionId,
             Entries = new List<Entry>(),

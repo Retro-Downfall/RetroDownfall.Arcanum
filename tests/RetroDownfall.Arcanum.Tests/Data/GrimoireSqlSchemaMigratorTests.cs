@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 {
 
-    private const int ExpectedMigrationCount = 1;
+    private const int ExpectedMigrationCount = 4;
 
     private readonly GrimoireFixture _fixture;
 
@@ -156,7 +156,7 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
 
-        const string lastMigrationId = "20260705171559_InitialCreate";
+        const string lastMigrationId = "20260706040200_AddEntriesIsPinned";
 
         await using (SqliteCommand deleteHistory = connection.CreateCommand())
         {
@@ -175,7 +175,7 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
         await using (SqliteCommand dropIndex = connection.CreateCommand())
         {
 
-            dropIndex.CommandText = """DROP INDEX IF EXISTS "IX_Entries_Role";""";
+            dropIndex.CommandText = """DROP INDEX IF EXISTS "IX_Entries_SessionId_IsPinned";""";
 
             _ = await dropIndex.ExecuteNonQueryAsync(CancellationToken.None);
 
@@ -190,7 +190,7 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
         verifyIndex.CommandText = """
             SELECT 1
             FROM sqlite_master
-            WHERE type = 'index' AND name = 'IX_Entries_Role'
+            WHERE type = 'index' AND name = 'IX_Entries_SessionId_IsPinned'
             LIMIT 1;
             """;
 

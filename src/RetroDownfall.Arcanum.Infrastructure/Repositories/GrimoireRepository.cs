@@ -491,7 +491,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         recent.Reverse();
 
         return recent
-            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt, m.IsPinned))
             .ToList();
     }
 
@@ -526,7 +526,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         recent.Reverse();
 
         return recent
-            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt, m.IsPinned))
             .ToList();
     }
 
@@ -538,8 +538,96 @@ public sealed class GrimoireRepository : IGrimoireRepository
         return await _db.Entries
             .AsNoTracking()
             .Where(m => m.SessionId == sessionId && m.Id == entryId)
-            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt))
+            .Select(m => new GrimoireEntryDto(m.Id, m.Role, m.Content, m.ModelUsed, m.CreatedAt, m.IsPinned))
             .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<bool> DeleteEntryAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default)
+    {
+        using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        await using var tx = await _db.Database
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            Entry? entry = await _db.Entries
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.SessionId == sessionId && m.Id == entryId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (entry is null)
+            {
+                await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return false;
+            }
+
+            DateTime? watermark = await _db.Sessions
+                .AsNoTracking()
+                .Where(s => s.Id == sessionId)
+                .Select(s => s.LastSummarizedMessageAt)
+                .FirstOrDefaultAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            bool isUnsummarized = watermark is null
+                || entry.CreatedAt > new DateTimeOffset(watermark.Value, TimeSpan.Zero);
+
+            int deleted = await SqliteBusyRetry.ExecuteAsync(
+                () => _db.Entries
+                    .Where(m => m.SessionId == sessionId && m.Id == entryId)
+                    .ExecuteDeleteAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+            if (deleted > 0 && isUnsummarized)
+            {
+                await _entryPersistence.DecrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, cancellationToken).ConfigureAwait(false);
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            return deleted > 0;
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+            throw;
+        }
+    }
+
+    public async Task<bool> SetEntryPinnedAsync(
+        Guid sessionId,
+        Guid entryId,
+        bool pinned,
+        CancellationToken cancellationToken = default)
+    {
+        using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        int updated = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Entries
+                .Where(m => m.SessionId == sessionId && m.Id == entryId)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(m => m.IsPinned, pinned),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+        return updated > 0;
+    }
+
+    public async Task<int> GetPinnedEntryCountAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return await _db.Entries
+            .AsNoTracking()
+            .Where(m => m.SessionId == sessionId && m.IsPinned)
+            .CountAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -826,6 +914,59 @@ public sealed class GrimoireRepository : IGrimoireRepository
                     s => s.SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens),
                     cancellationToken),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task IncrementSessionTokensAndCostAsync(
+        Guid sessionId,
+        long totalTokens,
+        decimal costUsd,
+        CancellationToken cancellationToken = default)
+    {
+        if (totalTokens <= 0 && costUsd <= 0)
+        {
+            return;
+        }
+
+        _ = await SqliteBusyRetry.ExecuteAsync(
+            () => _db.Sessions
+                .Where(c => c.Id == sessionId)
+                .ExecuteUpdateAsync(
+                    s => s
+                        .SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens)
+                        .SetProperty(c => c.TotalCostUsd, c => c.TotalCostUsd + costUsd),
+                    cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default)
+    {
+        string startOfDayText = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+        DbConnection connection = _db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = """
+            SELECT COALESCE(SUM("TotalCostUsd"), 0)
+            FROM "Sessions"
+            WHERE date("CreatedAt") >= date(@startOfDay);
+            """;
+
+        DbParameter parameter = cmd.CreateParameter();
+        parameter.ParameterName = "@startOfDay";
+        parameter.Value = startOfDayText;
+        cmd.Parameters.Add(parameter);
+
+        object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return result is null || result == DBNull.Value
+            ? 0m
+            : Convert.ToDecimal(result, CultureInfo.InvariantCulture);
     }
 
     public async Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)

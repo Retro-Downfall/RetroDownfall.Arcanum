@@ -42,6 +42,89 @@ internal static partial class OpenAiV1Endpoints
         _ = v1.MapPost("/batches/{id}/cancel", HandleCancelBatchAsync)
             .WithName("PostOpenAiBatchCancel");
 
+        _ = v1.MapPost("/batches/{id}/reset", HandleResetBatchAsync)
+            .WithName("PostOpenAiBatchReset");
+
+    }
+
+    private static async Task<IResult> HandleResetBatchAsync(
+        string id,
+        IBatchRepository batches,
+        IUploadedFileRepository files,
+        BatchProcessingService batchProcessingService,
+        CancellationToken cancellationToken)
+    {
+
+        if (!TryParseBatchId(id, out Guid batchId))
+        {
+
+            return BatchNotFoundResult(id);
+
+        }
+
+        BatchRecord? record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false);
+
+        if (record is null)
+        {
+
+            return BatchNotFoundResult(id);
+
+        }
+
+        if (!BatchStatuses.IsStuck(record.Status))
+        {
+
+            return JsonError(
+                $"Batch '{id}' is not in a stuck state ({record.Status}); reset is only allowed for batches stuck in_progress.",
+                "invalid_request_error",
+                "invalid_state",
+                "id",
+                StatusCodes.Status409Conflict);
+
+        }
+
+        if (batchProcessingService.IsBatchInFlight(batchId))
+        {
+
+            return JsonError(
+                $"Batch '{id}' is currently being processed; wait for it to finish or fail before resetting.",
+                "invalid_request_error",
+                "invalid_state",
+                "id",
+                StatusCodes.Status409Conflict);
+
+        }
+
+        UploadedFileRecord? inputFile = await files.GetByIdAsync(record.InputFileId, cancellationToken).ConfigureAwait(false);
+
+        string inputFilePath = UploadedFileStorage.ResolvePath(record.InputFileId);
+
+        if (inputFile is null || !File.Exists(inputFilePath))
+        {
+
+            return JsonError(
+                $"Batch '{id}' input file is missing; the batch cannot be safely reset.",
+                "invalid_request_error",
+                "not_found",
+                "input_file_id",
+                StatusCodes.Status400BadRequest);
+
+        }
+
+        await batches.UpdateStatusAsync(
+            batchId,
+            BatchStatuses.Validating,
+            null,
+            record.OutputFileId,
+            record.ErrorFileId,
+            cancellationToken).ConfigureAwait(false);
+
+        record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false) ?? record;
+
+        OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(record, cancellationToken).ConfigureAwait(false);
+
+        return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
+
     }
 
     private static async Task<IResult> HandleCreateBatchAsync(
@@ -276,7 +359,7 @@ internal static partial class OpenAiV1Endpoints
         OpenAiChatAssistantMessage message = new(
             Role: "assistant",
             Content: turn.Text,
-            ToolCalls: MapBufferedToolCalls(turn.ToolCalls),
+            ToolCalls: MapBufferedToolCalls(turn.ToolCalls, turn.PreserveProviderToolCallIds),
             Refusal: null);
 
         OpenAiChatResponse response = new(

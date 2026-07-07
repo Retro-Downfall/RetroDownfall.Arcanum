@@ -1,6 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
@@ -35,4 +36,7 @@ public sealed record PingRequest(
     ToolPolicy? ToolPolicy = null,
     string? AdditionalSystemPrompt = null,
     string? OverrideSpellPath = null,
-    List<ScryingFocusDto>? ScryingFoci = null);
+    List<ScryingFocusDto>? ScryingFoci = null,
+    OpenAiToolDefinition[]? ClientTools = null,
+    JsonElement? ClientToolChoice = null,
+    bool ForwardClientTools = false);

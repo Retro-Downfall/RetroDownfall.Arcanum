@@ -43,4 +43,21 @@ public static class ArcanumMetrics
     public static readonly Counter<long> SanctumBreachesTotal = Meter.CreateCounter<long>(
         "arcanum_sanctum_breaches_total", description: "Total sanctum breaches");
 
+    /// <summary>
+    /// Total prompt tokens served from a provider-side prompt cache (cache hit). Labels are strictly
+    /// low-cardinality: <c>provider</c> (provider name) and <c>model</c> (model name). No session,
+    /// request, or user identifiers are attached, so Prometheus cardinality stays bounded by the
+    /// number of configured (provider, model) pairs.
+    /// </summary>
+    public static readonly Counter<long> PromptCacheTokensTotal = Meter.CreateCounter<long>(
+        "arcanum_prompt_cache_tokens_total", "{tokens}", "Prompt tokens served from a provider-side prompt cache");
+
+    /// <summary>
+    /// Total inference turns that reported a non-zero prompt-cache hit. Labels: <c>provider</c>, <c>model</c>
+    /// (low-cardinality only). Useful to compare against <c>arcanum_inference_turns_total</c>-style
+    /// counts to estimate cache hit rate.
+    /// </summary>
+    public static readonly Counter<long> PromptCacheHitsTotal = Meter.CreateCounter<long>(
+        "arcanum_prompt_cache_hits_total", description: "Inference turns that reported a non-zero prompt-cache hit");
+
 }

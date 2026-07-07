@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Session",
                 typeof(Session),
                 baseEntityType,
-                propertyCount: 11,
+                propertyCount: 12,
                 navigationCount: 1,
                 unnamedIndexCount: 8,
                 keyCount: 1);
@@ -84,6 +84,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 fieldInfo: typeof(Session).GetField("<Title>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 nullable: true,
                 maxLength: 512);
+
+            var totalCostUsd = runtimeEntityType.AddProperty(
+                "TotalCostUsd",
+                typeof(decimal),
+                propertyInfo: typeof(Session).GetProperty("TotalCostUsd", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Session).GetField("<TotalCostUsd>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                valueGenerated: ValueGenerated.OnAdd,
+                precision: 18,
+                scale: 8,
+                sentinel: 0m);
+            totalCostUsd.AddAnnotation("Relational:DefaultValue", 0m);
 
             var totalTokensUsed = runtimeEntityType.AddProperty(
                 "TotalTokensUsed",

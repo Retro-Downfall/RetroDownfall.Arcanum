@@ -14,5 +14,6 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 /// </summary>
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(InferenceAuditRecord))]
+[JsonSerializable(typeof(GuardrailAuditRecord))]
 [JsonSerializable(typeof(List<string>))]
 public sealed partial class AuditJsonContext : JsonSerializerContext;

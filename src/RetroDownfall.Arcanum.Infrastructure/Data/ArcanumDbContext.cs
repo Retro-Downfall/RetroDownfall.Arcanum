@@ -71,6 +71,7 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Summary);
             entity.Property(e => e.LastSummarizedMessageAt);
             entity.Property(e => e.TotalTokensUsed).HasDefaultValue(0L);
+            entity.Property(e => e.TotalCostUsd).HasDefaultValue(0m).HasPrecision(18, 8);
             entity.Property(e => e.UnsummarizedEntryCount).HasDefaultValue(0);
             entity.Property(e => e.ForkedFromSessionId);
             entity.HasIndex(e => e.CreatedAt);
@@ -96,8 +97,10 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Role).HasConversion<int>();
             entity.Property(e => e.ToolCallId).HasMaxLength(256);
             entity.Property(e => e.ToolName).HasMaxLength(256);
+            entity.Property(e => e.IsPinned).HasDefaultValue(false);
             entity.HasIndex(m => new { m.SessionId, m.CreatedAt });
             entity.HasIndex(m => m.Role);
+            entity.HasIndex(m => new { m.SessionId, m.IsPinned });
         });
 
         modelBuilder.Entity<MageSetting>(entity =>

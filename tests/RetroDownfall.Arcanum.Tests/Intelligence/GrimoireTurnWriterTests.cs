@@ -296,6 +296,15 @@ public sealed class GrimoireTurnWriterTests
 
         }
 
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
         public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(int threshold, DateTime idleCutoff, CancellationToken cancellationToken = default) =>
             Task.FromResult(new List<Guid>());
 
@@ -307,6 +316,12 @@ public sealed class GrimoireTurnWriterTests
 
         public Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
 
         public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

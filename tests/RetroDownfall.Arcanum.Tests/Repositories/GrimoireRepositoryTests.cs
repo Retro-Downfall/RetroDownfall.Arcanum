@@ -203,6 +203,60 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task IncrementSessionTokensAndCostAsync_updates_total_and_cost()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "token and cost",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.IncrementSessionTokensAndCostAsync(sessionId, 42, 1.23m, CancellationToken.None);
+
+        Session? session = await _db!.Sessions.AsNoTracking().FirstAsync(s => s.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(42, session.TotalTokensUsed);
+
+        Assert.Equal(1.23m, session.TotalCostUsd);
+
+    }
+
+    [SkippableFact]
+    public async Task GetTodaySpendAsync_sums_sessions_created_today()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId1, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "session 1",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        (Guid sessionId2, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "session 2",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.IncrementSessionTokensAndCostAsync(sessionId1, 10, 2.00m, CancellationToken.None);
+
+        await repository.IncrementSessionTokensAndCostAsync(sessionId2, 20, 3.50m, CancellationToken.None);
+
+        decimal todaySpend = await repository.GetTodaySpendAsync(CancellationToken.None);
+
+        Assert.Equal(5.50m, todaySpend);
+
+    }
+
+    [SkippableFact]
     public async Task UnsummarizedEntryCount_increments_on_begin_and_resets_on_rollup()
     {
 
@@ -384,6 +438,176 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         string result = await repository.SearchArchivesAsync("cobalt", maxResults: 10, CancellationToken.None);
 
         Assert.Contains("cobalt", result, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [SkippableFact]
+    public async Task DeleteEntryAsync_removes_existing_entry()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "delete me",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(assistantEntryId, "delete me reply", CancellationToken.None);
+
+        bool deleted = await repository.DeleteEntryAsync(sessionId, assistantEntryId, CancellationToken.None);
+
+        Assert.True(deleted);
+
+        Assert.Null(await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task DeleteEntryAsync_returns_false_when_entry_missing()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "session only",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        bool deleted = await repository.DeleteEntryAsync(sessionId, Guid.NewGuid(), CancellationToken.None);
+
+        Assert.False(deleted);
+
+    }
+
+    [SkippableFact]
+    public async Task SetEntryPinnedAsync_toggles_pinned_flag()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "pin me",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(assistantEntryId, "pin me reply", CancellationToken.None);
+
+        GrimoireEntryDto? before = await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None);
+
+        Assert.NotNull(before);
+
+        Assert.False(before!.IsPinned);
+
+        bool pinned = await repository.SetEntryPinnedAsync(sessionId, assistantEntryId, true, CancellationToken.None);
+
+        Assert.True(pinned);
+
+        GrimoireEntryDto? after = await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None);
+
+        Assert.NotNull(after);
+
+        Assert.True(after!.IsPinned);
+
+        bool unpinned = await repository.SetEntryPinnedAsync(sessionId, assistantEntryId, false, CancellationToken.None);
+
+        Assert.True(unpinned);
+
+        GrimoireEntryDto? final = await repository.GetEntryByIdAsync(sessionId, assistantEntryId, CancellationToken.None);
+
+        Assert.NotNull(final);
+
+        Assert.False(final!.IsPinned);
+
+    }
+
+    [SkippableFact]
+    public async Task SetEntryPinnedAsync_returns_false_when_entry_missing()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "session only",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        bool pinned = await repository.SetEntryPinnedAsync(sessionId, Guid.NewGuid(), true, CancellationToken.None);
+
+        Assert.False(pinned);
+
+    }
+
+    [SkippableFact]
+    public async Task GetPinnedEntryCountAsync_counts_only_pinned_entries()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid entryId1) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "pin one",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(entryId1, "reply one", CancellationToken.None);
+
+        (Guid _, Guid entryId2) = await repository.BeginAssistantReplyAsync(
+            sessionId,
+            prompt: "pin two",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(entryId2, "reply two", CancellationToken.None);
+
+        Assert.Equal(0, await repository.GetPinnedEntryCountAsync(sessionId, CancellationToken.None));
+
+        await repository.SetEntryPinnedAsync(sessionId, entryId1, true, CancellationToken.None);
+
+        Assert.Equal(1, await repository.GetPinnedEntryCountAsync(sessionId, CancellationToken.None));
+
+        await repository.SetEntryPinnedAsync(sessionId, entryId2, true, CancellationToken.None);
+
+        Assert.Equal(2, await repository.GetPinnedEntryCountAsync(sessionId, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task GetSessionEntriesAsync_includes_is_pinned_projection()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid entryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "project pin",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(entryId, "project pin reply", CancellationToken.None);
+
+        await repository.SetEntryPinnedAsync(sessionId, entryId, true, CancellationToken.None);
+
+        List<GrimoireEntryDto>? entries = await repository.GetSessionEntriesAsync(sessionId, CancellationToken.None);
+
+        Assert.NotNull(entries);
+
+        Assert.Contains(entries!, e => e.Id == entryId && e.IsPinned);
 
     }
 

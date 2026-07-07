@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Chronosync;
@@ -10,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Logging;
@@ -105,6 +107,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.TheForge.SessionExportResult>))]
 [JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.TheForge.EntryDto>))]
 [JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.TheForge.EntryDto[]>))]
+[JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.TheForge.SessionEntryCountDto>))]
 [JsonSerializable(typeof(Result<RetroDownfall.Arcanum.Core.TheForge.SessionExportResult>))]
 [JsonSerializable(typeof(Result<RetroDownfall.Arcanum.Core.TheForge.SessionQueryResult>))]
 [JsonSerializable(typeof(Result<RetroDownfall.Arcanum.Core.TheForge.EntryDto>))]
@@ -142,6 +145,10 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<SpellCastResult>))]
 [JsonSerializable(typeof(Result<SpellCastResult>))]
 [JsonSerializable(typeof(PromptExecuteRequest))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Infrastructure.Weave.EmbeddingsResetResult))]
+[JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Infrastructure.Weave.EmbeddingsResetResult>))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Cli.DoctorReport))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Cli.DoctorCheck))]
 [JsonSerializable(typeof(CodexContentDto))]
 [JsonSerializable(typeof(CodexPutRequest))]
 [JsonSerializable(typeof(ApiResponse<CodexContentDto>))]
@@ -495,4 +502,40 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
 [JsonSerializable(typeof(System.Text.Json.JsonDocument))]
 [JsonSerializable(typeof(Dictionary<string, double>))]
+[JsonSerializable(typeof(JsonSchemaDefinition))]
+[JsonSerializable(typeof(JsonSchemaDefinition[]))]
+[JsonSerializable(typeof(List<JsonSchemaDefinition>))]
+[JsonSerializable(typeof(StructuredOutputSettings))]
+[JsonSerializable(typeof(PricingSettings))]
+[JsonSerializable(typeof(ModelPricingEntry))]
+[JsonSerializable(typeof(ModelPricingEntry[]))]
+[JsonSerializable(typeof(List<ModelPricingEntry>))]
+[JsonSerializable(typeof(Dictionary<string, ModelPricingEntry>))]
+[JsonSerializable(typeof(BudgetSettings))]
+[JsonSerializable(typeof(BudgetSummaryDto))]
+[JsonSerializable(typeof(ApiResponse<BudgetSummaryDto>))]
+[JsonSerializable(typeof(Result<BudgetSummaryDto>))]
+[JsonSerializable(typeof(CacheSettings))]
+[JsonSerializable(typeof(WebBrowsingSettings))]
+[JsonSerializable(typeof(ClientToolForwardingSettings))]
+[JsonSerializable(typeof(GuardrailsSettings))]
+[JsonSerializable(typeof(GuardrailsAuditLogSettings))]
+[JsonSerializable(typeof(GuardrailsResult))]
+[JsonSerializable(typeof(GuardrailsResult[]))]
+[JsonSerializable(typeof(List<GuardrailsResult>))]
+[JsonSerializable(typeof(GuardrailsViolation))]
+[JsonSerializable(typeof(GuardrailsViolation[]))]
+[JsonSerializable(typeof(List<GuardrailsViolation>))]
+[JsonSerializable(typeof(GuardrailAuditRecord))]
+[JsonSerializable(typeof(GuardrailAuditRecord[]))]
+[JsonSerializable(typeof(ApiResponse<GuardrailAuditRecord[]>))]
+[JsonSerializable(typeof(Result<GuardrailAuditRecord[]>))]
+[JsonSerializable(typeof(BrowseWebResult))]
+[JsonSerializable(typeof(ToolInvokeRequest))]
+[JsonSerializable(typeof(ToolInvokeResponse))]
+[JsonSerializable(typeof(ApiResponse<ToolInvokeResponse>))]
+[JsonSerializable(typeof(Result<ToolInvokeResponse>))]
+[JsonSerializable(typeof(CompactResult))]
+[JsonSerializable(typeof(ApiResponse<CompactResult>))]
+[JsonSerializable(typeof(Result<CompactResult>))]
 public partial class ArcanumJsonContext : JsonSerializerContext;

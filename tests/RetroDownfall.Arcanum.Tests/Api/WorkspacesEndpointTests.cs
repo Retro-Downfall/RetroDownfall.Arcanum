@@ -265,6 +265,72 @@ public sealed class WorkspacesEndpointTests
     }
 
     [SkippableFact]
+    public async Task HeadFileContents_ExistingFile_ReturnsSizeAndLastModifiedHeaders()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "head-existing");
+
+        string content = "hello, head check";
+
+        HttpResponseMessage putResponse = await client.PutAsync(
+            $"/api/workspaces/{workspace.Id}/files/contents?relativePath=head.txt",
+            JsonContent(new FileWriteRequest(content), ArcanumJsonContext.Default.FileWriteRequest));
+
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        HttpRequestMessage headRequest = new(HttpMethod.Head, $"/api/workspaces/{workspace.Id}/files/contents?relativePath=head.txt");
+        HttpResponseMessage headResponse = await client.SendAsync(headRequest);
+
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+
+        Assert.True(headResponse.Content.Headers.ContentLength.HasValue);
+        Assert.Equal(Encoding.UTF8.GetByteCount(content), headResponse.Content.Headers.ContentLength.Value);
+
+        Assert.NotNull(headResponse.Content.Headers.LastModified);
+
+        Assert.Empty(await headResponse.Content.ReadAsByteArrayAsync());
+
+    }
+
+    [SkippableFact]
+    public async Task HeadFileContents_UnknownFile_Returns404()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "head-missing");
+
+        HttpRequestMessage headRequest = new(HttpMethod.Head, $"/api/workspaces/{workspace.Id}/files/contents?relativePath=missing.txt");
+        HttpResponseMessage headResponse = await client.SendAsync(headRequest);
+
+        Assert.Equal(HttpStatusCode.NotFound, headResponse.StatusCode);
+
+    }
+
+    [SkippableFact]
+    public async Task HeadFileContents_UnknownWorkspace_Returns404()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string unknownId = Guid.NewGuid().ToString("N");
+
+        HttpRequestMessage headRequest = new(HttpMethod.Head, $"/api/workspaces/{unknownId}/files/contents?relativePath=x.txt");
+        HttpResponseMessage headResponse = await client.SendAsync(headRequest);
+
+        Assert.Equal(HttpStatusCode.NotFound, headResponse.StatusCode);
+
+    }
+
+    [SkippableFact]
     public async Task WriteEndpoints_ToggleDisabled_Return403Envelope()
     {
 

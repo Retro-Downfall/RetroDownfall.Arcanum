@@ -4,7 +4,14 @@ public sealed record PromptTurnResult(
     string Text,
     ChatCompletionUsage? Usage,
     List<PromptToolCall>? ToolCalls = null,
-    string? FinishReason = null);
+    string? FinishReason = null)
+{
+
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    public bool PreserveProviderToolCallIds { get; init; }
+
+}
 
 /// <summary>
 /// One assistant-issued tool call recorded during a buffered <c>ExecutePromptAsync</c> turn,

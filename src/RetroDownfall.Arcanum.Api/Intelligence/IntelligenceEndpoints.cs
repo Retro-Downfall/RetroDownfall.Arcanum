@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api;
@@ -329,6 +330,8 @@ internal static class IntelligenceEndpoints
         ManaPreflight manaPreflight,
         IMcpConnectionManager mcp,
         IOptionsSnapshot<ArcanumSettings> settings,
+        IHttpClientFactory httpClientFactory,
+        ILogger<ArcanumBrowseWebTool> browseWebLogger,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
@@ -396,8 +399,12 @@ internal static class IntelligenceEndpoints
         if (body.Tools)
         {
 
+            ArcanumBrowseWebTool? browseTool = settings.Value.WebBrowsing.Enabled
+                ? new ArcanumBrowseWebTool(httpClientFactory, settings, browseWebLogger)
+                : null;
+
             toolManaEstimate = await ToolSchemaManaEstimator
-                .EstimateAsync(mcp, tokenizer, perMessageOverhead, workingDirectory: null, cancellationToken)
+                .EstimateAsync(mcp, tokenizer, perMessageOverhead, workingDirectory: null, browseTool, cancellationToken)
                 .ConfigureAwait(false);
 
         }

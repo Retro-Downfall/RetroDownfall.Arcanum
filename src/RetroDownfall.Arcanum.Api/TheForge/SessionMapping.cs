@@ -14,7 +14,8 @@ internal static class SessionMapping
             entry.Content,
             entry.ToolCallId,
             entry.ToolName,
-            entry.CreatedAt);
+            entry.CreatedAt,
+            entry.IsPinned);
 
     public static SessionDetailDto ToDetailDto(Session session, int entryCount) =>
         new(

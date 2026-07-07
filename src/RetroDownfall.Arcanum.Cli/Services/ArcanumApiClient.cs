@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -2741,6 +2742,39 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         return await GetApiAsync(
             "api/saga/stats",
             ArcanumJsonContext.Default.ApiResponseSagaStats,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    #endregion
+
+    #region Tool Invoke
+
+    public async Task<Result<ToolInvokeResponse>> InvokeToolAsync(
+        string toolName,
+        JsonElement arguments,
+        CancellationToken cancellationToken = default)
+    {
+        ToolInvokeRequest request = new()
+        {
+            ToolName = toolName,
+            Arguments = arguments,
+        };
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ToolInvokeRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/tools/invoke",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseToolInvokeResponse,
+            static (_, _, envelope) => envelope switch
+            {
+                null => Result<ToolInvokeResponse>.Failure(InvalidResponseError),
+                { IsSuccess: false, Error: not null } => Result<ToolInvokeResponse>.Failure(envelope.Error.Value),
+                { Data: null } => Result<ToolInvokeResponse>.Failure(InvalidResponseError),
+                _ => Result<ToolInvokeResponse>.Success(envelope.Data)
+            },
             cancellationToken).ConfigureAwait(false);
     }
 

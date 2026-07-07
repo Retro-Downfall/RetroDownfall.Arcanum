@@ -55,6 +55,8 @@ public static class ErrorCodes
 
         public const string NotFound = "Session.NotFound";
 
+        public const string InvalidStatus = "Session.InvalidStatus";
+
         public const string Archived = "Session.Archived";
 
         public const string TooManyEntries = "Session.TooManyEntries";
@@ -68,6 +70,12 @@ public static class ErrorCodes
 
         /// <summary>The optional <c>upToEntryId</c> fork cutoff does not identify an entry belonging to the source session.</summary>
         public const string EntryNotFound = "Session.EntryNotFound";
+
+        /// <summary>Memory-management endpoints are disabled because <c>Arcanum:Sessions:AllowMemoryManagement</c> is false.</summary>
+        public const string MemoryManagementDisabled = "Session.MemoryManagementDisabled";
+
+        /// <summary>Pinning an entry would exceed <c>Arcanum:Sessions:MaxPinnedEntries</c>.</summary>
+        public const string TooManyPinned = "Session.TooManyPinned";
 
     }
 
@@ -193,6 +201,8 @@ public static class ErrorCodes
 
         public const string InvalidVersion = "Prompt.InvalidVersion";
 
+        public const string InvalidRequest = "Prompt.InvalidRequest";
+
     }
 
     /// <summary>Intelligence — cross-surface inference helpers.</summary>
@@ -200,6 +210,16 @@ public static class ErrorCodes
     {
 
         public const string HumanPromptNotFound = "Intelligence.HumanPromptNotFound";
+
+    }
+
+    /// <summary>StructuredOutput — JSON schema validation and constrained decoding.</summary>
+    public static class StructuredOutput
+    {
+
+        public const string ValidationFailed = "StructuredOutput.ValidationFailed";
+
+        public const string SchemaInvalid = "StructuredOutput.SchemaInvalid";
 
     }
 
@@ -258,6 +278,14 @@ public static class ErrorCodes
     {
 
         public const string TooManyRequests = "RateLimit.TooManyRequests";
+
+    }
+
+    /// <summary>Budget — daily cost spend enforcement.</summary>
+    public static class Budget
+    {
+
+        public const string Exceeded = "Budget.Exceeded";
 
     }
 
@@ -381,6 +409,46 @@ public static class ErrorCodes
         public const string AgentNotAllowed = "Sending.AgentNotAllowed";
 
         public const string MaxTasksReached = "Sending.MaxTasksReached";
+
+    }
+
+    /// <summary>WebBrowsing — built-in <c>browse_web</c> tool errors.</summary>
+    public static class WebBrowsing
+    {
+
+        public const string SsrfBlocked = "WebBrowsing.SsrfBlocked";
+
+        public const string TooLarge = "WebBrowsing.TooLarge";
+
+        public const string Timeout = "WebBrowsing.Timeout";
+
+        public const string InvalidUrl = "WebBrowsing.InvalidUrl";
+
+    }
+
+    /// <summary>ClientTools — client-supplied tool forwarding errors.</summary>
+    public static class ClientTools
+    {
+
+        public const string Disabled = "ClientTools.Disabled";
+
+        public const string TooMany = "ClientTools.TooMany";
+
+        public const string InvalidSchema = "ClientTools.InvalidSchema";
+
+    }
+
+    /// <summary>Guardrails — content filter (PII / toxicity / topic) violations (Tier 3 Phase 4).</summary>
+    public static class Guardrails
+    {
+
+        /// <summary>Personally-identifiable information (email/phone/SSN/credit-card) was detected in the
+        /// input and the turn was rejected before inference ran. Distinct from <see cref="Blocked"/> so
+        /// callers and operators can distinguish "redact-and-retry" PII from policy blocks.</summary>
+        public const string PiiDetected = "Guardrails.PiiDetected";
+
+        /// <summary>A toxicity-blocklist hit or an allowed/blocked-topic rule matched, rejecting the turn.</summary>
+        public const string Blocked = "Guardrails.Blocked";
 
     }
 

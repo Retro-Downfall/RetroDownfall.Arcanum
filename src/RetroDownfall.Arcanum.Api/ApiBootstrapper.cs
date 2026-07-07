@@ -16,6 +16,8 @@ using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
+using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Daemons;
 using RetroDownfall.Arcanum.Api.Mcp;
 using RetroDownfall.Arcanum.Api.Perception;
@@ -295,6 +297,10 @@ public static class ApiBootstrapper
 
         services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
 
+        services.AddTransient<OpenAiRequestAugmentingHandler>();
+
+        services.AddTransient<LlamaCppRequestAugmentingHandler>();
+
         services.AddHttpClient(
             "OpenAiCompatibleProvider",
             static (sp, client) =>
@@ -302,7 +308,8 @@ public static class ApiBootstrapper
                 _ = sp;
 
                 client.Timeout = Timeout.InfiniteTimeSpan;
-            });
+            })
+            .AddHttpMessageHandler<OpenAiRequestAugmentingHandler>();
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
@@ -312,6 +319,10 @@ public static class ApiBootstrapper
 
         services.AddSingleton<InferenceTokenizerResolver>();
 
+        services.AddSingleton<StructuredOutputValidator>();
+
+        services.AddSingleton<BudgetMonitor>();
+
         services.AddSingleton<ManaPreflight>();
 
         services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
@@ -320,13 +331,19 @@ public static class ApiBootstrapper
 
         services.AddScoped<GrimoireTurnWriter>();
 
+        services.AddScoped<IContextCompressionService, ContextCompressionService>();
+
         services.AddScoped<InferenceContextBuilder>();
 
         services.AddScoped<ToolExecutionPipeline>();
 
         services.AddScoped<SemanticSpellRouter>();
 
+        services.AddSingleton<GuardrailsPipeline>();
+
         services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();
+
+        services.AddScoped<IBuiltInToolRegistry, BuiltInToolRegistry>();
 
         services.AddSingleton<BatchProcessingService>();
 
@@ -505,13 +522,19 @@ public static class ApiBootstrapper
 
         apiGroup.MapHealthEndpoints();
 
+        apiGroup.MapBudgetEndpoints();
+
         apiGroup.MapLlamaEndpoints();
 
         apiGroup.MapConfigurationEndpoints();
 
         apiGroup.MapIntelligenceEndpoints();
 
+        apiGroup.MapToolInvokeEndpoints();
+
         apiGroup.MapAuditEndpoints();
+
+        apiGroup.MapGuardrailsAuditEndpoints();
 
         apiGroup.MapMcpEndpoints();
 
@@ -554,6 +577,8 @@ public static class ApiBootstrapper
         apiGroup.MapWorkspaceEndpoints();
 
         apiGroup.MapWorkspaceDivinationEndpoints();
+
+        apiGroup.MapEmbeddingsResetEndpoints();
 
         apiGroup.MapEventEndpoints();
 

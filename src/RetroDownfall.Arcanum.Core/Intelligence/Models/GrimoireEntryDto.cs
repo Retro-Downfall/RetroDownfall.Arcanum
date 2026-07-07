@@ -7,4 +7,5 @@ public sealed record GrimoireEntryDto(
     MessageRole Role,
     string Content,
     string ModelUsed,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    bool IsPinned = false);

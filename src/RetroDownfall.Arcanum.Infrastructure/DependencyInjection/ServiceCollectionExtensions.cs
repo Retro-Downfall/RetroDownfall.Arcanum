@@ -194,6 +194,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IInferenceAuditLogger, InferenceAuditLogger>();
 
+        services.AddSingleton<IGuardrailAuditLogger, GuardrailAuditLogger>();
+
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
             .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
@@ -210,6 +212,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
         services.AddSingleton<WeaveIndexAvailability>();
         services.AddScoped<IDivinationService, DivinationService>();
+        services.AddScoped<EmbeddingsResetService>();
         services.AddSingleton<SpellWeaveCache>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
 
@@ -246,6 +249,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IBatchRepository, BatchRepository>();
 
         services.AddScoped<ISanctumBreachRepository, SanctumBreachRepository>();
+
+        services.AddScoped<IBudgetAlertRepository, BudgetAlertRepository>();
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
@@ -289,6 +294,19 @@ public static class ServiceCollectionExtensions
 
                 int timeoutSeconds = ArcanumSettingClamps.WebhookTimeoutSeconds(
                     opts.CurrentValue.CommLink?.WebhookTimeoutSeconds ?? new CommLinkSettings().WebhookTimeoutSeconds);
+
+                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
+
+        services.AddHttpClient(
+            ArcanumBrowseWebConstants.HttpClientName,
+            (sp, client) =>
+            {
+                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+                int timeoutSeconds = ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
+                    opts.CurrentValue.WebBrowsing?.RequestTimeoutSeconds ?? new WebBrowsingSettings().RequestTimeoutSeconds);
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })

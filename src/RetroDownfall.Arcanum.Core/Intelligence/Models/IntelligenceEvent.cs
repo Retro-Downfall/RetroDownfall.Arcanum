@@ -29,7 +29,13 @@ public sealed record IntelligenceEvent(
     DateTimeOffset? Timestamp = null,
     [property: JsonPropertyName("finishReason")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? FinishReason = null);
+    string? FinishReason = null)
+{
+
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
+}
+
 
 /// <summary>
 /// Structured payload for <see cref="IntelligenceEventType.ToolCall"/> and
@@ -41,4 +47,5 @@ public sealed record IntelligenceToolCallEvent(
     string CallId,
     string Name,
     string ArgumentsJson,
-    int Index = 0);
+    int Index = 0,
+    [property: JsonIgnore] bool PreserveProviderCallId = false);

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Reflection;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
@@ -146,7 +147,9 @@ public sealed class ChatClientFactoryOverCapWarningTests
             new TestOptionsMonitor<ArcanumSettings>(settings),
             new SequencedLlamaServerManager(),
             secretProtector,
-            logger);
+            logger,
+            NullLogger<LlamaCppRequestAugmentingHandler>.Instance,
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
     }
 

@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Serialization;
 
@@ -52,5 +53,23 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(ScryingSettings))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(JsonSchemaDefinition))]
+[JsonSerializable(typeof(JsonSchemaDefinition[]))]
+[JsonSerializable(typeof(List<JsonSchemaDefinition>))]
+[JsonSerializable(typeof(StructuredOutputSettings))]
+[JsonSerializable(typeof(PricingSettings))]
+[JsonSerializable(typeof(ModelPricingEntry))]
+[JsonSerializable(typeof(ModelPricingEntry[]))]
+[JsonSerializable(typeof(List<ModelPricingEntry>))]
+[JsonSerializable(typeof(Dictionary<string, ModelPricingEntry>))]
+[JsonSerializable(typeof(BudgetSettings))]
+[JsonSerializable(typeof(CacheSettings))]
+[JsonSerializable(typeof(WebBrowsingSettings))]
+
+[JsonSerializable(typeof(ClientToolForwardingSettings))]
+
+[JsonSerializable(typeof(GuardrailsSettings))]
+
+[JsonSerializable(typeof(GuardrailsAuditLogSettings))]
 
 public partial class ConfigurationJsonContext : JsonSerializerContext;

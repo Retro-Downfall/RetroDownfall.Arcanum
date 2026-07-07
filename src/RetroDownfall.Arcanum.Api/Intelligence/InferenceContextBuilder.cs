@@ -6,8 +6,6 @@ using Microsoft.Extensions.Logging;
 
 using Microsoft.Extensions.Options;
 
-using Microsoft.ML.Tokenizers;
-
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -37,7 +35,7 @@ public sealed class InferenceContextBuilder(
     IOptionsSnapshot<ArcanumSettings> settings,
     ILogger<InferenceContextBuilder> logger,
     ManaPreflight manaPreflight,
-    InferenceTokenizerResolver inferenceTokenizerResolver)
+    IContextCompressionService contextCompressionService)
 {
 
     public static bool HasStatelessMessages(PingRequest request) =>
@@ -170,23 +168,11 @@ public sealed class InferenceContextBuilder(
 
         }
 
-        string encodingName = settings.Value.Intelligence.TokenizerEncoding ?? InferenceTokenizerResolver.DefaultEncodingName;
+        int totalTokens = contextCompressionService.CountTokens(chatMessages);
 
-        Tokenizer tokenizer = inferenceTokenizerResolver.ResolveTokenizer(encodingName);
-
-        int perMessageOverhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
-            settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
-
-        int totalTokens = manaPreflight.CountTokens(chatMessages, tokenizer, perMessageOverhead, encodingName);
-
-        int thresholdPct = ArcanumSettingClamps.ContextWindowCompressionThreshold(
+        int effectiveLimit = contextCompressionService.ComputeEffectiveLimit(
+            lease.Provider.ContextWindowLimit,
             settings.Value.Intelligence.ContextWindowCompressionThreshold);
-
-        int contextLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
-
-        long effectiveLong = (long)contextLimit * thresholdPct / 100L;
-
-        int effectiveLimit = effectiveLong > int.MaxValue ? int.MaxValue : (int)effectiveLong;
 
         if (totalTokens <= effectiveLimit)
         {
@@ -224,7 +210,7 @@ public sealed class InferenceContextBuilder(
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 
-        int afterTokens = manaPreflight.CountTokens(rebuilt, tokenizer, perMessageOverhead, encodingName);
+        int afterTokens = contextCompressionService.CountTokens(rebuilt);
 
         if (afterTokens > effectiveLimit)
         {
@@ -311,8 +297,16 @@ public sealed class InferenceContextBuilder(
         string newUserPrompt)
     {
 
-        List<Entry> ordered = session.Entries
-            .Where(m => m.CreatedAt.UtcDateTime > watermarkExclusive)
+        List<Entry> pinned = session.Entries
+            .Where(m => m.IsPinned)
+            .ToList();
+
+        List<Entry> afterWatermark = session.Entries
+            .Where(m => m.CreatedAt.UtcDateTime > watermarkExclusive && !m.IsPinned)
+            .ToList();
+
+        List<Entry> ordered = pinned
+            .Concat(afterWatermark)
             .OrderBy(m => m.CreatedAt)
             .ToList();
 

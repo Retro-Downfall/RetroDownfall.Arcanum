@@ -55,7 +55,8 @@ public sealed record EntryDto(
     string Content,
     string? ToolCallId,
     string? ToolName,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    bool IsPinned = false);
 
 public sealed record SessionQueryRequest(
     Guid? CampaignId = null,
@@ -107,3 +108,10 @@ public sealed record SessionExportResult(
 public sealed record SessionExportPayload(
     Storage.Entities.Session Session,
     List<Storage.Entities.Entry> Entries);
+
+public sealed record CompactResult(
+    int TokensBefore,
+    int TokensAfter,
+    int EntriesRemoved);
+
+public sealed record SessionEntryCountDto(int Count);

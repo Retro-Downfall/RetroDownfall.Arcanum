@@ -15,6 +15,9 @@ internal static class GrimoireSqlSchemaMigrator
     private static readonly string[] MigrationOrder =
     [
         "20260705171559_InitialCreate",
+        "20260706040000_AddSessionTotalCostUsd",
+        "20260706040100_AddBudgetAlerts",
+        "20260706040200_AddEntriesIsPinned",
     ];
 
     private const string ResourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.SqlMigrations.";

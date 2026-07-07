@@ -321,6 +321,52 @@ internal static class WorkspaceEndpoints
             })
         .WithName("ReadWorkspaceFileContents");
 
+        apiGroup.MapMethods(
+            "/workspaces/{id}/files/contents",
+            [HttpMethods.Head],
+            async (
+                string id,
+                string relativePath,
+                IWorkspaceRegistry registry,
+                IFileSystemBrowser browser,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                WorkspaceInfo? workspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (workspace is null)
+                {
+                    return Results.Json(
+                        ApiResponse<FileEntry>.FromResult(
+                            Result<FileEntry>.Failure(new Error(ErrorCodes.Workspace.NotFound, "No workspace exists with that id.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileEntry,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
+                }
+
+                Result<FileEntry> result = await browser
+                    .GetInfoAsync(workspace, relativePath, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsSuccess)
+                {
+                    ctx.Response.ContentLength = result.Value.Size;
+                    ctx.Response.Headers.LastModified = result.Value.LastModified.ToString("R");
+                    return Results.Ok();
+                }
+
+                return Results.Json(
+                    ApiResponse<FileEntry>.FromResult(
+                        Result<FileEntry>.Failure(result.Error),
+                        traceId),
+                    ArcanumJsonContext.Default.ApiResponseFileEntry,
+                    statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+            })
+        .WithName("HeadWorkspaceFileContents");
+
         apiGroup.MapPut(
             "/workspaces/{id}/files/contents",
             async (

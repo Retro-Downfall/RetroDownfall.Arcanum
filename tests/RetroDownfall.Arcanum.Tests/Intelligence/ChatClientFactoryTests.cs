@@ -118,7 +118,9 @@ public sealed class ChatClientFactoryTests
             new TestOptionsMonitor<ArcanumSettings>(settings),
             llama ?? new FakeLlamaServerManager(),
             secretProtector,
-            NullLogger<ChatClientFactory>.Instance);
+            NullLogger<ChatClientFactory>.Instance,
+            NullLogger<LlamaCppRequestAugmentingHandler>.Instance,
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
     }
 
     private sealed class FakeHttpClientFactory : IHttpClientFactory

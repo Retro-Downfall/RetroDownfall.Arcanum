@@ -52,11 +52,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsPinned")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(false);
+
                     b.HasKey("Id");
 
                     b.HasIndex("Role");
 
                     b.HasIndex("SessionId", "CreatedAt");
+
+                    b.HasIndex("SessionId", "IsPinned");
 
                     b.ToTable("Entries", (string)null);
                 });
@@ -91,6 +98,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("ForkedFromSessionId")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("LastSummarizedMessageAt")
                         .HasColumnType("TEXT");
 
@@ -107,6 +117,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.Property<string>("Title")
                         .HasMaxLength(512)
                         .HasColumnType("TEXT");
+
+                    b.Property<decimal>("TotalCostUsd")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 8)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue(0m);
 
                     b.Property<long>("TotalTokensUsed")
                         .ValueGeneratedOnAdd()
@@ -126,6 +142,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.HasIndex("CampaignId");
 
                     b.HasIndex("CreatedAt");
+
+                    b.HasIndex("ForkedFromSessionId");
 
                     b.HasIndex("Status");
 

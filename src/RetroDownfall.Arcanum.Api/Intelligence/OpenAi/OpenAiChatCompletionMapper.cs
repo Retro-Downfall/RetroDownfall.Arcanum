@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
@@ -10,7 +11,7 @@ internal static class OpenAiChatCompletionMapper
 
     private const string ImageReferenceSuffix = "]";
 
-    internal static PingRequest ToPingRequest(OpenAiChatRequest request)
+    internal static PingRequest ToPingRequest(OpenAiChatRequest request, bool forwardClientTools = false)
     {
         List<OpenAiChatMessage> msgs = request.Messages!;
 
@@ -51,7 +52,10 @@ internal static class OpenAiChatCompletionMapper
             PresencePenalty: request.PresencePenalty,
             FrequencyPenalty: request.FrequencyPenalty,
             User: request.User,
-            ParallelToolCalls: request.ParallelToolCalls);
+            ParallelToolCalls: request.ParallelToolCalls,
+            ClientTools: forwardClientTools ? request.Tools : null,
+            ClientToolChoice: forwardClientTools ? request.ToolChoice : null,
+            ForwardClientTools: forwardClientTools);
     }
 
     internal static CoreChatMessage ToCoreChatMessage(OpenAiChatMessage m)

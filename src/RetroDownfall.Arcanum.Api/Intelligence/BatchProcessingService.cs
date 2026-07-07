@@ -35,6 +35,13 @@ internal sealed class BatchProcessingService(
 
     private readonly ConcurrentDictionary<Guid, byte> _inFlight = new();
 
+    // Best-effort early-rejection guard, not a correctness guarantee — there is a race window between
+    // this check and the status reset. The real double-processing guard is the worker's
+    // _inFlight.TryAdd(batch.Id, 0) before processing (BatchProcessingService.cs:131), which prevents
+    // a second worker from picking the same batch up. This endpoint check just gives the operator a
+    // clear 409 instead of a confusing reset-while-running.
+    public bool IsBatchInFlight(Guid batchId) => _inFlight.ContainsKey(batchId);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
 

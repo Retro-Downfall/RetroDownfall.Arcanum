@@ -45,7 +45,9 @@ Compendium decrypts keys on read and re-encrypts them on save, so the file remai
 - **MVVM** via `CommunityToolkit.Mvvm` source generators.
 - **Models**: UI-only types — `ConfigSection`/`SectionDescriptor` (nav) and the `SettingDescriptor` metadata table (see below). The domain model is reused from `RetroDownfall.Arcanum.Core`.
 - **Services**: `ArcanumConfigurationStore`, `ArcanumDataProtectionSecretProtector`, `DialogService`. All filesystem paths are composed with `Path.Combine` and `ArcanumPaths.*`.
-- **ViewModels**: one root `ConfigurationViewModel` plus a `SectionViewModel` per configuration domain (Host, Server, Providers, Intelligence, Mcp, LlamaCpp, Orchestration, Security, CommLink, Storage, Forge, ProvingGrounds, Cli, Scrying). Core records are immutable `init`-only; the VMs expose mutable `[ObservableProperty]` fields and rebuild records via `with` expressions on save. `ProvidersSectionViewModel.ProviderViewModel.Models` is an `ObservableCollection<ModelEntryViewModel>` (name + Scrying `supportsVision` toggle per row), not a chips string — each `Arcanum:Providers[].models` entry is a `ModelEntry`, not a bare string.
+- **ViewModels**: one root `ConfigurationViewModel` plus 14 `SectionViewModel` classes covering the config surface. Several sections group multiple config domains: **Storage** covers Grimoire + Sessions + EventBus + Logs + Workspaces; **Forge** covers Spells + Campaigns + Perception + Prompts + Codex; **Orchestration** covers Daemon + Apprentices + Conclave (top-level only — the nested `Conclave.A2A` sub-record round-trips untouched); **Security** covers Security + Ward. Core records are immutable `init`-only; the VMs expose mutable `[ObservableProperty]` fields and rebuild records via `with` expressions on save. `ProvidersSectionViewModel.ProviderViewModel.Models` is an `ObservableCollection<ModelEntryViewModel>` (name + Scrying `supportsVision` toggle per row), not a chips string — each `Arcanum:Providers[].models` entry is a `ModelEntry`, not a bare string. The nav rail (`ConfigSection` enum) has 17 entries, but `Pricing`, `Resilience`, and `Moderations` fall back to `HostPage` (no VM yet).
+
+  **Settings with descriptors but no UI:** `SettingDescriptorCoverageTests` asserts every `ArcanumSettings` leaf property has a descriptor, but several recent config domains have descriptors and `ArcanumSettings` properties yet are not bound to any `SectionViewModel` — they round-trip via `_snapshot with { ... }` (preserved on save, not editable from the UI): `Embeddings` (all 5 RAG phases, including nested `Codebase` and `Saga` sub-records), `Guardrails` (including nested `AuditLog`), `Pricing` / `Budget`, `Cache`, `StructuredOutput`, `WebBrowsing`, `ClientToolForwarding`, `Resilience`, `Moderations`, `Metrics` (separate from `Host`), `Files`, `Batches`, and the nested `Conclave.A2A` sub-record. Operators must edit these in `arcanum.json` directly until their section VMs are implemented.
 - **Views**: `AppShell` (side nav + content host + sticky `SaveBar`), one `ContentPage` per section, and reusable controls (`LabeledEntry`, `LabeledStepper`, `LabeledToggle`, `ChipsEditor`, `LabeledPicker`, `LabeledColorEntry`, `SaveBar`).
 
 ## SettingDescriptor metadata table
@@ -59,7 +61,7 @@ A single `SettingDescriptor` table (`src/RetroDownfall.Compendium.Ux/Models/Sett
 - `EnumType` — the enum whose `Enum.GetValues()` populates the picker.
 - `ClampName` — the `ArcanumSettingClamps` method name used by the parity test.
 
-Two tests in `tests/RetroDownfall.Compendium.Ux.Tests` guard the table against drift:
+Two tests in `tests/RetroDownfall.Compendium.Tests` guard the table against drift:
 
 - `SettingDescriptorParityTests` — every numeric descriptor's `Min`/`Max` equal the bounds of the corresponding `ArcanumSettingClamps.*` method (verified by invoking the clamp with extreme values).
 - `SettingDescriptorCoverageTests` — reflects over `ArcanumSettings` and every nested record's `init` properties and asserts each has a matching descriptor; also asserts no orphaned descriptors and no duplicate keys.
@@ -100,10 +102,10 @@ The UI supports both System Light and System Dark modes through MAUI `AppThemeBi
 dotnet build RetroDownfall.Arcanum.slnx
 
 # Run the smoke test that verifies read/write round-trip with dp:v1: key interop
-dotnet test tests/RetroDownfall.Compendium.Ux.Tests/RetroDownfall.Compendium.Ux.Tests.csproj
+dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 
 # Run only the descriptor parity/coverage/converter tests
-dotnet test tests/RetroDownfall.Compendium.Ux.Tests/RetroDownfall.Compendium.Ux.Tests.csproj --filter "FullyQualifiedName~SettingDescriptor|FullyQualifiedName~Converter|FullyQualifiedName~ValidationRouting"
+dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj --filter "FullyQualifiedName~SettingDescriptor|FullyQualifiedName~Converter|FullyQualifiedName~ValidationRouting"
 
 # Run the MacCatalyst app (requires Xcode on macOS)
 dotnet run --project src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj -f net10.0-maccatalyst

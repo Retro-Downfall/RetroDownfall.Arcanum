@@ -60,6 +60,21 @@ public interface IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default);
 
+    Task<bool> DeleteEntryAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> SetEntryPinnedAsync(
+        Guid sessionId,
+        Guid entryId,
+        bool pinned,
+        CancellationToken cancellationToken = default);
+
+    Task<int> GetPinnedEntryCountAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default);
+
     Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
         int threshold,
         DateTime idleCutoff,
@@ -74,6 +89,20 @@ public interface IGrimoireRepository
     Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
     Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically increments both <see cref="Session.TotalTokensUsed"/> and <see cref="Session.TotalCostUsd"/> in a single UPDATE.
+    /// </summary>
+    Task IncrementSessionTokensAndCostAsync(
+        Guid sessionId,
+        long totalTokens,
+        decimal costUsd,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the sum of <see cref="Session.TotalCostUsd"/> across all sessions created today (UTC).
+    /// </summary>
+    Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Advances <see cref="Session.LastSummarizedMessageAt"/> to the latest entry timestamp (or UTC now if there are no entries).

@@ -48,6 +48,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     /// </summary>
     public List<IntelligenceToolCallEvent>? NextStreamToolCalls { get; set; }
 
+    public List<string>? NextWarnings { get; set; }
+
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
         CancellationToken cancellationToken = default,
@@ -70,7 +72,11 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
         }
 
         return Task.FromResult(
-            Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)));
+            Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
+            {
+                Warnings = NextWarnings ?? [],
+                PreserveProviderToolCallIds = request.ForwardClientTools,
+            }));
 
     }
 
@@ -122,7 +128,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
                     toolCall.Name,
                     toolCall.ArgumentsJson,
                     null,
-                    toolCall);
+                    toolCall with { PreserveProviderCallId = request.ForwardClientTools });
 
             }
 
@@ -142,7 +148,10 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
             "Complete",
             "0",
             null,
-            FinishReason: NextFinishReason ?? "stop");
+            FinishReason: NextFinishReason ?? "stop")
+        {
+            Warnings = NextWarnings ?? []
+        };
 
     }
 

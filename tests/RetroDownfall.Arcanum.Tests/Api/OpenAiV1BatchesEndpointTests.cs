@@ -2,8 +2,12 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -249,6 +253,74 @@ public sealed class OpenAiV1BatchesEndpointTests
             JsonContentOf(new OpenAiBatchRequest("file-abc", "/v1/chat/completions")));
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+    }
+
+    [SkippableFact]
+    public async Task ResetBatch_StuckInProgressWithInputFileResetsToValidating()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        OpenAiFileObject inputFile = await UploadInputFileAsync(client, "{}");
+
+        OpenAiBatchObject created = await CreateBatchAsync(client, inputFile.Id);
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        IBatchRepository batches = new BatchRepository(db);
+
+        BatchRecord record = await batches.GetByIdAsync(Guid.Parse(created.Id.AsSpan(6)), CancellationToken.None) ?? throw new InvalidOperationException("Batch not found");
+
+        await batches.UpdateStatusAsync(record.Id, BatchStatuses.InProgress, null, record.OutputFileId, record.ErrorFileId, CancellationToken.None);
+
+        HttpResponseMessage response = await client.PostAsync($"/v1/batches/{created.Id}/reset", content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        OpenAiBatchObject? reset = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiBatchObject);
+
+        Assert.NotNull(reset);
+
+        Assert.Equal("validating", reset.Status);
+
+    }
+
+    [SkippableFact]
+    public async Task ResetBatch_ValidatingBatch_Returns409()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        OpenAiFileObject inputFile = await UploadInputFileAsync(client, "{}");
+
+        OpenAiBatchObject created = await CreateBatchAsync(client, inputFile.Id);
+
+        HttpResponseMessage response = await client.PostAsync($"/v1/batches/{created.Id}/reset", content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+    }
+
+    [SkippableFact]
+    public async Task ResetBatch_UnknownId_Returns404()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync($"/v1/batches/batch_{Guid.NewGuid():N}/reset", content: null);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
     }
 

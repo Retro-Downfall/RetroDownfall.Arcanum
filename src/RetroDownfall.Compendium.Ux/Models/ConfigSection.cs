@@ -35,6 +35,8 @@ public enum ConfigSection
 
     Moderations,
 
+    Pricing,
+
 }
 
 public sealed record SectionDescriptor(
@@ -80,6 +82,8 @@ public static class SectionDescriptors
         new(ConfigSection.Scrying, "Scrying", "\ue7ca", "Vision/multimodality image gate"),
 
         new(ConfigSection.Moderations, "Moderations", "\ue7cb", "OpenAI-compatible content moderation"),
+
+        new(ConfigSection.Pricing, "Pricing", "\ue7cc", "Per-model cost tracking and budget"),
 
     ];
 

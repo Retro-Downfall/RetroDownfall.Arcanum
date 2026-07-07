@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS "Sessions" (
     "Summary" TEXT NULL,
     "LastSummarizedMessageAt" TEXT NULL,
     "TotalTokensUsed" INTEGER NOT NULL DEFAULT 0,
+    "TotalCostUsd" NUMERIC NOT NULL DEFAULT 0,
     "UnsummarizedEntryCount" INTEGER NOT NULL DEFAULT 0,
     "ForkedFromSessionId" TEXT NULL
 );

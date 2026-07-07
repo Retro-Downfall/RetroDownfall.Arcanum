@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Api.Spells;
@@ -132,7 +133,8 @@ internal static partial class SpellExecutionEndpoints
                         ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(turn.Error.Code));
             })
-        .WithName("Spell_Execute");
+        .WithName("Spell_Execute")
+        .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(3, ArcanumJsonContext.Default.SpellExecuteRequest));
 
         apiGroup.MapPost(
             "/spells/{name}/execute-stream",
@@ -247,7 +249,8 @@ internal static partial class SpellExecutionEndpoints
                     .WriteStreamAsync(ctx, intelligence, resolvedPing.Value, ctx.RequestAborted)
                     .ConfigureAwait(false);
             })
-        .WithName("Spell_ExecuteStream");
+        .WithName("Spell_ExecuteStream")
+        .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(3, ArcanumJsonContext.Default.SpellExecuteRequest));
 
         apiGroup.MapGet(
             "/spells/{name}/versions",

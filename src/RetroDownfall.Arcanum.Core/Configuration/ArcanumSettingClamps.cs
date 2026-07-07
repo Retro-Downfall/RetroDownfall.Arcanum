@@ -246,6 +246,10 @@ public static class ArcanumSettingClamps
 
     public static int SanctumBreachQueryLimit(int value) => Math.Clamp(value, 1, 1000);
 
+    public static int JsonSchemaMaxDepth(int value) => Math.Clamp(value, 1, 50);
+
+    public static int StructuredOutputMaxValidationRetries(int value) => Math.Clamp(value, 0, 5);
+
     public static int SanctumMaxBreachCount(int value) => Math.Clamp(value, 100, 100_000);
 
     public static int MaxInquisitorsPerTrial(int value) => Math.Clamp(value, 1, 200);
@@ -353,6 +357,34 @@ public static class ArcanumSettingClamps
     public static int HostAuditLogRetentionDays(int value) => Math.Clamp(value, 1, 365);
 
     public static int MaxForkDepth(int value) => Math.Clamp(value, 0, 20);
+
+    public static int SessionMaxPinnedEntries(int value) => Math.Clamp(value, 0, 100);
+
+    public static double PricingInputPer1M(double value) => Math.Clamp(value, 0.0, 1_000_000.0);
+
+    public static double PricingOutputPer1M(double value) => Math.Clamp(value, 0.0, 1_000_000.0);
+
+    public static decimal BudgetDailyLimitUsd(decimal value) => Math.Clamp(value, 0.00m, 1_000_000.00m);
+
+    public static int BudgetAlertThresholdPercent(int value) => Math.Clamp(value, 1, 100);
+
+    public static int CacheMinCacheableTokens(int value) => Math.Clamp(value, 1, 131_072);
+
+    public static int WebBrowsingMaxContentBytes(int value) => Math.Clamp(value, 1_000, 1_000_000);
+
+    public static int WebBrowsingRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 60);
+
+    public static int WebBrowsingMaxLinks(int value) => Math.Clamp(value, 0, 100);
+
+    public static int ClientToolForwardingMaxClientTools(int value) => Math.Clamp(value, 1, 100);
+
+    /// <summary>
+    /// Streaming output-filter mode for guardrails. Only <c>passthrough</c> and <c>buffered</c> are
+    /// recognized; any other value falls back to <c>passthrough</c> so an invalid setting never
+    /// silently changes streaming behavior.
+    /// </summary>
+    public static string GuardrailsStreamingMode(string value) =>
+        value.Equals("buffered", StringComparison.OrdinalIgnoreCase) ? "buffered" : "passthrough";
 
 }
 

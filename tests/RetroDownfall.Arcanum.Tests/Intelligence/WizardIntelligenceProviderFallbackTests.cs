@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -359,6 +360,31 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     private static PingRequest BaseRequest() =>
         new(Prompt: "hello", Model: ModelName, WorkingDirectory: string.Empty, SkipSpellRouting: true, DisableMcpTools: true);
 
+    private static InferenceContextBuilder CreateInferenceContextBuilder(
+        IGrimoireRepository grimoire,
+        ArcanumSettings settings)
+    {
+
+        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
+
+        IContextCompressionService compression = new ContextCompressionService(
+            grimoire,
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            manaPreflight,
+            tokenizerResolver,
+            NullLogger<ContextCompressionService>.Instance);
+
+        return new InferenceContextBuilder(
+            grimoire,
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            NullLogger<InferenceContextBuilder>.Instance,
+            manaPreflight,
+            compression);
+
+    }
+
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
         IProviderHealthTracker? healthTracker,
@@ -416,6 +442,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             factory,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<WizardIntelligenceProvider>.Instance,
+            new FakeHttpClientFactory(),
             grimoire,
             mcp,
             campaignRepository,
@@ -428,12 +455,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 grimoire,
                 new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
                 NullLogger<GrimoireTurnWriter>.Instance),
-            new InferenceContextBuilder(
-                grimoire,
-                new TestOptionsSnapshot<ArcanumSettings>(settings),
-                NullLogger<InferenceContextBuilder>.Instance,
-                new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
-                new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
+            CreateInferenceContextBuilder(grimoire, settings),
             sanctumGuard,
             new ProcessResourceLimiter(),
             new NoopWeaveService(),
@@ -451,7 +473,28 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<SemanticSpellRouter>.Instance),
             CreateUnusedDbContext(),
             new FakeInferenceAuditLogger(),
+            new StructuredOutputValidator(),
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
+            new BudgetMonitor(
+                CreateBudgetMonitorScopeFactory(new FakeGrimoireRepository(), new FakeBudgetAlertRepository()),
+                new FakeCommLinkDispatcher(),
+                new TestOptionsMonitor<ArcanumSettings>(settings),
+                NullLogger<BudgetMonitor>.Instance),
             healthTracker);
+    }
+
+    private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(
+        IGrimoireRepository grimoire,
+        IBudgetAlertRepository budgetAlerts)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddScoped(_ => grimoire);
+
+        services.AddScoped(_ => budgetAlerts);
+
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
     }
 
@@ -775,6 +818,15 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
             Task.FromResult<GrimoireEntryDto?>(null);
 
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
         public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(int threshold, DateTime idleCutoff, CancellationToken cancellationToken = default) =>
             Task.FromResult(new List<Guid>());
 
@@ -786,6 +838,12 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
 
         public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

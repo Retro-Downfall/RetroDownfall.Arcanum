@@ -79,6 +79,8 @@ public static class SettingDescriptors
 
         new("providers.contextWindowLimit", ConfigSection.Providers, "Context window limit", "Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152.", SettingKind.Int, 256, 2_097_152, 128, ClampName: nameof(ArcanumSettingClamps.ContextWindowLimit)),
 
+        new("providers.supportsPromptCaching", ConfigSection.Providers, "Supports prompt caching", "When true (default for OpenAI-compatible providers), Arcanum records arcanum_prompt_cache_tokens metrics when the response usage reports cached prompt tokens. Set false for providers that do not support caching.", SettingKind.Bool),
+
         new("providers.llamaCpp.modelMap", ConfigSection.Providers, "LlamaCpp model map", "Maps model keys to remote http/https URLs for on-demand GGUF download when the model is not yet cached. Only used when type is LlamaCppServer.", SettingKind.Dictionary, Placeholder: "phi3=https://example.com/phi3.gguf"),
 
         // ===== Intelligence =====
@@ -136,6 +138,16 @@ public static class SettingDescriptors
         new("intelligence.maxPlanSteps", ConfigSection.Intelligence, "Max plan steps", "Maximum steps in an Apprentice plan before the plan is rejected.", SettingKind.Int, 1, 200, 1, ClampName: nameof(ArcanumSettingClamps.MaxPlanSteps)),
 
         new("intelligence.inferenceTimeoutSeconds", ConfigSection.Intelligence, "Inference timeout (s)", "Wall-clock timeout for a single inference turn (buffered or streaming), including tool rounds. Default 600.", SettingKind.Int, 5, 3600, 1, ClampName: nameof(ArcanumSettingClamps.InferenceTimeoutSeconds)),
+
+        new("structuredOutput.enabled", ConfigSection.Intelligence, "Structured output enabled", "When true (default), responses requesting response_format: json_schema are validated and retried on failure.", SettingKind.Bool),
+
+        new("structuredOutput.maxValidationRetries", ConfigSection.Intelligence, "Max validation retries", "Maximum retry attempts after a structured-output validation failure. Default 2; clamped 0-5.", SettingKind.Int, 0, 5, 1, ClampName: nameof(ArcanumSettingClamps.StructuredOutputMaxValidationRetries)),
+
+        new("structuredOutput.useProviderConstrainedDecoding", ConfigSection.Intelligence, "Use provider constrained decoding", "When true (default), Arcanum asks the provider to constrain decoding (GBNF for llama.cpp, strict: true for OpenAI-compatible).", SettingKind.Bool),
+
+        new("structuredOutput.strictMode", ConfigSection.Intelligence, "Strict mode", "When true, a response that fails schema validation after all retries is rejected with 400. When false (default), the response is returned with a warning header.", SettingKind.Bool),
+
+        new("structuredOutput.schemaMaxDepth", ConfigSection.Intelligence, "Schema max depth", "Maximum recursion depth for JSON Schema parsing and validation. Default 10; clamped 1-50.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.JsonSchemaMaxDepth)),
 
         new("intelligence.useFastModelForSpellRouting", ConfigSection.Intelligence, "Use fast model for spell routing", "When true, semantic spell-router preflight uses the configured FastModel.", SettingKind.Bool),
 
@@ -322,6 +334,10 @@ public static class SettingDescriptors
         new("sessions.maxEntryContentBytes", ConfigSection.Storage, "Max entry content (bytes)", "Maximum byte size of a single session entry's content.", SettingKind.Int, 1024, 16_777_216, 1024, ClampName: nameof(ArcanumSettingClamps.MaxEntryContentBytes)),
 
         new("sessions.maxForkDepth", ConfigSection.Storage, "Max fork depth", "Maximum number of ancestor forks allowed in a session's lineage chain before further forking is rejected.", SettingKind.Int, 0, 20, 1, ClampName: nameof(ArcanumSettingClamps.MaxForkDepth)),
+
+        new("sessions.allowMemoryManagement", ConfigSection.Storage, "Allow memory management", "When true, enables DELETE /entries, pin/unpin, and compact endpoints for manual conversation memory management.", SettingKind.Bool),
+
+        new("sessions.maxPinnedEntries", ConfigSection.Storage, "Max pinned entries", "Maximum pinned entries per session. Pinned entries are always included in inference context even when compression would otherwise drop them.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.SessionMaxPinnedEntries)),
 
         new("files.maxUploadSizeBytes", ConfigSection.Storage, "Max file upload size (bytes)", "Maximum upload size for POST /v1/files.", SettingKind.Long, 1024 * 1024, 10L * 1024 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.FilesMaxUploadSizeBytes)),
 
@@ -541,6 +557,70 @@ public static class SettingDescriptors
         new("scrying.allowedMimeTypes", ConfigSection.Scrying, "Allowed MIME types", "Allowed image MIME types. Non-matching types are rejected. Only enforced for data: URI images; not enforced for http(s) URLs.", SettingKind.StringArray),
 
         new("moderations.enabled", ConfigSection.Moderations, "Moderations enabled", "When false (default), POST /v1/moderations returns 404. When true, it returns a pass-through result (always unflagged) — Arcanum runs no local or remote moderation model yet.", SettingKind.Bool),
+
+        // ===== Pricing =====
+
+        new("pricing.defaultPricing.inputPer1M", ConfigSection.Pricing, "Default input price (USD / 1M tokens)", "Fallback cost per 1M input tokens when a model has no explicit pricing entry. Default free.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingInputPer1M)),
+
+        new("pricing.defaultPricing.outputPer1M", ConfigSection.Pricing, "Default output price (USD / 1M tokens)", "Fallback cost per 1M output tokens when a model has no explicit pricing entry. Default free.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingOutputPer1M)),
+
+        new("pricing.modelPricing", ConfigSection.Pricing, "Per-model pricing", "Dictionary keyed by model name. Each entry supplies input and output USD cost per 1M tokens.", SettingKind.Dictionary),
+
+        // ===== Budget =====
+
+        new("budget.enabled", ConfigSection.Pricing, "Budget enforcement enabled", "When true, daily USD spend is checked against budget.limitUsd and inference is rejected with 429 once the limit is reached.", SettingKind.Bool),
+
+        new("budget.dailyLimitUsd", ConfigSection.Pricing, "Daily limit (USD)", "Maximum USD spend allowed per UTC day before inference is rejected with Budget.Exceeded (HTTP 429).", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.BudgetDailyLimitUsd)),
+
+        new("budget.alertThresholdPercent", ConfigSection.Pricing, "Alert threshold (%)", "Percentage of the daily limit at which a Comm Link warning is dispatched. Default 80; clamped 1-100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.BudgetAlertThresholdPercent)),
+
+        // ===== Prompt Caching =====
+
+        new("cache.enabled", ConfigSection.Intelligence, "Prompt caching enabled", "When true, Arcanum injects cache_prompt: true on eligible llama.cpp requests (estimated prompt tokens >= MinCacheableTokens) to reduce latency and cost for multi-turn conversations with large system prompts.", SettingKind.Bool),
+
+        new("cache.minCacheableTokens", ConfigSection.Intelligence, "Min cacheable tokens", "Minimum estimated prompt token count before cache_prompt: true is injected. Avoids cache lookup/insert overhead for short prompts. Default 256; clamped 1-131072.", SettingKind.Int, 1, 131_072, 1, ClampName: nameof(ArcanumSettingClamps.CacheMinCacheableTokens)),
+
+        // ===== Web Browsing =====
+
+        new("webBrowsing.enabled", ConfigSection.Intelligence, "Web browsing enabled", "When true, the browse_web built-in tool is advertised and can fetch external URLs subject to the outbound SSRF guard and Sanctum network policy.", SettingKind.Bool),
+
+        new("webBrowsing.maxContentBytes", ConfigSection.Intelligence, "Max browsed content (bytes)", "Maximum response body bytes read from a fetched page. Content beyond this is truncated with a marker. Default 50,000; clamped 1,000 - 1,000,000.", SettingKind.Int, 1_000, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingMaxContentBytes)),
+
+        new("webBrowsing.requestTimeoutSeconds", ConfigSection.Intelligence, "Web browsing timeout (s)", "Wall-clock timeout for the outbound HTTP request made by browse_web. Default 10; clamped 1 - 60.", SettingKind.Int, 1, 60, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds)),
+
+        new("webBrowsing.maxLinks", ConfigSection.Intelligence, "Max browsed links", "Maximum number of absolute links returned by browse_web. Default 10; clamped 0 - 100.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingMaxLinks)),
+
+        // ===== Client Tool Forwarding =====
+
+        new("clientToolForwarding.enabled", ConfigSection.Intelligence, "Client tool forwarding enabled", "When true, client-supplied tools and tool_choice on /v1/chat/completions are forwarded to the resolved provider instead of being rejected. Arcanum does not execute the tools; the client must round-trip the tool_calls response.", SettingKind.Bool),
+
+        new("clientToolForwarding.maxClientTools", ConfigSection.Intelligence, "Max client tools", "Maximum number of client-supplied tools accepted per /v1/chat/completions request. Default 20; clamped 1 - 100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.ClientToolForwardingMaxClientTools)),
+
+        // ===== Content Guardrails =====
+
+        new("guardrails.enabled", ConfigSection.Intelligence, "Content guardrails enabled", "When true, input and output are scanned by the GuardrailsPipeline. PII in input is rejected with Guardrails.PiiDetected; toxicity/topic violations are rejected with Guardrails.Blocked. Default false — a complete pass-through until an operator opts in.", SettingKind.Bool),
+
+        new("guardrails.detectPii", ConfigSection.Intelligence, "Detect PII", "When true (default), email/phone/SSN/credit-card patterns in input messages are detected and the turn is rejected before inference runs.", SettingKind.Bool),
+
+        new("guardrails.blockToxicity", ConfigSection.Intelligence, "Block toxicity", "When true, input or output containing any ToxicityBlocklist keyword is rejected. Default false — an empty blocklist is a no-op even when this is true.", SettingKind.Bool),
+
+        new("guardrails.toxicityBlocklist", ConfigSection.Intelligence, "Toxicity blocklist", "Substring (case-insensitive) blocklist matched against input and output text. Only consulted when BlockToxicity is true. Default empty.", SettingKind.StringArray),
+
+        new("guardrails.allowedTopics", ConfigSection.Intelligence, "Allowed topics", "Optional allow-list of regex patterns. When non-empty, input that fails to match any pattern is rejected. Default empty — all topics allowed.", SettingKind.StringArray),
+
+        new("guardrails.blockedTopics", ConfigSection.Intelligence, "Blocked topics", "Optional block-list of regex patterns. Input or output matching any pattern is rejected. Default empty — no topics blocked.", SettingKind.StringArray),
+
+        new("guardrails.streamingMode", ConfigSection.Intelligence, "Streaming output-filter mode", "passthrough (default) emits tokens in real time and runs the output filter post-hoc (toxic text may reach the client; only persistence is blocked). buffered holds tokens server-side and releases them only after the filter passes, blocking toxic content at the cost of real-time streaming. No-op when Guardrails:Enabled is false.", SettingKind.String),
+
+        // ===== Content Guardrails — Audit log =====
+
+        new("guardrails.auditLog.enabled", ConfigSection.Intelligence, "Guardrails audit log enabled", "Master toggle for the persisted guardrails audit log. When false (default), no violation file I/O occurs and GET /api/guardrails/audit returns an empty list. Ineffective when Guardrails:Enabled is false.", SettingKind.Bool),
+
+        new("guardrails.auditLog.filePath", ConfigSection.Intelligence, "Guardrails audit log file path", "Base path; the directory is where dated guardrails-YYYYMMDD.jsonl files are written (one per UTC day).", SettingKind.Path, Placeholder: "~/.config/arcanum/guardrails.jsonl"),
+
+        new("guardrails.auditLog.maxSizeMb", ConfigSection.Intelligence, "Guardrails audit log max size (MB)", "Soft per-day-file size cap; further writes for that day are dropped once reached. Default 100; clamped 10-1,000.", SettingKind.Int, 10, 1_000, 10, ClampName: nameof(ArcanumSettingClamps.HostAuditLogMaxSizeMb)),
+
+        new("guardrails.auditLog.retentionDays", ConfigSection.Intelligence, "Guardrails audit log retention (days)", "Dated log files older than this are deleted automatically. Default 7; clamped 1-365.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays)),
 
     ];
 

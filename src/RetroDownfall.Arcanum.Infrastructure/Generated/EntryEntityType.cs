@@ -21,10 +21,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Entry",
                 typeof(Entry),
                 baseEntityType,
-                propertyCount: 9,
+                propertyCount: 10,
                 navigationCount: 1,
                 foreignKeyCount: 1,
-                unnamedIndexCount: 2,
+                unnamedIndexCount: 3,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -48,6 +48,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 propertyInfo: typeof(Entry).GetProperty("CreatedAt", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 fieldInfo: typeof(Entry).GetField("<CreatedAt>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
                 sentinel: new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)));
+
+            var isPinned = runtimeEntityType.AddProperty(
+                "IsPinned",
+                typeof(bool),
+                propertyInfo: typeof(Entry).GetProperty("IsPinned", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Entry).GetField("<IsPinned>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                valueGenerated: ValueGenerated.OnAdd,
+                sentinel: false);
+            isPinned.AddAnnotation("Relational:DefaultValue", false);
 
             var modelUsed = runtimeEntityType.AddProperty(
                 "ModelUsed",
@@ -103,6 +112,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
 
             var index0 = runtimeEntityType.AddIndex(
                 new[] { sessionId, createdAt });
+
+            var index1 = runtimeEntityType.AddIndex(
+                new[] { sessionId, isPinned });
 
             return runtimeEntityType;
         }

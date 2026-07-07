@@ -65,9 +65,23 @@ public sealed record ArcanumSettings
 
     public ModerationsSettings Moderations { get; init; } = new();
 
+    public StructuredOutputSettings StructuredOutput { get; init; } = new();
+
     public FilesSettings Files { get; init; } = new();
 
     public BatchesSettings Batches { get; init; } = new();
+
+    public PricingSettings Pricing { get; init; } = new();
+
+    public BudgetSettings Budget { get; init; } = new();
+
+    public CacheSettings Cache { get; init; } = new();
+
+    public WebBrowsingSettings WebBrowsing { get; init; } = new();
+
+    public ClientToolForwardingSettings ClientToolForwarding { get; init; } = new();
+
+    public GuardrailsSettings Guardrails { get; init; } = new();
 
 }
 
