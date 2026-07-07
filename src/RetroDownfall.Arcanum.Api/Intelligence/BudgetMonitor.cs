@@ -100,10 +100,14 @@ public sealed class BudgetMonitor(
         try
         {
 
-            bool alreadyAlerted = await budgetAlerts.HasAlertedTodayAsync(threshold, cancellationToken).ConfigureAwait(false);
+            bool recorded = await budgetAlerts.RecordAlertAsync(threshold, spend, dailyLimit, cancellationToken).ConfigureAwait(false);
 
-            if (alreadyAlerted)
+            if (!recorded)
             {
+
+                logger.LogDebug(
+                    "Budget alert for threshold {Threshold} was already recorded today by another concurrent turn; skipping duplicate notification.",
+                    threshold);
 
                 return;
 
@@ -118,8 +122,6 @@ public sealed class BudgetMonitor(
             CommLinkMessage message = new(title, body, severity, "budget");
 
             await commLink.DispatchAsync(message, cancellationToken).ConfigureAwait(false);
-
-            await budgetAlerts.RecordAlertAsync(threshold, spend, dailyLimit, cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException)

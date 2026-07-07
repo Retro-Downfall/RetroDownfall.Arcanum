@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -91,6 +92,8 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
             byte[] modifiedBody = InjectStrictFlag(bodyBytes, jsonSchemaWrapper);
 
+            originalContent.Dispose();
+
             request.Content = new ByteArrayContent(modifiedBody)
             {
 
@@ -107,12 +110,18 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
                 _logger.LogWarning(
                     "Provider rejected strict structured-output request; retrying once without strict: true.");
 
-                request.Content = new ByteArrayContent(bodyBytes)
+                MediaTypeHeaderValue? contentType = request.Content?.Headers.ContentType;
+
+                request.Content?.Dispose();
+
+                request.Content = new ByteArrayContent(bodyBytes);
+
+                if (contentType is not null)
                 {
 
-                    Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json") }
+                    request.Content.Headers.ContentType = contentType;
 
-                };
+                }
 
                 response.Dispose();
 

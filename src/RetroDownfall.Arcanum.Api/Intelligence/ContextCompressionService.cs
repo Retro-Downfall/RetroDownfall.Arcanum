@@ -116,34 +116,52 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         int tokensAfter = tokensBefore;
 
-        foreach (Entry entry in ordered)
+        if (ordered.Count > 0)
         {
 
-            await _grimoire
-                .DeleteEntryAsync(sessionId, entry.Id, cancellationToken)
-                .ConfigureAwait(false);
+            int tokensToRemove = tokensBefore - effectiveLimit;
 
-            removed++;
+            int estimatedRemoved = 0;
+
+            List<Guid> entryIdsToDelete = [];
+
+            foreach (Entry entry in ordered)
+            {
+
+                estimatedRemoved += Math.Max(1, (entry.Content?.Length ?? 0) / 4);
+
+                entryIdsToDelete.Add(entry.Id);
+
+                if (estimatedRemoved >= tokensToRemove)
+                {
+
+                    break;
+
+                }
+
+            }
+
+            foreach (Guid entryId in entryIdsToDelete)
+            {
+
+                await _grimoire
+                    .DeleteEntryAsync(sessionId, entryId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                removed++;
+
+            }
 
             session = await _grimoire
                 .GetSessionAsync(sessionId, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (session is null)
+            if (session is not null)
             {
 
-                break;
+                messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, string.Empty);
 
-            }
-
-            messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, string.Empty);
-
-            tokensAfter = CountTokens(messages);
-
-            if (tokensAfter <= effectiveLimit)
-            {
-
-                break;
+                tokensAfter = CountTokens(messages);
 
             }
 

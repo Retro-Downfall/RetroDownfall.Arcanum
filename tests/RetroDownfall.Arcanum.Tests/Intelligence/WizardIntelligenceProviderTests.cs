@@ -164,11 +164,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
 
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token);
-
         IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
 
         Assert.Contains("StructuredOutput.ValidationFailed", error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(events, e => e.Type == IntelligenceEventType.Token);
 
         Assert.DoesNotContain(events, e => e.Type == IntelligenceEventType.Result);
 
@@ -3378,6 +3378,52 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public void SetPassphrase(string passphrase) =>
             throw new NotSupportedException("Unused: DbContextOptions is pre-configured so OnConfiguring never reads this.");
+
+    }
+
+    [Fact]
+    public void ResolveCallId_EmptyCallId_GeneratesStableFallbackId()
+    {
+
+        ArcanumSettings settings = DefaultSettings();
+
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            new FakeWard(),
+            new ConfigurableSanctumGuard(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+
+        FunctionCallContent fcc = new(callId: string.Empty, name: "test_tool", arguments: null);
+
+        string id1 = pipeline.ResolveCallId(fcc);
+
+        Assert.False(string.IsNullOrEmpty(id1));
+
+        Assert.NotEqual("test_tool", id1);
+
+        string id2 = pipeline.ResolveCallId(fcc);
+
+        Assert.Equal(id1, id2);
+
+    }
+
+    [Fact]
+    public void ResolveCallId_NonEmptyCallId_ReturnsOriginal()
+    {
+
+        ArcanumSettings settings = DefaultSettings();
+
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            new FakeWard(),
+            new ConfigurableSanctumGuard(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+
+        FunctionCallContent fcc = new(callId: "call_abc123", name: "test_tool", arguments: null);
+
+        string id = pipeline.ResolveCallId(fcc);
+
+        Assert.Equal("call_abc123", id);
 
     }
 

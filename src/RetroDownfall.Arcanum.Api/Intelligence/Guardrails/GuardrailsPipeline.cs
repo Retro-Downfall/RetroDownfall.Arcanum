@@ -85,7 +85,7 @@ public sealed partial class GuardrailsPipeline(
 
         GuardrailsResult result = new(false, [.. violations]);
 
-        await LogViolationAsync(StageInput, result.Violations[0], auditContext, cancellationToken).ConfigureAwait(false);
+        await LogViolationsAsync(StageInput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
 
         Error error = BuildError(result.Violations[0]);
 
@@ -125,7 +125,7 @@ public sealed partial class GuardrailsPipeline(
 
         GuardrailsResult result = new(false, [.. violations]);
 
-        await LogViolationAsync(StageOutput, result.Violations[0], auditContext, cancellationToken).ConfigureAwait(false);
+        await LogViolationsAsync(StageOutput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
 
         Error error = BuildError(result.Violations[0]);
 
@@ -357,7 +357,9 @@ public sealed partial class GuardrailsPipeline(
         try
         {
 
-            Match m = TopicRegexCache.GetOrAdd(pattern, static p => new Regex(p, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, s_matchTimeout)).Match(text);
+            Regex regex = GetTopicRegex(pattern);
+
+            Match m = regex.Match(text);
 
             if (m.Success)
             {
@@ -377,6 +379,56 @@ public sealed partial class GuardrailsPipeline(
         }
 
         return false;
+
+    }
+
+    private static Regex GetTopicRegex(string pattern)
+    {
+
+        if (TopicRegexCache.Count >= MaxTopicRegexCacheSize)
+        {
+
+            TopicRegexCache.Clear();
+
+        }
+
+        return TopicRegexCache.GetOrAdd(
+            pattern,
+            static p => new Regex(p, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, s_matchTimeout));
+
+    }
+
+    private async Task LogViolationsAsync(
+        string stage,
+        IReadOnlyList<GuardrailsViolation> violations,
+        GuardrailAuditContext? auditContext,
+        CancellationToken cancellationToken)
+    {
+
+        const int maxAuditEntriesPerTurn = 10;
+
+        int logged = 0;
+
+        foreach (GuardrailsViolation violation in violations)
+        {
+
+            if (logged >= maxAuditEntriesPerTurn)
+            {
+
+                logger.LogWarning(
+                    "Guardrails detected {ViolationCount} violations for this turn; only the first {MaxAuditEntries} are audited.",
+                    violations.Count,
+                    maxAuditEntriesPerTurn);
+
+                break;
+
+            }
+
+            await LogViolationAsync(stage, violation, auditContext, cancellationToken).ConfigureAwait(false);
+
+            logged++;
+
+        }
 
     }
 
@@ -460,6 +512,8 @@ public sealed partial class GuardrailsPipeline(
 
     private static readonly ConcurrentDictionary<string, Regex> TopicRegexCache = new();
 
+    private const int MaxTopicRegexCacheSize = 100;
+
     [GeneratedRegex(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex EmailPattern();
 
@@ -469,7 +523,7 @@ public sealed partial class GuardrailsPipeline(
     [GeneratedRegex(@"\b(?:\d[ \-]?){13,19}\b", RegexOptions.None)]
     private static partial Regex CreditCardPattern();
 
-    [GeneratedRegex(@"\b(?:\+?\d{1,2}[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b", RegexOptions.None)]
+    [GeneratedRegex(@"(?<!\d)(?:\+?\d{1,2}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)", RegexOptions.None)]
     private static partial Regex PhonePattern();
 
 }

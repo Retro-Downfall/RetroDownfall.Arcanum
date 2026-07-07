@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
@@ -36,6 +37,25 @@ public sealed class ClientForwardedFunction : AIFunction
     public override string Name => _definition.Name;
 
     public override string Description => _definition.Description ?? string.Empty;
+
+    public override IReadOnlyDictionary<string, object?> AdditionalProperties
+    {
+
+        get
+        {
+
+            if (_definition.Strict is true)
+            {
+
+                return new Dictionary<string, object?> { ["strict"] = true };
+
+            }
+
+            return base.AdditionalProperties;
+
+        }
+
+    }
 
     public override JsonElement JsonSchema
     {

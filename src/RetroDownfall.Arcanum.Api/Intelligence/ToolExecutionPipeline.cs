@@ -2,6 +2,8 @@ using System.Buffers;
 
 using System.Globalization;
 
+using System.Runtime.CompilerServices;
+
 using System.Text;
 
 using System.Text.Json;
@@ -111,8 +113,35 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    public static string ResolveCallId(FunctionCallContent fcc) =>
-        string.IsNullOrEmpty(fcc.CallId) ? fcc.Name ?? string.Empty : fcc.CallId;
+    private static readonly ConditionalWeakTable<FunctionCallContent, string> _fallbackCallIds = new();
+
+    public string ResolveCallId(FunctionCallContent fcc)
+    {
+
+        if (!string.IsNullOrEmpty(fcc.CallId))
+        {
+
+            return fcc.CallId;
+
+        }
+
+        if (!_fallbackCallIds.TryGetValue(fcc, out string? fallbackId))
+        {
+
+            fallbackId = Guid.NewGuid().ToString("N");
+
+            _fallbackCallIds.Add(fcc, fallbackId);
+
+            logger.LogWarning(
+                "Provider returned a tool call with an empty id for tool '{ToolName}'; assigning fallback id {FallbackId}.",
+                fcc.Name,
+                fallbackId);
+
+        }
+
+        return fallbackId;
+
+    }
 
     public static string SerializeToolArgumentsForGrimoire(FunctionCallContent fcc)
     {

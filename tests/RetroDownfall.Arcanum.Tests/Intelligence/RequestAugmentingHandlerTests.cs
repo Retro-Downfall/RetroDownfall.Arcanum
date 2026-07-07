@@ -347,6 +347,97 @@ public sealed class RequestAugmentingHandlerTests
 
     }
 
+    [Fact]
+    public async Task LlamaHandler_NonObjectJsonBody_PassesThroughUnchanged()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            StructuredOutput = new StructuredOutputSettings { Enabled = true, UseProviderConstrainedDecoding = true },
+        };
+
+        CapturingHandler capturing = new();
+
+        LlamaCppRequestAugmentingHandler handler = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<LlamaCppRequestAugmentingHandler>.Instance,
+            tokenizerResolver: null)
+        {
+            InnerHandler = capturing,
+        };
+
+        using HttpClient client = new(handler);
+
+        using StringContent content = new("\"just a string\"", Encoding.UTF8, "application/json");
+
+        HttpRequestMessage request = new(HttpMethod.Post, "http://example.com/v1/chat/completions")
+        {
+            Content = content,
+        };
+
+        HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.NotNull(capturing.LastBody);
+
+        string bodyText = Encoding.UTF8.GetString(capturing.LastBody!);
+
+        Assert.Equal("\"just a string\"", bodyText);
+
+    }
+
+    [Fact]
+    public async Task OpenAiHandler_StrictRetry_PreservesContentTypeHeader()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                UseProviderConstrainedDecoding = true,
+            },
+        };
+
+        StrictRejectingHandler rejecting = new();
+
+        OpenAiRequestAugmentingHandler handler = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<OpenAiRequestAugmentingHandler>.Instance)
+        {
+            InnerHandler = rejecting,
+        };
+
+        using HttpClient client = new(handler);
+
+        string json = """
+            {
+              "model": "test-model",
+              "messages": [{"role": "user", "content": "hi"}],
+              "response_format": {"type": "json_schema", "json_schema": {"name": "test", "schema": {"type": "object"}}}
+            }
+            """;
+
+        using StringContent content = new(json, Encoding.UTF8, "application/json");
+
+        HttpRequestMessage request = new(HttpMethod.Post, "http://example.com/v1/chat/completions")
+        {
+            Content = content,
+        };
+
+        HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.NotNull(rejecting.RetryBody);
+
+        Assert.NotNull(rejecting.RetryContentType);
+
+        Assert.Equal("application/json", rejecting.RetryContentType!.MediaType);
+
+    }
+
     private static HttpRequestMessage CreateJsonRequest(string json)
     {
 
@@ -370,6 +461,38 @@ public sealed class RequestAugmentingHandlerTests
         {
 
             LastBody = request.Content is null ? null : await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            return new HttpResponseMessage(HttpStatusCode.OK);
+
+        }
+
+    }
+
+    private sealed class StrictRejectingHandler : DelegatingHandler
+    {
+
+        public byte[]? RetryBody { get; private set; }
+
+        public System.Net.Http.Headers.MediaTypeHeaderValue? RetryContentType { get; private set; }
+
+        private int _callCount;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+
+            _callCount++;
+
+            if (_callCount == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{"error": {"message": "strict mode not supported"}}"""),
+                };
+            }
+
+            RetryBody = request.Content is null ? null : await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            RetryContentType = request.Content?.Headers.ContentType;
 
             return new HttpResponseMessage(HttpStatusCode.OK);
 

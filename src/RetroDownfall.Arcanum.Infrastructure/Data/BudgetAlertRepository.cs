@@ -48,8 +48,8 @@ internal sealed class BudgetAlertRepository(ArcanumDbContext db, ILogger<BudgetA
                 AddParameter(cmd, "@id", Guid.NewGuid().ToString("N"));
                 AddParameter(cmd, "@threshold", threshold);
                 AddParameter(cmd, "@alertedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
-                AddParameter(cmd, "@spendUsd", spendUsd.ToString(CultureInfo.InvariantCulture));
-                AddParameter(cmd, "@dailyLimitUsd", dailyLimitUsd.ToString(CultureInfo.InvariantCulture));
+                AddParameter(cmd, "@spendUsd", spendUsd);
+                AddParameter(cmd, "@dailyLimitUsd", dailyLimitUsd);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 

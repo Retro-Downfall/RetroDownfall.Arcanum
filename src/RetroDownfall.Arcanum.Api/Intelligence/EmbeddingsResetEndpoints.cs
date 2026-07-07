@@ -30,7 +30,7 @@ internal static class EmbeddingsResetEndpoints
                         ApiResponse<EmbeddingsResetResult>.FromResult(
                             Result<EmbeddingsResetResult>.Failure(
                                 new Error(
-                                    ErrorCodes.Validation.InvalidBody,
+                                    ErrorCodes.Embeddings.ConfirmationRequired,
                                     "Resetting embeddings is destructive. Pass ?confirm=true to acknowledge.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult,

@@ -922,7 +922,11 @@ public sealed class GrimoireRepository : IGrimoireRepository
         decimal costUsd,
         CancellationToken cancellationToken = default)
     {
-        if (totalTokens <= 0 && costUsd <= 0)
+        long clampedTokens = Math.Max(0L, totalTokens);
+
+        decimal clampedCost = Math.Max(0m, costUsd);
+
+        if (clampedTokens == 0 && clampedCost == 0)
         {
             return;
         }
@@ -932,41 +936,63 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 .Where(c => c.Id == sessionId)
                 .ExecuteUpdateAsync(
                     s => s
-                        .SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + totalTokens)
-                        .SetProperty(c => c.TotalCostUsd, c => c.TotalCostUsd + costUsd),
+                        .SetProperty(c => c.TotalTokensUsed, c => c.TotalTokensUsed + clampedTokens)
+                        .SetProperty(c => c.TotalCostUsd, c => c.TotalCostUsd + clampedCost),
                     cancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default)
     {
-        string startOfDayText = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-
-        DbConnection connection = _db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
+        return await SqliteBusyRetry.ExecuteAsync(async () =>
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        }
+            DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await using DbCommand cmd = connection.CreateCommand();
+            DateTimeOffset dayStart = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, TimeSpan.Zero);
 
-        cmd.CommandText = """
-            SELECT COALESCE(SUM("TotalCostUsd"), 0)
-            FROM "Sessions"
-            WHERE date("CreatedAt") >= date(@startOfDay);
-            """;
+            DateTimeOffset dayEnd = dayStart.AddDays(1);
 
-        DbParameter parameter = cmd.CreateParameter();
-        parameter.ParameterName = "@startOfDay";
-        parameter.Value = startOfDayText;
-        cmd.Parameters.Add(parameter);
+            DbConnection connection = _db.Database.GetDbConnection();
 
-        object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (connection.State != ConnectionState.Open)
+            {
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            }
 
-        return result is null || result == DBNull.Value
-            ? 0m
-            : Convert.ToDecimal(result, CultureInfo.InvariantCulture);
+            await using DbCommand cmd = connection.CreateCommand();
+
+            cmd.CommandText = """
+                SELECT "TotalCostUsd"
+                FROM "Sessions"
+                WHERE "CreatedAt" >= @dayStart AND "CreatedAt" < @dayEnd;
+                """;
+
+            DbParameter startParameter = cmd.CreateParameter();
+            startParameter.ParameterName = "@dayStart";
+            startParameter.Value = dayStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            cmd.Parameters.Add(startParameter);
+
+            DbParameter endParameter = cmd.CreateParameter();
+            endParameter.ParameterName = "@dayEnd";
+            endParameter.Value = dayEnd.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            cmd.Parameters.Add(endParameter);
+
+            decimal total = 0m;
+
+            await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                object value = reader.GetValue(0);
+
+                if (value != DBNull.Value)
+                {
+                    total += Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+                }
+            }
+
+            return total;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)

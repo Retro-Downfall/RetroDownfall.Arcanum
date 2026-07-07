@@ -74,16 +74,11 @@ public sealed class GuardrailAuditLogger(
                     return;
                 }
 
-                bool isNewFile = !File.Exists(filePath);
-
                 string json = JsonSerializer.Serialize(record, AuditJsonContext.Default.GuardrailAuditRecord);
 
                 await File.AppendAllTextAsync(filePath, json + "\n", cancellationToken).ConfigureAwait(false);
 
-                if (isNewFile)
-                {
-                    SecureFilePermissions.ApplyOwnerOnlyFile(filePath);
-                }
+                SecureFilePermissions.ApplyOwnerOnlyFile(filePath);
 
             }
             finally
@@ -266,13 +261,26 @@ public sealed class GuardrailAuditLogger(
     private void PrepareForNewDate(string directory, string stem, string dateStamp, int retentionDays)
     {
 
+        try
+        {
+
+            Directory.CreateDirectory(directory);
+
+            SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogError(ex, "Failed to create or secure guardrails audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
+
+            return;
+
+        }
+
         _lastPreparedDateStamp = dateStamp;
 
         _sizeCapWarnedForCurrentDate = false;
-
-        Directory.CreateDirectory(directory);
-
-        SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
 
         SweepOldFiles(directory, stem, ArcanumSettingClamps.HostAuditLogRetentionDays(retentionDays));
 

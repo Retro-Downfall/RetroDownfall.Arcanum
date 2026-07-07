@@ -447,6 +447,27 @@ internal static class SessionEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
+                Entry? sinceEntry = null;
+
+                if (since is Guid sinceEntryId)
+                {
+                    sinceEntry = await repo
+                        .GetEntryAsync(id, sinceEntryId, httpContext.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    if (sinceEntry is null)
+                    {
+                        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                        return Results.Json(
+                            ApiResponse<EntryDto>.FromResult(
+                                Result<EntryDto>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "No entry exists with that id in this session.")),
+                                traceId),
+                            ArcanumJsonContext.Default.ApiResponseEntryDto,
+                            statusCode: StatusCodes.Status404NotFound);
+                    }
+                }
+
                 if (!sseGate.TryAcquire(SseEventTypes.Session, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
 
@@ -482,32 +503,8 @@ internal static class SessionEndpoints
                 int replayLimit = ArcanumSettingClamps.SessionStreamReplayLimit(
                     sessionSettings.MaxStreamReplayEntries);
 
-                if (since is Guid sinceEntryId)
+                if (sinceEntry is not null)
                 {
-                    Entry? sinceEntry = await repo
-                        .GetEntryAsync(id, sinceEntryId, httpContext.RequestAborted)
-                        .ConfigureAwait(false);
-
-                    if (sinceEntry is null)
-                    {
-                        await pumpCts.CancelAsync().ConfigureAwait(false);
-
-                        try
-                        {
-                            await pumpTask.ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                        }
-
-                        return Results.Json(
-                            ApiResponse<EntryDto>.FromResult(
-                                Result<EntryDto>.Failure(new Error("Session.EntryNotFound", "No entry exists with that id in this session.")),
-                                Activity.Current?.Id ?? httpContext.TraceIdentifier),
-                            ArcanumJsonContext.Default.ApiResponseEntryDto,
-                            statusCode: StatusCodes.Status404NotFound);
-                    }
-
                     List<Entry> catchUp = await repo
                         .GetEntriesAfterAsync(id, sinceEntry.CreatedAt, sinceEntry.Id, replayLimit, httpContext.RequestAborted)
                         .ConfigureAwait(false);

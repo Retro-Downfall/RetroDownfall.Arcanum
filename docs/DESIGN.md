@@ -1387,7 +1387,7 @@ Histogram bucket boundaries (seconds), shared by every histogram the exporter re
 
 ### 8.23 Error code catalog and HTTP status mapping
 
-Every wire-stable error code is a `public const string` on `RetroDownfall.Arcanum.Core.Primitives.ErrorCodes`, grouped into nested classes by domain. The single authority for turning a code into an HTTP status is `ArcanumErrorMapper.ResolveStatusCode` (Api, `TheForge`); `ResolveStatusCodeDefaultBadRequest` wraps it for endpoints that historically treated any unmapped code as **400** (Apprentice, Campaign, Spell, Prompt, ProvingGrounds routes) while still honoring explicit **500** mappings (`ProvingGrounds.InferenceFailed`, `Hub.Error`) unchanged. Any string not recognized by the `switch` — including `Hub.Error` itself — falls through to the default arm: **HTTP 500**.
+Every wire-stable error code is a `public const string` on `RetroDownfall.Arcanum.Core.Primitives.ErrorCodes`, grouped into nested classes by domain. The single authority for turning a code into an HTTP status is `ArcanumErrorMapper.ResolveStatusCode` (Api, `TheForge`); `ResolveStatusCodeDefaultBadRequest` wraps it for endpoints that historically treated any unmapped code as **400** (Apprentice, Campaign, Spell, Prompt, ProvingGrounds routes) while still honoring every explicit **500** mapping (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`) unchanged. Any string not recognized by the `switch` — including `Hub.Error` itself — falls through to the default arm: **HTTP 500**.
 
 The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` and must be kept in sync with both; `ArcanumErrorMapperTests` unit-tests the mappings for full theory coverage.
 
@@ -1396,6 +1396,7 @@ The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` an
 | `Validation.InvalidPrompt` | 400 | Empty/whitespace prompt on a native `/api` inference route. |
 | `Validation.AttachedFiles` | 400 | Malformed or oversized CLI-attached file payload. |
 | `Validation.InvalidBody` | 400 | Request body failed shape/required-field validation. |
+| `Validation.InvalidQuery` | 400 | Query-parameter validation failure (e.g. guardrails audit endpoint date/range checks). |
 | `Validation.InvalidProviderType` | 400 | Provider `Kind` failed validation. |
 | `Hub.ToolLoop` | 503 | Exceeded `Arcanum:Intelligence:MaxToolInferenceRounds`. |
 | `Hub.Timeout` | 503 | Inference turn exceeded `Arcanum:Intelligence:InferenceTimeoutSeconds`. |
@@ -1407,6 +1408,7 @@ The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` an
 | `Campaign.MaxReached` | 400 | `Arcanum:Campaigns:MaxCampaigns` reached. |
 | `Session.NotFound` | 404 | Session id not found. |
 | `Session.Archived` | 400 | Mutation attempted on an archived (soft-deleted) session. |
+| `Session.InvalidStatus` | 400 | Session status update supplied an unrecognized value (must be `active` or `archived`). |
 | `Session.TooManyEntries` | 400 | `Arcanum:Sessions:MaxEntriesPerSession` reached. |
 | `Session.EntryTooLarge` | 400 | Entry content exceeds `Arcanum:Sessions:MaxEntryContentBytes`. |
 | `Session.EntryNotFound` | 404 | Entry id not found in the requested session. |
@@ -1467,6 +1469,7 @@ The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` an
 | `Prompt.DuplicateVersion` | 400 | Prompt name + version already exists. |
 | `Prompt.InvalidName` | 400 | Prompt name failed validation. |
 | `Prompt.InvalidVersion` | 400 | Prompt version label failed validation. |
+| `Prompt.InvalidRequest` | 400 | Prompt create/update request missing required name and version fields. |
 | `Intelligence.HumanPromptNotFound` | 404 | Human-in-the-loop prompt id not found (already answered or expired). |
 | `Mcp.AmbiguousServer` | 400 | Server name matches more than one connection without a disambiguating `workingDirectory`. |
 | `Mcp.MissingWorkspace` | 400 | Server lookup requires a `workingDirectory` that was not supplied. |
@@ -1490,6 +1493,7 @@ The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` an
 | `Batches.InputFileNotFound` | 404 | `POST /v1/batches` `input_file_id` does not resolve to an uploaded file (§11.21). |
 | `Embeddings.ProviderUnavailable` | 503 | Embedding provider call failed (network, 4xx/5xx, or shape mismatch). |
 | `Embeddings.FeatureDisabled` | 503 | `Arcanum:Embeddings:Enabled` and/or the specific phase flag (`SessionSearchEnabled`, `CodebaseRetrievalEnabled`, `SagaEnabled`) is false. |
+| `Embeddings.ConfirmationRequired` | 400 | `POST /api/embeddings/reset` called without `?confirm=true`; the endpoint is destructive and requires explicit acknowledgement. |
 | `ProvingGrounds.InvalidTrial` | 400 | Missing/invalid target, empty Inquisitors array, or malformed prompt GUID. |
 | `ProvingGrounds.TooManyInquisitors` | 400 | Exceeds `Arcanum:ProvingGrounds:MaxInquisitorsPerTrial`. |
 | `ProvingGrounds.WorkspaceNotAllowed` | 400 | Trial target's workspace is outside configured allowed roots. |
@@ -1513,8 +1517,10 @@ The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` an
 | `ClientTools.InvalidSchema` | 400 | A client-supplied tool is not `type: "function"`, lacks `function.name`, has non-object `function.parameters`, or `tool_choice` is not a recognized shape; public OpenAI code `invalid_schema`. |
 | `Guardrails.PiiDetected` | 400 | Personally-identifiable information (email/phone/SSN/credit-card) was detected in the input and the turn was rejected before inference ran (§8.27). |
 | `Guardrails.Blocked` | 400 | A toxicity-blocklist hit or an allowed/blocked-topic rule matched, rejecting the input or the model's output (§8.27). |
+| `StructuredOutput.ValidationFailed` | 400 | The model's response did not match the requested JSON Schema after all structured-output retries (strict mode); on the OpenAI-compatible `/v1` surface, maps to `code: "validation_failed"`. |
+| `StructuredOutput.SchemaInvalid` | 400 | The supplied JSON Schema for structured output could not be parsed (strict mode); on the OpenAI-compatible `/v1` surface, maps to `code: "invalid_schema"`. |
 
-**Unmapped codes:** any string not listed above (including a caller-supplied literal that never went through `ErrorCodes`) resolves to **500** via the mapper's default arm; `ResolveStatusCodeDefaultBadRequest` downgrades that case to **400** unless it is `ProvingGrounds.InferenceFailed` or `Hub.Error`.
+**Unmapped codes:** any string not listed above (including a caller-supplied literal that never went through `ErrorCodes`) resolves to **500** via the mapper's default arm; `ResolveStatusCodeDefaultBadRequest` downgrades that case to **400** unless the code is explicitly mapped to **500** in `ResolveStatusCode` (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`).
 
 **Ollama note:** the legacy `Ollama.Error` / `Ollama.Pull` / `Ollama.ListModels` codes were removed with `OllamaSharp` (§4.1). Inference failures against an Ollama provider now surface as `Hub.Error` like any other `OpenAICompatible` provider — Ollama has no bespoke error codes.
 
@@ -3191,10 +3197,10 @@ Three Tier-2 intelligence-pipeline capabilities ship together.
 
 ### 22.2 Cost tracking and budget enforcement (`Arcanum:Pricing`, `Arcanum:Budget`)
 
-- **Pricing.** `ModelPricingEntry` (`InputPer1M`, `OutputPer1M` USD) is keyed by model name in `Arcanum:Pricing:ModelPricing`, with `DefaultPricing` (default free) as the fallback. `CostCalculator.CalculateCost` uses `decimal` arithmetic: `(inputTokens * inputPer1M) / 1_000_000m + (outputTokens * outputPer1M) / 1_000_000m` — no integer-division precision loss.
-- **Accumulation.** `GrimoireRepository.IncrementSessionTokensAndCostAsync` performs a single atomic `UPDATE` incrementing both `Sessions.TotalTokensUsed` and `Sessions.TotalCostUsd` (new `NUMERIC NOT NULL DEFAULT 0` column, migration `20260706040000_AddSessionTotalCostUsd`; compiled EF model regenerated). `WizardIntelligenceProvider.TryIncrementSessionTokensAsync` resolves the model's pricing and calls the atomic update.
-- **Budget gate.** `BudgetMonitor` (DI singleton) runs `CheckAsync` before every inference turn (buffered and streaming). It uses `IOptionsMonitor<ArcanumSettings>` for live config and creates a short-lived `AsyncServiceScope` per call to resolve the scoped `IGrimoireRepository` and `IBudgetAlertRepository`, avoiding the captive-dependency anti-pattern. `GetTodaySpendAsync` sums `TotalCostUsd` over sessions created today (raw SQL with SQLite `date()` comparison for UTC-day bucketing). At 100% of `Arcanum:Budget:DailyLimitUsd` it returns `Budget.Exceeded` (mapped to HTTP 429 on the buffered path). At `AlertThresholdPercent` (default 80%) it dispatches a Comm Link warning and records a `BudgetAlerts` row.
-- **Alert deduplication.** The `BudgetAlerts` table (migration `20260706040100_AddBudgetAlerts`) has a unique index `IX_BudgetAlerts_Threshold_Date` on `(Threshold, date(AlertedAt))`; `BudgetAlertRepository.RecordAlertAsync` swallows the resulting `SQLITE_CONSTRAINT` and returns `false` for duplicate inserts. `HasAlertedTodayAsync` is a cheap pre-check.
+- **Pricing.** `ModelPricingEntry` (`InputPer1M`, `OutputPer1M` USD) is keyed by model name in `Arcanum:Pricing:ModelPricing`, with `DefaultPricing` (default free) as the fallback. `CostCalculator.CalculateCost` uses `decimal` arithmetic: `(inputTokens * inputPer1M) / 1_000_000m + (outputTokens * outputPer1M) / 1_000_000m` — no integer-division precision loss. **Cached-token billing:** `usage.PromptTokens` already includes cached tokens (per the `Microsoft.Extensions.AI.Abstractions` contract); `WizardIntelligenceProvider.TryIncrementSessionTokensAsync` subtracts `usage.CachedTokens` before pricing so cached prompt tokens are billed at zero until a dedicated `CachedPer1M` rate is introduced.
+- **Accumulation.** `GrimoireRepository.IncrementSessionTokensAndCostAsync` performs a single atomic `UPDATE` incrementing both `Sessions.TotalTokensUsed` and `Sessions.TotalCostUsd` (new `NUMERIC NOT NULL DEFAULT 0` column, precision 18 scale 8, migration `20260706040000_AddSessionTotalCostUsd`; compiled EF model regenerated). Negative inputs are clamped to zero before the increment so a buggy caller cannot decrement totals. `WizardIntelligenceProvider.TryIncrementSessionTokensAsync` resolves the model's pricing and calls the atomic update.
+- **Budget gate.** `BudgetMonitor` (DI singleton) runs `CheckAsync` before every inference turn (buffered and streaming). It uses `IOptionsMonitor<ArcanumSettings>` for live config and creates a short-lived `AsyncServiceScope` per call to resolve the scoped `IGrimoireRepository` and `IBudgetAlertRepository`, avoiding the captive-dependency anti-pattern. `GetTodaySpendAsync` reads `TotalCostUsd` rows for sessions created today using a **sargable half-open range** (`CreatedAt >= @dayStart AND CreatedAt < @dayEnd`, parameters bound as `yyyy-MM-dd` text) and sums them in C# with `decimal` to avoid SQLite `REAL` promotion precision loss; the read is wrapped in `SqliteBusyRetry`. At 100% of `Arcanum:Budget:DailyLimitUsd` it returns `Budget.Exceeded` (mapped to HTTP 429 on the buffered path). At `AlertThresholdPercent` (default 80%) it dispatches a Comm Link warning and records a `BudgetAlerts` row.
+- **Alert deduplication.** The `BudgetAlerts` table (migration `20260706040100_AddBudgetAlerts`) has a unique index `IX_BudgetAlerts_Threshold_Date` on `(Threshold, date(AlertedAt))`; `BudgetAlertRepository.RecordAlertAsync` swallows the resulting `SQLITE_CONSTRAINT` and returns `false` for duplicate inserts. `BudgetMonitor.TryDispatchAlertAsync` **inserts the alert row before dispatching the Comm Link notification**, so the unique index is the dedup authority under concurrent turns — the previous check-then-dispatch race that sent duplicate notifications is eliminated. `HasAlertedTodayAsync` is retained as a cheap pre-check but is no longer the sole dedup gate. Decimal columns (`SpendUsd`, `DailyLimitUsd`) are bound as `decimal`, not strings.
 - **Endpoint.** `GET /api/budget` returns `BudgetSummaryDto` (enabled, daily limit, today's spend, remaining, spent percent, alert threshold). When budget is disabled, `TodaySpendUsd` is reported as `0` to avoid a Grimoire read.
 
 ### 22.3 Prompt caching (`Arcanum:Cache`)

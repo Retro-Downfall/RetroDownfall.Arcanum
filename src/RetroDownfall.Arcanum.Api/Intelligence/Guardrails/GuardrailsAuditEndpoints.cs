@@ -100,7 +100,7 @@ internal static class GuardrailsAuditEndpoints
     {
 
         Result<GuardrailAuditRecord[]> invalid = Result<GuardrailAuditRecord[]>.Failure(
-            new Error(ErrorCodes.Validation.InvalidBody, message));
+            new Error(ErrorCodes.Validation.InvalidQuery, message));
 
         return Results.Json(
             ApiResponse<GuardrailAuditRecord[]>.FromResult(invalid, traceId),

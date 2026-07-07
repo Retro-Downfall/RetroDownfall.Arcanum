@@ -111,12 +111,30 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
+        if (record.OutputFileId is { } outputFileId)
+        {
+
+            BatchProcessingService.TryDeleteFile(UploadedFileStorage.ResolvePath(outputFileId));
+
+            await files.DeleteAsync(outputFileId, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        if (record.ErrorFileId is { } errorFileId)
+        {
+
+            BatchProcessingService.TryDeleteFile(UploadedFileStorage.ResolvePath(errorFileId));
+
+            await files.DeleteAsync(errorFileId, cancellationToken).ConfigureAwait(false);
+
+        }
+
         await batches.UpdateStatusAsync(
             batchId,
             BatchStatuses.Validating,
             null,
-            record.OutputFileId,
-            record.ErrorFileId,
+            null,
+            null,
             cancellationToken).ConfigureAwait(false);
 
         record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false) ?? record;

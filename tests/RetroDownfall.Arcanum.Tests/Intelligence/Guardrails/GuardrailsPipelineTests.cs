@@ -329,6 +329,64 @@ public sealed class GuardrailsPipelineTests
 
     }
 
+    [Fact]
+    public async Task FilterInputAsync_MultipleViolations_AuditsAllUpToCap()
+    {
+
+        FakeGuardrailAuditLogger audit = new();
+
+        GuardrailsPipeline pipeline = CreatePipeline(
+            new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = true,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+            },
+            audit);
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", "alice@example.com and bob@evil.org bad-word")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.True(audit.Records.Count >= 2);
+
+    }
+
+    [Fact]
+    public async Task FilterInputAsync_PhoneWithMismatchedParens_StillDetectsPhoneNumber()
+    {
+
+        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", "Call (555-555-5555 today.")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task FilterInputAsync_PhoneWithBalancedParens_Matches()
+    {
+
+        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", "Call (555) 555-5555 today.")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+
+    }
+
     private static GuardrailsPipeline CreatePipeline(GuardrailsSettings guardrails, FakeGuardrailAuditLogger? audit = null)
     {
 

@@ -287,14 +287,14 @@ public static class JsonSchemaHelper
         if (!element.TryGetProperty("type", out JsonElement typeElement))
         {
 
-            return ("object", false);
+            return (string.Empty, false);
 
         }
 
         if (typeElement.ValueKind == JsonValueKind.String)
         {
 
-            string value = typeElement.GetString()?.ToLowerInvariant() ?? "object";
+            string value = typeElement.GetString()?.ToLowerInvariant() ?? string.Empty;
 
             return (value, false);
 
@@ -365,6 +365,22 @@ public static class JsonSchemaHelper
 
         }
 
+        if (element.ValueKind == JsonValueKind.Null && schema.IsNullable)
+        {
+
+            return;
+
+        }
+
+        if (!string.IsNullOrEmpty(schema.Type) && !IsTypeMatch(element, schema.Type))
+        {
+
+            errors.Add($"{path}: expected type '{schema.Type}' but got '{GetJsonValueKindName(element.ValueKind)}'.");
+
+            return;
+
+        }
+
         if (schema.Enum.Count > 0)
         {
 
@@ -381,22 +397,6 @@ public static class JsonSchemaHelper
             }
 
             errors.Add($"{path}: value does not match any enum value.");
-
-            return;
-
-        }
-
-        if (element.ValueKind == JsonValueKind.Null && schema.IsNullable)
-        {
-
-            return;
-
-        }
-
-        if (!IsTypeMatch(element, schema.Type))
-        {
-
-            errors.Add($"{path}: expected type '{schema.Type}' but got '{GetJsonValueKindName(element.ValueKind)}'.");
 
             return;
 
@@ -544,7 +544,7 @@ public static class JsonSchemaHelper
         {
 
             JsonValueKind.String => left.GetString() == right.GetString(),
-            JsonValueKind.Number => left.GetRawText() == right.GetRawText(),
+            JsonValueKind.Number => left.GetDecimal() == right.GetDecimal(),
             JsonValueKind.True or JsonValueKind.False => true,
             JsonValueKind.Null => true,
             _ => left.GetRawText() == right.GetRawText()

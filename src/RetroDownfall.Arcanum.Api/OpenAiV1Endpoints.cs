@@ -249,7 +249,9 @@ internal static partial class OpenAiV1Endpoints
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
-            Result toolsValidation = ValidateClientTools(body.Tools, settings.Value.ClientToolForwarding.MaxClientTools);
+            int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(settings.Value.StructuredOutput.SchemaMaxDepth);
+
+            Result toolsValidation = ValidateClientTools(body.Tools, settings.Value.ClientToolForwarding.MaxClientTools, schemaMaxDepth);
 
             if (toolsValidation.IsFailure)
             {
@@ -265,16 +267,6 @@ internal static partial class OpenAiV1Endpoints
         if (body.ToolChoice is { } toolChoice
             && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
         {
-            if (!settings.Value.ClientToolForwarding.Enabled)
-            {
-                return JsonError(
-                    "Client-supplied `tool_choice` is not supported. Arcanum uses its own server-side MCP toolset.",
-                    "invalid_request_error",
-                    code: "unsupported_parameter",
-                    param: "tool_choice",
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
             if (!IsValidClientToolChoice(toolChoice))
             {
                 return JsonError(
@@ -283,6 +275,40 @@ internal static partial class OpenAiV1Endpoints
                     code: "invalid_schema",
                     param: "tool_choice",
                     statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (!settings.Value.ClientToolForwarding.Enabled)
+            {
+                if (toolChoice.ValueKind == JsonValueKind.Object)
+                {
+                    return JsonError(
+                        "Client-supplied `tool_choice` named function is not supported. Arcanum uses its own server-side MCP toolset.",
+                        "invalid_request_error",
+                        code: "unsupported_parameter",
+                        param: "tool_choice",
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+            }
+            else if (toolChoice.ValueKind == JsonValueKind.Object
+                && body.Tools is { Length: > 0 } tools)
+            {
+                string? functionName = toolChoice.TryGetProperty("function", out JsonElement functionElement)
+                    && functionElement.TryGetProperty("name", out JsonElement nameElement)
+                    ? nameElement.GetString()
+                    : null;
+
+                bool found = functionName is not null
+                    && tools.Any(t => string.Equals(t.Function?.Name, functionName, StringComparison.Ordinal));
+
+                if (!found)
+                {
+                    return JsonError(
+                        $"Client-supplied `tool_choice` references unknown function '{functionName}'; it must match one of the supplied tools.",
+                        "invalid_request_error",
+                        code: "invalid_value",
+                        param: "tool_choice",
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
             }
         }
 
@@ -415,10 +441,12 @@ internal static partial class OpenAiV1Endpoints
 
         if (result.IsFailure)
         {
+            (string errorType, string errorCode) = MapPublicOpenAiError(result.Error.Code);
+
             return JsonError(
                 ResolvePublicInferenceFailureMessage(result.Error.Code),
-                "api_error",
-                code: MapPublicOpenAiErrorCode(result.Error.Code),
+                errorType,
+                code: errorCode,
                 param: null,
                 statusCode: ResolveOpenAiInferenceFailureStatusCode(result.Error.Code));
         }
@@ -1112,22 +1140,27 @@ internal static partial class OpenAiV1Endpoints
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiErrorResponse, statusCode: statusCode);
     }
 
-    private static string MapPublicOpenAiErrorCode(string internalCode) =>
+    private static (string Type, string Code) MapPublicOpenAiError(string internalCode) =>
         internalCode switch
         {
-            ErrorCodes.Hub.Model => "model_not_found",
-            ErrorCodes.Validation.InvalidPrompt => "missing_required_parameter",
-            ErrorCodes.Validation.AttachedFiles => "invalid_value",
-            ErrorCodes.Hub.ToolLoop => "server_error",
-            ErrorCodes.Hub.Timeout => "server_error",
-            ErrorCodes.Hub.Error => "inference_failed",
-            ErrorCodes.Scrying.VisionNotSupported => "vision_not_supported",
-            ErrorCodes.Scrying.FeatureDisabled => "feature_disabled",
+            ErrorCodes.Hub.Model => ("api_error", "model_not_found"),
+            ErrorCodes.Validation.InvalidPrompt => ("api_error", "missing_required_parameter"),
+            ErrorCodes.Validation.AttachedFiles => ("api_error", "invalid_value"),
+            ErrorCodes.Hub.ToolLoop => ("api_error", "server_error"),
+            ErrorCodes.Hub.Timeout => ("api_error", "server_error"),
+            ErrorCodes.Hub.Error => ("api_error", "inference_failed"),
+            ErrorCodes.Scrying.VisionNotSupported => ("api_error", "vision_not_supported"),
+            ErrorCodes.Scrying.FeatureDisabled => ("api_error", "feature_disabled"),
             ErrorCodes.Scrying.TooManyImages
                 or ErrorCodes.Scrying.UnsupportedMimeType
-                or ErrorCodes.Scrying.ImageTooLarge => MapScryingOpenAiErrorCode(internalCode),
-            _ => "inference_failed",
+                or ErrorCodes.Scrying.ImageTooLarge => ("api_error", MapScryingOpenAiErrorCode(internalCode)),
+            ErrorCodes.StructuredOutput.SchemaInvalid => ("invalid_request_error", "invalid_schema"),
+            ErrorCodes.StructuredOutput.ValidationFailed => ("invalid_request_error", "validation_failed"),
+            _ => ("api_error", "inference_failed"),
         };
+
+    private static string MapPublicOpenAiErrorCode(string internalCode) =>
+        MapPublicOpenAiError(internalCode).Code;
 
     private static string ResolvePublicInferenceFailureMessage(string internalCode) =>
         internalCode switch
@@ -1138,6 +1171,8 @@ internal static partial class OpenAiV1Endpoints
             ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
             ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
             ErrorCodes.Hub.Timeout => "Inference timed out.",
+            ErrorCodes.StructuredOutput.SchemaInvalid => "The supplied JSON schema for structured output is invalid.",
+            ErrorCodes.StructuredOutput.ValidationFailed => "The model response did not match the requested JSON schema.",
             _ => "Inference failed. See server logs for details.",
         };
 
@@ -1185,7 +1220,7 @@ internal static partial class OpenAiV1Endpoints
 
     }
 
-    private static Result ValidateClientTools(OpenAiToolDefinition[] tools, int configuredMaxClientTools)
+    private static Result ValidateClientTools(OpenAiToolDefinition[] tools, int configuredMaxClientTools, int schemaMaxDepth)
     {
 
         int maxClientTools = ArcanumSettingClamps.ClientToolForwardingMaxClientTools(configuredMaxClientTools);
@@ -1198,6 +1233,8 @@ internal static partial class OpenAiV1Endpoints
                 $"Client-supplied tools exceed the maximum of {maxClientTools}."));
 
         }
+
+        HashSet<string> seenNames = new(StringComparer.Ordinal);
 
         for (int i = 0; i < tools.Length; i++)
         {
@@ -1222,17 +1259,43 @@ internal static partial class OpenAiV1Endpoints
 
             }
 
-            JsonElement? parameters = tool.Function?.Parameters;
-
-            if (parameters is { } parametersElement
-                && parametersElement.ValueKind is not JsonValueKind.Null
-                && parametersElement.ValueKind is not JsonValueKind.Undefined
-                && parametersElement.ValueKind is not JsonValueKind.Object)
+            if (!seenNames.Add(tool.Function.Name))
             {
 
                 return Result.Failure(new Error(
                     ErrorCodes.ClientTools.InvalidSchema,
-                    $"tools[{i}].function.parameters must be a valid JSON Schema object."));
+                    $"Duplicate tool function name '{tool.Function.Name}'."));
+
+            }
+
+            JsonElement? parameters = tool.Function?.Parameters;
+
+            if (parameters is { } parametersElement
+                && parametersElement.ValueKind is not JsonValueKind.Null
+                && parametersElement.ValueKind is not JsonValueKind.Undefined)
+            {
+
+                if (parametersElement.ValueKind != JsonValueKind.Object)
+                {
+
+                    return Result.Failure(new Error(
+                        ErrorCodes.ClientTools.InvalidSchema,
+                        $"tools[{i}].function.parameters must be a valid JSON Schema object."));
+
+                }
+
+                using JsonDocument parametersDocument = JsonDocument.Parse(parametersElement.GetRawText());
+
+                Result<JsonSchemaDefinition> parseResult = JsonSchemaHelper.Parse(parametersDocument, schemaMaxDepth);
+
+                if (parseResult.IsFailure)
+                {
+
+                    return Result.Failure(new Error(
+                        ErrorCodes.ClientTools.InvalidSchema,
+                        $"tools[{i}].function.parameters is not a valid JSON Schema: {parseResult.Error.Message}"));
+
+                }
 
             }
 

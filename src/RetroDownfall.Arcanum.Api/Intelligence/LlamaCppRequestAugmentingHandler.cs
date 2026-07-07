@@ -158,6 +158,8 @@ public sealed class LlamaCppRequestAugmentingHandler : DelegatingHandler
 
             byte[] modifiedBody = AugmentBody(bodyBytes, grammar, injectCachePrompt);
 
+            originalContent.Dispose();
+
             request.Content = new ByteArrayContent(modifiedBody)
             {
 
@@ -373,13 +375,18 @@ public sealed class LlamaCppRequestAugmentingHandler : DelegatingHandler
     private static byte[] AugmentBody(ReadOnlySpan<byte> originalBody, string? grammar, bool injectCachePrompt)
     {
 
+        using JsonDocument document = JsonDocument.Parse(Encoding.UTF8.GetString(originalBody));
+
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return originalBody.ToArray();
+        }
+
         using MemoryStream output = new();
 
         using Utf8JsonWriter writer = new(output);
 
         writer.WriteStartObject();
-
-        using JsonDocument document = JsonDocument.Parse(Encoding.UTF8.GetString(originalBody));
 
         bool wroteGrammar = false;
 

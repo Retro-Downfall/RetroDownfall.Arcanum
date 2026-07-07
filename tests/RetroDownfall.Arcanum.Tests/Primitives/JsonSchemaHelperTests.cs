@@ -296,6 +296,76 @@ public sealed class JsonSchemaHelperTests
     }
 
     [Fact]
+    public void Validate_EnumWithNonStringType_StillValidatesEnum()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "enum": [1, 2, 3]
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        ValidationResult valid = JsonSchemaHelper.Validate("2", parsed.Value);
+
+        Assert.True(valid.IsValid);
+
+        ValidationResult invalid = JsonSchemaHelper.Validate("99", parsed.Value);
+
+        Assert.False(invalid.IsValid);
+
+    }
+
+    [Fact]
+    public void Validate_NumericEnumEquality_HandlesDecimalPrecision()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "enum": [1.0, 2.5]
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        ValidationResult result = JsonSchemaHelper.Validate("1", parsed.Value);
+
+        Assert.True(result.IsValid);
+
+    }
+
+    [Fact]
+    public void Validate_MissingType_AcceptsAnyValue()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "properties": {
+                "value": {}
+              }
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        ValidationResult stringResult = JsonSchemaHelper.Validate("""{"value": "anything"}""", parsed.Value);
+
+        Assert.True(stringResult.IsValid);
+
+        ValidationResult numberResult = JsonSchemaHelper.Validate("""{"value": 42}""", parsed.Value);
+
+        Assert.True(numberResult.IsValid);
+
+    }
+
+    [Fact]
     public void Validate_PayloadExceedsMaxDepth_ReturnsInvalid()
     {
 

@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using HtmlAgilityPack;
 using Microsoft.Extensions.AI;
@@ -148,17 +149,15 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            string html = await ReadCappedStringAsync(stream, maxContentBytes, cancellationToken).ConfigureAwait(false);
+            Encoding encoding = GetEncodingFromContentType(response.Content.Headers.ContentType);
+
+            string html = await ReadCappedStringAsync(stream, maxContentBytes, encoding, cancellationToken).ConfigureAwait(false);
 
             BrowseWebResult result = Extract(html, targetUri, maxLinks);
 
             return JsonSerializer.Serialize(result, ArcanumJsonContext.Default.BrowseWebResult);
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (TimeoutException)
+        catch (OperationCanceledException ex) when (ex.InnerException is TimeoutException)
         {
             return JsonSerializer.Serialize(
                 new BrowseWebResult
@@ -168,6 +167,10 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                     Links = [],
                 },
                 ArcanumJsonContext.Default.BrowseWebResult);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (HttpRequestException ex) when (IsBlockedByOutboundUrlGuard(ex.Message))
         {
@@ -286,6 +289,11 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         foreach (HtmlNode anchor in doc.DocumentNode.SelectNodes("//a[@href]") ?? Enumerable.Empty<HtmlNode>())
         {
+            if (!ShouldRenderNode(anchor))
+            {
+                continue;
+            }
+
             string href = anchor.GetAttributeValue("href", string.Empty);
 
             if (string.IsNullOrWhiteSpace(href))
@@ -321,13 +329,32 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         return links;
     }
 
-    private static async Task<string> ReadCappedStringAsync(Stream stream, int maxBytes, CancellationToken cancellationToken)
+    private static Encoding GetEncodingFromContentType(MediaTypeHeaderValue? contentType)
+    {
+        if (contentType?.CharSet is not null)
+        {
+            try
+            {
+                return Encoding.GetEncoding(contentType.CharSet);
+            }
+            catch (ArgumentException)
+            {
+                // Unknown or malformed charset; fall back to UTF-8.
+            }
+        }
+
+        return Encoding.UTF8;
+    }
+
+    private static async Task<string> ReadCappedStringAsync(Stream stream, int maxBytes, Encoding encoding, CancellationToken cancellationToken)
     {
         byte[] buffer = new byte[8192];
 
         MemoryStream memory = new();
 
         int totalBytesRead = 0;
+
+        bool moreAvailable = false;
 
         while (totalBytesRead < maxBytes)
         {
@@ -347,13 +374,26 @@ public sealed class ArcanumBrowseWebTool : AIFunction
             totalBytesRead += bytesRead;
         }
 
+        if (totalBytesRead == maxBytes)
+        {
+
+            // Probe one extra byte to distinguish exact-fit from genuine truncation.
+
+            byte[] probe = new byte[1];
+
+            int probeRead = await stream.ReadAsync(probe.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+            moreAvailable = probeRead > 0;
+
+        }
+
         memory.Position = 0;
 
-        using StreamReader reader = new(memory);
+        using StreamReader reader = new(memory, encoding);
 
         string text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
 
-        if (totalBytesRead >= maxBytes && !text.EndsWith("...(truncated)", StringComparison.Ordinal))
+        if (moreAvailable && !text.EndsWith("...(truncated)", StringComparison.Ordinal))
         {
             text += "...(truncated)";
         }

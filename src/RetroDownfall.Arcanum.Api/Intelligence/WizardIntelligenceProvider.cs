@@ -423,7 +423,7 @@ public sealed class WizardIntelligenceProvider(
                     foreach (FunctionCallContent fcc in calls)
                     {
                         (observedToolCalls ??= []).Add(new PromptToolCall(
-                            ToolExecutionPipeline.ResolveCallId(fcc),
+                            toolExecutionPipeline.ResolveCallId(fcc),
                             fcc.Name ?? string.Empty,
                             ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc)));
                     }
@@ -1164,7 +1164,12 @@ public sealed class WizardIntelligenceProvider(
         string guardrailsStreamingMode = ArcanumSettingClamps.GuardrailsStreamingMode(
             settings.Value.Guardrails.StreamingMode);
 
-        bool bufferTokens = guardrailsStreamingMode == "buffered" && settings.Value.Guardrails.Enabled;
+        bool guardrailsOutputActive = settings.Value.Guardrails.Enabled
+            && (settings.Value.Guardrails.BlockToxicity
+                || settings.Value.Guardrails.BlockedTopics is { Length: > 0 });
+
+        bool bufferTokens = (guardrailsStreamingMode == "buffered" && guardrailsOutputActive)
+            || (request.ResponseFormat is "json_schema" && settings.Value.StructuredOutput.Enabled && settings.Value.StructuredOutput.StrictMode);
 
         while (true)
         {
@@ -1323,7 +1328,7 @@ public sealed class WizardIntelligenceProvider(
 
                         string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
 
-                        string callId = ToolExecutionPipeline.ResolveCallId(fcc);
+                        string callId = toolExecutionPipeline.ResolveCallId(fcc);
 
                         yield return new IntelligenceEvent(
                             IntelligenceEventType.ToolCall,
@@ -1361,7 +1366,7 @@ public sealed class WizardIntelligenceProvider(
 
                     string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
 
-                    string callId = ToolExecutionPipeline.ResolveCallId(fcc);
+                    string callId = toolExecutionPipeline.ResolveCallId(fcc);
 
                     yield return new IntelligenceEvent(
                         IntelligenceEventType.ToolCall,
@@ -1475,16 +1480,6 @@ public sealed class WizardIntelligenceProvider(
             yield break;
         }
 
-        if (bufferTokens)
-        {
-
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Token,
-                string.Empty,
-                finalText);
-
-        }
-
         IReadOnlyList<string> streamWarnings = [];
 
         if (request.ResponseFormat is "json_schema"
@@ -1553,6 +1548,16 @@ public sealed class WizardIntelligenceProvider(
                 streamWarnings = ["invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message];
 
             }
+
+        }
+
+        if (bufferTokens)
+        {
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Token,
+                string.Empty,
+                finalText);
 
         }
 
@@ -2883,7 +2888,9 @@ public sealed class WizardIntelligenceProvider(
                 pricing = explicitPricing;
             }
 
-            decimal costUsd = CostCalculator.CalculateCost(usage.PromptTokens, usage.CompletionTokens, pricing);
+            long billablePromptTokens = Math.Max(0L, usage.PromptTokens - usage.CachedTokens);
+
+            decimal costUsd = CostCalculator.CalculateCost(billablePromptTokens, usage.CompletionTokens, pricing);
 
             await grimoire
                 .IncrementSessionTokensAndCostAsync(sessionId.Value, usage.TotalTokens, costUsd, cancellationToken)

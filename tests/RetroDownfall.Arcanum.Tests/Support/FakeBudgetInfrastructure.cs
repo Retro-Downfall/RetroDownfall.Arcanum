@@ -25,9 +25,9 @@ internal sealed class FakeBudgetAlertRepository : IBudgetAlertRepository
 
     public Task<bool> RecordAlertAsync(int threshold, decimal spendUsd, decimal dailyLimitUsd, CancellationToken cancellationToken = default)
     {
-        AlertedThresholdsToday.Add(threshold);
+        bool added = AlertedThresholdsToday.Add(threshold);
 
-        return Task.FromResult(true);
+        return Task.FromResult(added);
     }
 
     public Task<bool> HasAlertedTodayAsync(int threshold, CancellationToken cancellationToken = default)

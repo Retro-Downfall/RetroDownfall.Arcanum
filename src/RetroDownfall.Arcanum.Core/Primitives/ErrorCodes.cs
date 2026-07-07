@@ -17,6 +17,8 @@ public static class ErrorCodes
 
         public const string InvalidBody = "Validation.InvalidBody";
 
+        public const string InvalidQuery = "Validation.InvalidQuery";
+
         public const string InvalidProviderType = "Validation.InvalidProviderType";
 
     }
@@ -343,6 +345,8 @@ public static class ErrorCodes
         public const string ProviderUnavailable = "Embeddings.ProviderUnavailable";
 
         public const string FeatureDisabled = "Embeddings.FeatureDisabled";
+
+        public const string ConfirmationRequired = "Embeddings.ConfirmationRequired";
 
     }
 

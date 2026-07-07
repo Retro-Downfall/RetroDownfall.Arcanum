@@ -61,6 +61,25 @@ Grimoire DB tests use `[SkippableFact]` and skip when `e_sqlcipher` is unavailab
 
 One blank line after each C# statement in test code (matches production style).
 
+## Bug-squash coverage (changeset review)
+
+The following test classes gained cases directly from the bug-squash plan. Each is named for the fix it locks down; see the plan in `docs/` for the per-bug rationale.
+
+| Test class | Coverage added |
+|------------|----------------|
+| `BudgetMonitorTests` | Singleton captive-dependency fix (`IOptionsMonitor` + `IServiceScopeFactory`); alert-record-before-dispatch ordering; duplicate-alert suppression via `RecordAlertAsync` returning `false`. |
+| `GuardrailsPipelineTests` / `GuardrailAuditLoggerTests` | Async audit-log observation (no fire-and-forget); multiple-violation auditing; phone regex balanced-parens enforcement; topic-regex cache bound. |
+| `JsonSchemaHelperTests` / `StructuredOutputValidatorTests` | Nullable type-array validation; GBNF rule-name collision; enum short-circuit now requires `type: "string"` or absent; numeric enum equality via `decimal`. |
+| `ArcanumErrorMapperTests` | New codes (`Prompt.InvalidRequest`, `Session.InvalidStatus`, `Validation.InvalidQuery`, `Embeddings.ConfirmationRequired`, `StructuredOutput.*`); `ResolveStatusCodeDefaultBadRequest` preserves all explicit 500 mappings. |
+| `GrimoireRepositoryTests` | `GetTodaySpendAsync` sargable half-open range + decimal sum in C#; `DeleteEntryAsync` decrements `UnsummarizedEntryCount`; `IncrementSessionTokensAndCostAsync` clamps negatives. |
+| `EmbeddingsResetScopeTests` / `EmbeddingsResetServiceTests` | `ParseScope` rejects typos (no silent `All` escalation); `?confirm=true` gates with `Embeddings.ConfirmationRequired`. |
+| `ArcanumBrowseWebToolTests` | `MaxLinks` clamp; SSRF error surfacing; response charset; timeout via `OperationCanceledException` inner `TimeoutException`; nav/header/footer link filter. |
+| `RequestAugmentingHandlerTests` | Replaced `HttpContent` disposed; retry re-applies content headers; non-object JSON guarded. |
+| `ClientToolForwardingTests` | Duplicate tool names; `tool_choice.function.name` verified against supplied tools; `tool_choice: "auto"`/`"none"` accepted when forwarding disabled; per-tool `strict` forwarded. |
+| `OpenAiV1EndpointTests` / `OpenAiV1BatchesEndpointTests` | Structured-output failure maps to `validation_failed`/`invalid_schema` (not generic `inference_failed`); batch reset cleans orphan output/error files. |
+| `SessionEndpointTests` | SSE `since` 404 returned with clean headers (no SSE headers leaked); `ErrorCodes.Session.EntryNotFound`/`InvalidStatus` constants used. |
+| `CostCalculatorTests` | Cached prompt tokens billed at zero (only non-cached portion priced). |
+
 ## Budget
 
 Full `dotnet test` should complete in **under 60 seconds** locally. Largest costs: one-time Grimoire template build and ApiHost WAF boot.

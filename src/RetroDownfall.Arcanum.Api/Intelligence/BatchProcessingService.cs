@@ -495,7 +495,7 @@ internal sealed class BatchProcessingService(
 
     }
 
-    private static void TryDeleteFile(string path)
+    internal static void TryDeleteFile(string path)
     {
 
         try
