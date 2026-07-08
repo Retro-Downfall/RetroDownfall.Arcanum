@@ -1,0 +1,25 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:atelier="using:RetroDownfall.TheForge.Ux.ViewModels.Atelier"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Controls.SpellTreeView"
+             x:DataType="atelier:AtelierViewModel">
+  <TreeView ItemsSource="{Binding Roots}">
+    <TreeView.ItemTemplate>
+      <TreeDataTemplate DataType="atelier:AtelierNodeViewModel" ItemsSource="{Binding Children}">
+        <Border Padding="4,2" DoubleTapped="OnNodeDoubleTapped">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <PathIcon Width="14" Height="14" Data="{DynamicResource IconSpell}" Opacity="0.75" />
+            <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+          </StackPanel>
+          <Border.ContextMenu>
+            <ContextMenu>
+              <MenuItem Header="Open" Command="{Binding PrimaryCommand}" />
+              <Separator />
+              <MenuItem Header="Refresh" Command="{Binding ExpandCommand}" />
+            </ContextMenu>
+          </Border.ContextMenu>
+        </Border>
+      </TreeDataTemplate>
+    </TreeView.ItemTemplate>
+  </TreeView>
+</UserControl>

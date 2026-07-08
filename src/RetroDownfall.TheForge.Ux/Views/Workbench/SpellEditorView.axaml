@@ -1,0 +1,74 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.SpellEditorView"
+             x:DataType="vm:SpellEditorViewModel">
+  <Grid RowDefinitions="Auto,*">
+    <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+      <StackPanel DockPanel.Dock="Left" Spacing="2">
+        <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding Spell.Description}" Opacity="0.68" />
+      </StackPanel>
+
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Load" Command="{Binding LoadCommand}" />
+        <Button Content="Save" Command="{Binding SaveCommand}" />
+        <Button Content="Cast" Command="{Binding CastCommand}" />
+        <Button Content="Estimate Mana" Command="{Binding EstimateManaCommand}" />
+        <Button Content="Execute" Command="{Binding ExecuteCommand}" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+      <Border Grid.Column="0" BorderThickness="1" BorderBrush="{DynamicResource ForgeShellBorderBrush}" Padding="4">
+        <avaloniaEdit:TextEditor x:Name="BodyEditor"
+                                 ShowLineNumbers="True"
+                                 WordWrap="True" />
+      </Border>
+
+      <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+
+      <TabControl Grid.Column="2">
+        <TabItem Header="Frontmatter">
+          <TextBox Text="{Binding Frontmatter}" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
+        </TabItem>
+        <TabItem Header="SKILL.json">
+          <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeShellBorderBrush}" Padding="4">
+            <avaloniaEdit:TextEditor x:Name="SkillJsonEditor"
+                                     ShowLineNumbers="True"
+                                     WordWrap="True" />
+          </Border>
+        </TabItem>
+        <TabItem Header="Scripts">
+          <TextBox Text="{Binding ScriptsSummary}" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
+        </TabItem>
+        <TabItem Header="Versions">
+          <Grid RowDefinitions="*,Auto">
+            <ListBox Grid.Row="0" ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="{Binding Version}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Description}" Opacity="0.72" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <Button Grid.Row="1" Content="Activate Version" Command="{Binding ActivateVersionCommand}" CommandParameter="{Binding SelectedVersion}" HorizontalAlignment="Right" Margin="0,8,0,0" />
+          </Grid>
+        </TabItem>
+        <TabItem Header="Preview">
+          <ScrollViewer>
+            <StackPanel Spacing="10" Margin="8">
+              <TextBlock Text="Cast Preview" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding CastPreview.SystemPrompt}" TextWrapping="Wrap" />
+              <TextBlock Text="Mana" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding ManaCount}" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+      </TabControl>
+    </Grid>
+  </Grid>
+</UserControl>

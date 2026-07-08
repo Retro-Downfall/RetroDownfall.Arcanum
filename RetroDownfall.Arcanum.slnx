@@ -7,9 +7,11 @@
 
   <Project Path="src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj" />
   <Folder Name="/docs/">
-    <File Path="docs\DESIGN.md" />
-    <File Path="docs\README.md" />
-    <File Path="docs\COMPENDIUM.md" />
+    <File Path="docs\Arcanum.DESIGN.md" />
+    <File Path="docs\Arcanum.README.md" />
+    <File Path="docs\Compendium.README.md" />
+    <File Path="docs\TheForge.DESIGN.md" />
+    <File Path="docs\TheForge.README.md" />
   </Folder>
 
   <Project Path="src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj" />
@@ -18,6 +20,11 @@
 
   <Project Path="src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj" />
 
+  <Project Path="src/RetroDownfall.TheForge.Core/RetroDownfall.TheForge.Core.csproj" />
+
+  <Project Path="src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj" />
+
   <Project Path="tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj" />
   <Project Path="tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj" />
+  <Project Path="tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj" />
 </Solution>

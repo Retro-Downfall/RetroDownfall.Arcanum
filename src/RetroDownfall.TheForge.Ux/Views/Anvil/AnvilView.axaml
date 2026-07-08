@@ -1,0 +1,20 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Anvil"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Anvil.AnvilView"
+             x:DataType="vm:AnvilViewModel">
+  <Border Padding="10,4" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource ForgeShellBorderBrush}">
+    <Grid ColumnDefinitions="Auto,18,Auto,18,Auto,*,Auto">
+      <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+        <Ellipse Width="9" Height="9" Fill="{DynamicResource ForgeShellAccentBrush}" VerticalAlignment="Center" />
+        <TextBlock Text="{Binding ConnectionStatusText}" VerticalAlignment="Center" />
+      </StackPanel>
+
+      <TextBlock Grid.Column="2" Text="{Binding ActiveCampaignName}" Opacity="0.75" VerticalAlignment="Center" />
+
+      <TextBlock Grid.Column="4" Text="{Binding ActiveModelName}" Opacity="0.75" VerticalAlignment="Center" />
+
+      <TextBlock Grid.Column="6" Text="The Anvil" Opacity="0.65" VerticalAlignment="Center" />
+    </Grid>
+  </Border>
+</UserControl>

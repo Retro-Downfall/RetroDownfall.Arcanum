@@ -1,0 +1,198 @@
+using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.TheForge.Ux.Models;
+using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
+using Xunit;
+
+namespace RetroDownfall.TheForge.Tests;
+
+public class AtelierViewModelTests
+{
+
+    [Fact]
+    public async Task RefreshAsync_CreatesFourRootNodes()
+    {
+
+        FakeAtelierDataSource dataSource = new();
+
+        NavigationService navigation = new();
+
+        AtelierViewModel viewModel = new(dataSource, navigation);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(["Campaigns", "Workspaces", "Global Spells", "Sessions"], viewModel.Roots.Select(static r => r.Label).ToArray());
+
+    }
+
+    [Fact]
+    public async Task ExpandCampaignsRoot_LoadsCampaignNodes()
+    {
+
+        FakeAtelierDataSource dataSource = new()
+        {
+            Campaigns =
+            [
+                NewCampaign("First Campaign"),
+                NewCampaign("Second Campaign"),
+            ],
+        };
+
+        NavigationService navigation = new();
+
+        AtelierViewModel viewModel = new(dataSource, navigation);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        AtelierNodeViewModel campaignsRoot = viewModel.Roots.Single(static r => r.Label == "Campaigns");
+
+        await campaignsRoot.ExpandAsync(CancellationToken.None);
+
+        Assert.Equal(["First Campaign", "Second Campaign"], campaignsRoot.Children.Select(static child => child.Label).ToArray());
+
+        Assert.All(campaignsRoot.Children, static child => Assert.IsType<CampaignNodeViewModel>(child));
+
+    }
+
+    [Fact]
+    public async Task ExpandCampaignNode_LoadsSpellsPromptsSessionsCodexAndSanctum()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeAtelierDataSource dataSource = new()
+        {
+            Campaigns = [NewCampaign("Autumnfall", campaignId)],
+            CampaignSpells = [new SpellSummary("heal", "Restore mana", SpellSource.Campaign, ["support"])],
+            CampaignPrompts = [new PromptSummaryDto(Guid.NewGuid(), campaignId, "briefing", "v1", "Mission setup", [], DateTimeOffset.UtcNow)],
+            CampaignSessions = [new SessionSummaryDto(Guid.NewGuid(), campaignId, "First Tome", "Active", 2, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)],
+        };
+
+        NavigationService navigation = new();
+
+        AtelierViewModel viewModel = new(dataSource, navigation);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        AtelierNodeViewModel campaignsRoot = viewModel.Roots.Single(static r => r.Label == "Campaigns");
+
+        await campaignsRoot.ExpandAsync(CancellationToken.None);
+
+        CampaignNodeViewModel campaign = Assert.IsType<CampaignNodeViewModel>(campaignsRoot.Children.Single());
+
+        await campaign.ExpandAsync(CancellationToken.None);
+
+        Assert.Equal(["Spells", "Prompts", "Sessions", "CODEX.md", "Sanctum"], campaign.Children.Select(static child => child.Label).ToArray());
+
+        Assert.Contains("heal", campaign.Children[0].Children.Select(static child => child.Label));
+
+        Assert.Contains("briefing v1", campaign.Children[1].Children.Select(static child => child.Label));
+
+        Assert.Contains("First Tome", campaign.Children[2].Children.Select(static child => child.Label));
+
+    }
+
+    [Fact]
+    public async Task GlobalSpellLeaf_OpenCommand_NavigatesToSpellDocument()
+    {
+
+        FakeAtelierDataSource dataSource = new()
+        {
+            GlobalSpells = [new SpellSummary("summon-light", "Create light", SpellSource.Builtin, [])],
+        };
+
+        NavigationService navigation = new();
+
+        (DocumentKind Kind, string Id)? opened = null;
+
+        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+
+        AtelierViewModel viewModel = new(dataSource, navigation);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        AtelierNodeViewModel globalSpellsRoot = viewModel.Roots.Single(static r => r.Label == "Global Spells");
+
+        await globalSpellsRoot.ExpandAsync(CancellationToken.None);
+
+        SpellNodeViewModel spell = Assert.IsType<SpellNodeViewModel>(globalSpellsRoot.Children.Single());
+
+        spell.OpenCommand.Execute(null);
+
+        Assert.Equal((DocumentKind.Spell, "summon-light"), opened);
+
+    }
+
+    [Fact]
+    public async Task SessionLeaf_OpenCommand_NavigatesToSessionDocument()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        FakeAtelierDataSource dataSource = new()
+        {
+            Sessions = [new SessionSummaryDto(sessionId, null, null, "Active", 3, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)],
+        };
+
+        NavigationService navigation = new();
+
+        (DocumentKind Kind, string Id)? opened = null;
+
+        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+
+        AtelierViewModel viewModel = new(dataSource, navigation);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        AtelierNodeViewModel sessionsRoot = viewModel.Roots.Single(static r => r.Label == "Sessions");
+
+        await sessionsRoot.ExpandAsync(CancellationToken.None);
+
+        SessionNodeViewModel session = Assert.IsType<SessionNodeViewModel>(sessionsRoot.Children.Single());
+
+        session.OpenCommand.Execute(null);
+
+        Assert.Equal((DocumentKind.Session, sessionId.ToString()), opened);
+
+    }
+
+    private static CampaignDto NewCampaign(string name, Guid? id = null) =>
+        new(id ?? Guid.NewGuid(), name, $"/campaigns/{name}", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+    private sealed class FakeAtelierDataSource : IAtelierDataSource
+    {
+
+        public IReadOnlyList<CampaignDto> Campaigns { get; init; } = [];
+
+        public IReadOnlyList<WorkspaceInfo> Workspaces { get; init; } = [];
+
+        public IReadOnlyList<SpellSummary> GlobalSpells { get; init; } = [];
+
+        public IReadOnlyList<SessionSummaryDto> Sessions { get; init; } = [];
+
+        public IReadOnlyList<SpellSummary> CampaignSpells { get; init; } = [];
+
+        public IReadOnlyList<PromptSummaryDto> CampaignPrompts { get; init; } = [];
+
+        public IReadOnlyList<SessionSummaryDto> CampaignSessions { get; init; } = [];
+
+        public Task<IReadOnlyList<CampaignDto>> GetCampaignsAsync(CancellationToken cancellationToken) => Task.FromResult(Campaigns);
+
+        public Task<IReadOnlyList<WorkspaceInfo>> GetWorkspacesAsync(CancellationToken cancellationToken) => Task.FromResult(Workspaces);
+
+        public Task<IReadOnlyList<SpellSummary>> GetGlobalSpellsAsync(CancellationToken cancellationToken) => Task.FromResult(GlobalSpells);
+
+        public Task<IReadOnlyList<SessionSummaryDto>> GetRecentSessionsAsync(CancellationToken cancellationToken) => Task.FromResult(Sessions);
+
+        public Task<IReadOnlyList<SpellSummary>> GetCampaignSpellsAsync(Guid campaignId, CancellationToken cancellationToken) => Task.FromResult(CampaignSpells);
+
+        public Task<IReadOnlyList<PromptSummaryDto>> GetCampaignPromptsAsync(Guid campaignId, CancellationToken cancellationToken) => Task.FromResult(CampaignPrompts);
+
+        public Task<IReadOnlyList<SessionSummaryDto>> GetCampaignSessionsAsync(Guid campaignId, CancellationToken cancellationToken) => Task.FromResult(CampaignSessions);
+
+    }
+
+}
