@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
@@ -100,23 +101,9 @@ public sealed class ServeCommand(IThemePalette themePalette)
         builder.WebHost.ConfigureKestrel(
             (WebHostBuilderContext ctx, KestrelServerOptions options) =>
             {
-                int configuredPort = ReadConfiguredHostPort(ctx.Configuration);
+                bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(ctx.Configuration));
 
-                int port = ArcanumSettingClamps.HostPort(configuredPort);
-
-                if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(ctx.Configuration)))
-                {
-                    options.ListenAnyIP(port);
-                }
-                else
-                {
-                    options.ListenLocalhost(port);
-                }
-
-                long maxBodyBytes = ArcanumSettingClamps.MaxRequestBodyBytes(
-                    ReadConfiguredMaxRequestBodyBytes(ctx.Configuration));
-
-                options.Limits.MaxRequestBodySize = maxBodyBytes;
+                ArcanumKestrelConfigurator.Configure(options, ctx.Configuration, listenAny);
             });
 
         builder.Logging.ClearProviders();
@@ -206,19 +193,5 @@ public sealed class ServeCommand(IThemePalette themePalette)
         }
 
         return bool.TryParse(configured.Trim(), out bool parsed) && parsed;
-    }
-
-    internal static long ReadConfiguredMaxRequestBodyBytes(IConfiguration configuration)
-    {
-        string? raw = configuration["Arcanum:Host:MaxRequestBodyBytes"];
-
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return new HostSettings().MaxRequestBodyBytes;
-        }
-
-        return long.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
-            ? parsed
-            : new HostSettings().MaxRequestBodyBytes;
     }
 }

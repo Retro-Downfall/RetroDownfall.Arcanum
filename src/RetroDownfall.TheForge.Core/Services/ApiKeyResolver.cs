@@ -1,69 +1,183 @@
-using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.TheForge.Core.Models;
 
 namespace RetroDownfall.TheForge.Core.Services;
 
 /// <summary>
-/// Resolves the <c>X-Arcanum-Key</c> API key The Forge uses to authenticate against Arcanum's HTTP
-/// API. The key itself is Data-Protection-encrypted at <c>security.dat</c> and cannot be decrypted by
-/// a separate process (The Forge is not Arcanum), so resolution goes through a CLI shell-out rather
-/// than reading the encrypted store directly:
-///
-/// 1. A previously-resolved key cached in <c>forge.json</c> (<see cref="ForgeSettings.ApiKey"/>).
-/// 2. Shell out to <c>arcanum key show</c>, which writes the raw key to stderr.
-/// 3. Otherwise <see langword="null"/> — the caller (Compendium / Whispers toast) prompts the user to paste one.
+/// Resolves the <c>X-Arcanum-Key</c> master API key for The Forge from the shared OS credential store
+/// (same identity Arcanum writes at bootstrap). Resolution order:
+/// <list type="number">
+/// <item>OS keychain (<see cref="ArcanumCredentialIdentity"/>).</item>
+/// <item>Legacy plaintext <c>forge.json</c> <see cref="ForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
+/// <item>Optional shell-out to <c>arcanum key show</c> — result persisted into the keychain.</item>
+/// <item>Otherwise <see langword="null"/> — caller prompts the user to paste and calls <see cref="PersistAsync"/>.</item>
+/// </list>
 /// </summary>
 public sealed class ApiKeyResolver
 {
 
+    private readonly IOsCredentialStore _osStore;
+
     private readonly ILogger<ApiKeyResolver> _logger;
 
-    public ApiKeyResolver(ILogger<ApiKeyResolver> logger)
+    public ApiKeyResolver(IOsCredentialStore osStore, ILogger<ApiKeyResolver> logger)
     {
+
+        _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
 
         _logger = logger;
 
     }
 
     /// <summary>
-    /// Resolves the API key, preferring the cached value in <c>forge.json</c> when present, then
-    /// shelling out to <c>arcanum key show</c>. Returns <see langword="null"/> when neither source
-    /// yields a key; callers should prompt the user to paste one and call
-    /// <see cref="PersistAsync"/> afterward.
+    /// Resolves the API key from the OS store (with legacy forge.json / CLI fallbacks). Returns
+    /// <see langword="null"/> when no source yields a key; callers should prompt the user to paste
+    /// one and call <see cref="PersistAsync"/>.
     /// </summary>
     public async Task<string?> ResolveAsync(ForgeSettings currentSettings, CancellationToken cancellationToken)
     {
 
+        OsCredentialStoreResult os = _osStore.TryGet(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount);
+
+        if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
+        {
+
+            return os.Value;
+
+        }
+
+        if (os.Status == OsCredentialStoreStatus.Unavailable)
+        {
+
+            _logger.LogWarning("OS credential store unavailable: {Message}", os.Message);
+
+        }
+
         if (!string.IsNullOrWhiteSpace(currentSettings.ApiKey))
         {
 
-            return currentSettings.ApiKey;
+            string legacy = currentSettings.ApiKey!;
+
+            OsCredentialStoreResult migrate = _osStore.Set(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MasterApiKeyAccount,
+                legacy);
+
+            if (migrate.Status == OsCredentialStoreStatus.Ok)
+            {
+
+                _logger.LogInformation("Migrated forge.json apiKey into the OS credential store; stripping plaintext cache.");
+
+                await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
+
+            }
+            else
+            {
+
+                _logger.LogWarning(
+                    "Could not migrate forge.json apiKey into the OS store ({Message}); using in-memory value only.",
+                    migrate.Message);
+
+            }
+
+            return legacy;
 
         }
 
         string? shelledOutKey = await TryShellOutAsync(cancellationToken).ConfigureAwait(false);
 
-        return string.IsNullOrWhiteSpace(shelledOutKey) ? null : shelledOutKey;
+        if (string.IsNullOrWhiteSpace(shelledOutKey))
+        {
+
+            return null;
+
+        }
+
+        OsCredentialStoreResult persist = _osStore.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            shelledOutKey);
+
+        if (persist.Status != OsCredentialStoreStatus.Ok)
+        {
+
+            _logger.LogWarning(
+                "`arcanum key show` succeeded but OS store persist failed: {Message}",
+                persist.Message);
+
+        }
+
+        return shelledOutKey;
 
     }
 
     /// <summary>
-    /// Runs <c>arcanum key show</c> and captures the key from stderr (the CLI intentionally avoids
-    /// stdout so the key is not accidentally captured by shell piping). Returns <see langword="null"/>
-    /// on any failure (CLI not on PATH, non-zero exit, empty output) — never throws.
+    /// Persists a pasted (or otherwise obtained) key into the OS credential store. Also strips any
+    /// legacy plaintext <c>apiKey</c> from <c>forge.json</c>.
     /// </summary>
+    public async Task PersistAsync(ForgeSettings currentSettings, string apiKey, CancellationToken cancellationToken)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+
+        OsCredentialStoreResult result = _osStore.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            apiKey.Trim());
+
+        if (result.Status != OsCredentialStoreStatus.Ok)
+        {
+
+            throw new InvalidOperationException(
+                result.Message ?? "Failed to store the API key in the OS credential store.");
+
+        }
+
+        await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task StripForgeJsonApiKeyAsync(ForgeSettings currentSettings, CancellationToken cancellationToken)
+    {
+
+        if (string.IsNullOrWhiteSpace(currentSettings.ApiKey)
+            && !File.Exists(Path.Combine(ArcanumPaths.GrimoireDirectory, "forge.json")))
+        {
+
+            return;
+
+        }
+
+        string directory = ArcanumPaths.GrimoireDirectory;
+
+        Directory.CreateDirectory(directory);
+
+        string path = Path.Combine(directory, "forge.json");
+
+        ForgeSettings updated = currentSettings with { ApiKey = null };
+
+        string json = JsonSerializer.Serialize(updated, ForgeSettingsJsonContext.Default.ForgeSettings);
+
+        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
+
+        TrySetUnixFileMode(path);
+
+    }
+
     private async Task<string?> TryShellOutAsync(CancellationToken cancellationToken)
     {
 
         try
         {
 
-            using Process process = new()
+            using System.Diagnostics.Process process = new()
             {
-                StartInfo = new ProcessStartInfo
+                StartInfo = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "arcanum",
                     ArgumentList = { "key", "show" },
@@ -100,9 +214,13 @@ public sealed class ApiKeyResolver
 
             }
 
-            string trimmed = stderr.Trim();
+            // CLI writes the key on the first stderr line; muted notes may follow.
+            string? firstLine = stderr
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(static line => line.Trim())
+                .FirstOrDefault(static line => line.Length > 0 && !line.StartsWith('('));
 
-            return trimmed.Length == 0 ? null : trimmed;
+            return string.IsNullOrWhiteSpace(firstLine) ? null : firstLine;
 
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or OperationCanceledException)
@@ -113,29 +231,6 @@ public sealed class ApiKeyResolver
             return null;
 
         }
-
-    }
-
-    /// <summary>
-    /// Persists a resolved (or manually-pasted) key into <c>forge.json</c>
-    /// (<see cref="ArcanumPaths.GrimoireDirectory"/>) with file mode <c>0600</c> on Unix.
-    /// </summary>
-    public async Task PersistAsync(ForgeSettings currentSettings, string apiKey, CancellationToken cancellationToken)
-    {
-
-        string directory = ArcanumPaths.GrimoireDirectory;
-
-        Directory.CreateDirectory(directory);
-
-        string path = Path.Combine(directory, "forge.json");
-
-        ForgeSettings updated = currentSettings with { ApiKey = apiKey };
-
-        string json = JsonSerializer.Serialize(updated, ForgeSettingsJsonContext.Default.ForgeSettings);
-
-        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
-
-        TrySetUnixFileMode(path);
 
     }
 

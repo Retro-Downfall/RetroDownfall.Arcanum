@@ -1,0 +1,149 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.WarTable"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
+             xmlns:core="using:RetroDownfall.Arcanum.Core.TheForge"
+             x:Class="RetroDownfall.TheForge.Ux.Views.WarTable.WarTableView"
+             x:DataType="vm:WarTableViewModel">
+  <Grid RowDefinitions="Auto,*,Auto">
+    <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+      <TextBlock DockPanel.Dock="Left"
+                 Text="{Binding Title}"
+                 FontSize="{DynamicResource ForgeTitleFontSize}"
+                 FontWeight="SemiBold"
+                 VerticalAlignment="Center" />
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Refresh" Command="{Binding RefreshCommand}" />
+        <Button Content="Create" Command="{Binding OpenCreatePanelCommand}" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+      <Grid Grid.Column="0" RowDefinitions="*,Auto">
+        <ListBox ItemsSource="{Binding Apprentices}"
+                 BorderThickness="0"
+                 DoubleTapped="OnApprenticeDoubleTapped">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="core:ApprenticeSummaryDto">
+              <StackPanel Spacing="2" Margin="0,0,0,6">
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Text="{Binding Name}" FontWeight="SemiBold" />
+                  <TextBlock DockPanel.Dock="Right" Text="{Binding Status}" Opacity="0.7" />
+                </DockPanel>
+                <TextBlock Text="{Binding Goal}" Opacity="0.72" TextWrapping="Wrap" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Grid.Row="0"
+                   Text="{Binding EmptyState}"
+                   IsVisible="{Binding HasNoApprentices}"
+                   Opacity="0.72"
+                   Margin="8"
+                   TextWrapping="Wrap" />
+
+        <Border Grid.Row="1"
+                IsVisible="{Binding IsCreatePanelOpen}"
+                Margin="0,8,0,0"
+                Padding="8"
+                BorderThickness="1"
+                BorderBrush="{DynamicResource ForgeBorderBrush}">
+          <StackPanel Spacing="6">
+            <TextBlock Text="Create Apprentice" FontWeight="SemiBold" />
+            <TextBox Text="{Binding NewName}" Watermark="Name" />
+            <TextBox Text="{Binding NewGoal}"
+                     Watermark="Goal (supports @file mentions)"
+                     AcceptsReturn="True"
+                     MinHeight="56"
+                     TextWrapping="Wrap" />
+            <ComboBox ItemsSource="{Binding Workspaces}"
+                      SelectedItem="{Binding SelectedWorkspace}"
+                      PlaceholderText="Workspace">
+              <ComboBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <ComboBox ItemsSource="{Binding Campaigns}"
+                      SelectedItem="{Binding SelectedCampaign}"
+                      PlaceholderText="Campaign">
+              <ComboBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+              <Button Content="Cancel" Command="{Binding CloseCreatePanelCommand}" />
+              <Button Content="Create" Command="{Binding CreateApprenticeCommand}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </Grid>
+
+      <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+
+      <TabControl Grid.Column="2">
+        <TabItem Header="Detail">
+          <ScrollViewer>
+            <StackPanel Spacing="8" Margin="4" DataContext="{Binding SelectedApprentice}">
+              <TextBlock Text="{Binding Name}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding Status}" Opacity="0.75" />
+              <TextBlock Text="{Binding Goal}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding WorkspacePath}" Opacity="0.65" TextWrapping="Wrap" />
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button Content="Start" Command="{Binding StartCommand}" />
+                <Button Content="Pause" Command="{Binding PauseCommand}" />
+                <Button Content="Resume" Command="{Binding ResumeCommand}" />
+                <Button Content="Cancel" Command="{Binding CancelCommand}" />
+                <Button Content="Reweave" Command="{Binding ReweaveCommand}" />
+              </StackPanel>
+              <TextBox Text="{Binding InterveneGuidance}"
+                       Watermark="Intervene guidance…"
+                       MinHeight="40" />
+              <Button Content="Intervene" Command="{Binding InterveneCommand}" HorizontalAlignment="Left" />
+              <TextBlock Text="Plan" FontWeight="SemiBold" Margin="0,8,0,0" />
+              <ItemsControl ItemsSource="{Binding PlanSteps}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:PlanStepViewModel">
+                    <Border Margin="0,0,0,6" Padding="6" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                      <StackPanel Spacing="2">
+                        <DockPanel LastChildFill="False">
+                          <TextBlock DockPanel.Dock="Left" Text="{Binding Index, StringFormat=Step {0}}" FontWeight="SemiBold" />
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding StatusKind}" Opacity="0.75" />
+                        </DockPanel>
+                        <TextBlock Text="{Binding Description}" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Result}" Opacity="0.7" TextWrapping="Wrap" />
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <TextBlock Text="Conclave lineage" FontWeight="SemiBold" Margin="0,8,0,0" />
+              <TreeView ItemsSource="{Binding LineageRoots}">
+                <TreeView.ItemTemplate>
+                  <TreeDataTemplate DataType="vm:LineageNodeViewModel" ItemsSource="{Binding Children}">
+                    <TextBlock Text="{Binding Display}" />
+                  </TreeDataTemplate>
+                </TreeView.ItemTemplate>
+              </TreeView>
+              <TextBlock Text="{Binding LastError}"
+                         TextWrapping="Wrap"
+                         Foreground="{DynamicResource ForgeAccentBrush}" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+        <TabItem Header="Chronicle">
+          <controls:ChronicleTimeline DataContext="{Binding SelectedApprentice.Chronicle}" />
+        </TabItem>
+      </TabControl>
+    </Grid>
+
+    <TextBlock Grid.Row="2"
+               Margin="0,8,0,0"
+               Text="{Binding LastError}"
+               TextWrapping="Wrap"
+               Foreground="{DynamicResource ForgeAccentBrush}" />
+  </Grid>
+</UserControl>

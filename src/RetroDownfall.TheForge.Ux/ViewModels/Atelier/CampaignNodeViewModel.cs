@@ -7,8 +7,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
 /// <summary>
 /// Campaign branch. It lazy-loads campaign-scoped spells, prompts, sessions, CODEX.md, and Sanctum
-/// on first expansion. The context-menu commands are surfaced now; their full dialogs/actions land
-/// in later phases.
+/// on first expansion. Create dialogs are not implemented yet — New* commands are disabled.
 /// </summary>
 public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 {
@@ -34,27 +33,31 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
     public CampaignDto Campaign { get; }
 
-    [RelayCommand]
+    /// <summary>Create-spell dialog is not implemented yet.</summary>
+    public bool CanCreateDocuments => false;
+
+    [RelayCommand(CanExecute = nameof(CanCreateDocuments))]
     private void NewSpell()
     {
 
-        _navigation.OpenDocument(DocumentKind.Spell, $"new:{Campaign.Id}");
+        // Intentionally disabled until create dialogs/API flows exist.
+        // Do not open fake "new:{id}" documents.
 
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanCreateDocuments))]
     private void NewPrompt()
     {
 
-        _navigation.OpenDocument(DocumentKind.Prompt, $"new:{Campaign.Id}");
+        // Intentionally disabled until create dialogs/API flows exist.
 
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanCreateDocuments))]
     private void NewSession()
     {
 
-        _navigation.OpenDocument(DocumentKind.Session, $"new:{Campaign.Id}");
+        // Intentionally disabled until create dialogs/API flows exist.
 
     }
 

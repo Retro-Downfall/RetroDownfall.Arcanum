@@ -76,25 +76,43 @@ public sealed class ConfigurationSecretProtector(IDataProtectionProvider dataPro
     public ArcanumSettings ProtectSettingsForStorage(ArcanumSettings settings)
     {
 
-        if (settings.Providers is not { Length: > 0 })
+        ArcanumSettings result = settings;
+
+        if (settings.Providers is { Length: > 0 })
         {
 
-            return settings;
+            ProviderSettings[] providers = new ProviderSettings[settings.Providers.Length];
+
+            for (int i = 0; i < settings.Providers.Length; i++)
+            {
+
+                ProviderSettings provider = settings.Providers[i];
+
+                providers[i] = provider with { ApiKey = Protect(provider.ApiKey) };
+
+            }
+
+            result = result with { Providers = providers };
 
         }
 
-        ProviderSettings[] providers = new ProviderSettings[settings.Providers.Length];
-
-        for (int i = 0; i < settings.Providers.Length; i++)
+        if (!string.IsNullOrEmpty(settings.Host.Https.CertificatePassword))
         {
 
-            ProviderSettings provider = settings.Providers[i];
-
-            providers[i] = provider with { ApiKey = Protect(provider.ApiKey) };
+            result = result with
+            {
+                Host = result.Host with
+                {
+                    Https = result.Host.Https with
+                    {
+                        CertificatePassword = Protect(settings.Host.Https.CertificatePassword),
+                    },
+                },
+            };
 
         }
 
-        return settings with { Providers = providers };
+        return result;
 
     }
 

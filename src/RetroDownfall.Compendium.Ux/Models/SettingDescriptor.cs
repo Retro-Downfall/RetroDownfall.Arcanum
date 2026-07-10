@@ -38,4 +38,5 @@ public sealed record SettingDescriptor(
     double Increment = 1,
     Type? EnumType = null,
     string Placeholder = "",
-    string? ClampName = null);
+    string? ClampName = null,
+    string? Group = null);

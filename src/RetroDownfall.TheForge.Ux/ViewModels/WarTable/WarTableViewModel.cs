@@ -1,16 +1,316 @@
+using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Workspaces;
+
 namespace RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 
-/// <summary>Phase 3 placeholder for The War Table; Phase 7 adds apprentice orchestration and Chronicle streaming.</summary>
-public sealed class WarTableViewModel : ViewModelBase
+/// <summary>
+/// The War Table lists apprentices, hosts detail/plan/lineage/chronicle for the selection, and
+/// creates new apprentices. Visibility gates list refresh and chronicle streaming.
+/// </summary>
+public sealed partial class WarTableViewModel : ViewModelBase, IDisposable
 {
 
-    public WarTableViewModel()
+    private readonly IWarTableDataSource _dataSource;
+
+    private bool _disposed;
+
+    [ObservableProperty]
+    private bool _isVisible;
+
+    [ObservableProperty]
+    private bool _isBusy;
+
+    [ObservableProperty]
+    private string? _lastError;
+
+    [ObservableProperty]
+    private ApprenticeDetailViewModel? _selectedApprentice;
+
+    [ObservableProperty]
+    private bool _isCreatePanelOpen;
+
+    [ObservableProperty]
+    private string _newName = string.Empty;
+
+    [ObservableProperty]
+    private string _newGoal = string.Empty;
+
+    [ObservableProperty]
+    private CampaignDto? _selectedCampaign;
+
+    [ObservableProperty]
+    private WorkspaceInfo? _selectedWorkspace;
+
+    public WarTableViewModel(IWarTableDataSource dataSource)
     {
+
+        _dataSource = dataSource;
 
         Title = "The War Table";
 
     }
 
-    public string EmptyState => "Apprentice orchestration arrives in Phase 7.";
+    public ObservableCollection<ApprenticeSummaryDto> Apprentices { get; } = [];
+
+    public ObservableCollection<CampaignDto> Campaigns { get; } = [];
+
+    public ObservableCollection<WorkspaceInfo> Workspaces { get; } = [];
+
+    public bool HasNoApprentices => Apprentices.Count == 0;
+
+    public string EmptyState => "No apprentices yet — cast one to begin the Conclave.";
+
+    partial void OnIsVisibleChanged(bool value)
+    {
+
+        if (value)
+        {
+
+            _ = RefreshCommand.ExecuteAsync(null);
+
+            SelectedApprentice?.Activate();
+
+        }
+        else
+        {
+
+            SelectedApprentice?.Deactivate();
+
+        }
+
+    }
+
+    partial void OnSelectedApprenticeChanged(ApprenticeDetailViewModel? oldValue, ApprenticeDetailViewModel? newValue)
+    {
+
+        oldValue?.Dispose();
+
+        if (IsVisible)
+        {
+
+            newValue?.Activate();
+
+        }
+
+    }
+
+    [RelayCommand]
+    public async Task RefreshAsync(CancellationToken cancellationToken)
+    {
+
+        IsBusy = true;
+
+        LastError = null;
+
+        try
+        {
+
+            IReadOnlyList<ApprenticeSummaryDto> list = await _dataSource.ListApprenticesAsync(cancellationToken).ConfigureAwait(true);
+
+            Apprentices.Clear();
+
+            foreach (ApprenticeSummaryDto item in list)
+            {
+
+                Apprentices.Add(item);
+
+            }
+
+            OnPropertyChanged(nameof(HasNoApprentices));
+
+            if (SelectedApprentice is not null)
+            {
+
+                await SelectedApprentice.LoadAsync(cancellationToken).ConfigureAwait(true);
+
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+        }
+        finally
+        {
+
+            IsBusy = false;
+
+        }
+
+    }
+
+    [RelayCommand]
+    public async Task SelectApprenticeAsync(ApprenticeSummaryDto? summary, CancellationToken cancellationToken)
+    {
+
+        if (summary is null)
+        {
+
+            return;
+
+        }
+
+        ApprenticeDetailViewModel detail = new(summary.Id, _dataSource);
+
+        SelectedApprentice = detail;
+
+        await detail.LoadAsync(cancellationToken).ConfigureAwait(true);
+
+        if (IsVisible)
+        {
+
+            detail.Activate();
+
+        }
+
+    }
+
+    [RelayCommand]
+    public async Task OpenCreatePanelAsync(CancellationToken cancellationToken)
+    {
+
+        IsCreatePanelOpen = true;
+
+        try
+        {
+
+            IReadOnlyList<CampaignDto> campaigns = await _dataSource.ListCampaignsAsync(cancellationToken).ConfigureAwait(true);
+
+            Campaigns.Clear();
+
+            foreach (CampaignDto campaign in campaigns)
+            {
+
+                Campaigns.Add(campaign);
+
+            }
+
+            IReadOnlyList<WorkspaceInfo> workspaces = await _dataSource.ListWorkspacesAsync(cancellationToken).ConfigureAwait(true);
+
+            Workspaces.Clear();
+
+            foreach (WorkspaceInfo workspace in workspaces)
+            {
+
+                Workspaces.Add(workspace);
+
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+        }
+
+    }
+
+    [RelayCommand]
+    private void CloseCreatePanel()
+    {
+
+        IsCreatePanelOpen = false;
+
+    }
+
+    [RelayCommand]
+    public async Task CreateApprenticeAsync(CancellationToken cancellationToken)
+    {
+
+        if (string.IsNullOrWhiteSpace(NewName) || string.IsNullOrWhiteSpace(NewGoal))
+        {
+
+            LastError = "Name and goal are required.";
+
+            return;
+
+        }
+
+        IsBusy = true;
+
+        LastError = null;
+
+        try
+        {
+
+            CreateApprenticeRequest request = new(
+                NewName.Trim(),
+                NewGoal.Trim(),
+                SelectedCampaign?.Id,
+                SelectedWorkspace?.Path);
+
+            ApprenticeDetailDto? created = await _dataSource.CreateApprenticeAsync(request, cancellationToken).ConfigureAwait(true);
+
+            if (created is null)
+            {
+
+                LastError = "Failed to create apprentice.";
+
+                return;
+
+            }
+
+            IsCreatePanelOpen = false;
+
+            NewName = string.Empty;
+
+            NewGoal = string.Empty;
+
+            await RefreshAsync(cancellationToken).ConfigureAwait(true);
+
+            await SelectApprenticeAsync(
+                new ApprenticeSummaryDto(
+                    created.Id,
+                    created.CampaignId,
+                    created.Name,
+                    created.Goal,
+                    created.Status,
+                    created.CurrentStep,
+                    created.Plan.Count,
+                    created.CreatedAt,
+                    created.UpdatedAt),
+                cancellationToken).ConfigureAwait(true);
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+        }
+        finally
+        {
+
+            IsBusy = false;
+
+        }
+
+    }
+
+    public void Dispose()
+    {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        _disposed = true;
+
+        SelectedApprentice?.Dispose();
+
+        SelectedApprentice = null;
+
+        GC.SuppressFinalize(this);
+
+    }
 
 }

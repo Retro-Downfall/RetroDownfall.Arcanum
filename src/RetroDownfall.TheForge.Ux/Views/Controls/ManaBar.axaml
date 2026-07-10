@@ -1,0 +1,17 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Controls.ManaBar"
+             x:Name="Root">
+  <Grid Height="8" x:Name="Track">
+    <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
+            BorderBrush="{DynamicResource ForgeBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="2"
+            ClipToBounds="True">
+      <Border x:Name="Fill"
+              Background="{DynamicResource ForgeAccentBrush}"
+              HorizontalAlignment="Left"
+              Width="0" />
+    </Border>
+  </Grid>
+</UserControl>

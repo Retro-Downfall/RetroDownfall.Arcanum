@@ -1,0 +1,49 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             xmlns:vm="using:RetroDownfall.Compendium.Ux.ViewModels"
+             x:Class="RetroDownfall.Compendium.Ux.Views.ProvingGroundsPage"
+             x:DataType="vm:ConfigurationViewModel">
+
+    <ScrollViewer>
+
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
+
+            <TextBlock Text="Proving Grounds"
+                       FontSize="{DynamicResource ForgePageTitleFontSize}"
+                       FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Max inquisitors per trial"
+                                     Description="Maximum Inquisitors allowed on a single Trial."
+                                     Key="provingGrounds.maxInquisitorsPerTrial"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding ProvingGrounds.MaxInquisitorsPerTrial, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="200"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Semantic judge max tokens"
+                                     Description="Maximum completion tokens for a Semantic Inquisitor FastModel judge call."
+                                     Key="provingGrounds.semanticJudgeMaxTokens"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding ProvingGrounds.SemanticJudgeMaxTokens, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="256"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Semantic judge timeout (s)"
+                                     Description="Timeout for a Semantic Inquisitor judge inference call."
+                                     Key="provingGrounds.semanticJudgeTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding ProvingGrounds.SemanticJudgeTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+        </StackPanel>
+
+    </ScrollViewer>
+
+</UserControl>

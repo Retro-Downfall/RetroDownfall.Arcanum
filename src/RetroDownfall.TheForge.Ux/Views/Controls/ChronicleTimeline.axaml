@@ -1,0 +1,46 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.WarTable"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Controls.ChronicleTimeline"
+             x:DataType="vm:ChronicleViewModel">
+  <ScrollViewer>
+    <ItemsControl ItemsSource="{Binding Entries}">
+      <ItemsControl.ItemTemplate>
+        <DataTemplate x:DataType="vm:ChronicleEntryViewModel">
+          <Border Margin="0,0,0,6"
+                  Padding="6"
+                  BorderThickness="1"
+                  BorderBrush="{DynamicResource ForgeBorderBrush}">
+            <StackPanel Spacing="2">
+              <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding IconKey}"
+                           Margin="0,0,6,0"
+                           Opacity="0.8" />
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding Type}"
+                           FontWeight="SemiBold" />
+                <TextBlock DockPanel.Dock="Right"
+                           Text="{Binding Timestamp}"
+                           Opacity="0.65"
+                           FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+              </DockPanel>
+              <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding DurationMs, StringFormat={}{0} ms}"
+                         Opacity="0.7"
+                         IsVisible="{Binding DurationMs, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              <TextBlock Text="{Binding Error}"
+                         TextWrapping="Wrap"
+                         IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                         Foreground="{DynamicResource ForgeErrorBrush}" />
+              <TextBlock Text="{Binding Summary}"
+                         TextWrapping="Wrap"
+                         Opacity="0.75"
+                         IsVisible="{Binding Summary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+          </Border>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </ScrollViewer>
+</UserControl>

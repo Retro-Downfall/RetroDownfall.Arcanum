@@ -65,6 +65,13 @@ public sealed record HostSettings
     /// </summary>
     public HostAuditLogSettings AuditLog { get; init; } = new();
 
+    /// <summary>
+    /// Optional HTTPS/TLS binding. Disabled by default — the plaintext HTTP loopback binding is
+    /// unchanged until an operator opts in. When enabled, Kestrel adds a second listener on
+    /// <see cref="HttpsSettings.Port"/> alongside the existing HTTP listener.
+    /// </summary>
+    public HttpsSettings Https { get; init; } = new();
+
 }
 
 /// <summary>

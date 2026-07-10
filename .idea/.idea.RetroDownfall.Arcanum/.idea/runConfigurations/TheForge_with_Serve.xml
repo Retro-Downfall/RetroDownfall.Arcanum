@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="The Forge (+ Serve)" type="CompoundRunConfigurationType">
+    <toRun name="Arcanum (Cli serve)" type="DotNetProject" />
+    <toRun name="The Forge" type="DotNetProject" />
+    <method v="2" />
+  </configuration>
+</component>

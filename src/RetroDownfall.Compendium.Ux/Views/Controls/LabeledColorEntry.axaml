@@ -1,0 +1,53 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             xmlns:conv="using:RetroDownfall.Compendium.Ux.Converters"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.LabeledColorEntry"
+             x:Name="Root">
+
+    <UserControl.Resources>
+
+        <conv:HexToBrushConverter x:Key="HexToBrushConverter" />
+
+    </UserControl.Resources>
+
+    <StackPanel Spacing="4">
+
+        <TextBlock Text="{Binding #Root.Label}"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource ForgeTextBrush}" />
+
+        <Grid ColumnDefinitions="*,Auto"
+              ColumnSpacing="8">
+
+            <TextBox Grid.Column="0"
+                     Text="{Binding #Root.Text, Mode=TwoWay}"
+                     Watermark="{Binding #Root.Placeholder}" />
+
+            <Border Grid.Column="1"
+                    Width="36"
+                    Height="36"
+                    BorderBrush="{DynamicResource ForgeBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Margin="0">
+
+                <Panel Background="{Binding #Root.Text, Converter={StaticResource HexToBrushConverter}}" />
+
+            </Border>
+
+        </Grid>
+
+        <TextBlock Text="{Binding #Root.Description}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeMutedTextBrush}"
+                   IsVisible="{Binding #Root.Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+        <TextBlock Text="{Binding #Root.ValidationMessage}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeErrorBrush}"
+                   IsVisible="{Binding #Root.ValidationMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    </StackPanel>
+
+</UserControl>

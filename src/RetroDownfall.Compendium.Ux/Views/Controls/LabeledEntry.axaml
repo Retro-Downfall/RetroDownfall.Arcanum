@@ -1,0 +1,29 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.LabeledEntry"
+             x:Name="Root">
+
+    <StackPanel Spacing="4">
+
+        <TextBlock Text="{Binding #Root.Label}"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource ForgeTextBrush}" />
+
+        <TextBox x:Name="EntryControl"
+                 Text="{Binding #Root.Text, Mode=TwoWay}"
+                 Watermark="{Binding #Root.Placeholder}" />
+
+        <TextBlock Text="{Binding #Root.Description}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeMutedTextBrush}"
+                   IsVisible="{Binding #Root.Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+        <TextBlock Text="{Binding #Root.ValidationMessage}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeErrorBrush}"
+                   IsVisible="{Binding #Root.ValidationMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    </StackPanel>
+
+</UserControl>

@@ -1,20 +1,51 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Anvil"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
              x:Class="RetroDownfall.TheForge.Ux.Views.Anvil.AnvilView"
              x:DataType="vm:AnvilViewModel">
-  <Border Padding="10,4" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource ForgeShellBorderBrush}">
-    <Grid ColumnDefinitions="Auto,18,Auto,18,Auto,*,Auto">
-      <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
-        <Ellipse Width="9" Height="9" Fill="{DynamicResource ForgeShellAccentBrush}" VerticalAlignment="Center" />
-        <TextBlock Text="{Binding ConnectionStatusText}" VerticalAlignment="Center" />
-      </StackPanel>
-
-      <TextBlock Grid.Column="2" Text="{Binding ActiveCampaignName}" Opacity="0.75" VerticalAlignment="Center" />
-
-      <TextBlock Grid.Column="4" Text="{Binding ActiveModelName}" Opacity="0.75" VerticalAlignment="Center" />
-
-      <TextBlock Grid.Column="6" Text="The Anvil" Opacity="0.65" VerticalAlignment="Center" />
-    </Grid>
+  <Border Height="24"
+          Padding="8,2"
+          BorderThickness="0,1,0,0"
+          BorderBrush="{DynamicResource ForgeBorderBrush}"
+          Background="{DynamicResource ForgeSurfaceBrush}">
+    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+      <Button Classes="anvil-chip"
+              Command="{Binding ConnectCommand}"
+              Padding="4,0"
+              Background="Transparent"
+              BorderThickness="0"
+              ToolTip.Tip="Connect / reconnect to Arcanum (also under View menu)">
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <Ellipse Width="8" Height="8" Fill="{DynamicResource ForgeAccentBrush}" VerticalAlignment="Center" />
+          <TextBlock Text="{Binding ConnectionStatusText}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusCampaignCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
+              Content="{Binding ActiveCampaignName}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusModelCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
+              Content="{Binding ActiveModelName}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusManaCommand}" Padding="4,0" Background="Transparent" BorderThickness="0">
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <controls:ManaBar Width="72" Height="8" ManaPercent="{Binding ManaPercent}" VerticalAlignment="Center" />
+          <TextBlock Text="{Binding ManaPercent, StringFormat={}{0:0}%}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusBudgetCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
+              Content="{Binding TodaySpendUsd, StringFormat=Spend ${0:0.00}}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusWardsCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
+              Content="{Binding ActiveWardsCount, StringFormat=Wards {0}}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusApprenticesCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
+              Content="{Binding RunningApprenticesCount, StringFormat=Apprentices {0}}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
+      <Button Classes="anvil-chip" Command="{Binding FocusMcpCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
+              Content="{Binding McpOnlineTotal, StringFormat=MCP {0}}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+    </StackPanel>
   </Border>
 </UserControl>

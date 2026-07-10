@@ -1,0 +1,96 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Hearth"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Hearth.HearthView"
+             x:DataType="vm:HearthViewModel">
+  <UserControl.Styles>
+    <Style Selector="TextBlock.hearth-command">
+      <Setter Property="Foreground" Value="{DynamicResource ForgeAccentBrush}" />
+      <Setter Property="Opacity" Value="0.9" />
+    </Style>
+    <Style Selector="TextBlock.hearth-stderr">
+      <Setter Property="Foreground" Value="{DynamicResource ForgeErrorBrush}" />
+    </Style>
+    <Style Selector="TextBlock.hearth-system">
+      <Setter Property="Foreground" Value="{DynamicResource ForgeMutedTextBrush}" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+    <DockPanel Grid.Row="0" Margin="0,0,0,6" LastChildFill="True">
+      <Button DockPanel.Dock="Right"
+              Content="Stop"
+              Command="{Binding StopCommand}"
+              Margin="4,0,0,0"
+              MinWidth="64" />
+      <Button DockPanel.Dock="Right"
+              Content="Clear"
+              Command="{Binding ClearCommand}"
+              Margin="4,0,0,0"
+              MinWidth="64" />
+      <Button DockPanel.Dock="Right"
+              Content="Home"
+              Command="{Binding ResetWorkingDirectoryCommand}"
+              Margin="4,0,0,0"
+              MinWidth="64" />
+      <TextBlock Text="{Binding CurrentDirectory}"
+                 TextTrimming="CharacterEllipsis"
+                 FontFamily="{DynamicResource ForgeCodeFontFamily}"
+                 FontSize="{DynamicResource ForgeCodeFontSize}"
+                 VerticalAlignment="Center"
+                 ToolTip.Tip="{Binding CurrentDirectory}" />
+    </DockPanel>
+
+    <Grid Grid.Row="1">
+      <TextBlock Text="{Binding EmptyState}"
+                 IsVisible="{Binding HasNoLines}"
+                 Opacity="0.72"
+                 TextWrapping="Wrap"
+                 Margin="8"
+                 VerticalAlignment="Center"
+                 HorizontalAlignment="Center" />
+
+      <ListBox x:Name="OutputList"
+               ItemsSource="{Binding Lines}"
+               IsVisible="{Binding !HasNoLines}"
+               BorderThickness="0"
+               Background="Transparent"
+               FontFamily="{DynamicResource ForgeCodeFontFamily}"
+               FontSize="{DynamicResource ForgeCodeFontSize}"
+               ScrollViewer.HorizontalScrollBarVisibility="Auto"
+               ScrollViewer.VerticalScrollBarVisibility="Auto">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:HearthLineViewModel">
+            <TextBlock Text="{Binding Text}"
+                       TextWrapping="NoWrap"
+                       Classes.hearth-command="{Binding IsCommand}"
+                       Classes.hearth-stderr="{Binding IsStandardError}"
+                       Classes.hearth-system="{Binding IsSystem}" />
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <DockPanel Grid.Row="2" Margin="0,6,0,0" LastChildFill="True">
+      <Button DockPanel.Dock="Right"
+              Content="Run"
+              Command="{Binding RunCommand}"
+              Margin="8,0,0,0"
+              MinWidth="64" />
+      <TextBlock DockPanel.Dock="Left"
+                 Text="{Binding PromptText}"
+                 FontFamily="{DynamicResource ForgeCodeFontFamily}"
+                 FontSize="{DynamicResource ForgeCodeFontSize}"
+                 VerticalAlignment="Center"
+                 Margin="0,0,8,0"
+                 MinWidth="48" />
+      <TextBox x:Name="CommandInput"
+               Text="{Binding CommandText}"
+               FontFamily="{DynamicResource ForgeCodeFontFamily}"
+               FontSize="{DynamicResource ForgeCodeFontSize}"
+               IsEnabled="{Binding !IsRunning}"
+               Watermark="Enter a command…"
+               AcceptsReturn="False" />
+    </DockPanel>
+  </Grid>
+</UserControl>

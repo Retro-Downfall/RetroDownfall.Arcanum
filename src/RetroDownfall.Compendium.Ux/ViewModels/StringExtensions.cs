@@ -13,13 +13,10 @@ internal static class StringExtensions
 
         }
 
-        return value.Split([','], StringSplitOptions.RemoveEmptyEntries)
-
-            .Select(static s => s.Trim())
-
-            .Where(static s => !string.IsNullOrWhiteSpace(s))
-
-            .ToArray();
+        return Deduplicate(
+            value.Split([','], StringSplitOptions.RemoveEmptyEntries)
+                .Select(static s => s.Trim())
+                .Where(static s => !string.IsNullOrWhiteSpace(s)));
 
     }
 
@@ -33,7 +30,30 @@ internal static class StringExtensions
 
         }
 
-        return string.Join(", ", values.Where(static s => !string.IsNullOrWhiteSpace(s)));
+        return string.Join(", ", Deduplicate(values.Where(static s => !string.IsNullOrWhiteSpace(s))));
+
+    }
+
+    private static string[] Deduplicate(IEnumerable<string> values)
+    {
+
+        List<string> unique = [];
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string value in values)
+        {
+
+            if (seen.Add(value))
+            {
+
+                unique.Add(value);
+
+            }
+
+        }
+
+        return unique.ToArray();
 
     }
 

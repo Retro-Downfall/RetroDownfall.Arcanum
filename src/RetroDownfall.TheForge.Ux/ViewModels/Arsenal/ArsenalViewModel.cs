@@ -1,6 +1,6 @@
 namespace RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
 
-/// <summary>Phase 3 placeholder for The Arsenal; later phases add MCP server state and actions.</summary>
+/// <summary>Placeholder for The Arsenal until MCP management UI is implemented.</summary>
 public sealed class ArsenalViewModel : ViewModelBase
 {
 
@@ -11,6 +11,6 @@ public sealed class ArsenalViewModel : ViewModelBase
 
     }
 
-    public string EmptyState => "MCP server management will appear here.";
+    public string EmptyState => "The Arsenal is not implemented yet. MCP online counts appear on The Anvil; server management arrives later.";
 
 }

@@ -1,0 +1,153 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             xmlns:vm="using:RetroDownfall.Compendium.Ux.ViewModels"
+             x:Class="RetroDownfall.Compendium.Ux.Views.ForgePage"
+             x:DataType="vm:ConfigurationViewModel">
+
+    <ScrollViewer>
+
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
+
+<TextBlock Text="The Forge"
+                   FontSize="{DynamicResource ForgePageTitleFontSize}"
+                   FontWeight="SemiBold" />
+
+            <TextBlock Text="Spells"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:ChipsEditor Label="Allowed workspace roots"
+                                  Description="Absolute directory roots that spell CRUD routes may use. Empty denies all access by default."
+                                  Text="{Binding Forge.SpellsAllowedWorkspaceRoots, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max file size (bytes)"
+                                     Description="Maximum SPELL.md (and frontmatter) read size in bytes. Further capped by Workspaces.MaxFileReadSizeBytes."
+                                     Key="spells.maxFileSizeBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.SpellsMaxFileSizeBytes, Mode=TwoWay}"
+                                     Minimum="1024"
+                                     Maximum="1048576"
+                                     Increment="1024" />
+
+            <controls:LabeledStepper Label="Metadata scan cache TTL (s)"
+                                     Description="TTL for the in-process spell-metadata scan cache used by routing and Arcane Resonance. 0 disables caching."
+                                     Key="spells.metadataScanCacheTtlSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.SpellsMetadataScanCacheTtlSeconds, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="300"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max dependencies"
+                                     Description="Maximum dependencies a single spell may declare in SKILL.json."
+                                     Key="spells.maxDependencies"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.SpellsMaxDependencies, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max declared tools"
+                                     Description="Maximum tools a single spell may declare in SKILL.json (Artifact Attunement allowlist)."
+                                     Key="spells.maxDeclaredTools"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.SpellsMaxDeclaredTools, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="256"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max resonant dependencies"
+                                     Description="Maximum Arcane Resonance dependencies resolved recursively per spell (hard depth limit 3, cycle-safe)."
+                                     Key="spells.maxResonantDependencies"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.SpellsMaxResonantDependencies, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="50"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max resonant bytes"
+                                     Description="Maximum total bytes of resonant dependency markdown bodies concatenated into the system prompt."
+                                     Key="spells.maxResonantBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.SpellsMaxResonantBytes, Mode=TwoWay}"
+                                     Minimum="4096"
+                                     Maximum="1048576"
+                                     Increment="1024" />
+
+            <TextBlock Text="Campaigns"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:ChipsEditor Label="Allowed roots"
+                                  Description="Absolute directory roots that campaign registration may use. Empty denies all access by default."
+                                  Text="{Binding Forge.CampaignsAllowedRoots, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max campaigns"
+                                     Description="Maximum number of registered campaigns in the Grimoire database."
+                                     Key="campaigns.maxCampaigns"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.CampaignsMaxCampaigns, Mode=TwoWay}"
+                                     Minimum="10"
+                                     Maximum="10000"
+                                     Increment="10" />
+
+            <TextBlock Text="Perception"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:ChipsEditor Label="Allowed workspace roots"
+                                  Description="Absolute directory roots that GET /api/perception/look may scan. Empty (default) denies all requests with 403 Perception.PathNotAllowed."
+                                  Text="{Binding Forge.PerceptionAllowedWorkspaceRoots, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max enumeration steps"
+                                     Description="Maximum file/dir entries enumerated by a single Eye of the World look request."
+                                     Key="perception.maxEnumerationSteps"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.PerceptionMaxEnumerationSteps, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="10000000"
+                                     Increment="1000" />
+
+            <controls:LabeledStepper Label="Max TOC lines"
+                                     Description="Maximum lines in the table-of-contents summary produced by a look request."
+                                     Key="perception.maxTableOfContentsLines"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.PerceptionMaxTableOfContentsLines, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="500"
+                                     Increment="1" />
+
+            <TextBlock Text="Prompts"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Max parameter value chars"
+                                     Description="Maximum character length of a single prompt parameter value on render/execute."
+                                     Key="prompts.maxParameterValueChars"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.PromptsMaxParameterValueChars, Mode=TwoWay}"
+                                     Minimum="256"
+                                     Maximum="65536"
+                                     Increment="256" />
+
+            <TextBlock Text="Codex"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Max size (bytes)"
+                                     Description="Maximum byte size of a CODEX.md read or write. Further capped by Workspaces.MaxFileReadSizeBytes."
+                                     Key="codex.maxSizeBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Forge.CodexMaxSizeBytes, Mode=TwoWay}"
+                                     Minimum="1024"
+                                     Maximum="1048576"
+                                     Increment="1024" />
+
+        </StackPanel>
+
+    </ScrollViewer>
+
+</UserControl>

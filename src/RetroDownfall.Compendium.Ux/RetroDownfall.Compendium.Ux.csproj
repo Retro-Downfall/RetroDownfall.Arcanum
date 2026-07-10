@@ -2,17 +2,9 @@
 
   <PropertyGroup>
 
-    <TargetFrameworks>net10.0;net10.0-maccatalyst</TargetFrameworks>
+    <OutputType>WinExe</OutputType>
 
-    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0;net10.0-maccatalyst;net10.0-windows10.0.19041.0</TargetFrameworks>
-
-    <OutputType Condition="'$(TargetFramework)' == 'net10.0'">Library</OutputType>
-
-    <OutputType Condition="'$(TargetFramework)' != 'net10.0'">Exe</OutputType>
-
-    <UseMaui Condition="'$(TargetFramework)' != 'net10.0'">true</UseMaui>
-
-    <SingleProject Condition="'$(TargetFramework)' != 'net10.0'">true</SingleProject>
+    <TargetFramework>net10.0</TargetFramework>
 
     <Nullable>enable</Nullable>
 
@@ -26,23 +18,37 @@
 
     <ApplicationTitle>Compendium</ApplicationTitle>
 
-    <ApplicationId>com.retrodownfall.compendium</ApplicationId>
+    <Version>0.1.0-beta</Version>
 
-    <ApplicationVersion>1</ApplicationVersion>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
 
-    <ApplicationDisplayVersion>0.1.0-beta</ApplicationDisplayVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
 
   </PropertyGroup>
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.60" />
+    <PackageReference Include="Avalonia" Version="11.3.16" />
 
-    <PackageReference Include="CommunityToolkit.Maui" Version="14.2.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.16" />
+
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.16" />
+
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.16" />
+
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.16" Condition="'$(Configuration)' == 'Debug'" />
 
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 
     <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="10.0.8" />
+
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
+
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.8" />
 
   </ItemGroup>
 
@@ -52,51 +58,10 @@
 
   </ItemGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0'">
+  <ItemGroup>
 
-    <MauiIcon Include="Resources\Images\appicon.svg" ForegroundFile="Resources\Images\appiconfg.svg" Color="#212121" />
-
-    <MauiSplashScreen Include="Resources\Images\appicon.svg" Color="#212121" BaseSize="128,128" />
-
-    <MauiImage Include="Resources\Images\*" />
+    <InternalsVisibleTo Include="RetroDownfall.Compendium.Tests" />
 
   </ItemGroup>
-
-  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
-
-    <Compile Remove="App.xaml.cs" />
-
-    <Compile Remove="MauiProgram.cs" />
-
-    <Compile Remove="Views\**\*.xaml.cs" />
-
-    <EmbeddedResource Remove="App.xaml" />
-
-    <EmbeddedResource Remove="Views\**\*.xaml" />
-
-    <EmbeddedResource Remove="Resources\Styles\*.xaml" />
-
-    <MauiCss Remove="Resources\Styles\*.xaml" />
-
-    <!-- MAUI's SDK also tracks compiled XAML pages under the MauiXaml item (consumed by the XamlC compiler
-         task, distinct from the EmbeddedResource item removed above). Without also removing it here, XamlC
-         still tries to statically validate these pages against their code-behind for this plain net10.0
-         library TFM — where that code-behind (Views\**\*.xaml.cs, removed above) isn't compiled — so every
-         custom bindable property looks "missing" and Release builds fail with XC0009/XC0002. -->
-    <MauiXaml Remove="App.xaml" />
-
-    <MauiXaml Remove="Views\**\*.xaml" />
-
-  </ItemGroup>
-
-  <PropertyGroup>
-
-    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
-
-    <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
-
-    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
-
-  </PropertyGroup>
 
 </Project>

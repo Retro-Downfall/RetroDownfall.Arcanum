@@ -1,0 +1,27 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.LabeledToggle"
+             x:Name="Root">
+
+    <StackPanel Spacing="4">
+
+        <StackPanel Orientation="Horizontal"
+                    Spacing="12">
+
+            <TextBlock Text="{Binding #Root.Label}"
+                       VerticalAlignment="Center"
+                       Foreground="{DynamicResource ForgeTextBrush}" />
+
+            <ToggleSwitch IsChecked="{Binding #Root.IsOn, Mode=TwoWay}" />
+
+        </StackPanel>
+
+        <TextBlock Text="{Binding #Root.Description}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeMutedTextBrush}"
+                   IsVisible="{Binding #Root.Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    </StackPanel>
+
+</UserControl>

@@ -1,0 +1,90 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="using:RetroDownfall.Compendium.Ux.Converters"
+             x:Class="RetroDownfall.Compendium.Ux.App"
+             Name="Compendium"
+             RequestedThemeVariant="Default">
+
+  <!-- macOS app menu (leftmost menu bar item). Without this, Avalonia inserts "About Avalonia". -->
+  <NativeMenu.Menu>
+    <NativeMenu>
+      <NativeMenuItem Header="About Compendium"
+                      Click="OnAboutClick" />
+    </NativeMenu>
+  </NativeMenu.Menu>
+
+  <Application.Styles>
+    <FluentTheme />
+    <Style Selector="Window">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Background" Value="{DynamicResource ForgeBackgroundBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeTextBrush}" />
+    </Style>
+    <Style Selector="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="12,6" />
+      <Setter Property="MinHeight" Value="{DynamicResource ForgeAnvilHeight}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="10,6" />
+      <Setter Property="MinHeight" Value="{DynamicResource ForgeAnvilHeight}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="10,6" />
+      <Setter Property="MinHeight" Value="{DynamicResource ForgeAnvilHeight}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="NumericUpDown">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="10,6" />
+      <Setter Property="MinHeight" Value="{DynamicResource ForgeAnvilHeight}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ToggleSwitch">
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="MenuItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+    <Style Selector="TabItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="12,6" />
+    </Style>
+    <Style Selector="ListBoxItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+  </Application.Styles>
+
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://RetroDownfall.Compendium.Ux/Themes/Typography.axaml" />
+      </ResourceDictionary.MergedDictionaries>
+
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceInclude x:Key="Light" Source="avares://RetroDownfall.Compendium.Ux/Themes/LightTheme.axaml" />
+        <ResourceInclude x:Key="Dark" Source="avares://RetroDownfall.Compendium.Ux/Themes/DarkTheme.axaml" />
+      </ResourceDictionary.ThemeDictionaries>
+
+      <converters:EnumToStringConverter x:Key="EnumToStringConverter" />
+      <converters:HexToBrushConverter x:Key="HexToBrushConverter" />
+    </ResourceDictionary>
+  </Application.Resources>
+
+</Application>

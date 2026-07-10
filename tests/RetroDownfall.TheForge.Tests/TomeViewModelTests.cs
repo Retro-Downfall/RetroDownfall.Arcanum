@@ -195,7 +195,7 @@ public class TomeViewModelTests
     public async Task SendAsync_ErrorLogsToFoundryFloorAndAddsInlineError()
     {
 
-        FoundryFloorViewModel foundryFloor = new();
+        FoundryFloorViewModel foundryFloor = new(new NullLogService());
 
         FakeTomeDataSource dataSource = new()
         {
@@ -268,7 +268,7 @@ public class TomeViewModelTests
             ForkedSession = NewSession("Fork", forkedId),
         };
 
-        TomeViewModel viewModel = new(SessionId, dataSource, navigation, new FoundryFloorViewModel());
+        TomeViewModel viewModel = new(SessionId, dataSource, navigation, new FoundryFloorViewModel(new NullLogService()));
 
         await viewModel.LoadAsync(CancellationToken.None);
 
@@ -343,7 +343,7 @@ public class TomeViewModelTests
     }
 
     private static TomeViewModel CreateViewModel(FakeTomeDataSource dataSource, FoundryFloorViewModel? foundryFloor = null) =>
-        new(SessionId, dataSource, new NavigationService(), foundryFloor ?? new FoundryFloorViewModel());
+        new(SessionId, dataSource, new NavigationService(), foundryFloor ?? new FoundryFloorViewModel(new NullLogService()));
 
     private static SessionDetailDto NewSession(string title = "Session", Guid? id = null) =>
         new(

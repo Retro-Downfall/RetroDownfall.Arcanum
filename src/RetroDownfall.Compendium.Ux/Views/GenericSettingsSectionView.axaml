@@ -1,0 +1,11 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RetroDownfall.Compendium.Ux.Views.GenericSettingsSectionView">
+
+  <ScrollViewer>
+    <StackPanel x:Name="RootPanel"
+                Margin="24"
+                Spacing="8" />
+  </ScrollViewer>
+
+</UserControl>

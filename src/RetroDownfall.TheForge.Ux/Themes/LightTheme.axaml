@@ -1,0 +1,14 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <SolidColorBrush x:Key="ForgeBackgroundBrush" Color="#EEEEEE" />
+  <SolidColorBrush x:Key="ForgeSurfaceBrush" Color="#FFFFFF" />
+  <SolidColorBrush x:Key="ForgeSurfaceAltBrush" Color="#F9F9F9" />
+  <SolidColorBrush x:Key="ForgeBorderBrush" Color="#ADADAD" />
+  <SolidColorBrush x:Key="ForgeTextBrush" Color="#1A1A1A" />
+  <SolidColorBrush x:Key="ForgeMutedTextBrush" Color="#666666" />
+  <SolidColorBrush x:Key="ForgeAccentBrush" Color="#5649B0" />
+  <SolidColorBrush x:Key="ForgeSuccessBrush" Color="#107C10" />
+  <SolidColorBrush x:Key="ForgeErrorBrush" Color="#C50F1F" />
+  <SolidColorBrush x:Key="ForgeWarningBrush" Color="#9A6700" />
+  <SolidColorBrush x:Key="ForgeSelectionBrush" Color="#D6D1F5" />
+</ResourceDictionary>

@@ -93,6 +93,14 @@ internal static class HealthEndpoints
 
             }
 
+            bool httpsEnabled = settings.Value.Host.Https.Enabled;
+
+            int httpsPort = ArcanumSettingClamps.HostHttpsPort(settings.Value.Host.Https.Port);
+
+            string? httpsUrl = httpsEnabled
+                ? $"https://localhost:{httpsPort}"
+                : null;
+
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
                 OsDescription: RuntimeInformation.OSDescription,
@@ -109,7 +117,10 @@ internal static class HealthEndpoints
                 ArchiveSearchEnabled: settings.Value.Intelligence.EnableArchiveSearch,
                 ContextCompressionEnabled: settings.Value.Intelligence.EnableContextCompression,
                 TokenTrackingEnabled: settings.Value.Intelligence.EnableTokenTracking,
-                LlamaCppEnabled: llamaServerManager.IsLlamaServerAvailable());
+                LlamaCppEnabled: llamaServerManager.IsLlamaServerAvailable(),
+                HttpsEnabled: httpsEnabled,
+                HttpsPort: httpsPort,
+                HttpsUrl: httpsUrl);
 
             Result<InstanceMetadataDto> metadataResult = metadata;
 

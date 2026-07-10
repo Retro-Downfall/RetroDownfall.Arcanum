@@ -1,33 +1,65 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
-             x:Class="RetroDownfall.TheForge.Ux.App"
-             RequestedThemeVariant="Dark">
-  <!--
-    "RequestedThemeVariant" is temporarily hard-coded to Dark for the Phase 1 shell. Phase 10 wires
-    this to ForgeSettings.Theme instead (see docs/THE_FORGE.md "Theme & styling").
-  -->
+             xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
+             x:Class="RetroDownfall.TheForge.Ux.App">
 
   <Application.Styles>
     <FluentTheme />
-    <!-- Avalonia.AvaloniaEdit's Fluent style include is wired in Phase 5, once the Spell Editor
-         actually hosts a TextEditor control (avoids an unresolved avares:// style reference before
-         it's needed). -->
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+    <Style Selector="Window">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Background" Value="{DynamicResource ForgeBackgroundBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeTextBrush}" />
+    </Style>
+    <Style Selector="TextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="8,3" />
+      <Setter Property="MinHeight" Value="24" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="6,3" />
+      <Setter Property="MinHeight" Value="24" />
+    </Style>
+    <Style Selector="MenuItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+    <Style Selector="TabItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+      <Setter Property="Padding" Value="10,4" />
+    </Style>
+    <Style Selector="TreeViewItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+    <Style Selector="ListBoxItem">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
+    </Style>
+    <Style Selector="avaloniaEdit|TextEditor">
+      <Setter Property="FontFamily" Value="{DynamicResource ForgeCodeFontFamily}" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeCodeFontSize}" />
+    </Style>
   </Application.Styles>
 
   <Application.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://RetroDownfall.TheForge.Ux/Themes/Typography.axaml" />
         <ResourceInclude Source="avares://RetroDownfall.TheForge.Ux/Themes/Icons.axaml" />
       </ResourceDictionary.MergedDictionaries>
 
       <converters:BoolToGridLengthConverter x:Key="BoolToGridLengthConverter" />
-
-      <SolidColorBrush x:Key="ForgeShellBorderBrush" Color="#3A3A4C" />
-      <SolidColorBrush x:Key="ForgeShellSurfaceBrush" Color="#2A2A3C" />
-      <SolidColorBrush x:Key="ForgeShellMutedBrush" Color="#8888A0" />
-      <SolidColorBrush x:Key="ForgeShellAccentBrush" Color="#E8734A" />
-      <SolidColorBrush x:Key="ForgeShellTextBrush" Color="#E0E0E8" />
     </ResourceDictionary>
   </Application.Resources>
 

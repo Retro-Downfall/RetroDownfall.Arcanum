@@ -37,6 +37,26 @@ public enum ConfigSection
 
     Pricing,
 
+    Guardrails,
+
+    Embeddings,
+
+    Metrics,
+
+    Files,
+
+    Batches,
+
+    Cache,
+
+    StructuredOutput,
+
+    WebBrowsing,
+
+    ClientToolForwarding,
+
+    Budget,
+
 }
 
 public sealed record SectionDescriptor(
@@ -77,14 +97,71 @@ public static class SectionDescriptors
 
         new(ConfigSection.Cli, "CLI", "\ue7c7", "Terminal client options and theme"),
 
-        new(ConfigSection.Resilience, "Resilience", "\ue7c9", "Provider health probing and fallback"),
-
         new(ConfigSection.Scrying, "Scrying", "\ue7ca", "Vision/multimodality image gate"),
+
+        new(ConfigSection.Resilience, "Resilience", "\ue7c9", "Provider health probing and fallback"),
 
         new(ConfigSection.Moderations, "Moderations", "\ue7cb", "OpenAI-compatible content moderation"),
 
-        new(ConfigSection.Pricing, "Pricing", "\ue7cc", "Per-model cost tracking and budget"),
+        new(ConfigSection.Pricing, "Pricing", "\ue7cc", "Per-model cost tracking"),
+
+        new(ConfigSection.Budget, "Budget", "\ue7cd", "Daily spend limits and alerts"),
+
+        new(ConfigSection.Cache, "Cache", "\ue7ce", "Prompt caching for llama.cpp"),
+
+        new(ConfigSection.StructuredOutput, "Structured Output", "\ue7cf", "JSON schema validation"),
+
+        new(ConfigSection.WebBrowsing, "Web Browsing", "\ue7d0", "browse_web tool limits"),
+
+        new(ConfigSection.ClientToolForwarding, "Client Tools", "\ue7d1", "Forward client tools to providers"),
+
+        new(ConfigSection.Guardrails, "Guardrails", "\ue7d2", "PII, toxicity, topic filters"),
+
+        new(ConfigSection.Embeddings, "Embeddings", "\ue7d3", "The Weave / Divination / Saga"),
+
+        new(ConfigSection.Metrics, "Metrics", "\ue7d4", "Prometheus /metrics endpoint"),
+
+        new(ConfigSection.Files, "Files", "\ue7d5", "OpenAI-compatible file uploads"),
+
+        new(ConfigSection.Batches, "Batches", "\ue7d6", "OpenAI-compatible batch jobs"),
 
     ];
+
+    public static bool IsPolished(ConfigSection section) => section switch
+    {
+        ConfigSection.Host
+            or ConfigSection.Server
+            or ConfigSection.Providers
+            or ConfigSection.Intelligence
+            or ConfigSection.Mcp
+            or ConfigSection.LlamaCpp
+            or ConfigSection.Orchestration
+            or ConfigSection.Security
+            or ConfigSection.CommLink
+            or ConfigSection.Storage
+            or ConfigSection.Forge
+            or ConfigSection.ProvingGrounds
+            or ConfigSection.Cli
+            or ConfigSection.Scrying => true,
+        _ => false,
+    };
+
+    public static string? KeyPrefix(ConfigSection section) => section switch
+    {
+        ConfigSection.Resilience => "resilience.",
+        ConfigSection.Moderations => "moderations.",
+        ConfigSection.Pricing => "pricing.",
+        ConfigSection.Budget => "budget.",
+        ConfigSection.Cache => "cache.",
+        ConfigSection.StructuredOutput => "structuredOutput.",
+        ConfigSection.WebBrowsing => "webBrowsing.",
+        ConfigSection.ClientToolForwarding => "clientToolForwarding.",
+        ConfigSection.Guardrails => "guardrails.",
+        ConfigSection.Embeddings => "embeddings.",
+        ConfigSection.Metrics => "metrics.",
+        ConfigSection.Files => "files.",
+        ConfigSection.Batches => "batches.",
+        _ => null,
+    };
 
 }

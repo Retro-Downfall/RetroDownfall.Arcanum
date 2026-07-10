@@ -1,0 +1,94 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels"
+             xmlns:dockViews="using:RetroDownfall.TheForge.Ux.Views.Docking"
+             xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Docking.DockHostView"
+             x:DataType="vm:MainViewModel">
+  <UserControl.Resources>
+    <converters:DoubleToGridLengthConverter x:Key="DoubleToGridLengthConverter" />
+  </UserControl.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="{Binding DockLayout.Bottom.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}" />
+    </Grid.RowDefinitions>
+
+    <Grid Grid.Row="0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="{Binding DockLayout.Left.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="{Binding DockLayout.Right.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}" />
+      </Grid.ColumnDefinitions>
+
+      <dockViews:DockGroupView Grid.Column="0"
+                               DataContext="{Binding DockLayout.Left}"
+                               MinWidth="0" />
+
+      <GridSplitter Grid.Column="1"
+                    Width="5"
+                    ResizeDirection="Columns"
+                    IsVisible="{Binding !DockLayout.Left.IsCollapsed}" />
+
+      <Border Grid.Column="2" Padding="10">
+        <Grid RowDefinitions="Auto,*">
+          <TextBlock Grid.Row="0"
+                     Text="The Workbench"
+                     FontSize="{DynamicResource ForgeTitleFontSize}"
+                     FontWeight="SemiBold"
+                     Margin="0,0,0,8" />
+
+          <TabControl Grid.Row="1"
+                      ItemsSource="{Binding OpenDocuments}"
+                      SelectedItem="{Binding ActiveDocument}">
+            <TabControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Title}" />
+              </DataTemplate>
+            </TabControl.ItemTemplate>
+          </TabControl>
+
+          <Border Grid.Row="1"
+                  IsVisible="{Binding HasNoOpenDocuments}"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Padding="24">
+            <StackPanel Spacing="10">
+              <TextBlock Text="The Workbench is ready."
+                         FontSize="{DynamicResource ForgeTitleFontSize}"
+                         FontWeight="SemiBold"
+                         HorizontalAlignment="Center" />
+              <TextBlock Text="Open a spell, prompt, session, apprentice, trial, or config document to begin forging."
+                         Opacity="0.72"
+                         TextAlignment="Center"
+                         TextWrapping="Wrap"
+                         MaxWidth="520" />
+            </StackPanel>
+          </Border>
+        </Grid>
+      </Border>
+
+      <GridSplitter Grid.Column="3"
+                    Width="5"
+                    ResizeDirection="Columns"
+                    IsVisible="{Binding !DockLayout.Right.IsCollapsed}" />
+
+      <dockViews:DockGroupView Grid.Column="4"
+                               DataContext="{Binding DockLayout.Right}"
+                               MinWidth="0" />
+    </Grid>
+
+    <GridSplitter Grid.Row="1"
+                  Height="5"
+                  ResizeDirection="Rows"
+                  IsVisible="{Binding !DockLayout.Bottom.IsCollapsed}" />
+
+    <dockViews:DockGroupView Grid.Row="2"
+                             DataContext="{Binding DockLayout.Bottom}"
+                             MinHeight="0" />
+  </Grid>
+</UserControl>

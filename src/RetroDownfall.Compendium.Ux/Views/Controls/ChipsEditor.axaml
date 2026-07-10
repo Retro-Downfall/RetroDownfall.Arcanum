@@ -1,0 +1,36 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.ChipsEditor"
+             x:Name="Root">
+
+    <StackPanel Spacing="4">
+
+        <TextBlock Text="{Binding #Root.Label}"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource ForgeTextBrush}" />
+
+        <TextBlock Text="{Binding #Root.Description}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeMutedTextBrush}"
+                   IsVisible="{Binding #Root.Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+        <WrapPanel x:Name="ChipsContainer" />
+
+        <Grid ColumnDefinitions="*,Auto"
+              ColumnSpacing="8">
+
+            <TextBox x:Name="NewItemEntry"
+                     Grid.Column="0"
+                     Watermark="Add value..."
+                     KeyDown="OnNewItemKeyDown" />
+
+            <Button Grid.Column="1"
+                    Content="Add"
+                    Click="OnAddClicked" />
+
+        </Grid>
+
+    </StackPanel>
+
+</UserControl>

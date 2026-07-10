@@ -1194,4 +1194,236 @@ public sealed class ConfigurationValidatorTests
 
     }
 
+    [Fact]
+    public void Validate_HttpsDisabledWithNoCertificatePath_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings { Https = new HttpsSettings { Enabled = false } },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_HttpsEnabledWithoutCertificatePath_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings { Https = new HttpsSettings { Enabled = true, Port = 5443, CertificatePath = null } },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.certificatePath");
+
+    }
+
+    [Fact]
+    public void Validate_HttpsPortEqualsHttpPort_ReturnsFailure()
+    {
+
+        string certificatePath = Path.GetTempFileName();
+
+        try
+        {
+
+            ArcanumSettings settings = new()
+            {
+                Host = new HostSettings
+                {
+                    Port = 5001,
+                    Https = new HttpsSettings { Enabled = true, Port = 5001, CertificatePath = certificatePath },
+                },
+            };
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.port");
+
+        }
+        finally
+        {
+
+            File.Delete(certificatePath);
+
+        }
+
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(70_000)]
+    public void Validate_HttpsPortOutsideClamp_ReturnsFailure(int port)
+    {
+
+        string certificatePath = Path.GetTempFileName();
+
+        try
+        {
+
+            ArcanumSettings settings = new()
+            {
+                Host = new HostSettings
+                {
+                    Port = 5001,
+                    Https = new HttpsSettings { Enabled = true, Port = port, CertificatePath = certificatePath },
+                },
+            };
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.port");
+
+        }
+        finally
+        {
+
+            File.Delete(certificatePath);
+
+        }
+
+    }
+
+    [Fact]
+    public void Validate_HttpsEnabledWithMissingCertificateFile_ReturnsFailure()
+    {
+
+        string missing = Path.Combine(Path.GetTempPath(), $"arcanum-missing-{Guid.NewGuid():N}.pfx");
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings
+            {
+                Port = 5001,
+                Https = new HttpsSettings { Enabled = true, Port = 5443, CertificatePath = missing },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.certificatePath");
+
+    }
+
+    [Fact]
+    public void Validate_HttpsEnabledWithExistingPfx_ReturnsSuccess()
+    {
+
+        string certificatePath = Path.GetTempFileName();
+
+        try
+        {
+
+            ArcanumSettings settings = new()
+            {
+                Host = new HostSettings
+                {
+                    Port = 5001,
+                    Https = new HttpsSettings
+                    {
+                        Enabled = true,
+                        Port = 5443,
+                        CertificatePath = certificatePath,
+                        CertificatePassword = "secret",
+                    },
+                },
+            };
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsSuccess);
+
+        }
+        finally
+        {
+
+            File.Delete(certificatePath);
+
+        }
+
+    }
+
+    [Fact]
+    public void Validate_HttpsPemWithMissingPrivateKey_ReturnsFailure()
+    {
+
+        string certificatePath = Path.GetTempFileName();
+
+        string missingKey = Path.Combine(Path.GetTempPath(), $"arcanum-missing-{Guid.NewGuid():N}.key");
+
+        try
+        {
+
+            ArcanumSettings settings = new()
+            {
+                Host = new HostSettings
+                {
+                    Port = 5001,
+                    Https = new HttpsSettings
+                    {
+                        Enabled = true,
+                        Port = 5443,
+                        CertificatePath = certificatePath,
+                        PrivateKeyPath = missingKey,
+                    },
+                },
+            };
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.privateKeyPath");
+
+        }
+        finally
+        {
+
+            File.Delete(certificatePath);
+
+        }
+
+    }
+
+    [Fact]
+    public void Validate_HttpsErrorsNeverIncludePassword()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings
+            {
+                Port = 5001,
+                Https = new HttpsSettings
+                {
+                    Enabled = true,
+                    Port = 5001,
+                    CertificatePath = null,
+                    CertificatePassword = "top-secret-password",
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.DoesNotContain(result.Error.Details!, static e => e.Detail.Contains("top-secret-password", StringComparison.Ordinal));
+
+    }
+
 }

@@ -34,10 +34,6 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
 
-  </ItemGroup>
-
-  <ItemGroup>
-
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Cli" />
@@ -47,6 +43,8 @@
   <ItemGroup>
 
     <ProjectReference Include="..\RetroDownfall.Arcanum.Core\RetroDownfall.Arcanum.Core.csproj" />
+
+    <ProjectReference Include="..\RetroDownfall.Arcanum.Secrets\RetroDownfall.Arcanum.Secrets.csproj" />
 
   </ItemGroup>
 

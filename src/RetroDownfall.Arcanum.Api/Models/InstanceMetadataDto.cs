@@ -16,4 +16,7 @@ public sealed record InstanceMetadataDto(
     bool ArchiveSearchEnabled,
     bool ContextCompressionEnabled,
     bool TokenTrackingEnabled,
-    bool LlamaCppEnabled);
+    bool LlamaCppEnabled,
+    bool HttpsEnabled,
+    int HttpsPort,
+    string? HttpsUrl);

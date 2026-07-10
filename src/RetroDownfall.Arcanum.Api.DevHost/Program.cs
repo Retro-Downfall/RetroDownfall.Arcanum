@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
+using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
@@ -41,12 +42,7 @@ int listenPort = ArcanumSettingClamps.HostPort(configuredPort);
 builder.WebHost.ConfigureKestrel(
     (WebHostBuilderContext ctx, KestrelServerOptions options) =>
     {
-        options.ListenLocalhost(listenPort);
-
-        long maxBodyBytes = ArcanumSettingClamps.MaxRequestBodyBytes(
-            ReadConfiguredMaxRequestBodyBytes(ctx.Configuration));
-
-        options.Limits.MaxRequestBodySize = maxBodyBytes;
+        ArcanumKestrelConfigurator.Configure(options, ctx.Configuration, listenAny: false);
     });
 
 builder.Logging.ClearProviders();
@@ -88,18 +84,4 @@ try
 finally
 {
     Log.CloseAndFlush();
-}
-
-static long ReadConfiguredMaxRequestBodyBytes(IConfiguration configuration)
-{
-    string? raw = configuration["Arcanum:Host:MaxRequestBodyBytes"];
-
-    if (string.IsNullOrWhiteSpace(raw))
-    {
-        return new HostSettings().MaxRequestBodyBytes;
-    }
-
-    return long.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
-        ? parsed
-        : new HostSettings().MaxRequestBodyBytes;
 }

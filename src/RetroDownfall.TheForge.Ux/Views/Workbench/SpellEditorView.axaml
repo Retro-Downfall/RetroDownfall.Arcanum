@@ -7,7 +7,7 @@
   <Grid RowDefinitions="Auto,*">
     <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Spacing="2">
-        <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
         <TextBlock Text="{Binding Spell.Description}" Opacity="0.68" />
       </StackPanel>
 
@@ -21,7 +21,7 @@
     </DockPanel>
 
     <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
-      <Border Grid.Column="0" BorderThickness="1" BorderBrush="{DynamicResource ForgeShellBorderBrush}" Padding="4">
+      <Border Grid.Column="0" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4">
         <avaloniaEdit:TextEditor x:Name="BodyEditor"
                                  ShowLineNumbers="True"
                                  WordWrap="True" />
@@ -34,7 +34,7 @@
           <TextBox Text="{Binding Frontmatter}" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
         </TabItem>
         <TabItem Header="SKILL.json">
-          <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeShellBorderBrush}" Padding="4">
+          <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4">
             <avaloniaEdit:TextEditor x:Name="SkillJsonEditor"
                                      ShowLineNumbers="True"
                                      WordWrap="True" />

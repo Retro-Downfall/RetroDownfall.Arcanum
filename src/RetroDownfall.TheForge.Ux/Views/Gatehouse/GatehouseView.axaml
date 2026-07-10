@@ -1,0 +1,83 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Gatehouse"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Gatehouse.GatehouseView"
+             x:DataType="vm:GatehouseViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+    <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+      <TextBlock DockPanel.Dock="Left"
+                 Text="{Binding Title}"
+                 FontSize="{DynamicResource ForgeTitleFontSize}"
+                 FontWeight="SemiBold"
+                 VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right"
+                 Text="Refreshing…"
+                 Opacity="0.65"
+                 Margin="0,0,8,0"
+                 VerticalAlignment="Center"
+                 IsVisible="{Binding IsRefreshing}" />
+      <Button DockPanel.Dock="Right"
+              Content="Refresh"
+              Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1"
+               Text="{Binding LastError}"
+               Foreground="{DynamicResource ForgeErrorBrush}"
+               TextWrapping="Wrap"
+               Margin="0,0,0,8"
+               IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <Grid Grid.Row="2">
+      <TextBlock Text="{Binding EmptyState}"
+                 IsVisible="{Binding HasNoWards}"
+                 Opacity="0.72"
+                 TextWrapping="Wrap"
+                 Margin="8" />
+
+      <ListBox ItemsSource="{Binding Wards}"
+               IsVisible="{Binding !HasNoWards}"
+               BorderThickness="0">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:WardCardViewModel">
+            <Border Margin="0,0,0,10"
+                    Padding="10"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource ForgeBorderBrush}">
+              <StackPanel Spacing="6">
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left"
+                             Text="{Binding ToolName}"
+                             FontWeight="SemiBold" />
+                  <TextBlock DockPanel.Dock="Right"
+                             Text="{Binding CountdownText}"
+                             Opacity="0.75" />
+                </DockPanel>
+
+                <TextBlock Text="{Binding ArgumentsSummary}"
+                           TextWrapping="Wrap"
+                           Opacity="0.8"
+                           FontFamily="Cascadia Mono, Consolas, monospace" />
+
+                <TextBlock Text="{Binding SessionId, StringFormat=Session: {0}}"
+                           Opacity="0.65"
+                           IsVisible="{Binding SessionId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                <TextBox Text="{Binding DenyReason}"
+                         Watermark="Deny reason (optional)…"
+                         MinHeight="32" />
+
+                <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                  <Button Content="Approve"
+                          Command="{Binding ApproveCommand}" />
+                  <Button Content="Deny"
+                          Command="{Binding DenyCommand}" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+  </Grid>
+</UserControl>

@@ -48,6 +48,12 @@ public sealed class MetaEndpointTests
 
         Assert.False(string.IsNullOrWhiteSpace(body.Data.GrimoireDirectory));
 
+        Assert.False(body.Data.HttpsEnabled);
+
+        Assert.Null(body.Data.HttpsUrl);
+
+        Assert.Equal(5443, body.Data.HttpsPort);
+
     }
 
 }

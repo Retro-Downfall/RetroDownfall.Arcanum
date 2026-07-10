@@ -1,13 +1,14 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.TomeView"
              x:DataType="vm:TomeViewModel">
   <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
 
     <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Spacing="2">
-        <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
         <TextBlock Text="{Binding Session.Status}" Opacity="0.68" />
       </StackPanel>
 
@@ -19,17 +20,10 @@
       </StackPanel>
     </DockPanel>
 
-    <Border Grid.Row="1"
-            Height="10"
-            Margin="0,0,0,8"
-            CornerRadius="4"
-            BorderThickness="1"
-            BorderBrush="{DynamicResource ForgeShellBorderBrush}"
-            ClipToBounds="True">
-      <Border Background="{DynamicResource ForgeShellAccentBrush}"
-              HorizontalAlignment="Left"
-              Width="{Binding ManaPercent}" />
-    </Border>
+    <controls:ManaBar Grid.Row="1"
+                       ManaPercent="{Binding ManaPercent}"
+                       Height="10"
+                       Margin="0,0,0,8" />
 
     <ScrollViewer Grid.Row="2">
       <ItemsControl ItemsSource="{Binding Messages}">
@@ -38,7 +32,7 @@
             <Border Margin="0,0,0,10"
                     Padding="10"
                     BorderThickness="1"
-                    BorderBrush="{DynamicResource ForgeShellBorderBrush}">
+                    BorderBrush="{DynamicResource ForgeBorderBrush}">
               <StackPanel Spacing="6">
                 <TextBlock Text="{Binding Role}"
                            FontWeight="SemiBold"
@@ -56,7 +50,7 @@
                     <TextBlock Text="{Binding ToolCall.Result}" TextWrapping="Wrap" />
                     <TextBlock Text="{Binding ToolCall.ErrorMessage}"
                                IsVisible="{Binding ToolCall.HasError}"
-                               Foreground="{DynamicResource ForgeShellAccentBrush}"
+                               Foreground="{DynamicResource ForgeAccentBrush}"
                                TextWrapping="Wrap" />
                   </StackPanel>
                 </Expander>

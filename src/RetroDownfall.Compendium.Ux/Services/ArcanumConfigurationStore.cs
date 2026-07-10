@@ -135,7 +135,18 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
 
-            File.Replace(tempPath, _filePath, destinationBackupFileName: null);
+            if (File.Exists(_filePath))
+            {
+
+                File.Replace(tempPath, _filePath, destinationBackupFileName: null);
+
+            }
+            else
+            {
+
+                File.Move(tempPath, _filePath);
+
+            }
 
             return new ConfigurationWriteResult(true, [], null);
 

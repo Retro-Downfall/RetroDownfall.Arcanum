@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -14,6 +16,12 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     private readonly IArcanumConfigurationStore _store;
 
     private readonly IDialogService _dialogService;
+
+    private readonly IUiDispatcher _uiDispatcher;
+
+    private readonly Dictionary<ConfigSection, GenericSectionViewModel> _genericSections = new();
+
+    private readonly HashSet<INotifyPropertyChanged> _nestedDirtySubscriptions = [];
 
     [ObservableProperty] private bool _isDirty;
 
@@ -71,20 +79,30 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public IAsyncRelayCommand RefreshCommand { get; }
 
+    public IAsyncRelayCommand CancelCommand { get; }
+
     public IRelayCommand<SectionDescriptor> SelectSectionCommand { get; }
 
     public ConfigurationViewModel(
         IArcanumConfigurationStore store,
-        IDialogService dialogService)
+        IDialogService dialogService,
+        IUiDispatcher uiDispatcher,
+        LocalCertificateGenerator? certificateGenerator = null)
     {
 
         _store = store;
 
         _dialogService = dialogService;
 
+        _uiDispatcher = uiDispatcher;
+
+        Host.AttachServices(certificateGenerator ?? new LocalCertificateGenerator(), dialogService);
+
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && !IsSaving && !HasExternalChange);
 
         RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsSaving);
+
+        CancelCommand = new AsyncRelayCommand(CancelAsync, () => IsDirty && !IsSaving);
 
         SelectSectionCommand = new RelayCommand<SectionDescriptor>(OnSelectSection);
 
@@ -93,6 +111,59 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         WireDirtyTracking();
 
         _ = LoadAsync();
+
+    }
+
+    public void MarkDirty()
+    {
+
+        IsDirty = true;
+
+        SaveCommand.NotifyCanExecuteChanged();
+
+        CancelCommand.NotifyCanExecuteChanged();
+
+    }
+
+    partial void OnIsDirtyChanged(bool value)
+    {
+
+        SaveCommand.NotifyCanExecuteChanged();
+
+        CancelCommand.NotifyCanExecuteChanged();
+
+    }
+
+    partial void OnIsSavingChanged(bool value)
+    {
+
+        SaveCommand.NotifyCanExecuteChanged();
+
+        RefreshCommand.NotifyCanExecuteChanged();
+
+        CancelCommand.NotifyCanExecuteChanged();
+
+    }
+
+    partial void OnHasExternalChangeChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
+
+    public GenericSectionViewModel GetOrCreateGenericSection(ConfigSection section)
+    {
+
+        if (_genericSections.TryGetValue(section, out GenericSectionViewModel? existing))
+        {
+
+            return existing;
+
+        }
+
+        GenericSectionViewModel created = new(this, section);
+
+        ReloadGenericSection(created);
+
+        _genericSections[section] = created;
+
+        return created;
 
     }
 
@@ -111,9 +182,14 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     private void OnExternalChange(object? sender, EventArgs e)
     {
 
-        HasExternalChange = true;
+        _uiDispatcher.Post(() =>
+        {
 
-        StatusMessage = "arcanum.json changed on disk.";
+            HasExternalChange = true;
+
+            StatusMessage = "arcanum.json changed on disk.";
+
+        });
 
     }
 
@@ -121,6 +197,13 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     {
 
         ArcanumSettings settings = await _store.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+
+        await _uiDispatcher.InvokeAsync(() => ApplyLoadedSettings(settings)).ConfigureAwait(false);
+
+    }
+
+    private void ApplyLoadedSettings(ArcanumSettings settings)
+    {
 
         _snapshot = settings;
 
@@ -165,6 +248,13 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         Scrying.LoadFrom(settings.Scrying);
 
+        foreach (GenericSectionViewModel generic in _genericSections.Values)
+        {
+
+            ReloadGenericSection(generic);
+
+        }
+
         IsDirty = false;
 
         HasExternalChange = false;
@@ -174,6 +264,40 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         LastSavedAt = _store.GetLastWriteTimeUtc();
 
         StatusMessage = $"Loaded from {_store.ConfigurationFilePath}";
+
+    }
+
+    private void ReloadGenericSection(GenericSectionViewModel section)
+    {
+
+        string? prefix = SectionDescriptors.KeyPrefix(section.Section);
+
+        IEnumerable<SettingDescriptor> descriptors = SettingDescriptors.All
+            .Where(d =>
+                prefix is not null
+                    ? d.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    : d.Section == section.Section);
+
+        List<GenericSettingFieldViewModel> fields = [];
+
+        foreach (SettingDescriptor descriptor in descriptors)
+        {
+
+            // Skip dictionary kinds in the generic editor for v1 (complex nested maps).
+            if (descriptor.Kind == SettingKind.Dictionary)
+            {
+
+                continue;
+
+            }
+
+            object? value = GenericSettingsUpdater.ReadValue(_snapshot, descriptor.Key);
+
+            fields.Add(new GenericSettingFieldViewModel(descriptor, value));
+
+        }
+
+        section.LoadFrom(fields);
 
     }
 
@@ -196,58 +320,59 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
             ConfigurationWriteResult result = await _store.WriteAsync(settings, CancellationToken.None).ConfigureAwait(false);
 
-            if (result.IsSuccess)
+            await _uiDispatcher.InvokeAsync(() =>
             {
 
-                _snapshot = settings;
-
-                IsDirty = false;
-
-                HasExternalChange = false;
-
-                LastSavedAt = _store.GetLastWriteTimeUtc();
-
-                StatusMessage = "Saved arcanum.json";
-
-                ValidationErrorsByPointer = new Dictionary<string, string>();
-
-            }
-            else
-
-            {
-
-                StatusMessage = result.ErrorMessage ?? "Save failed.";
-
-                Dictionary<string, string> byPointer = new(StringComparer.Ordinal);
-
-                foreach (ConfigurationValidationError error in result.ValidationErrors)
-
+                if (result.IsSuccess)
                 {
 
-                    byPointer[error.Pointer] = error.Detail;
+                    _snapshot = settings;
+
+                    IsDirty = false;
+
+                    HasExternalChange = false;
+
+                    LastSavedAt = _store.GetLastWriteTimeUtc();
+
+                    StatusMessage = "Saved arcanum.json";
+
+                    ValidationErrorsByPointer = new Dictionary<string, string>();
+
+                }
+                else
+                {
+
+                    StatusMessage = result.ErrorMessage ?? "Save failed.";
+
+                    Dictionary<string, string> byPointer = new(StringComparer.Ordinal);
+
+                    foreach (ConfigurationValidationError error in result.ValidationErrors)
+                    {
+
+                        byPointer[error.Pointer] = error.Detail;
+
+                    }
+
+                    ValidationErrorsByPointer = byPointer;
 
                 }
 
-                ValidationErrorsByPointer = byPointer;
+            }).ConfigureAwait(false);
 
-                if (result.ValidationErrors.Count > 0)
+            if (!result.IsSuccess && result.ValidationErrors.Count > 0)
+            {
 
-                {
+                string first = result.ValidationErrors[0].Detail;
 
-                    string first = result.ValidationErrors[0].Detail;
-
-                    await _dialogService.ShowAlertAsync("Validation Error", first).ConfigureAwait(false);
-
-                }
+                await _dialogService.ShowAlertAsync("Validation Error", first).ConfigureAwait(false);
 
             }
 
         }
         finally
-
         {
 
-            IsSaving = false;
+            await _uiDispatcher.InvokeAsync(() => IsSaving = false).ConfigureAwait(false);
 
         }
 
@@ -264,7 +389,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         }
 
         if (IsDirty)
-
         {
 
             bool discard = await _dialogService
@@ -272,7 +396,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                 .ConfigureAwait(false);
 
             if (!discard)
-
             {
 
                 return;
@@ -285,10 +408,28 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     }
 
-    private ArcanumSettings BuildSettings()
+    private Task CancelAsync()
     {
 
-        return _snapshot with
+        if (IsSaving || !IsDirty)
+        {
+
+            return Task.CompletedTask;
+
+        }
+
+        ApplyLoadedSettings(_snapshot);
+
+        StatusMessage = "Discarded local edits.";
+
+        return Task.CompletedTask;
+
+    }
+
+    public ArcanumSettings BuildSettings()
+    {
+
+        ArcanumSettings polished = _snapshot with
         {
 
             Host = Host.Build(),
@@ -347,24 +488,277 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         };
 
+        List<GenericSettingFieldViewModel> genericFields = _genericSections.Values
+            .SelectMany(s => s.Fields)
+            .ToList();
+
+        return GenericSettingsUpdater.ApplyFields(polished, genericFields);
+
     }
 
     private void WireDirtyTracking()
     {
 
         foreach (ObservableObject section in AllSectionViewModels())
-
         {
 
-            section.PropertyChanged += (_, _) => IsDirty = true;
+            section.PropertyChanged += (_, _) => MarkDirty();
 
         }
 
-        Providers.Providers.CollectionChanged += (_, _) => IsDirty = true;
+        Providers.Providers.CollectionChanged += OnProvidersCollectionChanged;
 
-        Orchestration.Jobs.CollectionChanged += (_, _) => IsDirty = true;
+        Orchestration.Jobs.CollectionChanged += OnJobsCollectionChanged;
+
+        foreach (ProvidersSectionViewModel.ProviderViewModel provider in Providers.Providers)
+        {
+
+            SubscribeProviderDirty(provider);
+
+        }
+
+        foreach (OrchestrationSectionViewModel.UnseenServantJobViewModel job in Orchestration.Jobs)
+        {
+
+            SubscribeNestedDirty(job);
+
+        }
 
     }
+
+    private void OnProvidersCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+
+        MarkDirty();
+
+        if (e.OldItems is not null)
+        {
+
+            foreach (object item in e.OldItems)
+            {
+
+                if (item is ProvidersSectionViewModel.ProviderViewModel provider)
+                {
+
+                    UnsubscribeProviderDirty(provider);
+
+                }
+
+            }
+
+        }
+
+        if (e.NewItems is not null)
+        {
+
+            foreach (object item in e.NewItems)
+            {
+
+                if (item is ProvidersSectionViewModel.ProviderViewModel provider)
+                {
+
+                    SubscribeProviderDirty(provider);
+
+                }
+
+            }
+
+        }
+
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+
+            foreach (INotifyPropertyChanged nested in _nestedDirtySubscriptions.ToArray())
+            {
+
+                if (nested is ProvidersSectionViewModel.ProviderViewModel
+                    or ProvidersSectionViewModel.ModelEntryViewModel)
+                {
+
+                    UnsubscribeNestedDirty(nested);
+
+                }
+
+            }
+
+            foreach (ProvidersSectionViewModel.ProviderViewModel provider in Providers.Providers)
+            {
+
+                SubscribeProviderDirty(provider);
+
+            }
+
+        }
+
+    }
+
+    private void OnJobsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+
+        MarkDirty();
+
+        if (e.OldItems is not null)
+        {
+
+            foreach (object item in e.OldItems)
+            {
+
+                if (item is INotifyPropertyChanged nested)
+                {
+
+                    UnsubscribeNestedDirty(nested);
+
+                }
+
+            }
+
+        }
+
+        if (e.NewItems is not null)
+        {
+
+            foreach (object item in e.NewItems)
+            {
+
+                if (item is INotifyPropertyChanged nested)
+                {
+
+                    SubscribeNestedDirty(nested);
+
+                }
+
+            }
+
+        }
+
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+
+            foreach (INotifyPropertyChanged nested in _nestedDirtySubscriptions.ToArray())
+            {
+
+                if (nested is OrchestrationSectionViewModel.UnseenServantJobViewModel)
+                {
+
+                    UnsubscribeNestedDirty(nested);
+
+                }
+
+            }
+
+            foreach (OrchestrationSectionViewModel.UnseenServantJobViewModel job in Orchestration.Jobs)
+            {
+
+                SubscribeNestedDirty(job);
+
+            }
+
+        }
+
+    }
+
+    private void SubscribeProviderDirty(ProvidersSectionViewModel.ProviderViewModel provider)
+    {
+
+        SubscribeNestedDirty(provider);
+
+        provider.Models.CollectionChanged += OnProviderModelsCollectionChanged;
+
+        foreach (ProvidersSectionViewModel.ModelEntryViewModel model in provider.Models)
+        {
+
+            SubscribeNestedDirty(model);
+
+        }
+
+    }
+
+    private void UnsubscribeProviderDirty(ProvidersSectionViewModel.ProviderViewModel provider)
+    {
+
+        provider.Models.CollectionChanged -= OnProviderModelsCollectionChanged;
+
+        foreach (ProvidersSectionViewModel.ModelEntryViewModel model in provider.Models)
+        {
+
+            UnsubscribeNestedDirty(model);
+
+        }
+
+        UnsubscribeNestedDirty(provider);
+
+    }
+
+    private void OnProviderModelsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+
+        MarkDirty();
+
+        if (e.OldItems is not null)
+        {
+
+            foreach (object item in e.OldItems)
+            {
+
+                if (item is INotifyPropertyChanged nested)
+                {
+
+                    UnsubscribeNestedDirty(nested);
+
+                }
+
+            }
+
+        }
+
+        if (e.NewItems is not null)
+        {
+
+            foreach (object item in e.NewItems)
+            {
+
+                if (item is INotifyPropertyChanged nested)
+                {
+
+                    SubscribeNestedDirty(nested);
+
+                }
+
+            }
+
+        }
+
+    }
+
+    private void SubscribeNestedDirty(INotifyPropertyChanged nested)
+    {
+
+        if (!_nestedDirtySubscriptions.Add(nested))
+        {
+
+            return;
+
+        }
+
+        nested.PropertyChanged += OnNestedPropertyChanged;
+
+    }
+
+    private void UnsubscribeNestedDirty(INotifyPropertyChanged nested)
+    {
+
+        if (!_nestedDirtySubscriptions.Remove(nested))
+        {
+
+            return;
+
+        }
+
+        nested.PropertyChanged -= OnNestedPropertyChanged;
+
+    }
+
+    private void OnNestedPropertyChanged(object? sender, PropertyChangedEventArgs e) => MarkDirty();
 
     private IEnumerable<ObservableObject> AllSectionViewModels()
     {

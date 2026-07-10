@@ -2,11 +2,16 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 using RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
 using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
+using RetroDownfall.TheForge.Ux.ViewModels.Docking;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
@@ -17,11 +22,10 @@ using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 namespace RetroDownfall.TheForge.Ux.ViewModels;
 
 /// <summary>
-/// Root ViewModel for the Phase 3 shell: panel visibility, Workbench tab collection, connection
-/// commands, and event-based routing via <see cref="INavigationService"/>. Feature-rich panel
-/// content lands in later milestones, but the shell layout and navigation seams are in place now.
+/// Root ViewModel for the shell: dock layout, Workbench tab collection, connection
+/// commands, and event-based routing via <see cref="INavigationService"/>.
 /// </summary>
-public sealed partial class MainViewModel : ViewModelBase
+public sealed partial class MainViewModel : ViewModelBase, IDisposable
 {
 
     private readonly IArcanumConnection _connection;
@@ -32,19 +36,14 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private readonly IWorkbenchDocumentFactory _documentFactory;
 
+    private readonly ILogger<MainViewModel>? _logger;
+
     private bool _atelierLoaded;
+
+    private bool _disposed;
 
     [ObservableProperty]
     private ConnectionState _connectionState;
-
-    [ObservableProperty]
-    private bool _isAtelierVisible = true;
-
-    [ObservableProperty]
-    private bool _isRightPanelVisible = true;
-
-    [ObservableProperty]
-    private bool _isFoundryFloorVisible = true;
 
     [ObservableProperty]
     private ViewModelBase? _activeDocument;
@@ -53,6 +52,8 @@ public sealed partial class MainViewModel : ViewModelBase
 
     /// <summary>True when no Workbench documents are open; drives the shell's empty-state overlay.</summary>
     public bool HasNoOpenDocuments => OpenDocuments.Count == 0;
+
+    public DockLayoutViewModel DockLayout { get; }
 
     public AtelierViewModel Atelier { get; }
 
@@ -81,12 +82,17 @@ public sealed partial class MainViewModel : ViewModelBase
         FoundryFloorViewModel foundryFloor,
         HearthViewModel hearth,
         AnvilViewModel anvil,
-        IWorkbenchDocumentFactory documentFactory)
+        IWorkbenchDocumentFactory documentFactory,
+        IForgeSettingsStore settingsStore,
+        IOptionsMonitor<ForgeSettings> settings,
+        ILogger<MainViewModel>? logger = null)
     {
 
         _connection = connection;
 
         _navigation = navigation;
+
+        _logger = logger;
 
         Title = "The Forge — Inference IDE";
 
@@ -110,6 +116,27 @@ public sealed partial class MainViewModel : ViewModelBase
 
         _connectionState = connection.State;
 
+        DockLayout = new DockLayoutViewModel(
+            settingsStore,
+            settings.CurrentValue.LayoutState,
+            logger: null);
+
+        WireDockContent();
+
+        ApplyToolVisibility();
+
+        DockLayout.Left.PropertyChanged += OnDockGroupPropertyChanged;
+
+        DockLayout.Right.PropertyChanged += OnDockGroupPropertyChanged;
+
+        DockLayout.Bottom.PropertyChanged += OnDockGroupPropertyChanged;
+
+        DockLayout.Left.Tools.CollectionChanged += OnDockToolsChanged;
+
+        DockLayout.Right.Tools.CollectionChanged += OnDockToolsChanged;
+
+        DockLayout.Bottom.Tools.CollectionChanged += OnDockToolsChanged;
+
         _connection.PropertyChanged += OnConnectionPropertyChanged;
 
         OpenDocuments.CollectionChanged += OnOpenDocumentsCollectionChanged;
@@ -123,28 +150,31 @@ public sealed partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void ToggleAtelier()
-    {
-
-        IsAtelierVisible = !IsAtelierVisible;
-
-    }
+    private void ResetWindowLayout() => DockLayout.ResetLayout();
 
     [RelayCommand]
-    private void ToggleRightPanel()
-    {
-
-        IsRightPanelVisible = !IsRightPanelVisible;
-
-    }
+    private void ShowAtelier() => DockLayout.ShowTool(DockToolId.Atelier);
 
     [RelayCommand]
-    private void ToggleFoundryFloor()
-    {
+    private void ShowGatehouse() => DockLayout.ShowTool(DockToolId.Gatehouse);
 
-        IsFoundryFloorVisible = !IsFoundryFloorVisible;
+    [RelayCommand]
+    private void ShowTreasury() => DockLayout.ShowTool(DockToolId.Treasury);
 
-    }
+    [RelayCommand]
+    private void ShowArsenal() => DockLayout.ShowTool(DockToolId.Arsenal);
+
+    [RelayCommand]
+    private void ShowWarTable() => DockLayout.ShowTool(DockToolId.WarTable);
+
+    [RelayCommand]
+    private void ShowOutput() => DockLayout.ShowTool(DockToolId.Output);
+
+    [RelayCommand]
+    private void ShowLogs() => DockLayout.ShowTool(DockToolId.Logs);
+
+    [RelayCommand]
+    private void ShowHearth() => DockLayout.ShowTool(DockToolId.Hearth);
 
     [RelayCommand]
     private void Connect()
@@ -162,6 +192,146 @@ public sealed partial class MainViewModel : ViewModelBase
 
     }
 
+    public void Dispose()
+    {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        _disposed = true;
+
+        DockLayout.Left.PropertyChanged -= OnDockGroupPropertyChanged;
+
+        DockLayout.Right.PropertyChanged -= OnDockGroupPropertyChanged;
+
+        DockLayout.Bottom.PropertyChanged -= OnDockGroupPropertyChanged;
+
+        DockLayout.Left.Tools.CollectionChanged -= OnDockToolsChanged;
+
+        DockLayout.Right.Tools.CollectionChanged -= OnDockToolsChanged;
+
+        DockLayout.Bottom.Tools.CollectionChanged -= OnDockToolsChanged;
+
+        _connection.PropertyChanged -= OnConnectionPropertyChanged;
+
+        OpenDocuments.CollectionChanged -= OnOpenDocumentsCollectionChanged;
+
+        _navigation.DocumentOpenRequested -= OnDocumentOpenRequested;
+
+        _navigation.DocumentCloseRequested -= OnDocumentCloseRequested;
+
+        _navigation.PanelFocusRequested -= OnPanelFocusRequested;
+
+        foreach (ViewModelBase document in OpenDocuments.ToArray())
+        {
+
+            if (document is IDisposable disposable)
+            {
+
+                disposable.Dispose();
+
+            }
+
+        }
+
+        OpenDocuments.Clear();
+
+        _documentsByKey.Clear();
+
+        DockLayout.Dispose();
+
+        WarTable.Dispose();
+
+        Gatehouse.Dispose();
+
+        Hearth.Dispose();
+
+        Anvil.Dispose();
+
+        // FoundryFloorViewModel is a DI singleton — leave disposal to ServiceProvider.
+
+        GC.SuppressFinalize(this);
+
+    }
+
+    private void WireDockContent()
+    {
+
+        DockLayout.SetContent(DockToolId.Atelier, Atelier);
+
+        DockLayout.SetContent(DockToolId.Gatehouse, Gatehouse);
+
+        DockLayout.SetContent(DockToolId.Treasury, Treasury);
+
+        DockLayout.SetContent(DockToolId.Arsenal, Arsenal);
+
+        DockLayout.SetContent(DockToolId.WarTable, WarTable);
+
+        DockLayout.SetContent(DockToolId.Output, new OutputToolContent(FoundryFloor));
+
+        DockLayout.SetContent(DockToolId.Logs, new LogsToolContent(FoundryFloor));
+
+        DockLayout.SetContent(DockToolId.Hearth, Hearth);
+
+    }
+
+    private void ApplyToolVisibility()
+    {
+
+        string? rightSelected = DockLayout.Right.SelectedTool?.ToolId;
+
+        string? bottomSelected = DockLayout.Bottom.SelectedTool?.ToolId;
+
+        string? leftSelected = DockLayout.Left.SelectedTool?.ToolId;
+
+        Gatehouse.IsVisible =
+            rightSelected == DockToolId.Gatehouse
+            || bottomSelected == DockToolId.Gatehouse
+            || leftSelected == DockToolId.Gatehouse;
+
+        WarTable.IsVisible =
+            rightSelected == DockToolId.WarTable
+            || bottomSelected == DockToolId.WarTable
+            || leftSelected == DockToolId.WarTable;
+
+        bool foundryVisible = !DockLayout.Bottom.IsCollapsed
+            && DockLayout.Bottom.Tools.Any(t =>
+                t.ToolId is DockToolId.Output or DockToolId.Logs);
+
+        // Also stream logs if Output/Logs were moved to another region and selected.
+        if (!foundryVisible)
+        {
+
+            foundryVisible =
+                leftSelected is DockToolId.Output or DockToolId.Logs
+                || rightSelected is DockToolId.Output or DockToolId.Logs;
+
+        }
+
+        FoundryFloor.IsVisible = foundryVisible;
+
+    }
+
+    private void OnDockToolsChanged(object? sender, NotifyCollectionChangedEventArgs e) => ApplyToolVisibility();
+
+    private void OnDockGroupPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+
+        if (e.PropertyName is nameof(DockGroupViewModel.SelectedTool)
+            or nameof(DockGroupViewModel.IsCollapsed)
+            or nameof(DockGroupViewModel.Tools))
+        {
+
+            ApplyToolVisibility();
+
+        }
+
+    }
+
     private void OnConnectionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
 
@@ -175,7 +345,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
                 _atelierLoaded = true;
 
-                _ = Atelier.RefreshCommand.ExecuteAsync(null);
+                TaskUtilities.FireAndForget(Atelier.RefreshCommand.ExecuteAsync(null), _logger);
 
             }
 
@@ -247,28 +417,25 @@ public sealed partial class MainViewModel : ViewModelBase
     private void OnPanelFocusRequested(PanelKind panel)
     {
 
-        switch (panel)
+        string? toolId = panel switch
         {
-            case PanelKind.Atelier:
-                IsAtelierVisible = true;
-                break;
+            PanelKind.Atelier => DockToolId.Atelier,
+            PanelKind.Gatehouse => DockToolId.Gatehouse,
+            PanelKind.Treasury => DockToolId.Treasury,
+            PanelKind.Arsenal => DockToolId.Arsenal,
+            PanelKind.WarTable => DockToolId.WarTable,
+            PanelKind.FoundryFloor => DockToolId.Output,
+            PanelKind.Hearth => DockToolId.Hearth,
+            _ => null,
+        };
 
-            case PanelKind.Gatehouse:
-            case PanelKind.Treasury:
-            case PanelKind.Arsenal:
-                IsRightPanelVisible = true;
-                break;
+        if (toolId is not null)
+        {
 
-            case PanelKind.FoundryFloor:
-            case PanelKind.Hearth:
-                IsFoundryFloorVisible = true;
-                break;
+            DockLayout.FocusTool(toolId);
 
-            case PanelKind.Workbench:
-            case PanelKind.WarTable:
-            case PanelKind.Anvil:
-            default:
-                break;
+            ApplyToolVisibility();
+
         }
 
     }

@@ -30,6 +30,20 @@ public sealed class ArcanumSettingClampsTests
     }
 
     [Fact]
+    public void HostHttpsPort_clamps_to_valid_range()
+    {
+
+        Assert.Equal(1, ArcanumSettingClamps.HostHttpsPort(0));
+
+        Assert.Equal(1, ArcanumSettingClamps.HostHttpsPort(-1));
+
+        Assert.Equal(5443, ArcanumSettingClamps.HostHttpsPort(5443));
+
+        Assert.Equal(65_535, ArcanumSettingClamps.HostHttpsPort(70_000));
+
+    }
+
+    [Fact]
     public void JsonSchemaMaxDepth_clamps_to_valid_range()
     {
 

@@ -63,7 +63,7 @@ public sealed class EnumToStringConverterTests
 
         EnumToStringConverter converter = new();
 
-        Assert.Equal(Binding.DoNothing, converter.ConvertBack("OpenAI Compatible", null, null, null));
+        Assert.Equal(Avalonia.AvaloniaProperty.UnsetValue, converter.ConvertBack("OpenAI Compatible", typeof(object), null!, null!));
 
     }
 

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Core.Services;
 
 namespace RetroDownfall.TheForge.Ux.Services;
 
@@ -30,17 +31,22 @@ public sealed class ArcanumApiClient
 
     private readonly IOptionsMonitor<ForgeSettings> _settingsMonitor;
 
+    private readonly IForgeApiKeyProvider _apiKeyProvider;
+
     private readonly ILogger<ArcanumApiClient> _logger;
 
     public ArcanumApiClient(
         IHttpClientFactory httpClientFactory,
         IOptionsMonitor<ForgeSettings> settingsMonitor,
+        IForgeApiKeyProvider apiKeyProvider,
         ILogger<ArcanumApiClient> logger)
     {
 
         _httpClientFactory = httpClientFactory;
 
         _settingsMonitor = settingsMonitor;
+
+        _apiKeyProvider = apiKeyProvider;
 
         _logger = logger;
 
@@ -68,7 +74,7 @@ public sealed class ArcanumApiClient
         try
         {
 
-            using HttpClient client = CreateClient();
+            using HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
             using HttpResponseMessage response = await client
                 .DeleteAsync(path, cancellationToken)
@@ -81,6 +87,14 @@ public sealed class ArcanumApiClient
         {
 
             _logger.LogWarning(ex, "DELETE {Path} failed.", path);
+
+            return false;
+
+        }
+        catch (InvalidOperationException ex)
+        {
+
+            _logger.LogWarning(ex, "DELETE {Path} aborted: missing API key.", path);
 
             return false;
 
@@ -122,50 +136,70 @@ public sealed class ArcanumApiClient
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
 
-        using HttpClient client = CreateClient();
+        HttpClient client;
 
-        using HttpRequestMessage request = new(HttpMethod.Post, path)
-        {
-            Content = SerializeBody(body, requestTypeInfo),
-        };
-
-        using HttpResponseMessage response = await client
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (!response.IsSuccessStatusCode)
+        try
         {
 
-            _logger.LogWarning("NDJSON stream POST {Path} returned {StatusCode}.", path, (int)response.StatusCode);
+            client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (InvalidOperationException ex)
+        {
+
+            _logger.LogWarning(ex, "NDJSON stream POST {Path} aborted: missing API key.", path);
 
             yield break;
 
         }
 
-        await using Stream stream = await response.Content
-            .ReadAsStreamAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        using StreamReader reader = new(stream, Encoding.UTF8);
-
-        string? line;
-
-        while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+        using (client)
         {
 
-            if (string.IsNullOrWhiteSpace(line))
+            using HttpRequestMessage request = new(HttpMethod.Post, path)
+            {
+                Content = SerializeBody(body, requestTypeInfo),
+            };
+
+            using HttpResponseMessage response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
             {
 
-                continue;
+                _logger.LogWarning("NDJSON stream POST {Path} returned {StatusCode}.", path, (int)response.StatusCode);
+
+                yield break;
 
             }
 
-            TFrame? frame = DeserializeOrLog(line, frameTypeInfo, path);
+            await using Stream stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-            if (frame is not null)
+            using StreamReader reader = new(stream, Encoding.UTF8);
+
+            string? line;
+
+            while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
             {
 
-                yield return frame;
+                if (string.IsNullOrWhiteSpace(line))
+                {
+
+                    continue;
+
+                }
+
+                TFrame? frame = DeserializeOrLog(line, frameTypeInfo, path);
+
+                if (frame is not null)
+                {
+
+                    yield return frame;
+
+                }
 
             }
 
@@ -184,42 +218,73 @@ public sealed class ArcanumApiClient
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
 
-        using HttpClient client = CreateClient();
+        HttpClient client;
 
-        using HttpRequestMessage request = new(HttpMethod.Get, path);
-
-        using HttpResponseMessage response = await client
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (!response.IsSuccessStatusCode)
+        try
         {
 
-            _logger.LogWarning("SSE GET {Path} returned {StatusCode}.", path, (int)response.StatusCode);
+            client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (InvalidOperationException ex)
+        {
+
+            _logger.LogWarning(ex, "SSE GET {Path} aborted: missing API key.", path);
 
             yield break;
 
         }
 
-        await using Stream stream = await response.Content
-            .ReadAsStreamAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        using StreamReader reader = new(stream, Encoding.UTF8);
-
-        await foreach (SseEvent sseEvent in SseFrameParser.ParseAsync(reader, cancellationToken).ConfigureAwait(false))
+        using (client)
         {
 
-            yield return sseEvent;
+            using HttpRequestMessage request = new(HttpMethod.Get, path);
+
+            using HttpResponseMessage response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+
+                _logger.LogWarning("SSE GET {Path} returned {StatusCode}.", path, (int)response.StatusCode);
+
+                yield break;
+
+            }
+
+            await using Stream stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            using StreamReader reader = new(stream, Encoding.UTF8);
+
+            await foreach (SseEvent sseEvent in SseFrameParser.ParseAsync(reader, cancellationToken).ConfigureAwait(false))
+            {
+
+                yield return sseEvent;
+
+            }
 
         }
 
     }
 
-    private HttpClient CreateClient()
+    private async Task<HttpClient> CreateClientAsync(CancellationToken cancellationToken)
     {
 
         ForgeSettings settings = _settingsMonitor.CurrentValue;
+
+        string? apiKey = await _apiKeyProvider.GetApiKeyAsync(cancellationToken).ConfigureAwait(false);
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+
+            throw new InvalidOperationException(
+                "No master API key is available. Store one with `arcanum key set`, run `arcanum serve` once, "
+                + "or paste a key when prompted. Shared OS identity: arcanum/master-api-key.");
+
+        }
 
         HttpClient client = _httpClientFactory.CreateClient(HttpClientName);
 
@@ -227,12 +292,7 @@ public sealed class ArcanumApiClient
 
         client.DefaultRequestHeaders.Remove(ApiKeyHeaderName);
 
-        if (!string.IsNullOrWhiteSpace(settings.ApiKey))
-        {
-
-            client.DefaultRequestHeaders.Add(ApiKeyHeaderName, settings.ApiKey);
-
-        }
+        client.DefaultRequestHeaders.Add(ApiKeyHeaderName, apiKey);
 
         return client;
 
@@ -262,7 +322,7 @@ public sealed class ArcanumApiClient
         try
         {
 
-            using HttpClient client = CreateClient();
+            using HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
             using HttpRequestMessage request = new(method, path) { Content = requestContent };
 
@@ -295,6 +355,14 @@ public sealed class ArcanumApiClient
             return response.IsSuccessStatusCode
                 ? null
                 : Failure(responseTypeInfo, $"Http.{(int)response.StatusCode}", response.ReasonPhrase ?? "Request failed.");
+
+        }
+        catch (InvalidOperationException ex)
+        {
+
+            _logger.LogWarning(ex, "{Method} {Path} aborted: missing API key.", method, path);
+
+            return Failure(responseTypeInfo, "Security.MissingApiKey", ex.Message);
 
         }
         catch (HttpRequestException ex)
@@ -332,7 +400,7 @@ public sealed class ArcanumApiClient
 
     }
 
-    private TValue? DeserializeOrLog<TValue>(string json, JsonTypeInfo<TValue> typeInfo, string path)
+    private T? DeserializeOrLog<T>(string json, JsonTypeInfo<T> typeInfo, string path)
     {
 
         try
@@ -344,7 +412,7 @@ public sealed class ArcanumApiClient
         catch (JsonException ex)
         {
 
-            _logger.LogWarning(ex, "Could not parse Arcanum response for {Path}.", path);
+            _logger.LogWarning(ex, "Failed to deserialize response from {Path}.", path);
 
             return default;
 

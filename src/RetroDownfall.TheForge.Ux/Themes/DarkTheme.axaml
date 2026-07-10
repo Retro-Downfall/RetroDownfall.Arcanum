@@ -1,0 +1,27 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Visual Studio 2026 Fluent Dark–inspired tokens -->
+  <Color x:Key="ForgeBackgroundColor">#1C1C1C</Color>
+  <Color x:Key="ForgeSurfaceColor">#282828</Color>
+  <Color x:Key="ForgeSurfaceAltColor">#222222</Color>
+  <Color x:Key="ForgeBorderColor">#454545</Color>
+  <Color x:Key="ForgeTextColor">#FFFFFF</Color>
+  <Color x:Key="ForgeMutedTextColor">#A0A0A0</Color>
+  <Color x:Key="ForgeAccentColor">#9184EE</Color>
+  <Color x:Key="ForgeSuccessColor">#6A9955</Color>
+  <Color x:Key="ForgeErrorColor">#F14C4C</Color>
+  <Color x:Key="ForgeWarningColor">#CCA700</Color>
+  <Color x:Key="ForgeSelectionColor">#3A3558</Color>
+
+  <SolidColorBrush x:Key="ForgeBackgroundBrush" Color="{StaticResource ForgeBackgroundColor}" />
+  <SolidColorBrush x:Key="ForgeSurfaceBrush" Color="{StaticResource ForgeSurfaceColor}" />
+  <SolidColorBrush x:Key="ForgeSurfaceAltBrush" Color="{StaticResource ForgeSurfaceAltColor}" />
+  <SolidColorBrush x:Key="ForgeBorderBrush" Color="{StaticResource ForgeBorderColor}" />
+  <SolidColorBrush x:Key="ForgeTextBrush" Color="{StaticResource ForgeTextColor}" />
+  <SolidColorBrush x:Key="ForgeMutedTextBrush" Color="{StaticResource ForgeMutedTextColor}" />
+  <SolidColorBrush x:Key="ForgeAccentBrush" Color="{StaticResource ForgeAccentColor}" />
+  <SolidColorBrush x:Key="ForgeSuccessBrush" Color="{StaticResource ForgeSuccessColor}" />
+  <SolidColorBrush x:Key="ForgeErrorBrush" Color="{StaticResource ForgeErrorColor}" />
+  <SolidColorBrush x:Key="ForgeWarningBrush" Color="{StaticResource ForgeWarningColor}" />
+  <SolidColorBrush x:Key="ForgeSelectionBrush" Color="{StaticResource ForgeSelectionColor}" />
+</ResourceDictionary>

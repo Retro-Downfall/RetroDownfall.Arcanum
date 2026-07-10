@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="The Forge (+ DevHost)" type="CompoundRunConfigurationType">
+    <toRun name="Arcanum (Api.DevHost)" type="DotNetProject" />
+    <toRun name="The Forge" type="DotNetProject" />
+    <method v="2" />
+  </configuration>
+</component>

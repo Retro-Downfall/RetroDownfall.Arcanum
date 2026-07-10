@@ -2,10 +2,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
+using RetroDownfall.TheForge.Ux.Services.Terminal;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 using RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
@@ -42,11 +44,25 @@ internal static class ServiceCollectionConfigurator
 
         services.AddOptions<ForgeSettings>().Bind(configuration);
 
+        services.AddSingleton<IForgeSettingsStore>(sp => new ForgeSettingsStore(
+            forgeJsonPath,
+            sp.GetService<ILogger<ForgeSettingsStore>>()));
+
         services.AddLogging(builder => builder.AddDebug());
 
         services.AddHttpClient(ArcanumApiClient.HttpClientName);
 
+        services.AddSingleton<IOsCredentialStore, OsCredentialStore>();
+
         services.AddSingleton<ApiKeyResolver>();
+
+        services.AddSingleton<IApiKeyPrompt, AvaloniaApiKeyPrompt>();
+
+        services.AddSingleton<IForgeApiKeyProvider>(static sp => new ForgeApiKeyProvider(
+            sp.GetRequiredService<ApiKeyResolver>(),
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<ForgeSettings>>(),
+            sp.GetRequiredService<ILogger<ForgeApiKeyProvider>>(),
+            ct => sp.GetRequiredService<IApiKeyPrompt>().PromptForApiKeyAsync(ct)));
 
         services.AddSingleton<ArcanumApiClient>();
 
@@ -64,7 +80,19 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<ITomeDataSource, TomeDataSource>();
 
+        services.AddSingleton<IGatehouseDataSource, GatehouseDataSource>();
+
+        services.AddSingleton<IAnvilDataSource, AnvilDataSource>();
+
+        services.AddSingleton<ThemeApplicationService>();
+
+        services.AddSingleton<IWarTableDataSource, WarTableDataSource>();
+
         services.AddSingleton<IWorkbenchDocumentFactory, WorkbenchDocumentFactory>();
+
+        services.AddSingleton<ITerminalShellResolver, TerminalShellResolver>();
+
+        services.AddSingleton<ITerminalCommandRunner, TerminalCommandRunner>();
 
         RegisterRouteServices(services);
 
@@ -140,6 +168,8 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<SanctumService>();
 
         services.AddSingleton<ExportImportService>();
+
+        services.AddSingleton<ILogService>(sp => sp.GetRequiredService<LogService>());
 
         services.AddSingleton<LogService>();
 

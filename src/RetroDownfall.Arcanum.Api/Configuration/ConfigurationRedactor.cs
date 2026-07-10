@@ -28,10 +28,18 @@ internal static class ConfigurationRedactor
             WebhookUrl = Mask(settings.CommLink.WebhookUrl),
         };
 
-        return Clone(settings) with { Providers = redactedProviders, CommLink = commLink };
+        HostSettings host = settings.Host with
+        {
+            Https = settings.Host.Https with
+            {
+                CertificatePassword = Mask(settings.Host.Https.CertificatePassword),
+            },
+        };
+
+        return Clone(settings) with { Providers = redactedProviders, CommLink = commLink, Host = host };
     }
 
-    public static ArcanumSettings MergeApiKeys(ArcanumSettings request, ArcanumSettings current)
+    public static ArcanumSettings MergeRedactedSecrets(ArcanumSettings request, ArcanumSettings current)
     {
         ProviderSettings[] requestProviders = request.Providers ?? [];
 
@@ -56,15 +64,34 @@ internal static class ConfigurationRedactor
             WebhookUrl = RestoreMask(request.CommLink.WebhookUrl, current.CommLink.WebhookUrl),
         };
 
-        return Clone(request) with { Providers = mergedProviders, CommLink = mergedCommLink };
+        HostSettings mergedHost = request.Host with
+        {
+            Https = request.Host.Https with
+            {
+                CertificatePassword = RestoreMask(
+                    request.Host.Https.CertificatePassword,
+                    current.Host.Https.CertificatePassword),
+            },
+        };
+
+        return Clone(request) with { Providers = mergedProviders, CommLink = mergedCommLink, Host = mergedHost };
     }
 
-    // W3.5: after MergeApiKeys, any field still equal to the mask sentinel "***" is a residual the
+    // W3.5: after MergeRedactedSecrets, any field still equal to the mask sentinel "***" is a residual the
     // merge could not restore — it can only come from a NEW provider (absent from current) or a NEW
     // model-map key, where the round-tripped redacted GET value would otherwise be persisted as the
     // literal "***" (a silent auth/config footgun). Reject those so the operator supplies real values.
     public static Result ValidateNoResidualMask(ArcanumSettings merged)
     {
+
+        if (merged.Host.Https.CertificatePassword == MaskSentinel)
+        {
+
+            return Result.Failure(new Error(
+                "Config.UnresolvedMask",
+                $"Host.Https.CertificatePassword has a masked value ('{MaskSentinel}'); supply the real password."));
+
+        }
 
         ProviderSettings[] providers = merged.Providers ?? [];
 

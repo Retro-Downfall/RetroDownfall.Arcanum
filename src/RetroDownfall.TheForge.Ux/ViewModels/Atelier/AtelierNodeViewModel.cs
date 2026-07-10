@@ -27,6 +27,8 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
 
     private bool _childrenLoaded;
 
+    private bool _expandLoadQueued;
+
     public ObservableCollection<AtelierNodeViewModel> Children { get; } = [];
 
     /// <summary>Whether this node can hold children (branch nodes); leaves override to <see langword="false"/>.</summary>
@@ -57,6 +59,7 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
     }
 
     /// <summary>Reloads this node's children from its data source, replacing any existing children.</summary>
+    [RelayCommand]
     public async Task ReloadAsync(CancellationToken cancellationToken)
     {
 
@@ -88,6 +91,45 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
         {
 
             IsLoading = false;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Marks children as already loaded (for category nodes that were pre-populated in the constructor).
+    /// </summary>
+    protected void MarkChildrenLoaded() => _childrenLoaded = true;
+
+    partial void OnIsExpandedChanged(bool value)
+    {
+
+        if (!value || _childrenLoaded || !HasChildren || _expandLoadQueued)
+        {
+
+            return;
+
+        }
+
+        _expandLoadQueued = true;
+
+        _ = ExpandFromIsExpandedAsync();
+
+    }
+
+    private async Task ExpandFromIsExpandedAsync()
+    {
+
+        try
+        {
+
+            await ExpandAsync(CancellationToken.None).ConfigureAwait(true);
+
+        }
+        finally
+        {
+
+            _expandLoadQueued = false;
 
         }
 

@@ -329,6 +329,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ArcanumConfigurationFile))]
 [JsonSerializable(typeof(HostSettings))]
 [JsonSerializable(typeof(HostRateLimitSettings))]
+[JsonSerializable(typeof(HostAuditLogSettings))]
+[JsonSerializable(typeof(HttpsSettings))]
 [JsonSerializable(typeof(ProviderSettings))]
 [JsonSerializable(typeof(ProviderSettings[]))]
 [JsonSerializable(typeof(AiProviderKind))]

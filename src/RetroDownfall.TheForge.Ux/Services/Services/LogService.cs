@@ -5,7 +5,7 @@ using RetroDownfall.TheForge.Core.Serialization;
 namespace RetroDownfall.TheForge.Ux.Services.Services;
 
 /// <summary>Wraps <c>GET /api/logs</c> and <c>GET /api/events/logs</c> (SSE) for The Foundry Floor.</summary>
-public sealed class LogService
+public sealed class LogService : ILogService
 {
 
     private readonly ArcanumApiClient _apiClient;

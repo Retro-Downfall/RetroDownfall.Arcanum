@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Secrets.Security;
 using Serilog;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
@@ -10,7 +12,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 public static class ArcanumMasterKeyBootstrapper
 {
     /// <summary>
-    /// Ensures a master API key exists on disk before the generic host starts (required for Grimoire SQLCipher key derivation).
+    /// Ensures a master API key exists in the OS credential store (with security.dat fallback)
+    /// before the generic host starts (required for Grimoire SQLCipher key derivation).
     /// </summary>
     /// <returns>The newly generated key material when one was created; otherwise null.</returns>
     public static async Task<string?> EnsureMasterApiKeyExistsAsync(CancellationToken cancellationToken = default)
@@ -29,7 +32,9 @@ public static class ArcanumMasterKeyBootstrapper
             .SetApplicationName("ArcanumCore")
             .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
 
-        services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
+        services.AddArcanumSecretStore();
 
         using ServiceProvider provider = services.BuildServiceProvider();
 
@@ -73,6 +78,11 @@ public static class ArcanumMasterKeyBootstrapper
         CryptographicOperations.ZeroMemory(keyBytes);
 
         await store.SaveApiKeyAsync(apiKey).ConfigureAwait(false);
+
+        Log.Information(
+            "Master API key stored in the OS credential store ({Service}/{Account}) with security.dat mirror.",
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount);
 
         return apiKey;
 

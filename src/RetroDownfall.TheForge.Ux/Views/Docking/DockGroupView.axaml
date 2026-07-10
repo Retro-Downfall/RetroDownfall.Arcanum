@@ -1,0 +1,100 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:dock="using:RetroDownfall.TheForge.Ux.ViewModels.Docking"
+             xmlns:atelier="using:RetroDownfall.TheForge.Ux.ViewModels.Atelier"
+             xmlns:atelierViews="using:RetroDownfall.TheForge.Ux.Views.Atelier"
+             xmlns:gatehouse="using:RetroDownfall.TheForge.Ux.ViewModels.Gatehouse"
+             xmlns:gatehouseViews="using:RetroDownfall.TheForge.Ux.Views.Gatehouse"
+             xmlns:warTable="using:RetroDownfall.TheForge.Ux.ViewModels.WarTable"
+             xmlns:warTableViews="using:RetroDownfall.TheForge.Ux.Views.WarTable"
+             xmlns:treasury="using:RetroDownfall.TheForge.Ux.ViewModels.Treasury"
+             xmlns:arsenal="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
+             xmlns:hearth="using:RetroDownfall.TheForge.Ux.ViewModels.Hearth"
+             xmlns:hearthViews="using:RetroDownfall.TheForge.Ux.Views.Hearth"
+             xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Docking.DockGroupView"
+             x:DataType="dock:DockGroupViewModel">
+  <UserControl.Resources>
+    <converters:IconKeyToGeometryConverter x:Key="IconKeyToGeometryConverter" />
+  </UserControl.Resources>
+
+  <Border IsVisible="{Binding !IsCollapsed}"
+          BorderBrush="{DynamicResource ForgeBorderBrush}">
+    <TabControl ItemsSource="{Binding Tools}"
+                SelectedItem="{Binding SelectedTool}">
+      <TabControl.ItemTemplate>
+        <DataTemplate x:DataType="dock:DockToolViewModel">
+          <Border Background="Transparent" Padding="2,0">
+            <Border.ContextMenu>
+              <ContextMenu>
+                <MenuItem Header="Move Left"
+                          Command="{Binding Owner.MoveLeftCommand}"
+                          CommandParameter="{Binding}" />
+                <MenuItem Header="Move Right"
+                          Command="{Binding Owner.MoveRightCommand}"
+                          CommandParameter="{Binding}" />
+                <MenuItem Header="Move Bottom"
+                          Command="{Binding Owner.MoveBottomCommand}"
+                          CommandParameter="{Binding}" />
+                <Separator />
+                <MenuItem Header="Hide"
+                          Command="{Binding Owner.HideCommand}"
+                          CommandParameter="{Binding}" />
+                <MenuItem Header="Reset Layout"
+                          Command="{Binding Owner.ResetLayoutCommand}" />
+              </ContextMenu>
+            </Border.ContextMenu>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Path Width="12" Height="12"
+                    Stretch="Uniform"
+                    Fill="{DynamicResource ForgeTextBrush}"
+                    Data="{Binding IconKey, Converter={StaticResource IconKeyToGeometryConverter}}"
+                    VerticalAlignment="Center" />
+              <TextBlock Text="{Binding Title}" VerticalAlignment="Center" />
+            </StackPanel>
+          </Border>
+        </DataTemplate>
+      </TabControl.ItemTemplate>
+      <TabControl.ContentTemplate>
+        <DataTemplate x:DataType="dock:DockToolViewModel">
+          <ContentControl Content="{Binding Content}">
+            <ContentControl.DataTemplates>
+              <DataTemplate DataType="atelier:AtelierViewModel">
+                <atelierViews:AtelierView />
+              </DataTemplate>
+              <DataTemplate DataType="gatehouse:GatehouseViewModel">
+                <gatehouseViews:GatehouseView />
+              </DataTemplate>
+              <DataTemplate DataType="warTable:WarTableViewModel">
+                <warTableViews:WarTableView />
+              </DataTemplate>
+              <DataTemplate DataType="treasury:TreasuryViewModel">
+                <TextBlock Text="{Binding EmptyState}" TextWrapping="Wrap" Margin="8" />
+              </DataTemplate>
+              <DataTemplate DataType="arsenal:ArsenalViewModel">
+                <TextBlock Text="{Binding EmptyState}" TextWrapping="Wrap" Margin="8" />
+              </DataTemplate>
+              <DataTemplate DataType="hearth:HearthViewModel">
+                <hearthViews:HearthView />
+              </DataTemplate>
+              <DataTemplate DataType="dock:OutputToolContent">
+                <TextBlock Text="{Binding FoundryFloor.OutputEmptyState}" TextWrapping="Wrap" Margin="8" />
+              </DataTemplate>
+              <DataTemplate DataType="dock:LogsToolContent">
+                <Grid>
+                  <TextBlock Text="{Binding FoundryFloor.LogsEmptyState}"
+                             IsVisible="{Binding FoundryFloor.HasNoLines}"
+                             TextWrapping="Wrap"
+                             Margin="8" />
+                  <ListBox ItemsSource="{Binding FoundryFloor.Lines}"
+                           IsVisible="{Binding !FoundryFloor.HasNoLines}"
+                           BorderThickness="0" />
+                </Grid>
+              </DataTemplate>
+            </ContentControl.DataTemplates>
+          </ContentControl>
+        </DataTemplate>
+      </TabControl.ContentTemplate>
+    </TabControl>
+  </Border>
+</UserControl>

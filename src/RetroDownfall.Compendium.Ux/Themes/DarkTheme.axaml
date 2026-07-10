@@ -1,0 +1,15 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Visual Studio 2026 Fluent Dark–inspired tokens -->
+  <SolidColorBrush x:Key="ForgeBackgroundBrush" Color="#1C1C1C" />
+  <SolidColorBrush x:Key="ForgeSurfaceBrush" Color="#282828" />
+  <SolidColorBrush x:Key="ForgeSurfaceAltBrush" Color="#222222" />
+  <SolidColorBrush x:Key="ForgeBorderBrush" Color="#454545" />
+  <SolidColorBrush x:Key="ForgeTextBrush" Color="#FFFFFF" />
+  <SolidColorBrush x:Key="ForgeMutedTextBrush" Color="#A0A0A0" />
+  <SolidColorBrush x:Key="ForgeAccentBrush" Color="#9184EE" />
+  <SolidColorBrush x:Key="ForgeSuccessBrush" Color="#6A9955" />
+  <SolidColorBrush x:Key="ForgeErrorBrush" Color="#F14C4C" />
+  <SolidColorBrush x:Key="ForgeWarningBrush" Color="#CCA700" />
+  <SolidColorBrush x:Key="ForgeSelectionBrush" Color="#3A3558" />
+</ResourceDictionary>

@@ -51,4 +51,10 @@ public static class ArcanumPaths
     /// </summary>
     public static string FilesDirectory => Path.Combine(GrimoireDirectory, "files");
 
+    /// <summary>
+    /// HTTPS certificate storage root: <c>~/.config/arcanum/certs/</c>. Holds locally generated
+    /// self-signed development certificates (and their PFX bundles) written owner-only.
+    /// </summary>
+    public static string CertificatesDirectory => Path.Combine(GrimoireDirectory, "certs");
+
 }

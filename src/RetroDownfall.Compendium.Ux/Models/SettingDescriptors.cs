@@ -49,11 +49,23 @@ public static class SettingDescriptors
 
         new("host.auditLog.redactToolArguments", ConfigSection.Host, "Redact tool arguments", "When true (default), only tool names are captured. When false, raw tool argument JSON is also recorded — at the operator's risk, since arguments can carry file contents or command lines.", SettingKind.Bool),
 
+        // ===== Host — HTTPS (TLS) =====
+
+        new("host.https.enabled", ConfigSection.Host, "Enable HTTPS", "When true, Kestrel adds a TLS listener on the HTTPS port alongside the existing plaintext HTTP listener. Default false.", SettingKind.Bool),
+
+        new("host.https.port", ConfigSection.Host, "HTTPS port", "TLS listen port. Default 5443; clamped 1-65535. Must differ from the HTTP port.", SettingKind.Int, 1, 65535, 1, ClampName: nameof(ArcanumSettingClamps.HostHttpsPort)),
+
+        new("host.https.certificatePath", ConfigSection.Host, "Certificate path", "PFX bundle path when no private key path is set, or a PEM certificate path when a private key path is provided. Leading ~ expands to the user profile directory.", SettingKind.Path, Placeholder: "~/.config/arcanum/certs/localhost.pfx"),
+
+        new("host.https.privateKeyPath", ConfigSection.Host, "Private key path (PEM)", "Optional PEM private key path. When set, the certificate path is treated as a PEM certificate and the password is ignored. Leave blank to use a PFX bundle.", SettingKind.Path, Placeholder: "~/.config/arcanum/certs/localhost.key"),
+
+        new("host.https.certificatePassword", ConfigSection.Host, "Certificate password (PFX)", "Password for the PFX bundle. Encrypted at rest with the dp:v1: prefix; ignored for PEM. Leave blank for a password-less PFX.", SettingKind.Secret),
+
         // ===== Host — Metrics =====
 
-        new("metrics.enabled", ConfigSection.Host, "Enable metrics endpoint", "When true (default), GET /metrics renders Prometheus text format; when false, the endpoint returns 404.", SettingKind.Bool),
+        new("metrics.enabled", ConfigSection.Metrics, "Enable metrics endpoint", "When true (default), GET /metrics renders Prometheus text format; when false, the endpoint returns 404.", SettingKind.Bool),
 
-        new("metrics.requireApiKey", ConfigSection.Host, "Require API key for metrics", "When true, /metrics is mapped behind ApiKeyEndpointFilter instead of as a standalone unauthenticated route. Forced to effectively true whenever the host binds to all interfaces.", SettingKind.Bool),
+        new("metrics.requireApiKey", ConfigSection.Metrics, "Require API key for metrics", "When true, /metrics is mapped behind ApiKeyEndpointFilter instead of as a standalone unauthenticated route. Forced to effectively true whenever the host binds to all interfaces.", SettingKind.Bool),
 
         // ===== Server =====
 
@@ -139,15 +151,15 @@ public static class SettingDescriptors
 
         new("intelligence.inferenceTimeoutSeconds", ConfigSection.Intelligence, "Inference timeout (s)", "Wall-clock timeout for a single inference turn (buffered or streaming), including tool rounds. Default 600.", SettingKind.Int, 5, 3600, 1, ClampName: nameof(ArcanumSettingClamps.InferenceTimeoutSeconds)),
 
-        new("structuredOutput.enabled", ConfigSection.Intelligence, "Structured output enabled", "When true (default), responses requesting response_format: json_schema are validated and retried on failure.", SettingKind.Bool),
+        new("structuredOutput.enabled", ConfigSection.StructuredOutput, "Structured output enabled", "When true (default), responses requesting response_format: json_schema are validated and retried on failure.", SettingKind.Bool),
 
-        new("structuredOutput.maxValidationRetries", ConfigSection.Intelligence, "Max validation retries", "Maximum retry attempts after a structured-output validation failure. Default 2; clamped 0-5.", SettingKind.Int, 0, 5, 1, ClampName: nameof(ArcanumSettingClamps.StructuredOutputMaxValidationRetries)),
+        new("structuredOutput.maxValidationRetries", ConfigSection.StructuredOutput, "Max validation retries", "Maximum retry attempts after a structured-output validation failure. Default 2; clamped 0-5.", SettingKind.Int, 0, 5, 1, ClampName: nameof(ArcanumSettingClamps.StructuredOutputMaxValidationRetries)),
 
-        new("structuredOutput.useProviderConstrainedDecoding", ConfigSection.Intelligence, "Use provider constrained decoding", "When true (default), Arcanum asks the provider to constrain decoding (GBNF for llama.cpp, strict: true for OpenAI-compatible).", SettingKind.Bool),
+        new("structuredOutput.useProviderConstrainedDecoding", ConfigSection.StructuredOutput, "Use provider constrained decoding", "When true (default), Arcanum asks the provider to constrain decoding (GBNF for llama.cpp, strict: true for OpenAI-compatible).", SettingKind.Bool),
 
-        new("structuredOutput.strictMode", ConfigSection.Intelligence, "Strict mode", "When true, a response that fails schema validation after all retries is rejected with 400. When false (default), the response is returned with a warning header.", SettingKind.Bool),
+        new("structuredOutput.strictMode", ConfigSection.StructuredOutput, "Strict mode", "When true, a response that fails schema validation after all retries is rejected with 400. When false (default), the response is returned with a warning header.", SettingKind.Bool),
 
-        new("structuredOutput.schemaMaxDepth", ConfigSection.Intelligence, "Schema max depth", "Maximum recursion depth for JSON Schema parsing and validation. Default 10; clamped 1-50.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.JsonSchemaMaxDepth)),
+        new("structuredOutput.schemaMaxDepth", ConfigSection.StructuredOutput, "Schema max depth", "Maximum recursion depth for JSON Schema parsing and validation. Default 10; clamped 1-50.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.JsonSchemaMaxDepth)),
 
         new("intelligence.useFastModelForSpellRouting", ConfigSection.Intelligence, "Use fast model for spell routing", "When true, semantic spell-router preflight uses the configured FastModel.", SettingKind.Bool),
 
@@ -339,17 +351,17 @@ public static class SettingDescriptors
 
         new("sessions.maxPinnedEntries", ConfigSection.Storage, "Max pinned entries", "Maximum pinned entries per session. Pinned entries are always included in inference context even when compression would otherwise drop them.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.SessionMaxPinnedEntries)),
 
-        new("files.maxUploadSizeBytes", ConfigSection.Storage, "Max file upload size (bytes)", "Maximum upload size for POST /v1/files.", SettingKind.Long, 1024 * 1024, 10L * 1024 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.FilesMaxUploadSizeBytes)),
+        new("files.maxUploadSizeBytes", ConfigSection.Files, "Max file upload size (bytes)", "Maximum upload size for POST /v1/files.", SettingKind.Long, 1024 * 1024, 10L * 1024 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.FilesMaxUploadSizeBytes)),
 
-        new("files.allowedMimeTypes", ConfigSection.Storage, "Allowed upload MIME types", "Allowed Content-Type values for POST /v1/files uploads. Empty (default) means no operator-configured restriction.", SettingKind.StringArray),
+        new("files.allowedMimeTypes", ConfigSection.Files, "Allowed upload MIME types", "Allowed Content-Type values for POST /v1/files uploads. Empty (default) means no operator-configured restriction.", SettingKind.StringArray),
 
-        new("batches.maxConcurrentBatches", ConfigSection.Storage, "Max concurrent batches", "Maximum number of /v1/batches processed concurrently across the whole server.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentBatches)),
+        new("batches.maxConcurrentBatches", ConfigSection.Batches, "Max concurrent batches", "Maximum number of /v1/batches processed concurrently across the whole server.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentBatches)),
 
-        new("batches.maxRequestsPerBatch", ConfigSection.Storage, "Max requests per batch", "Maximum JSONL request lines accepted in a single /v1/batches input file.", SettingKind.Int, 1, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxRequestsPerBatch)),
+        new("batches.maxRequestsPerBatch", ConfigSection.Batches, "Max requests per batch", "Maximum JSONL request lines accepted in a single /v1/batches input file.", SettingKind.Int, 1, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxRequestsPerBatch)),
 
-        new("batches.batchExpiryHours", ConfigSection.Storage, "Batch expiry (hours)", "How long after creation a non-terminal batch is force-expired (input/output files deleted).", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.BatchesBatchExpiryHours)),
+        new("batches.batchExpiryHours", ConfigSection.Batches, "Batch expiry (hours)", "How long after creation a non-terminal batch is force-expired (input/output files deleted).", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.BatchesBatchExpiryHours)),
 
-        new("batches.maxConcurrentRequestsPerBatch", ConfigSection.Storage, "Max concurrent requests per batch", "Maximum chat-completion requests run concurrently within a single batch.", SettingKind.Int, 1, 10, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentRequestsPerBatch)),
+        new("batches.maxConcurrentRequestsPerBatch", ConfigSection.Batches, "Max concurrent requests per batch", "Maximum chat-completion requests run concurrently within a single batch.", SettingKind.Int, 1, 10, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentRequestsPerBatch)),
 
         // ===== Storage — EventBus =====
 
@@ -486,65 +498,65 @@ public static class SettingDescriptors
         // documented per-row below and in DESIGN.md §21. This list stays in exact sync with
         // ArcanumSettings.Embeddings (see SettingDescriptorCoverageTests).
 
-        new("embeddings.enabled", ConfigSection.Intelligence, "Embeddings enabled", "Master toggle for The Weave (Arcanum's embedding and vector substrate) and Divination (semantic search). When false (default), every RAG code path is unchanged from pre-RAG behavior.", SettingKind.Bool),
+        new("embeddings.enabled", ConfigSection.Embeddings, "Embeddings enabled", "Master toggle for The Weave (Arcanum's embedding and vector substrate) and Divination (semantic search). When false (default), every RAG code path is unchanged from pre-RAG behavior.", SettingKind.Bool),
 
-        new("embeddings.provider", ConfigSection.Intelligence, "Embeddings provider", "Provider name (from Arcanum:Providers) used to imprint text into The Weave. Required when Enabled is true.", SettingKind.String, Placeholder: "local"),
+        new("embeddings.provider", ConfigSection.Embeddings, "Embeddings provider", "Provider name (from Arcanum:Providers) used to imprint text into The Weave. Required when Enabled is true.", SettingKind.String, Placeholder: "local"),
 
-        new("embeddings.model", ConfigSection.Intelligence, "Embeddings model", "Embedding model name advertised by the configured provider (e.g. nomic-embed-text, text-embedding-3-small). Required when Enabled is true.", SettingKind.String, Placeholder: "nomic-embed-text"),
+        new("embeddings.model", ConfigSection.Embeddings, "Embeddings model", "Embedding model name advertised by the configured provider (e.g. nomic-embed-text, text-embedding-3-small). Required when Enabled is true.", SettingKind.String, Placeholder: "nomic-embed-text"),
 
-        new("embeddings.dimensions", ConfigSection.Intelligence, "Embeddings dimensions", "Expected imprinted vector dimension; must match the model's output. Used for the vec0 acceleration table schema. Changing this after data exists requires an operator-triggered re-index.", SettingKind.Int, 64, 4096, 8, ClampName: nameof(ArcanumSettingClamps.EmbeddingsDimensions)),
+        new("embeddings.dimensions", ConfigSection.Embeddings, "Embeddings dimensions", "Expected imprinted vector dimension; must match the model's output. Used for the vec0 acceleration table schema. Changing this after data exists requires an operator-triggered re-index.", SettingKind.Int, 64, 4096, 8, ClampName: nameof(ArcanumSettingClamps.EmbeddingsDimensions)),
 
-        new("embeddings.batchSize", ConfigSection.Intelligence, "Embeddings batch size", "Maximum texts imprinted per embedding API call.", SettingKind.Int, 1, 256, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsBatchSize)),
+        new("embeddings.batchSize", ConfigSection.Embeddings, "Embeddings batch size", "Maximum texts imprinted per embedding API call.", SettingKind.Int, 1, 256, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsBatchSize)),
 
-        new("embeddings.chunkSizeChars", ConfigSection.Intelligence, "Embeddings chunk size (chars)", "Maximum characters per chunk when imprinting long documents.", SettingKind.Int, 128, 8192, 64, ClampName: nameof(ArcanumSettingClamps.EmbeddingsChunkSizeChars)),
+        new("embeddings.chunkSizeChars", ConfigSection.Embeddings, "Embeddings chunk size (chars)", "Maximum characters per chunk when imprinting long documents.", SettingKind.Int, 128, 8192, 64, ClampName: nameof(ArcanumSettingClamps.EmbeddingsChunkSizeChars)),
 
-        new("embeddings.chunkOverlapChars", ConfigSection.Intelligence, "Embeddings chunk overlap (chars)", "Overlap in characters between adjacent chunks; improves Divination at chunk boundaries.", SettingKind.Int, 0, 1024, 16, ClampName: nameof(ArcanumSettingClamps.EmbeddingsChunkOverlapChars)),
+        new("embeddings.chunkOverlapChars", ConfigSection.Embeddings, "Embeddings chunk overlap (chars)", "Overlap in characters between adjacent chunks; improves Divination at chunk boundaries.", SettingKind.Int, 0, 1024, 16, ClampName: nameof(ArcanumSettingClamps.EmbeddingsChunkOverlapChars)),
 
-        new("embeddings.similarityThreshold", ConfigSection.Intelligence, "Embeddings similarity threshold", "Minimum cosine similarity for a Divination result to be included.", SettingKind.Float, 0, 1, 0.05, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSimilarityThreshold)),
+        new("embeddings.similarityThreshold", ConfigSection.Embeddings, "Embeddings similarity threshold", "Minimum cosine similarity for a Divination result to be included.", SettingKind.Float, 0, 1, 0.05, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSimilarityThreshold)),
 
-        new("embeddings.maxResults", ConfigSection.Intelligence, "Embeddings max results", "Default maximum results per Divination call. Individual features may override.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsMaxResults)),
+        new("embeddings.maxResults", ConfigSection.Embeddings, "Embeddings max results", "Default maximum results per Divination call. Individual features may override.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsMaxResults)),
 
-        new("embeddings.requestTimeoutSeconds", ConfigSection.Intelligence, "Embeddings request timeout (s)", "Timeout for a single embedding API call.", SettingKind.Int, 5, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsRequestTimeoutSeconds)),
+        new("embeddings.requestTimeoutSeconds", ConfigSection.Embeddings, "Embeddings request timeout (s)", "Timeout for a single embedding API call.", SettingKind.Int, 5, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsRequestTimeoutSeconds)),
 
-        new("embeddings.maxEmbeddingInputChars", ConfigSection.Intelligence, "Max embedding input (chars)", "Maximum total character count across all inputs in a single POST /v1/embeddings request; exceeding it returns 400 invalid_request_error.", SettingKind.Int, 1000, 10_000_000, 1000, ClampName: nameof(ArcanumSettingClamps.EmbeddingsMaxEmbeddingInputChars)),
+        new("embeddings.maxEmbeddingInputChars", ConfigSection.Embeddings, "Max embedding input (chars)", "Maximum total character count across all inputs in a single POST /v1/embeddings request; exceeding it returns 400 invalid_request_error.", SettingKind.Int, 1000, 10_000_000, 1000, ClampName: nameof(ArcanumSettingClamps.EmbeddingsMaxEmbeddingInputChars)),
 
-        new("embeddings.sessionSearchEnabled", ConfigSection.Intelligence, "Session search enabled", "Phase 2 feature flag: session semantic search (Divination over the Grimoire). Requires Embeddings enabled to also be true.", SettingKind.Bool),
+        new("embeddings.sessionSearchEnabled", ConfigSection.Embeddings, "Session search enabled", "Phase 2 feature flag: session semantic search (Divination over the Grimoire). Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
-        new("embeddings.embeddingQueueIntervalSeconds", ConfigSection.Intelligence, "Embedding queue interval (s)", "Phase 2: interval between EntryWeavingService embedding queue processing ticks. Only relevant when Session search enabled is true.", SettingKind.Int, 1, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsEmbeddingQueueIntervalSeconds)),
+        new("embeddings.embeddingQueueIntervalSeconds", ConfigSection.Embeddings, "Embedding queue interval (s)", "Phase 2: interval between EntryWeavingService embedding queue processing ticks. Only relevant when Session search enabled is true.", SettingKind.Int, 1, 300, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsEmbeddingQueueIntervalSeconds)),
 
-        new("embeddings.codebaseRetrievalEnabled", ConfigSection.Intelligence, "Codebase retrieval enabled", "Phase 3 feature flag: semantic codebase retrieval. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+        new("embeddings.codebaseRetrievalEnabled", ConfigSection.Embeddings, "Codebase retrieval enabled", "Phase 3 feature flag: semantic codebase retrieval. Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
-        new("embeddings.codebase.maxFilesToIndex", ConfigSection.Intelligence, "Codebase max files to index", "Phase 3: maximum files embedded per workspace during a single indexing tick.", SettingKind.Int, 1, 10_000, 10, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex)),
+        new("embeddings.codebase.maxFilesToIndex", ConfigSection.Embeddings, "Codebase max files to index", "Phase 3: maximum files embedded per workspace during a single indexing tick.", SettingKind.Int, 1, 10_000, 10, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex)),
 
-        new("embeddings.codebase.maxFileSizeChars", ConfigSection.Intelligence, "Codebase max file size (chars)", "Phase 3: files larger than this (characters) are skipped during indexing.", SettingKind.Int, 1_000, 500_000, 1_000, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars)),
+        new("embeddings.codebase.maxFileSizeChars", ConfigSection.Embeddings, "Codebase max file size (chars)", "Phase 3: files larger than this (characters) are skipped during indexing.", SettingKind.Int, 1_000, 500_000, 1_000, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars)),
 
-        new("embeddings.codebase.fileExtensions", ConfigSection.Intelligence, "Codebase file extensions", "File extensions eligible for indexing (case-insensitive), e.g. .cs, .py, .md. An empty list indexes nothing.", SettingKind.StringArray),
+        new("embeddings.codebase.fileExtensions", ConfigSection.Embeddings, "Codebase file extensions", "File extensions eligible for indexing (case-insensitive), e.g. .cs, .py, .md. An empty list indexes nothing.", SettingKind.StringArray),
 
-        new("embeddings.codebase.indexingIntervalMinutes", ConfigSection.Intelligence, "Codebase indexing interval (min)", "Phase 3: background re-indexing interval for workspaces with active inference.", SettingKind.Int, 5, 1_440, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseIndexingIntervalMinutes)),
+        new("embeddings.codebase.indexingIntervalMinutes", ConfigSection.Embeddings, "Codebase indexing interval (min)", "Phase 3: background re-indexing interval for workspaces with active inference.", SettingKind.Int, 5, 1_440, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseIndexingIntervalMinutes)),
 
-        new("embeddings.codebase.maxRetrievedChunks", ConfigSection.Intelligence, "Codebase max retrieved chunks", "Phase 3: maximum file chunks injected into the system prompt per inference turn.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxRetrievedChunks)),
+        new("embeddings.codebase.maxRetrievedChunks", ConfigSection.Embeddings, "Codebase max retrieved chunks", "Phase 3: maximum file chunks injected into the system prompt per inference turn.", SettingKind.Int, 1, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxRetrievedChunks)),
 
-        new("embeddings.sagaEnabled", ConfigSection.Intelligence, "Saga enabled", "Phase 4 feature flag: Saga, Arcanum's long-term associative memory. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+        new("embeddings.sagaEnabled", ConfigSection.Embeddings, "Saga enabled", "Phase 4 feature flag: Saga, Arcanum's long-term associative memory. Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
-        new("embeddings.saga.extractionEnabled", ConfigSection.Intelligence, "Saga extraction enabled", "Phase 4: when Saga enabled is true, controls whether the background SagaExtractionService runs. Set false for retrieval-only mode (existing memories still surface, no new ones are extracted).", SettingKind.Bool),
+        new("embeddings.saga.extractionEnabled", ConfigSection.Embeddings, "Saga extraction enabled", "Phase 4: when Saga enabled is true, controls whether the background SagaExtractionService runs. Set false for retrieval-only mode (existing memories still surface, no new ones are extracted).", SettingKind.Bool),
 
-        new("embeddings.saga.maxMemoriesPerSession", ConfigSection.Intelligence, "Saga max memories per session", "Phase 4: maximum Saga memories associated with a single session. New extractions for a session at this cap are rejected.", SettingKind.Int, 1, 1_000, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesPerSession)),
+        new("embeddings.saga.maxMemoriesPerSession", ConfigSection.Embeddings, "Saga max memories per session", "Phase 4: maximum Saga memories associated with a single session. New extractions for a session at this cap are rejected.", SettingKind.Int, 1, 1_000, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesPerSession)),
 
-        new("embeddings.saga.maxMemoriesTotal", ConfigSection.Intelligence, "Saga max memories total", "Phase 4: maximum total Saga memories across all sessions. New extractions are rejected once this cap is reached.", SettingKind.Int, 100, 1_000_000, 100, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesTotal)),
+        new("embeddings.saga.maxMemoriesTotal", ConfigSection.Embeddings, "Saga max memories total", "Phase 4: maximum total Saga memories across all sessions. New extractions are rejected once this cap is reached.", SettingKind.Int, 100, 1_000_000, 100, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesTotal)),
 
-        new("embeddings.saga.extractionModel", ConfigSection.Intelligence, "Saga extraction model", "Phase 4: model used for memory extraction. Falls back to Arcanum:FastModel, then Arcanum:DefaultModel, when empty.", SettingKind.String, Placeholder: "(uses FastModel/DefaultModel)"),
+        new("embeddings.saga.extractionModel", ConfigSection.Embeddings, "Saga extraction model", "Phase 4: model used for memory extraction. Falls back to Arcanum:FastModel, then Arcanum:DefaultModel, when empty.", SettingKind.String, Placeholder: "(uses FastModel/DefaultModel)"),
 
-        new("embeddings.saga.extractionMaxTokens", ConfigSection.Intelligence, "Saga extraction max tokens", "Phase 4: maximum output tokens for the extraction LLM call.", SettingKind.Int, 100, 4_096, 50, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionMaxTokens)),
+        new("embeddings.saga.extractionMaxTokens", ConfigSection.Embeddings, "Saga extraction max tokens", "Phase 4: maximum output tokens for the extraction LLM call.", SettingKind.Int, 100, 4_096, 50, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionMaxTokens)),
 
-        new("embeddings.saga.extractionIntervalMinutes", ConfigSection.Intelligence, "Saga extraction interval (min)", "Phase 4: interval, in minutes, between SagaExtractionService queue processing ticks (informational — the service is event-driven, enqueued after successful inference turns, not polling).", SettingKind.Int, 1, 1_440, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionIntervalMinutes)),
+        new("embeddings.saga.extractionIntervalMinutes", ConfigSection.Embeddings, "Saga extraction interval (min)", "Phase 4: interval, in minutes, between SagaExtractionService queue processing ticks (informational — the service is event-driven, enqueued after successful inference turns, not polling).", SettingKind.Int, 1, 1_440, 5, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionIntervalMinutes)),
 
-        new("embeddings.saga.extractionWindowEntries", ConfigSection.Intelligence, "Saga extraction window (entries)", "Phase 4: number of recent Grimoire entries reviewed per extraction call.", SettingKind.Int, 2, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionWindowEntries)),
+        new("embeddings.saga.extractionWindowEntries", ConfigSection.Embeddings, "Saga extraction window (entries)", "Phase 4: number of recent Grimoire entries reviewed per extraction call.", SettingKind.Int, 2, 50, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSagaExtractionWindowEntries)),
 
-        new("embeddings.semanticSpellRoutingEnabled", ConfigSection.Intelligence, "Semantic Spell Routing enabled", "Phase 5 feature flag: embedding-based Spell Routing pre-filter. When false (default), the existing LLM-based SemanticRouter is used unchanged. Requires Embeddings enabled to also be true.", SettingKind.Bool),
+        new("embeddings.semanticSpellRoutingEnabled", ConfigSection.Embeddings, "Semantic Spell Routing enabled", "Phase 5 feature flag: embedding-based Spell Routing pre-filter. When false (default), the existing LLM-based SemanticRouter is used unchanged. Requires Embeddings enabled to also be true.", SettingKind.Bool),
 
-        new("embeddings.spellRoutingHybridMode", ConfigSection.Intelligence, "Spell Routing hybrid mode", "Phase 5: when true and Semantic Spell Routing enabled is also true, embedding similarity pre-filters the spell catalog to the top-K candidates before the LLM router picks from that reduced set. When false, the highest-similarity spell above the similarity threshold wins outright with no LLM call.", SettingKind.Bool),
+        new("embeddings.spellRoutingHybridMode", ConfigSection.Embeddings, "Spell Routing hybrid mode", "Phase 5: when true and Semantic Spell Routing enabled is also true, embedding similarity pre-filters the spell catalog to the top-K candidates before the LLM router picks from that reduced set. When false, the highest-similarity spell above the similarity threshold wins outright with no LLM call.", SettingKind.Bool),
 
-        new("embeddings.spellRoutingHybridTopK", ConfigSection.Intelligence, "Spell Routing hybrid top-K", "Phase 5: number of top candidates passed to the LLM router in hybrid mode.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSpellRoutingHybridTopK)),
+        new("embeddings.spellRoutingHybridTopK", ConfigSection.Embeddings, "Spell Routing hybrid top-K", "Phase 5: number of top candidates passed to the LLM router in hybrid mode.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.EmbeddingsSpellRoutingHybridTopK)),
 
         // ===== Scrying (Vision/Multimodality) =====
 
@@ -568,59 +580,59 @@ public static class SettingDescriptors
 
         // ===== Budget =====
 
-        new("budget.enabled", ConfigSection.Pricing, "Budget enforcement enabled", "When true, daily USD spend is checked against budget.limitUsd and inference is rejected with 429 once the limit is reached.", SettingKind.Bool),
+        new("budget.enabled", ConfigSection.Budget, "Budget enforcement enabled", "When true, daily USD spend is checked against budget.limitUsd and inference is rejected with 429 once the limit is reached.", SettingKind.Bool),
 
-        new("budget.dailyLimitUsd", ConfigSection.Pricing, "Daily limit (USD)", "Maximum USD spend allowed per UTC day before inference is rejected with Budget.Exceeded (HTTP 429).", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.BudgetDailyLimitUsd)),
+        new("budget.dailyLimitUsd", ConfigSection.Budget, "Daily limit (USD)", "Maximum USD spend allowed per UTC day before inference is rejected with Budget.Exceeded (HTTP 429).", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.BudgetDailyLimitUsd)),
 
-        new("budget.alertThresholdPercent", ConfigSection.Pricing, "Alert threshold (%)", "Percentage of the daily limit at which a Comm Link warning is dispatched. Default 80; clamped 1-100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.BudgetAlertThresholdPercent)),
+        new("budget.alertThresholdPercent", ConfigSection.Budget, "Alert threshold (%)", "Percentage of the daily limit at which a Comm Link warning is dispatched. Default 80; clamped 1-100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.BudgetAlertThresholdPercent)),
 
         // ===== Prompt Caching =====
 
-        new("cache.enabled", ConfigSection.Intelligence, "Prompt caching enabled", "When true, Arcanum injects cache_prompt: true on eligible llama.cpp requests (estimated prompt tokens >= MinCacheableTokens) to reduce latency and cost for multi-turn conversations with large system prompts.", SettingKind.Bool),
+        new("cache.enabled", ConfigSection.Cache, "Prompt caching enabled", "When true, Arcanum injects cache_prompt: true on eligible llama.cpp requests (estimated prompt tokens >= MinCacheableTokens) to reduce latency and cost for multi-turn conversations with large system prompts.", SettingKind.Bool),
 
-        new("cache.minCacheableTokens", ConfigSection.Intelligence, "Min cacheable tokens", "Minimum estimated prompt token count before cache_prompt: true is injected. Avoids cache lookup/insert overhead for short prompts. Default 256; clamped 1-131072.", SettingKind.Int, 1, 131_072, 1, ClampName: nameof(ArcanumSettingClamps.CacheMinCacheableTokens)),
+        new("cache.minCacheableTokens", ConfigSection.Cache, "Min cacheable tokens", "Minimum estimated prompt token count before cache_prompt: true is injected. Avoids cache lookup/insert overhead for short prompts. Default 256; clamped 1-131072.", SettingKind.Int, 1, 131_072, 1, ClampName: nameof(ArcanumSettingClamps.CacheMinCacheableTokens)),
 
         // ===== Web Browsing =====
 
-        new("webBrowsing.enabled", ConfigSection.Intelligence, "Web browsing enabled", "When true, the browse_web built-in tool is advertised and can fetch external URLs subject to the outbound SSRF guard and Sanctum network policy.", SettingKind.Bool),
+        new("webBrowsing.enabled", ConfigSection.WebBrowsing, "Web browsing enabled", "When true, the browse_web built-in tool is advertised and can fetch external URLs subject to the outbound SSRF guard and Sanctum network policy.", SettingKind.Bool),
 
-        new("webBrowsing.maxContentBytes", ConfigSection.Intelligence, "Max browsed content (bytes)", "Maximum response body bytes read from a fetched page. Content beyond this is truncated with a marker. Default 50,000; clamped 1,000 - 1,000,000.", SettingKind.Int, 1_000, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingMaxContentBytes)),
+        new("webBrowsing.maxContentBytes", ConfigSection.WebBrowsing, "Max browsed content (bytes)", "Maximum response body bytes read from a fetched page. Content beyond this is truncated with a marker. Default 50,000; clamped 1,000 - 1,000,000.", SettingKind.Int, 1_000, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingMaxContentBytes)),
 
-        new("webBrowsing.requestTimeoutSeconds", ConfigSection.Intelligence, "Web browsing timeout (s)", "Wall-clock timeout for the outbound HTTP request made by browse_web. Default 10; clamped 1 - 60.", SettingKind.Int, 1, 60, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds)),
+        new("webBrowsing.requestTimeoutSeconds", ConfigSection.WebBrowsing, "Web browsing timeout (s)", "Wall-clock timeout for the outbound HTTP request made by browse_web. Default 10; clamped 1 - 60.", SettingKind.Int, 1, 60, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds)),
 
-        new("webBrowsing.maxLinks", ConfigSection.Intelligence, "Max browsed links", "Maximum number of absolute links returned by browse_web. Default 10; clamped 0 - 100.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingMaxLinks)),
+        new("webBrowsing.maxLinks", ConfigSection.WebBrowsing, "Max browsed links", "Maximum number of absolute links returned by browse_web. Default 10; clamped 0 - 100.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.WebBrowsingMaxLinks)),
 
         // ===== Client Tool Forwarding =====
 
-        new("clientToolForwarding.enabled", ConfigSection.Intelligence, "Client tool forwarding enabled", "When true, client-supplied tools and tool_choice on /v1/chat/completions are forwarded to the resolved provider instead of being rejected. Arcanum does not execute the tools; the client must round-trip the tool_calls response.", SettingKind.Bool),
+        new("clientToolForwarding.enabled", ConfigSection.ClientToolForwarding, "Client tool forwarding enabled", "When true, client-supplied tools and tool_choice on /v1/chat/completions are forwarded to the resolved provider instead of being rejected. Arcanum does not execute the tools; the client must round-trip the tool_calls response.", SettingKind.Bool),
 
-        new("clientToolForwarding.maxClientTools", ConfigSection.Intelligence, "Max client tools", "Maximum number of client-supplied tools accepted per /v1/chat/completions request. Default 20; clamped 1 - 100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.ClientToolForwardingMaxClientTools)),
+        new("clientToolForwarding.maxClientTools", ConfigSection.ClientToolForwarding, "Max client tools", "Maximum number of client-supplied tools accepted per /v1/chat/completions request. Default 20; clamped 1 - 100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.ClientToolForwardingMaxClientTools)),
 
         // ===== Content Guardrails =====
 
-        new("guardrails.enabled", ConfigSection.Intelligence, "Content guardrails enabled", "When true, input and output are scanned by the GuardrailsPipeline. PII in input is rejected with Guardrails.PiiDetected; toxicity/topic violations are rejected with Guardrails.Blocked. Default false — a complete pass-through until an operator opts in.", SettingKind.Bool),
+        new("guardrails.enabled", ConfigSection.Guardrails, "Content guardrails enabled", "When true, input and output are scanned by the GuardrailsPipeline. PII in input is rejected with Guardrails.PiiDetected; toxicity/topic violations are rejected with Guardrails.Blocked. Default false — a complete pass-through until an operator opts in.", SettingKind.Bool),
 
-        new("guardrails.detectPii", ConfigSection.Intelligence, "Detect PII", "When true (default), email/phone/SSN/credit-card patterns in input messages are detected and the turn is rejected before inference runs.", SettingKind.Bool),
+        new("guardrails.detectPii", ConfigSection.Guardrails, "Detect PII", "When true (default), email/phone/SSN/credit-card patterns in input messages are detected and the turn is rejected before inference runs.", SettingKind.Bool),
 
-        new("guardrails.blockToxicity", ConfigSection.Intelligence, "Block toxicity", "When true, input or output containing any ToxicityBlocklist keyword is rejected. Default false — an empty blocklist is a no-op even when this is true.", SettingKind.Bool),
+        new("guardrails.blockToxicity", ConfigSection.Guardrails, "Block toxicity", "When true, input or output containing any ToxicityBlocklist keyword is rejected. Default false — an empty blocklist is a no-op even when this is true.", SettingKind.Bool),
 
-        new("guardrails.toxicityBlocklist", ConfigSection.Intelligence, "Toxicity blocklist", "Substring (case-insensitive) blocklist matched against input and output text. Only consulted when BlockToxicity is true. Default empty.", SettingKind.StringArray),
+        new("guardrails.toxicityBlocklist", ConfigSection.Guardrails, "Toxicity blocklist", "Substring (case-insensitive) blocklist matched against input and output text. Only consulted when BlockToxicity is true. Default empty.", SettingKind.StringArray),
 
-        new("guardrails.allowedTopics", ConfigSection.Intelligence, "Allowed topics", "Optional allow-list of regex patterns. When non-empty, input that fails to match any pattern is rejected. Default empty — all topics allowed.", SettingKind.StringArray),
+        new("guardrails.allowedTopics", ConfigSection.Guardrails, "Allowed topics", "Optional allow-list of regex patterns. When non-empty, input that fails to match any pattern is rejected. Default empty — all topics allowed.", SettingKind.StringArray),
 
-        new("guardrails.blockedTopics", ConfigSection.Intelligence, "Blocked topics", "Optional block-list of regex patterns. Input or output matching any pattern is rejected. Default empty — no topics blocked.", SettingKind.StringArray),
+        new("guardrails.blockedTopics", ConfigSection.Guardrails, "Blocked topics", "Optional block-list of regex patterns. Input or output matching any pattern is rejected. Default empty — no topics blocked.", SettingKind.StringArray),
 
-        new("guardrails.streamingMode", ConfigSection.Intelligence, "Streaming output-filter mode", "passthrough (default) emits tokens in real time and runs the output filter post-hoc (toxic text may reach the client; only persistence is blocked). buffered holds tokens server-side and releases them only after the filter passes, blocking toxic content at the cost of real-time streaming. No-op when Guardrails:Enabled is false.", SettingKind.String),
+        new("guardrails.streamingMode", ConfigSection.Guardrails, "Streaming output-filter mode", "passthrough (default) emits tokens in real time and runs the output filter post-hoc (toxic text may reach the client; only persistence is blocked). buffered holds tokens server-side and releases them only after the filter passes, blocking toxic content at the cost of real-time streaming. No-op when Guardrails:Enabled is false.", SettingKind.String),
 
         // ===== Content Guardrails — Audit log =====
 
-        new("guardrails.auditLog.enabled", ConfigSection.Intelligence, "Guardrails audit log enabled", "Master toggle for the persisted guardrails audit log. When false (default), no violation file I/O occurs and GET /api/guardrails/audit returns an empty list. Ineffective when Guardrails:Enabled is false.", SettingKind.Bool),
+        new("guardrails.auditLog.enabled", ConfigSection.Guardrails, "Guardrails audit log enabled", "Master toggle for the persisted guardrails audit log. When false (default), no violation file I/O occurs and GET /api/guardrails/audit returns an empty list. Ineffective when Guardrails:Enabled is false.", SettingKind.Bool),
 
-        new("guardrails.auditLog.filePath", ConfigSection.Intelligence, "Guardrails audit log file path", "Base path; the directory is where dated guardrails-YYYYMMDD.jsonl files are written (one per UTC day).", SettingKind.Path, Placeholder: "~/.config/arcanum/guardrails.jsonl"),
+        new("guardrails.auditLog.filePath", ConfigSection.Guardrails, "Guardrails audit log file path", "Base path; the directory is where dated guardrails-YYYYMMDD.jsonl files are written (one per UTC day).", SettingKind.Path, Placeholder: "~/.config/arcanum/guardrails.jsonl"),
 
-        new("guardrails.auditLog.maxSizeMb", ConfigSection.Intelligence, "Guardrails audit log max size (MB)", "Soft per-day-file size cap; further writes for that day are dropped once reached. Default 100; clamped 10-1,000.", SettingKind.Int, 10, 1_000, 10, ClampName: nameof(ArcanumSettingClamps.HostAuditLogMaxSizeMb)),
+        new("guardrails.auditLog.maxSizeMb", ConfigSection.Guardrails, "Guardrails audit log max size (MB)", "Soft per-day-file size cap; further writes for that day are dropped once reached. Default 100; clamped 10-1,000.", SettingKind.Int, 10, 1_000, 10, ClampName: nameof(ArcanumSettingClamps.HostAuditLogMaxSizeMb)),
 
-        new("guardrails.auditLog.retentionDays", ConfigSection.Intelligence, "Guardrails audit log retention (days)", "Dated log files older than this are deleted automatically. Default 7; clamped 1-365.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays)),
+        new("guardrails.auditLog.retentionDays", ConfigSection.Guardrails, "Guardrails audit log retention (days)", "Dated log files older than this are deleted automatically. Default 7; clamped 1-365.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays)),
 
     ];
 

@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
+using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -73,19 +75,21 @@ public sealed class ServeCommandConfigReaderTests
     }
 
     [Fact]
-    public void ReadConfiguredMaxRequestBodyBytes_returns_default_when_missing()
+    public void Configure_sets_default_max_request_body_when_missing()
     {
 
         IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>());
 
-        long maxBytes = ServeCommand.ReadConfiguredMaxRequestBodyBytes(configuration);
+        KestrelServerOptions options = new();
 
-        Assert.Equal(new HostSettings().MaxRequestBodyBytes, maxBytes);
+        ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false);
+
+        Assert.Equal(new HostSettings().MaxRequestBodyBytes, options.Limits.MaxRequestBodySize);
 
     }
 
     [Fact]
-    public void ReadConfiguredMaxRequestBodyBytes_parses_valid_integer()
+    public void Configure_applies_configured_max_request_body()
     {
 
         IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
@@ -93,9 +97,11 @@ public sealed class ServeCommandConfigReaderTests
             ["Arcanum:Host:MaxRequestBodyBytes"] = "2097152",
         });
 
-        long maxBytes = ServeCommand.ReadConfiguredMaxRequestBodyBytes(configuration);
+        KestrelServerOptions options = new();
 
-        Assert.Equal(2_097_152L, maxBytes);
+        ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false);
+
+        Assert.Equal(2_097_152L, options.Limits.MaxRequestBodySize);
 
     }
 

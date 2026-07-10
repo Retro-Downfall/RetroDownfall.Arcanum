@@ -1,0 +1,40 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.LabeledStepper"
+             x:Name="Root">
+
+    <StackPanel Spacing="4">
+
+        <TextBlock Text="{Binding #Root.Label}"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource ForgeTextBrush}" />
+
+        <StackPanel Orientation="Horizontal"
+                    Spacing="8">
+
+            <NumericUpDown x:Name="StepperControl"
+                           Minimum="{Binding #Root.Minimum}"
+                           Maximum="{Binding #Root.Maximum}"
+                           Increment="{Binding #Root.Increment}"
+                           ValueChanged="OnStepperValueChanged" />
+
+            <TextBlock x:Name="ValueControl"
+                       VerticalAlignment="Center"
+                       Foreground="{DynamicResource ForgeTextBrush}" />
+
+        </StackPanel>
+
+        <TextBlock Text="{Binding #Root.Description}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeMutedTextBrush}"
+                   IsVisible="{Binding #Root.Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+        <TextBlock Text="{Binding #Root.ValidationMessage}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeErrorBrush}"
+                   IsVisible="{Binding #Root.ValidationMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    </StackPanel>
+
+</UserControl>

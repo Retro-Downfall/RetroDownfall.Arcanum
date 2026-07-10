@@ -4,6 +4,8 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 public sealed class AtelierCategoryNodeViewModel : AtelierNodeViewModel
 {
 
+    private readonly IReadOnlyList<AtelierNodeViewModel> _initialChildren;
+
     public AtelierCategoryNodeViewModel(string label, string icon, IEnumerable<AtelierNodeViewModel> children)
     {
 
@@ -11,16 +13,20 @@ public sealed class AtelierCategoryNodeViewModel : AtelierNodeViewModel
 
         Icon = icon;
 
-        foreach (AtelierNodeViewModel child in children)
+        _initialChildren = children.ToArray();
+
+        foreach (AtelierNodeViewModel child in _initialChildren)
         {
 
             Children.Add(child);
 
         }
 
+        MarkChildrenLoaded();
+
     }
 
     protected override Task<IReadOnlyList<AtelierNodeViewModel>> LoadChildrenAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<AtelierNodeViewModel>>(Children.ToArray());
+        Task.FromResult(_initialChildren);
 
 }

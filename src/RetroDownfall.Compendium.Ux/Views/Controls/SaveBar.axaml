@@ -1,0 +1,46 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             x:Class="RetroDownfall.Compendium.Ux.Views.Controls.SaveBar"
+             x:Name="Root">
+
+    <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto"
+          Margin="12,8"
+          Background="{DynamicResource ForgeSurfaceBrush}">
+
+        <Border Grid.ColumnSpan="5"
+                BorderBrush="{DynamicResource ForgeBorderBrush}"
+                BorderThickness="0,1,0,0"
+                VerticalAlignment="Top"
+                Height="1" />
+
+        <Ellipse Grid.Column="0"
+                 Width="10"
+                 Height="10"
+                 VerticalAlignment="Center"
+                 Margin="0,0,8,0"
+                 Fill="{DynamicResource ForgeAccentBrush}"
+                 IsVisible="{Binding #Root.IsDirty}" />
+
+        <TextBlock Grid.Column="1"
+                   x:Name="StatusLabel"
+                   VerticalAlignment="Center"
+                   Foreground="{DynamicResource ForgeTextBrush}" />
+
+        <Button Grid.Column="2"
+                Content="Reload"
+                Command="{Binding #Root.RefreshCommand}"
+                IsVisible="{Binding #Root.HasExternalChange}" />
+
+        <Button Grid.Column="3"
+                Content="Cancel"
+                Command="{Binding #Root.CancelCommand}"
+                IsVisible="{Binding #Root.IsDirty}" />
+
+        <Button Grid.Column="4"
+                Content="Save"
+                Command="{Binding #Root.SaveCommand}" />
+
+    </Grid>
+
+</UserControl>

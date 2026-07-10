@@ -36,16 +36,24 @@ By default Arcanum listens on `http://localhost:5001` (loopback). The Forge's `f
 
 ## Acquiring an API key
 
-Every Arcanum `/api/*` route requires the `X-Arcanum-Key` header. The Forge resolves a key in this
-order:
+Every Arcanum `/api/*` route requires the `X-Arcanum-Key` header. The master key is stored in the
+**OS credential store** under the shared identity `service=arcanum` / `account=master-api-key`
+(macOS Keychain, Windows Credential Manager, Linux Secret Service). Arcanum creates it on first
+`arcanum serve`; The Forge reads the same entry.
 
-1. A previously-resolved key cached in `~/.config/arcanum/forge.json`.
-2. Shelling out to `arcanum key show` (the Arcanum CLI writes the raw key to **stderr**).
-3. Otherwise, The Forge prompts you to paste one manually.
+The Forge resolves a key in this order:
 
-Once resolved, the key is cached back into `forge.json` (file mode `0600` on Unix) so subsequent
-launches don't need to re-resolve it. If you rotate the key, delete `apiKey` from `forge.json` (or
-delete the file entirely) to force re-resolution.
+1. OS credential store (`arcanum` / `master-api-key`).
+2. Legacy plaintext `apiKey` in `~/.config/arcanum/forge.json` — migrated into the OS store, then stripped.
+3. Shelling out to `arcanum key show` (stderr) — result persisted into the OS store.
+4. Otherwise, a Whispers paste dialog; the pasted key is stored in the OS credential store.
+
+Do **not** keep the master key in `forge.json` going forward. To rotate, run `arcanum key set` (or
+update the OS credential) and restart The Forge.
+
+**Linux:** install `libsecret` and ensure a Secret Service (e.g. gnome-keyring) is running. If the
+OS store is unavailable, Arcanum can still fall back to Data Protection `security.dat`, but The Forge
+cannot share that fallback — paste or `arcanum key set` on a machine with a working keychain.
 
 ## Settings file
 
@@ -64,6 +72,34 @@ restarting The Forge:
 }
 ```
 
+`apiKey` is obsolete (legacy migrate-and-strip only); leave it `null`.
+
+`layoutState` holds a versioned JSON dock layout (`ForgeDockLayoutDto`) when the operator has
+rearranged tool windows; `null` means use the default shell layout.
+
+## Window layout
+
+Tool windows (Atelier, Gatehouse, Treasury, Arsenal, War Table, Output, Logs, Hearth) can be moved
+between the left, right, and bottom dock regions via each tool’s header **context menu** (Move Left /
+Move Right / Move Bottom / Hide) or restored from **View**. **View → Reset Window Layout** restores
+the default shell and persists it. Layout is stored in `~/.config/arcanum/forge.json` as `layoutState`
+and restored on next launch. The Workbench stays the central document host; The Anvil stays a fixed
+status bar. Drag-and-drop docking is not required for this release — menu/context movement is the
+supported path.
+
+## The Hearth terminal
+
+The Hearth is The Forge's dockable terminal panel (View → **The Hearth**, default bottom dock). It
+runs local shell commands from a working directory that starts at your user home profile. Use the
+**Home** button to reset the working directory; use built-in `cd` (including `~`) to move around.
+
+Initial Git integration is available through The Hearth terminal: use `git status`, `git diff`, etc.
+directly until the dedicated Git UI (**The Ledger**) arrives.
+
+The Hearth supports command output streaming, `cd`, Stop, and Clear. It is not a full
+pseudo-terminal yet, so fully interactive terminal apps may not work correctly. Command execution is
+local desktop functionality — it does not call the Arcanum API or go through Sanctum/Wards.
+
 ## Build and run
 
 From the repository root:
@@ -81,14 +117,7 @@ dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.cspr
 
 ## Status
 
-The Forge is in **alpha** (`0.1.0-alpha`, overriding the solution-wide `0.1.0-beta` in
-`Directory.Build.props`). **Milestone C is complete** (Phases 1–6): the solution scaffold, Core
-models, the full HTTP/SSE/NDJSON client stack, DI wiring, the Phase 3 Avalonia shell, the Phase 4
-live Atelier tree, the Phase 5 Spell editor, and the Phase 6 Tome are in place. The Atelier lists
-campaign, workspace, global spell, and recent-session roots with lazy campaign children and
-spell/session/prompt Workbench navigation. The Spell editor loads spell detail and versions, edits
-SPELL.md/SKILL.json, saves, casts dry-run previews, estimates Mana, activates versions, and opens a
-Session tab on `sessionBound`. The Tome streams NDJSON ping-stream chat (all `IntelligenceEvent`
-types, tool cards, mana bar, manual entry, fork/export) and observes live session SSE. War Table,
-Gatehouse, Anvil aggregation, and theme polish remain in later milestones. See
-[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §6 for the full milestone breakdown.
+The Forge is in **alpha** (`0.1.0-alpha`). **Milestones A–E are complete** (Phases 1–10): Avalonia shell, Atelier, Spell editor, Tome, War Table, Gatehouse, Anvil, and Visual Studio 2026 Fluent-inspired theming (Cascadia Mono / Segoe UI Variable, Dark/Light resource dictionaries, ManaBar, Icons, `forge.json` `Theme` swap). **The Hearth** local terminal is also available (see above). See [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7, §5.8, and §6.
+
+**Known gaps (honest UI):** Treasury and Arsenal are placeholders (“not implemented yet”). Campaign **New Spell / New Prompt / New Session** are disabled until create flows ship. Dedicated Git UI (The Ledger) is not built yet — use The Hearth for `git` commands. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet.
+

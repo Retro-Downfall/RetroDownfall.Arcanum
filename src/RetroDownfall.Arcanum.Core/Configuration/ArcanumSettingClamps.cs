@@ -8,6 +8,8 @@ public static class ArcanumSettingClamps
 
     public static int HostPort(int value) => Math.Clamp(value, 1, 65_535);
 
+    public static int HostHttpsPort(int value) => Math.Clamp(value, 1, 65_535);
+
     public static int RetainedLogFileCount(int value) => Math.Clamp(value, 1, 366);
 
     public static int McpRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);

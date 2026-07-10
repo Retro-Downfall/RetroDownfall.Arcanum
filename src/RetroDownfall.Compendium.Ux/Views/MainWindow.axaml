@@ -1,0 +1,82 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RetroDownfall.Compendium.Ux.ViewModels"
+        xmlns:models="using:RetroDownfall.Compendium.Ux.Models"
+        xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+        x:Class="RetroDownfall.Compendium.Ux.Views.MainWindow"
+        x:DataType="vm:ConfigurationViewModel"
+        Title="Compendium"
+        Width="1100"
+        Height="720"
+        MinWidth="800"
+        MinHeight="500"
+        Background="{DynamicResource ForgeBackgroundBrush}">
+
+  <DockPanel>
+
+    <Menu DockPanel.Dock="Top"
+          Background="{DynamicResource ForgeSurfaceAltBrush}">
+      <MenuItem Header="_File">
+        <MenuItem Header="_Save"
+                  Command="{Binding SaveCommand}" />
+        <MenuItem Header="_Reload"
+                  Command="{Binding RefreshCommand}" />
+        <Separator />
+        <MenuItem Header="E_xit"
+                  Click="OnExitClick" />
+      </MenuItem>
+    </Menu>
+
+    <controls:SaveBar DockPanel.Dock="Bottom"
+                      IsDirty="{Binding IsDirty}"
+                      IsSaving="{Binding IsSaving}"
+                      StatusMessage="{Binding StatusMessage}"
+                      LastSavedAt="{Binding LastSavedAt}"
+                      HasExternalChange="{Binding HasExternalChange}"
+                      SaveCommand="{Binding SaveCommand}"
+                      RefreshCommand="{Binding RefreshCommand}"
+                      CancelCommand="{Binding CancelCommand}" />
+
+    <Grid ColumnDefinitions="220,*">
+
+      <Border Grid.Column="0"
+              Background="{DynamicResource ForgeSurfaceBrush}"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              BorderThickness="0,0,1,0">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top"
+                     Text="SECTIONS"
+                     Margin="12,10,12,6"
+                     FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                     Foreground="{DynamicResource ForgeMutedTextBrush}" />
+          <ListBox x:Name="SectionList"
+                   ItemsSource="{Binding Sections}"
+                   Background="Transparent"
+                   BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:SectionDescriptor">
+                <StackPanel Margin="4,6" Spacing="2">
+                  <TextBlock Text="{Binding Title}"
+                             FontWeight="SemiBold"
+                             Foreground="{DynamicResource ForgeTextBrush}" />
+                  <TextBlock Text="{Binding Subtitle}"
+                             FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                             Foreground="{DynamicResource ForgeMutedTextBrush}"
+                             TextWrapping="Wrap" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <TabControl x:Name="DocumentTabs"
+                  Grid.Column="1"
+                  Background="{DynamicResource ForgeBackgroundBrush}"
+                  Margin="0" />
+
+    </Grid>
+
+  </DockPanel>
+
+</Window>

@@ -118,11 +118,12 @@ suggest — recorded here so future changes don't silently drift from the real w
   of `RetroDownfall.Arcanum.Core.TheForge.ApprenticeEvent` — deserializing straight into
   `ApprenticeEvent` would silently drop every pass-through field.
 - **Paths**: `RetroDownfall.Arcanum.Core.Storage.ArcanumPaths.GrimoireDirectory` is public and used
-  as-is (`~/.config/arcanum`). `forge.json` lives at `{GrimoireDirectory}/forge.json`. This is
-  distinct from `ArcanumPaths.SecretStoreDirectory` (where Arcanum's own Data-Protection-encrypted
-  `security.dat` lives) — The Forge cannot decrypt that file from a separate process, hence the
-  `arcanum key show` shell-out in `ApiKeyResolver` (the CLI writes the key to **stderr**, not
-  stdout, specifically to avoid accidental capture by shell piping).
+  as-is (`~/.config/arcanum`). `forge.json` lives at `{GrimoireDirectory}/forge.json`. The master
+  API key is **not** stored in `forge.json`: Arcanum and The Forge share the OS credential store
+  identity `arcanum` / `master-api-key` (`RetroDownfall.Arcanum.Secrets`). Legacy `security.dat`
+  remains a Data Protection mirror/fallback for Arcanum only; The Forge resolves via
+  `IForgeApiKeyProvider` → `ApiKeyResolver` (OS store → migrate forge.json → `arcanum key show` →
+  paste). The CLI writes `arcanum key show` to **stderr**.
 - **Enum serialization discipline**: `ForgeJsonContext` and `ForgeSettingsJsonContext` never register
   a blanket `JsonStringEnumConverter` in `[JsonSourceGenerationOptions]`. Every Core enum that
   serializes as a string already carries its own
@@ -153,25 +154,35 @@ suggest — recorded here so future changes don't silently drift from the real w
 | Entry inspector | The Loupe | Export/import wizard | Export / Import Wizard *(literal)* |
 
 `Compendium` here refers to Forge's Settings panel concept, distinct from the existing
-`RetroDownfall.Compendium.Ux` MAUI project (Arcanum's separate configuration-editor app) already in
+`RetroDownfall.Compendium.Ux` Avalonia project (Arcanum's separate configuration-editor app) already in
 the solution — the two are unrelated products that happen to share a name from the same fantasy
 vocabulary.
 
 ### 5.1 Phase 3 shell structure
 
-Milestone B establishes the shell that future feature panels plug into:
+Milestone B established the shell that feature panels plug into. The shell has since gained
+**internal dockable window management** (in-window only — no OS floating windows yet):
 
-- `MainWindow.axaml` owns the top menu row (File, Edit, View, Campaign, Spell, Apprentice, Trial,
-  Tools, Help), the left **Atelier**, center **Workbench**, right **Gatehouse** / **Treasury** /
-  **Arsenal** / **War Table** tab group, bottom **Foundry Floor** / **Logs** / **Hearth** tab group,
-  and bottom **Anvil** status bar.
-- `MainViewModel` owns panel visibility (`IsAtelierVisible`, `IsRightPanelVisible`,
-  `IsFoundryFloorVisible`), Workbench tabs (`OpenDocuments`, `ActiveDocument`, `HasNoOpenDocuments`),
-  connection commands, and `NavigationService` subscriptions for open/close/focus events.
-- `BoolToGridLengthConverter` collapses grid columns/rows to `0` so hidden panels release space
-  instead of merely hiding their contents.
-- Feature panels are represented by placeholder ViewModels in Phase 3; Phases 4–9 replace the
-  placeholder body text with live API-backed content without changing the shell seams.
+- `MainWindow.axaml` owns the top menu row, a `DockHostView` for rearrangeable tool windows, and the
+  fixed bottom **Anvil** status bar. The Workbench remains the central document well.
+- Tool windows: **Atelier**, **Gatehouse**, **Treasury**, **Arsenal**, **War Table**, **Output**,
+  **Logs**, **Hearth**. Each has a stable string id (`atelier`, `gatehouse`, …), title, optional icon
+  key, dock region (`Left` / `Right` / `Bottom` / `Hidden`), visibility, and selection within its group.
+- `DockLayoutViewModel` owns layout state and groups; `MainViewModel` wires content ViewModels into
+  tools and routes `NavigationService` / Anvil focus chips via `FocusTool`. Empty groups collapse.
+- **Required UX:** tool header context menu — Move Left / Move Right / Move Bottom / Hide / Reset
+  Layout. View menu: Reset Window Layout plus show-or-focus items for each tool. Drag-and-drop onto
+  dock targets is preferred when small/stable; this pass ships the menu path first (DnD may follow).
+- **Persistence:** versioned `ForgeDockLayoutDto` (`SchemaVersion = 1`) is source-gen serialized into
+  `ForgeSettings.LayoutState` via `ForgeSettingsJsonContext` and written through path-injected
+  `IForgeSettingsStore` (debounced). Corrupt/missing layout falls back to defaults; unknown tool ids
+  are ignored; missing known tools are inserted; sizes are clamped.
+- **Reset** replaces the entire layout with `DockLayoutDefaults` (today’s default shell) and persists.
+- `MainViewModel` disposes owned documents, transient child VMs, and `DockLayoutViewModel` on window
+  close; DI singleton `FoundryFloorViewModel` is left to `ServiceProvider`.
+
+Default layout: Left = Atelier; Right = Gatehouse, Treasury, Arsenal, War Table; Bottom = Output,
+Logs, Hearth; center = Workbench; fixed bottom = Anvil.
 
 ### 5.2 Phase 4 Atelier tree
 
@@ -229,6 +240,82 @@ Phase 6 replaces session Workbench placeholders with **The Tome** chat surface:
   provisional Mana bar (full `ManaBar` control arrives in Phase 10), and Enter-to-send /
   Shift+Enter newline input.
 
+
+### 5.7 Phase 7 The War Table
+
+Phase 7 replaces the War Table placeholder with apprentice orchestration:
+
+- `WarTableViewModel` lists apprentices from `GET /api/apprentices`, opens a create panel (name,
+  goal with `@file` mentions, workspace + campaign selectors), and hosts the selected detail pane.
+- `ApprenticeDetailViewModel` loads detail/plan, walks Conclave lineage via
+  `ParentApprenticeId`, and exposes Start/Pause/Resume/Cancel/Reweave/Intervene.
+- `ChronicleViewModel` streams `GET /api/apprentices/{id}/chronicle` into Forge-local
+  `ChronicleFrame` entries (raw-string `Type`); pass-through Wizard events and `eventsDropped`
+  warnings are rendered by `ChronicleTimeline`.
+- Visibility is gated with the right panel (same seam as The Gatehouse).
+
+### 5.5 Phase 8 The Gatehouse
+
+Phase 8 replaces the Gatehouse placeholder with live ward governance:
+
+- `GatehouseViewModel` polls `GET /api/wards` every 2s **only while `IsVisible`** (tied to the
+  right-panel visibility from `MainViewModel`).
+- `WardCardViewModel` shows tool name, truncated indented JSON arguments, session id, and an
+  `ExpiresAt` countdown refreshed each poll tick.
+- Approve / Deny call `POST /api/wards/{id}` with `ResolveWardRequest` (`allow` + optional deny
+  reason). Empty state: "No active wards — the Forge is quiet." Ward SSE auto-refresh is noted as a
+  future hook, not built.
+
+### 5.6 Phase 9 The Anvil
+
+Phase 9 expands The Anvil from a connection indicator into a live status bar:
+
+- Aggregates `ConnectionState`, `ActiveCampaignName` (from `ForgeSettings.LastCampaignId`),
+  `ActiveModelName` (from health-report component detail when present), `ManaPercent` /
+  `TodaySpendUsd` (`GET /api/budget`), `ActiveWardsCount`, `RunningApprenticesCount`, and
+  `McpOnlineTotal` (`online/total` from `GET /api/mcp`).
+- Refreshes on a 10s timer and when connection becomes Connected; each chip is a button that
+  focuses the relevant panel via `NavigationService`.
+
+
+### 5.7 Phase 10 Theme & styling (Visual Studio 2026)
+
+Milestone E restyles The Forge to mirror Visual Studio 2026 Fluent IDE chrome:
+
+- `Themes/Typography.axaml` — `ForgeUiFontFamily` (Segoe UI Variable / Segoe UI), `ForgeCodeFontFamily` (Cascadia Mono / Cascadia Code), sizes 12 / 11 / 14.
+- `Themes/DarkTheme.axaml` / `Themes/LightTheme.axaml` — VS Fluent-inspired tokens (`#1C1C1C` / `#EEEEEE` bodies, `#9184EE` / `#5649B0` accents). Legacy `ForgeShell*` brush keys alias the new tokens.
+- `ThemeApplicationService` applies `ForgeSettings.Theme` (`dark`/`light`) to `RequestedThemeVariant` and swaps the theme dictionary.
+- `Views/Controls/ManaBar.axaml` — reusable utilization bar; Anvil and Tome consume it.
+- `Themes/Icons.axaml` — outline `PathGeometry` catalog (spell, apprentice, ward, campaign, session, MCP, model).
+- App styles set compact VS-like density; AvaloniaEdit uses the code font resources. Views use `{DynamicResource}` only (no inline hex).
+
+### 5.8 The Hearth (local terminal)
+
+The Hearth is The Forge's dockable **local shell command runner** (default bottom region). It is
+**desktop-only** functionality: it does not call Arcanum HTTP APIs, does not use MCP
+`execute_command`, and does not go through Sanctum/Ward approval. Commands are started only when the
+operator types them — nothing runs automatically on open.
+
+**Initial Git integration:** operators run `git status`, `git diff`, `dotnet build`, `arcanum`, etc.
+from The Hearth until **The Ledger** (dedicated Git UI) ships.
+
+**Behavior:**
+
+- `HearthViewModel` + `HearthView` replace the Phase 3 placeholder; content is wired through the
+  existing dock `DataTemplate` in `DockGroupView`.
+- `ITerminalCommandRunner` / `TerminalCommandRunner` spawn the platform default shell via
+  `ProcessStartInfo.ArgumentList` (Unix: `$SHELL` else zsh/sh with `-lc`; Windows: `cmd.exe` `/C`).
+  Stdout and stderr are drained concurrently; Stop cancels and kills the process tree best-effort.
+- Built-in `cd` (no child process): home, `~` / `~/…`, relative/absolute paths, simple quotes.
+  Working directory defaults to the user profile; toolbar **Home** resets to that profile.
+- Output is a capped line list (`HearthLineKind`: Command / StandardOutput / StandardError / System),
+  styled with Forge theme brushes and `ForgeCodeFontFamily`.
+- `MainViewModel` operationally owns and disposes the transient `HearthViewModel` (dispose is
+  idempotent and cancels any running process).
+
+**Limitations (honest):** not a full PTY — interactive TTY apps may misbehave; no dedicated Git UI
+yet; no folder picker for cwd; no automatic command execution.
+
 ## 6. Feature catalog (phased)
 
 Delivered in buildable milestones rather than one drop — each keeps `dotnet build`/`dotnet test`
@@ -237,23 +324,16 @@ green before the next begins.
 | Milestone | Phases | Scope |
 |---|---|---|
 | A — Foundation | 1–2 | Solution scaffold, minimal launchable shell, Core models, JSON contexts, `ArcanumApiClient`/`ArcanumSseClient`, `ArcanumConnectionService`, all 23 per-route services, DI wiring, unit tests |
-| B — Shell | 3 | Full main window: menu bar, Atelier/Workbench/right-panel/Foundry Floor/Anvil `Grid`+`GridSplitter` layout, tab management |
+| B — Shell | 3 | Full main window: menu bar, dockable tool windows (Left/Right/Bottom), Workbench document well, Anvil; layout persistence via `LayoutState` |
 | C — Create & converse | 4–6 | The Atelier tree, the Spell editor (Save/Cast/Execute/EstimateMana/versions), The Tome (NDJSON chat, tool cards, manual entry, session SSE) |
 | D — Orchestrate & govern | 7–9 | The War Table + Chronicle SSE + lineage walk, The Gatehouse (ward poll/approve/deny), The Anvil status aggregation |
-| E — Polish | 10 | Dark/Light theme resource dictionaries, `Icons.axaml` `PathGeometry` catalog, `ManaBar` control, theme swap via `ForgeSettings.Theme` |
+| E — Polish | 10 | VS 2026 Fluent-inspired Dark/Light themes, Cascadia/Segoe typography, `Icons.axaml`, `ManaBar`, theme swap via `ForgeSettings.Theme` |
 
-As of this document's last update, **Milestones A–C (Phases 1–6) are implemented**: the solution
-scaffold, Core models/JSON context, the full HTTP/SSE/NDJSON client stack, all 23 per-route
-services, DI wiring, the full Phase 3 shell, the Phase 4 live Atelier tree, the Phase 5 Spell
-editor, and the Phase 6 Tome exist and are covered by unit tests. The shell includes the menu row,
-collapsible Atelier/right-panel/Foundry Floor regions, Workbench tab management, Anvil connection
-status, and NavigationService open/close/focus seams. The Atelier exposes campaign/workspace/global
-spell/recent session roots, lazy campaign children, and spell/session/prompt navigation. The Spell
-editor loads spell detail and versions, edits SPELL.md/SKILL.json, saves, casts dry-run previews,
-estimates Mana, activates versions, and streams execute events into a Session tab. The Tome handles
-NDJSON ping-stream chat (all `IntelligenceEvent` types), tool cards, manual entry, fork/export, and
-live session SSE. War Table, Gatehouse, Anvil aggregation, and theme polish remain in later
-milestones.
+As of this document's last update, **Milestones A–E (Phases 1–10) are implemented**, plus **The Hearth**
+local terminal (§5.8): the solution scaffold through The Tome, War Table, Gatehouse, Anvil, VS 2026
+Fluent-inspired theme polish, and the dockable Hearth command runner.
+
+**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are disabled until create UX exists. Treasury and Arsenal show explicit “not implemented yet” empty states. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass.
 
 ## 7. API integration notes
 

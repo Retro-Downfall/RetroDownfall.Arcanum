@@ -4,7 +4,7 @@ Arcanum's primary persistent store is the **Grimoire**, an encrypted SQLite (SQL
 
 One deliberately **non-Grimoire** persisted artifact exists alongside it: the **persisted inference audit log** (`Arcanum:Host:AuditLog`, disabled by default, DESIGN.md §8.26) — plain dated JSONL files (`~/.config/arcanum/audit-YYYYMMDD.jsonl` by default), not a SQLite table. It records operational metadata about completed inference turns (model, tokens, latency, tool activity), not conversation content, and is intentionally kept out of the encrypted Grimoire so operators can `tail`/`grep`/ship it with standard log tooling without needing the Grimoire's decryption key. It is out of scope for the rest of this document, which covers only Grimoire-backed state.
 
-This is a living document. It is updated each time an in-memory subsystem gains Grimoire persistence (see `docs/DESIGN.md` §2.2 for the tracked backlog of remaining amnesiac gaps).
+This is a living document. It is updated each time an in-memory subsystem gains Grimoire persistence (see `docs/Arcanum.DESIGN.md` §2.2 for the tracked backlog of remaining amnesiac gaps).
 
 ## 1. Where state lives
 
@@ -99,19 +99,19 @@ A failed watermark write is logged as a warning and swallowed — it never crash
 
 ## 9. Migration safety and configuration impact
 
-The `UnseenServantWatermarks` table is purely additive — a table with no foreign keys to existing tables, no column changes on existing tables, no data backfill. Arcanum has no production Grimoire databases in the wild (see `docs/README.md` "Database migrations" section), so it ships as part of the current `InitialCreate.sql` schema baseline via `GrimoireDatabaseBootstrapper` with zero risk to existing data. No data migration step is needed.
+The `UnseenServantWatermarks` table is purely additive — a table with no foreign keys to existing tables, no column changes on existing tables, no data backfill. Arcanum has no production Grimoire databases in the wild (see `docs/Arcanum.README.md` "Database migrations" section), so it ships as part of the current `InitialCreate.sql` schema baseline via `GrimoireDatabaseBootstrapper` with zero risk to existing data. No data migration step is needed.
 
 The table introduces no configuration elements and modifies no existing ones. `DaemonSettings`, `UnseenServantJob`, `WardSettings`, and all other `ArcanumSettings` sections are unchanged. The Compendium desktop application (`RetroDownfall.Compendium.Ux`, the `arcanum.json` editor) requires no updates. No base database data or seed data needs updating — the table starts empty and is populated at runtime as jobs complete.
 
 ## 10. Cost tracking and budget enforcement
 
-Cost tracking and budget enforcement mechanics — pricing configuration, per-session cost accumulation via `IncrementSessionTokensAndCostAsync`, daily budget enforcement via `BudgetMonitor.CheckAsync`, and the `BudgetAlerts` deduplication table — are documented authoritatively in [DESIGN.md §22.2](DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumpricing-arcanumbudget). `GET /api/budget` surfaces the snapshot (`BudgetSummaryDto`) without requiring the budget to be enabled.
+Cost tracking and budget enforcement mechanics — pricing configuration, per-session cost accumulation via `IncrementSessionTokensAndCostAsync`, daily budget enforcement via `BudgetMonitor.CheckAsync`, and the `BudgetAlerts` deduplication table — are documented authoritatively in [Arcanum.DESIGN.md §22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumpricing-arcanumbudget). `GET /api/budget` surfaces the snapshot (`BudgetSummaryDto`) without requiring the budget to be enabled.
 
 The `BudgetAlerts` table follows the same raw-SQL-via-`ArcanumDbContext`-connection pattern as `UnseenServantWatermarks` and `SanctumBreaches` — deliberately **not** part of the compiled EF model, so it required no `dotnet ef dbcontext optimize` regeneration. The `Sessions.TotalCostUsd` column, by contrast, is a change to an existing compiled-model entity, so the compiled model was regenerated with `dotnet ef dbcontext optimize` and the generated files under `src/RetroDownfall.Arcanum.Infrastructure/Generated/` were updated in place.
 
 ## 11. Prompt caching
 
-Prompt caching mechanics — `Arcanum:Cache:Enabled` opt-in, llama.cpp `cache_prompt: true` injection via `LlamaCppRequestAugmentingHandler`, OpenAI-compatible automatic caching with `UsageDetails.CachedInputTokenCount` metric recording, and the shared `LlamaCppRequestAugmentingHandler` that also owns structured-output `grammar` injection (DESIGN.md §22.1) — are documented authoritatively in [DESIGN.md §22.3](DESIGN.md#223-prompt-caching-arcanumcache). Both augmentations happen in a single JSON-body pass.
+Prompt caching mechanics — `Arcanum:Cache:Enabled` opt-in, llama.cpp `cache_prompt: true` injection via `LlamaCppRequestAugmentingHandler`, OpenAI-compatible automatic caching with `UsageDetails.CachedInputTokenCount` metric recording, and the shared `LlamaCppRequestAugmentingHandler` that also owns structured-output `grammar` injection (DESIGN.md §22.1) — are documented authoritatively in [Arcanum.DESIGN.md §22.3](Arcanum.DESIGN.md#223-prompt-caching-arcanumcache). Both augmentations happen in a single JSON-body pass.
 
 ## 12. EF migration snapshot drift
 

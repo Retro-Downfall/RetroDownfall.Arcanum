@@ -37,6 +37,7 @@ using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
@@ -114,8 +115,33 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Registers the OS keychain–backed master API key store with Data Protection fallback/mirror,
+    /// plus the concrete <see cref="DataProtectionSecretStore"/> used for Grimoire encryption secrets.
+    /// </summary>
+    public static IServiceCollection AddArcanumSecretStore(this IServiceCollection services)
+    {
+
+        // Must use the parameterless-ctor factory, not TryAddSingleton<IOsCredentialStore, OsCredentialStore>():
+        // the generic overload lets the container pick OsCredentialStore's test-seam constructor
+        // (OsCredentialStore(IOsCredentialStore inner)), which requests IOsCredentialStore again and
+        // self-cycles at resolution time.
+        services.TryAddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
+
+        services.AddSingleton<DataProtectionSecretStore>();
+
+        services.AddSingleton<ISecretStore>(static sp => new OsKeychainSecretStore(
+            sp.GetRequiredService<IOsCredentialStore>(),
+            sp.GetRequiredService<DataProtectionSecretStore>(),
+            sp.GetRequiredService<IApiKeyDigestCache>(),
+            sp.GetService<ILogger<OsKeychainSecretStore>>()));
+
+        return services;
+
+    }
+
+    /// <summary>
     /// W6.4: the minimal secret/grimoire stack the CLI shares with the API host — Data Protection,
-    /// the API-key digest cache, the Data-Protection-backed secret store, and the CLI Grimoire. Owned
+    /// the API-key digest cache, the OS-keychain-backed secret store, and the CLI Grimoire. Owned
     /// here (next to <see cref="AddArcanumInfrastructure"/>) so the CLI wiring cannot silently drift
     /// out of sync with the host (see DX5).
     /// </summary>
@@ -127,7 +153,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
-        services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
+        services.AddArcanumSecretStore();
 
         services.AddArcanumGrimoireForCli();
 
@@ -204,7 +230,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
-        services.AddSingleton<ISecretStore, DataProtectionSecretStore>();
+        services.AddArcanumSecretStore();
+
         services.AddSingleton<IWard, WardGate>();
         services.AddScoped<ISanctumGuard, SanctumGuard>();
         services.AddSingleton<IProcessResourceLimiter, ProcessResourceLimiter>();

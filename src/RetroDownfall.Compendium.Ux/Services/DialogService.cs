@@ -1,58 +1,159 @@
+using Avalonia.Controls;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Threading;
+
 namespace RetroDownfall.Compendium.Ux.Services;
 
-public sealed class DialogService : IDialogService
+public sealed class DialogService(IMainWindowProvider mainWindowProvider) : IDialogService
 {
 
-    public Task ShowAlertAsync(string title, string message, string cancel = "OK")
+    public async Task ShowAlertAsync(string title, string message, string cancel = "OK")
     {
 
-        Page? page = GetCurrentPage();
-
-        if (page is null)
+        await Dispatcher.UIThread.InvokeAsync(async () =>
         {
 
-            return Task.CompletedTask;
+            Window? owner = mainWindowProvider.GetMainWindow();
 
-        }
+            if (owner is null)
+            {
 
-        return page.DisplayAlertAsync(title, message, cancel);
+                return;
+
+            }
+
+            Window dialog = CreateDialog(title, message, cancel, null, null);
+
+            await dialog.ShowDialog(owner);
+
+        });
 
     }
 
-    public Task<bool> ShowConfirmAsync(string title, string message, string accept = "Yes", string cancel = "No")
+    public async Task<bool> ShowConfirmAsync(string title, string message, string accept = "Yes", string cancel = "No")
     {
 
-        Page? page = GetCurrentPage();
-
-        if (page is null)
+        return await Dispatcher.UIThread.InvokeAsync(async () =>
         {
 
-            return Task.FromResult(false);
+            Window? owner = mainWindowProvider.GetMainWindow();
 
-        }
+            if (owner is null)
+            {
 
-        return page.DisplayAlertAsync(title, message, accept, cancel);
+                return false;
+
+            }
+
+            TaskCompletionSource<bool> tcs = new();
+
+            Window dialog = CreateDialog(title, message, cancel, accept, tcs);
+
+            await dialog.ShowDialog(owner);
+
+            return await tcs.Task;
+
+        });
 
     }
 
-    private static Page? GetCurrentPage()
+    private static Window CreateDialog(
+        string title,
+        string message,
+        string cancel,
+        string? accept,
+        TaskCompletionSource<bool>? tcs)
     {
 
-        if (Shell.Current is not null && Shell.Current.CurrentPage is not null)
+        Button cancelButton = new()
+        {
+            Content = cancel,
+            MinWidth = 72,
+        };
+
+        StackPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Children = { cancelButton },
+        };
+
+        if (accept is not null)
         {
 
-            return Shell.Current.CurrentPage;
+            Button acceptButton = new()
+            {
+                Content = accept,
+                MinWidth = 72,
+            };
+
+            acceptButton.Click += (_, _) =>
+            {
+
+                tcs?.TrySetResult(true);
+
+                // Close via tag
+            };
+
+            buttons.Children.Insert(0, acceptButton);
+
+            // Wire after dialog created below
+        }
+
+        StackPanel content = new()
+        {
+            Margin = new Avalonia.Thickness(16),
+            Spacing = 16,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = message,
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 420,
+                },
+                buttons,
+            },
+        };
+
+        Window dialog = new()
+        {
+            Title = title,
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = content,
+        };
+
+        cancelButton.Click += (_, _) =>
+        {
+
+            tcs?.TrySetResult(false);
+
+            dialog.Close();
+
+        };
+
+        if (accept is not null && buttons.Children[0] is Button acceptBtn)
+        {
+
+            acceptBtn.Click += (_, _) =>
+            {
+
+                tcs?.TrySetResult(true);
+
+                dialog.Close();
+
+            };
 
         }
 
-        if (Application.Current?.Windows is not null && Application.Current.Windows.Count > 0)
-        {
+        dialog.Closed += (_, _) => tcs?.TrySetResult(false);
 
-            return Application.Current.Windows[0].Page;
-
-        }
-
-        return null;
+        return dialog;
 
     }
 

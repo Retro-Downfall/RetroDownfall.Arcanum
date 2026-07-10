@@ -58,7 +58,7 @@ public sealed class ConfigurationRedactorTests
     }
 
     [Fact]
-    public void MergeApiKeys_PreservesCurrentKeyWhenRequestSendsMask()
+    public void MergeRedactedSecrets_PreservesCurrentKeyWhenRequestSendsMask()
     {
         ArcanumSettings current = new()
         {
@@ -70,13 +70,13 @@ public sealed class ConfigurationRedactorTests
             Providers = [new ProviderSettings { Name = "openai", ApiKey = "***" }],
         };
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(request, current);
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
 
         Assert.Equal("sk-real", merged.Providers![0].ApiKey);
     }
 
     [Fact]
-    public void MergeApiKeys_ReplacesKeyWhenRequestSendsNewValue()
+    public void MergeRedactedSecrets_ReplacesKeyWhenRequestSendsNewValue()
     {
         ArcanumSettings current = new()
         {
@@ -88,13 +88,13 @@ public sealed class ConfigurationRedactorTests
             Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-new" }],
         };
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(request, current);
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
 
         Assert.Equal("sk-new", merged.Providers![0].ApiKey);
     }
 
     [Fact]
-    public void MergeApiKeys_RoundTripRestoresAllMaskedFields()
+    public void MergeRedactedSecrets_RoundTripRestoresAllMaskedFields()
     {
         ArcanumSettings current = new()
         {
@@ -119,7 +119,7 @@ public sealed class ConfigurationRedactorTests
 
         ArcanumSettings redacted = ConfigurationRedactor.Redact(current);
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(redacted, current);
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(redacted, current);
 
         Assert.Equal("sk-live", merged.Providers![0].ApiKey);
 
@@ -131,7 +131,7 @@ public sealed class ConfigurationRedactorTests
     }
 
     [Fact]
-    public void MergeApiKeys_PreservesEndpointWhenRequestSendsMask()
+    public void MergeRedactedSecrets_PreservesEndpointWhenRequestSendsMask()
     {
         ArcanumSettings current = new()
         {
@@ -143,9 +143,72 @@ public sealed class ConfigurationRedactorTests
             Providers = [new ProviderSettings { Name = "local", Endpoint = "***" }],
         };
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(request, current);
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
 
         Assert.Equal("http://127.0.0.1:11434", merged.Providers![0].Endpoint);
+    }
+
+    [Fact]
+    public void Redact_MasksHttpsCertificatePassword()
+    {
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings
+            {
+                Https = new HttpsSettings
+                {
+                    Enabled = true,
+                    CertificatePath = "/certs/localhost.pfx",
+                    CertificatePassword = "super-secret",
+                },
+            },
+        };
+
+        ArcanumSettings redacted = ConfigurationRedactor.Redact(settings);
+
+        Assert.Equal("***", redacted.Host.Https.CertificatePassword);
+    }
+
+    [Fact]
+    public void MergeRedactedSecrets_PreservesHttpsPasswordWhenRequestSendsMask()
+    {
+        ArcanumSettings current = new()
+        {
+            Host = new HostSettings
+            {
+                Https = new HttpsSettings { CertificatePassword = "real-password" },
+            },
+        };
+
+        ArcanumSettings request = new()
+        {
+            Host = new HostSettings
+            {
+                Https = new HttpsSettings { CertificatePassword = "***" },
+            },
+        };
+
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
+
+        Assert.Equal("real-password", merged.Host.Https.CertificatePassword);
+    }
+
+    [Fact]
+    public void ValidateNoResidualMask_MaskedHttpsPassword_Fails()
+    {
+        ArcanumSettings merged = new()
+        {
+            Host = new HostSettings
+            {
+                Https = new HttpsSettings { CertificatePassword = "***" },
+            },
+        };
+
+        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
     }
 
     [Fact]
@@ -199,7 +262,7 @@ public sealed class ConfigurationRedactorTests
             Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-live", Endpoint = "https://api.openai.com/v1" }],
         };
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(ConfigurationRedactor.Redact(current), current);
+        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(ConfigurationRedactor.Redact(current), current);
 
         Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
 

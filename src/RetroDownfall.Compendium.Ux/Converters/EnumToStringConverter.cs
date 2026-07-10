@@ -1,12 +1,15 @@
 using System.Globalization;
+
 using System.Text;
+
+using Avalonia.Data.Converters;
 
 namespace RetroDownfall.Compendium.Ux.Converters;
 
 public sealed class EnumToStringConverter : IValueConverter
 {
 
-    public object Convert(object? value, Type? targetType, object? parameter, CultureInfo? culture)
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
 
         if (value is null)
@@ -23,10 +26,10 @@ public sealed class EnumToStringConverter : IValueConverter
 
     }
 
-    public object ConvertBack(object? value, Type? targetType, object? parameter, CultureInfo? culture)
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
 
-        return Binding.DoNothing;
+        return Avalonia.AvaloniaProperty.UnsetValue;
 
     }
 

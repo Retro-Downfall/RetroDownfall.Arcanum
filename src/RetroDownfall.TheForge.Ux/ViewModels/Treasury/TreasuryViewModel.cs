@@ -1,6 +1,6 @@
 namespace RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 
-/// <summary>Phase 3 placeholder for The Treasury; Phase 9 adds budget and spend aggregation.</summary>
+/// <summary>Placeholder for The Treasury until budget/spend UI is implemented.</summary>
 public sealed class TreasuryViewModel : ViewModelBase
 {
 
@@ -11,6 +11,6 @@ public sealed class TreasuryViewModel : ViewModelBase
 
     }
 
-    public string EmptyState => "Budget and spend tracking arrives in Phase 9.";
+    public string EmptyState => "The Treasury is not implemented yet. Budget chips on The Anvil show live spend; full tracking arrives later.";
 
 }

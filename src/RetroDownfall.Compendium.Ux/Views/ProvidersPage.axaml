@@ -1,0 +1,152 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             xmlns:vm="using:RetroDownfall.Compendium.Ux.ViewModels"
+             x:Class="RetroDownfall.Compendium.Ux.Views.ProvidersPage"
+             x:DataType="vm:ConfigurationViewModel">
+
+    <ScrollViewer>
+
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
+
+            <TextBlock Text="AI Providers"
+                       FontSize="{DynamicResource ForgePageTitleFontSize}"
+                       FontWeight="SemiBold" />
+
+            <controls:LabeledEntry Label="Default model"
+                                   Description="Model used when a request does not specify one. Must match a models entry on some provider."
+                                   Key="defaultModel"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Providers.DefaultModel, Mode=TwoWay}"
+                                   Placeholder="deepseek-chat" />
+
+            <controls:LabeledEntry Label="Fast model"
+                                   Description="Model used for internal background summarization, semantic routing preflight, and semantic Inquisitor judges. Must match a models entry on some provider."
+                                   Key="fastModel"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Providers.FastModel, Mode=TwoWay}"
+                                   Placeholder="mistral:latest" />
+
+            <Button Content="Add Provider"
+                    Command="{Binding Providers.AddProviderCommand}" />
+
+            <ItemsControl ItemsSource="{Binding Providers.Providers}">
+
+                <ItemsControl.ItemTemplate>
+
+                    <DataTemplate x:DataType="vm:ProvidersSectionViewModel+ProviderViewModel">
+
+                        <Border BorderBrush="{DynamicResource ForgeBorderBrush}"
+                                BorderThickness="1"
+                                Margin="0,8"
+                                Padding="12">
+
+                            <StackPanel Orientation="Vertical"
+                                        Spacing="8">
+
+                                <controls:LabeledEntry Label="Name"
+                                                       Description="Human-readable name for this provider entry."
+                                                       Text="{Binding Name, Mode=TwoWay}"
+                                                       Placeholder="Local Ollama" />
+
+                                <controls:LabeledPicker Label="Type"
+                                                        Description="Backend kind: OpenAI Compatible (any OpenAI-shaped HTTP API, including Ollama via its /v1 endpoint), or Llama Cpp Server (spawned local llama-server)."
+                                                        PickerTitle="Select type"
+                                                        ItemsSource="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).ProviderKinds}"
+                                                        SelectedItem="{Binding Type, Mode=TwoWay}" />
+
+                                <controls:LabeledEntry Label="Endpoint"
+                                                       Description="Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1). Ignored for LlamaCppServer."
+                                                       Text="{Binding Endpoint, Mode=TwoWay}"
+                                                       Placeholder="https://api.openai.com/v1" />
+
+                                <controls:LabeledEntry Label="API key"
+                                                       Description="Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local Ollama."
+                                                       Text="{Binding ApiKey, Mode=TwoWay}"
+                                                       IsPassword="True"
+                                                       Placeholder="sk-..." />
+
+                                <TextBlock Text="Models"
+                                           FontWeight="SemiBold" />
+
+                                <TextBlock Text="Model IDs advertised by this provider, and whether each supports vision (Scrying). Must include the DefaultModel and FastModel if those reference this provider."
+                                           FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                           Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                                <ItemsControl ItemsSource="{Binding Models}">
+
+                                    <ItemsControl.ItemTemplate>
+
+                                        <DataTemplate x:DataType="vm:ProvidersSectionViewModel+ModelEntryViewModel">
+
+                                            <Grid ColumnDefinitions="*,Auto,Auto"
+                                                  ColumnSpacing="8"
+                                                  Margin="0,4">
+
+                                                <TextBox Grid.Column="0"
+                                                         Text="{Binding Name, Mode=TwoWay}"
+                                                         Watermark="gpt-4o" />
+
+                                                <StackPanel Grid.Column="1"
+                                                            Orientation="Horizontal"
+                                                            Spacing="4"
+                                                            VerticalAlignment="Center">
+
+                                                    <TextBlock Text="Vision"
+                                                               FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                                               VerticalAlignment="Center" />
+
+                                                    <ToggleSwitch IsChecked="{Binding SupportsVision, Mode=TwoWay}" />
+
+                                                </StackPanel>
+
+                                                <Button Grid.Column="2"
+                                                        Content="Remove"
+                                                        x:CompileBindings="False"
+                                                        Command="{Binding $parent[ItemsControl].DataContext.RemoveModelCommand}"
+                                                        CommandParameter="{Binding}" />
+
+                                            </Grid>
+
+                                        </DataTemplate>
+
+                                    </ItemsControl.ItemTemplate>
+
+                                </ItemsControl>
+
+                                <Button Content="Add Model"
+                                        Command="{Binding AddModelCommand}" />
+
+                                <controls:LabeledStepper Label="Context window limit"
+                                                         Description="Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152."
+                                                         Value="{Binding ContextWindowLimit, Mode=TwoWay}"
+                                                         Minimum="256"
+                                                         Maximum="2097152"
+                                                         Increment="128" />
+
+                                <controls:LabeledEntry Label="LlamaCpp model map"
+                                                       Description="Maps model keys to remote http/https URLs for on-demand GGUF download when the model is not yet cached. Only used when type is LlamaCppServer."
+                                                       Text="{Binding LlamaCppModelMap, Mode=TwoWay}"
+                                                       Placeholder="phi3=https://example.com/phi3.gguf" />
+
+                                <Button Content="Remove"
+                                        Command="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).Providers.RemoveProviderCommand}"
+                                        CommandParameter="{Binding .}" />
+
+                            </StackPanel>
+
+                        </Border>
+
+                    </DataTemplate>
+
+                </ItemsControl.ItemTemplate>
+
+            </ItemsControl>
+
+        </StackPanel>
+
+    </ScrollViewer>
+
+</UserControl>

@@ -174,6 +174,8 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         ValidateHostWorkspace((settings.Host ?? new HostSettings()).Workspace, "host.workspace", errors);
 
+        ValidateHttps(settings.Host ?? new HostSettings(), errors);
+
         ValidateResilience(settings, errors);
 
         ValidateEventBus(settings);
@@ -404,6 +406,89 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             errors.Add(new ConfigurationValidationError(
                 "scrying.allowedMimeTypes",
                 "Scrying.AllowedMimeTypes must not be empty when Scrying.Enabled is true."));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Optional HTTPS binding. Only enforced when <see cref="HttpsSettings.Enabled"/> is <c>true</c>
+    /// (disabled is a complete no-op, so a missing certificate path is fine). The certificate path
+    /// must be set, the TLS port must be within range and distinct from the plaintext HTTP port, and
+    /// the referenced file(s) must exist on disk. No PKCS#12/PEM cryptographic load happens here —
+    /// that is deferred to the Infrastructure loader at bind time — and the certificate password is
+    /// never read or echoed into any error message.
+    /// </summary>
+    private static void ValidateHttps(HostSettings host, List<ConfigurationValidationError> errors)
+    {
+
+        HttpsSettings https = host.Https ?? new HttpsSettings();
+
+        if (!https.Enabled)
+        {
+
+            return;
+
+        }
+
+        if (string.IsNullOrWhiteSpace(https.CertificatePath))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "host.https.certificatePath",
+                "Host.Https.CertificatePath is required when Host.Https.Enabled is true."));
+
+        }
+
+        if (https.Port != ArcanumSettingClamps.HostHttpsPort(https.Port))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "host.https.port",
+                $"Host.Https.Port ({https.Port}) must be within the 1-65535 clamp range."));
+
+        }
+
+        if (https.Port == ArcanumSettingClamps.HostPort(host.Port))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "host.https.port",
+                $"Host.Https.Port ({https.Port}) must differ from Host.Port ({ArcanumSettingClamps.HostPort(host.Port)}); the HTTP and HTTPS listeners cannot share a port."));
+
+        }
+
+        if (string.IsNullOrWhiteSpace(https.CertificatePath))
+        {
+
+            return;
+
+        }
+
+        string? resolvedCertificatePath = HttpsCertificatePathResolver.Resolve(https.CertificatePath);
+
+        if (!string.IsNullOrWhiteSpace(resolvedCertificatePath) && !File.Exists(resolvedCertificatePath))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "host.https.certificatePath",
+                $"Host.Https.CertificatePath '{https.CertificatePath}' does not exist or is not a file."));
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(https.PrivateKeyPath))
+        {
+
+            string? resolvedKeyPath = HttpsCertificatePathResolver.Resolve(https.PrivateKeyPath);
+
+            if (!string.IsNullOrWhiteSpace(resolvedKeyPath) && !File.Exists(resolvedKeyPath))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    "host.https.privateKeyPath",
+                    $"Host.Https.PrivateKeyPath '{https.PrivateKeyPath}' does not exist or is not a file."));
+
+            }
 
         }
 

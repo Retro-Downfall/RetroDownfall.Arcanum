@@ -3,6 +3,8 @@
 
   <Project Path="src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj" />
 
+  <Project Path="src/RetroDownfall.Arcanum.Secrets/RetroDownfall.Arcanum.Secrets.csproj" />
+
   <Project Path="src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj" />
 
   <Project Path="src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj" />

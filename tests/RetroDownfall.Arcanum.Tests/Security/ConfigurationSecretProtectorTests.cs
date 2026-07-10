@@ -45,6 +45,54 @@ public sealed class ConfigurationSecretProtectorTests
 
     }
 
+    [Fact]
+    public void ProtectSettingsForStorage_encrypts_https_certificate_password()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings
+            {
+                Https = new HttpsSettings
+                {
+                    Enabled = true,
+                    CertificatePath = "/certs/localhost.pfx",
+                    CertificatePassword = "pfx-secret",
+                },
+            },
+        };
+
+        ArcanumSettings stored = protector.ProtectSettingsForStorage(settings);
+
+        Assert.StartsWith("dp:v1:", stored.Host.Https.CertificatePassword, StringComparison.Ordinal);
+
+        Assert.Equal("pfx-secret", protector.Unprotect(stored.Host.Https.CertificatePassword));
+
+    }
+
+    [Fact]
+    public void ProtectSettingsForStorage_NoProvidersNoHttpsPassword_ReturnsSameInstance()
+    {
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector protector = new(provider);
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings { Https = new HttpsSettings { Enabled = true, CertificatePath = "/certs/x.pfx" } },
+        };
+
+        ArcanumSettings stored = protector.ProtectSettingsForStorage(settings);
+
+        Assert.Same(settings, stored);
+
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

@@ -14,11 +14,15 @@
 
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
 
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
+
   </ItemGroup>
 
   <ItemGroup>
 
     <ProjectReference Include="..\RetroDownfall.Arcanum.Core\RetroDownfall.Arcanum.Core.csproj" />
+
+    <ProjectReference Include="..\RetroDownfall.Arcanum.Secrets\RetroDownfall.Arcanum.Secrets.csproj" />
 
   </ItemGroup>
 

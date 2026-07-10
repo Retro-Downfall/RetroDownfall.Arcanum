@@ -66,7 +66,7 @@ internal static class ConfigurationEndpoints
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
             }
 
-            ArcanumSettings merged = ConfigurationRedactor.MergeApiKeys(request, currentSettings.Value);
+            ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, currentSettings.Value);
 
             // W3.5: a residual "***" after merge means a new provider / model-map key whose masked
             // value could not be restored — reject it instead of persisting the literal mask.
