@@ -9,15 +9,19 @@ using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.Anvil;
+using RetroDownfall.TheForge.Ux.ViewModels.Archive;
 using RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
 using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
+using RetroDownfall.TheForge.Ux.ViewModels.Divination;
 using RetroDownfall.TheForge.Ux.ViewModels.Docking;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
+using RetroDownfall.TheForge.Ux.ViewModels.Lore;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
+using RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels;
 
@@ -71,6 +75,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     public AnvilViewModel Anvil { get; }
 
+    public LoreBrowserViewModel Lore { get; }
+
+    public SagaArchiveViewModel Archive { get; }
+
+    public DivinationViewModel Divination { get; }
+
+    public WorkspaceExplorerViewModel WorkspaceExplorer { get; }
+
     public MainViewModel(
         IArcanumConnection connection,
         INavigationService navigation,
@@ -82,9 +94,13 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         FoundryFloorViewModel foundryFloor,
         HearthViewModel hearth,
         AnvilViewModel anvil,
+        LoreBrowserViewModel lore,
+        SagaArchiveViewModel archive,
+        DivinationViewModel divination,
+        WorkspaceExplorerViewModel workspaceExplorer,
         IWorkbenchDocumentFactory documentFactory,
-        IForgeSettingsStore settingsStore,
-        IOptionsMonitor<ForgeSettings> settings,
+        ITheForgeSettingsStore settingsStore,
+        IOptionsMonitor<TheForgeSettings> settings,
         ILogger<MainViewModel>? logger = null)
     {
 
@@ -111,6 +127,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         Hearth = hearth;
 
         Anvil = anvil;
+
+        Lore = lore;
+
+        Archive = archive;
+
+        Divination = divination;
+
+        WorkspaceExplorer = workspaceExplorer;
 
         _documentFactory = documentFactory;
 
@@ -175,6 +199,21 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void ShowHearth() => DockLayout.ShowTool(DockToolId.Hearth);
+
+    [RelayCommand]
+    private void ShowLore() => DockLayout.ShowTool(DockToolId.Lore);
+
+    [RelayCommand]
+    private void ShowArchive() => DockLayout.ShowTool(DockToolId.Archive);
+
+    [RelayCommand]
+    private void ShowDivination() => DockLayout.ShowTool(DockToolId.Divination);
+
+    [RelayCommand]
+    private void ShowWorkspaceExplorer() => DockLayout.ShowTool(DockToolId.WorkspaceExplorer);
+
+    [RelayCommand]
+    private void OpenGlobalCodex() => _navigation.OpenDocument(DocumentKind.Codex, "global");
 
     [RelayCommand]
     private void Connect()
@@ -250,6 +289,10 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         Hearth.Dispose();
 
+        Arsenal.Dispose();
+
+        Treasury.Dispose();
+
         Anvil.Dispose();
 
         // FoundryFloorViewModel is a DI singleton — leave disposal to ServiceProvider.
@@ -277,6 +320,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         DockLayout.SetContent(DockToolId.Hearth, Hearth);
 
+        DockLayout.SetContent(DockToolId.Lore, Lore);
+
+        DockLayout.SetContent(DockToolId.Archive, Archive);
+
+        DockLayout.SetContent(DockToolId.Divination, Divination);
+
+        DockLayout.SetContent(DockToolId.WorkspaceExplorer, WorkspaceExplorer);
+
     }
 
     private void ApplyToolVisibility()
@@ -297,6 +348,26 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             rightSelected == DockToolId.WarTable
             || bottomSelected == DockToolId.WarTable
             || leftSelected == DockToolId.WarTable;
+
+        Lore.IsVisible =
+            rightSelected == DockToolId.Lore
+            || bottomSelected == DockToolId.Lore
+            || leftSelected == DockToolId.Lore;
+
+        Archive.IsVisible =
+            rightSelected == DockToolId.Archive
+            || bottomSelected == DockToolId.Archive
+            || leftSelected == DockToolId.Archive;
+
+        Divination.IsVisible =
+            rightSelected == DockToolId.Divination
+            || bottomSelected == DockToolId.Divination
+            || leftSelected == DockToolId.Divination;
+
+        WorkspaceExplorer.IsVisible =
+            rightSelected == DockToolId.WorkspaceExplorer
+            || bottomSelected == DockToolId.WorkspaceExplorer
+            || leftSelected == DockToolId.WorkspaceExplorer;
 
         bool foundryVisible = !DockLayout.Bottom.IsCollapsed
             && DockLayout.Bottom.Tools.Any(t =>
@@ -426,6 +497,10 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             PanelKind.WarTable => DockToolId.WarTable,
             PanelKind.FoundryFloor => DockToolId.Output,
             PanelKind.Hearth => DockToolId.Hearth,
+            PanelKind.Lore => DockToolId.Lore,
+            PanelKind.Archive => DockToolId.Archive,
+            PanelKind.Divination => DockToolId.Divination,
+            PanelKind.WorkspaceExplorer => DockToolId.WorkspaceExplorer,
             _ => null,
         };
 

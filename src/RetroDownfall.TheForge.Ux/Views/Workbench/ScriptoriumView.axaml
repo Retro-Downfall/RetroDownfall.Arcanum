@@ -1,0 +1,100 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.ScriptoriumView"
+             x:DataType="vm:ScriptoriumViewModel">
+  <Grid RowDefinitions="Auto,*">
+    <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+      <StackPanel DockPanel.Dock="Left" Spacing="2">
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding StatusText}" Opacity="0.68" />
+        <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" MaxWidth="460" />
+      </StackPanel>
+
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Load" Command="{Binding LoadCommand}" />
+        <Button Content="Save" Command="{Binding SaveCommand}" />
+        <Button Content="Render" Command="{Binding RenderCommand}" />
+        <Button Content="Test" Command="{Binding TestCommand}" />
+        <Button Content="Run" Command="{Binding ExecuteCommand}" />
+        <Button Content="Stop" Command="{Binding StopExecutionCommand}" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+      <Border Grid.Column="0" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4">
+        <avaloniaEdit:TextEditor x:Name="TemplateEditor"
+                                 ShowLineNumbers="True"
+                                 WordWrap="True" />
+      </Border>
+
+      <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+
+      <TabControl Grid.Column="2">
+        <TabItem Header="Metadata">
+          <ScrollViewer Padding="4">
+            <StackPanel Spacing="8" Margin="4">
+              <StackPanel Spacing="2">
+                <TextBlock Text="Version" Opacity="0.72" />
+                <TextBox Text="{Binding Version}" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="Description" Opacity="0.72" />
+                <TextBox Text="{Binding Description}" AcceptsReturn="True" TextWrapping="Wrap" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="Tags (comma-separated)" Opacity="0.72" />
+                <TextBox Text="{Binding TagsText}" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="Model" Opacity="0.72" />
+                <TextBox Text="{Binding Model}" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="Provider" Opacity="0.72" />
+                <TextBox Text="{Binding Provider}" />
+              </StackPanel>
+              <TextBlock Text="Numeric sampling (Temperature/TopP/MaxOutputTokens) and parameter-schema JSON editing are deferred." Opacity="0.6" TextWrapping="Wrap" FontSize="11" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+        <TabItem Header="Parameters">
+          <StackPanel Spacing="4" Margin="4">
+            <TextBlock Text="Parameters, one per line: key=value" Opacity="0.72" />
+            <TextBox Text="{Binding ParametersText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" />
+          </StackPanel>
+        </TabItem>
+        <TabItem Header="Preview">
+          <ScrollViewer Padding="4">
+            <StackPanel Spacing="6" Margin="4">
+              <TextBlock Text="{Binding RenderedText}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding RenderTokenCount, StringFormat='Tokens: {0}'}" Opacity="0.72" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+        <TabItem Header="Test">
+          <ScrollViewer Padding="4">
+            <StackPanel Spacing="6" Margin="4">
+              <TextBlock Text="{Binding TestAssembledText}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding TestTokenCount, StringFormat='Tokens: {0}'}" Opacity="0.72" />
+              <TextBlock Text="{Binding TestResolvedSpell, StringFormat='Resolved spell: {0}'}" Opacity="0.72" />
+              <TextBlock Text="{Binding TestMcpServerCount, StringFormat='MCP servers: {0}'}" Opacity="0.72" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+        <TabItem Header="Run">
+          <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+            <TextBox Grid.Row="0" Text="{Binding RunUserMessage}" Watermark="User message (required to run)" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" />
+            <Border Grid.Row="1" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4" Margin="0,4">
+              <ScrollViewer>
+                <TextBlock Text="{Binding RunResultText}" TextWrapping="Wrap" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
+              </ScrollViewer>
+            </Border>
+            <TextBlock Grid.Row="2" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" />
+          </Grid>
+        </TabItem>
+      </TabControl>
+    </Grid>
+  </Grid>
+</UserControl>

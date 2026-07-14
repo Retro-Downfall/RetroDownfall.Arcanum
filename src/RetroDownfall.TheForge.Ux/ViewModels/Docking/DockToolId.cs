@@ -20,6 +20,14 @@ public static class DockToolId
 
     public const string Hearth = "hearth";
 
+    public const string Lore = "lore";
+
+    public const string Archive = "archive";
+
+    public const string Divination = "divination";
+
+    public const string WorkspaceExplorer = "workspaceExplorer";
+
     public static IReadOnlyList<string> All { get; } =
     [
         Atelier,
@@ -30,6 +38,10 @@ public static class DockToolId
         Output,
         Logs,
         Hearth,
+        Lore,
+        Archive,
+        Divination,
+        WorkspaceExplorer,
     ];
 
 }

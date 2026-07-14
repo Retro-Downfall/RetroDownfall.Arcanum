@@ -8,7 +8,7 @@ using RetroDownfall.TheForge.Core.Models;
 namespace RetroDownfall.TheForge.Ux.Services;
 
 /// <summary>
-/// Applies <see cref="ForgeSettings.Theme"/> to Avalonia: RequestedThemeVariant plus exactly one
+/// Applies <see cref="TheForgeSettings.Theme"/> to Avalonia: RequestedThemeVariant plus exactly one
 /// Dark/Light resource dictionary (VS 2026 Fluent-inspired tokens). Typography and Icons stay static
 /// in <c>App.axaml</c>; this service owns the sole active theme dictionary.
 /// </summary>
@@ -21,7 +21,7 @@ public sealed class ThemeApplicationService : IDisposable
 
     private bool _disposed;
 
-    public ThemeApplicationService(IOptionsMonitor<ForgeSettings> settings)
+    public ThemeApplicationService(IOptionsMonitor<TheForgeSettings> settings)
     {
 
         Apply(settings.CurrentValue.Theme);

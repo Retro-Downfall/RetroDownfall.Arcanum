@@ -1,10 +1,12 @@
 using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using Xunit;
@@ -342,6 +344,160 @@ public class TomeViewModelTests
 
     }
 
+    [Fact]
+    public async Task RefreshEntries_PopulatesIdentity()
+    {
+
+        Guid entryId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            Entries =
+            [
+                new EntryDto(entryId, SessionId, "user", "hello", null, null, DateTimeOffset.UtcNow),
+            ],
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        Assert.Single(viewModel.Messages);
+
+        Assert.Equal(entryId, viewModel.Messages[0].EntryId);
+
+        Assert.Equal("user", viewModel.Messages[0].Role);
+
+        Assert.Equal("hello", viewModel.Messages[0].Content);
+
+    }
+
+    [Fact]
+    public async Task PinEntry_CallsDataSource()
+    {
+
+        Guid entryId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            Entries =
+            [
+                new EntryDto(entryId, SessionId, "assistant", "pin me", null, null, DateTimeOffset.UtcNow),
+            ],
+            PinResult = new DataSourceResult<bool>(true, true, null, null),
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        ChatMessageViewModel message = viewModel.Messages[0];
+
+        await viewModel.PinEntryAsync(message, CancellationToken.None);
+
+        Assert.Equal(entryId, dataSource.LastPinEntryId);
+
+        Assert.True(message.IsPinned);
+
+        Assert.Equal("Entry pinned.", viewModel.MemoryStatusText);
+
+    }
+
+    [Fact]
+    public async Task PinEntry_MemoryManagementDisabled_SetsFlag()
+    {
+
+        Guid entryId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            Entries =
+            [
+                new EntryDto(entryId, SessionId, "user", "blocked", null, null, DateTimeOffset.UtcNow),
+            ],
+            PinResult = new DataSourceResult<bool>(
+                false,
+                false,
+                ErrorCodes.Session.MemoryManagementDisabled,
+                "memory off"),
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.PinEntryAsync(viewModel.Messages[0], CancellationToken.None);
+
+        Assert.True(viewModel.MemoryManagementDisabled);
+
+    }
+
+    [Fact]
+    public async Task PinEntry_TooManyPinned_SurfacesMessage()
+    {
+
+        Guid entryId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            Entries =
+            [
+                new EntryDto(entryId, SessionId, "user", "overflow", null, null, DateTimeOffset.UtcNow),
+            ],
+            PinResult = new DataSourceResult<bool>(
+                false,
+                false,
+                ErrorCodes.Session.TooManyPinned,
+                "pin limit reached"),
+        };
+
+        FoundryFloorViewModel foundryFloor = new(new NullLogService());
+
+        TomeViewModel viewModel = CreateViewModel(dataSource, foundryFloor);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.PinEntryAsync(viewModel.Messages[0], CancellationToken.None);
+
+        Assert.Equal("pin limit reached", viewModel.MemoryStatusText);
+
+        Assert.Contains(foundryFloor.Lines, static line => line.Contains("pin limit reached"));
+
+    }
+
+    [Fact]
+    public async Task Compact_CallsDataSource()
+    {
+
+        CompactResult compact = new(100, 40, 3);
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            CompactResult = new DataSourceResult<CompactResult>(compact, true, null, null),
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.CompactAsync(CancellationToken.None);
+
+        Assert.True(dataSource.CompactCalled);
+
+        Assert.Equal(2, dataSource.GetEntriesCallCount);
+
+        Assert.Equal("0 entries.", viewModel.MemoryStatusText);
+
+    }
+
+    // AppendEntryIfNew backfill during SSE observation is not unit-tested here — the path is private
+    // and only reachable mid-stream; RefreshEntries is the identity source of truth (see above).
+
     private static TomeViewModel CreateViewModel(FakeTomeDataSource dataSource, FoundryFloorViewModel? foundryFloor = null) =>
         new(SessionId, dataSource, new NavigationService(), foundryFloor ?? new FoundryFloorViewModel(new NullLogService()));
 
@@ -372,6 +528,14 @@ public class TomeViewModelTests
 
         public SessionExportResult? ExportResult { get; init; }
 
+        public IReadOnlyList<EntryDto> Entries { get; init; } = [];
+
+        public DataSourceResult<bool> PinResult { get; init; } =
+            new(true, true, null, null);
+
+        public DataSourceResult<CompactResult> CompactResult { get; init; } =
+            new(null, true, null, null);
+
         public PingRequest? LastPingRequest { get; private set; }
 
         public AppendEntryRequest? LastAppendRequest { get; private set; }
@@ -379,6 +543,12 @@ public class TomeViewModelTests
         public string? LastExportFormat { get; private set; }
 
         public bool ObserveStarted { get; private set; }
+
+        public Guid? LastPinEntryId { get; private set; }
+
+        public bool CompactCalled { get; private set; }
+
+        public int GetEntriesCallCount { get; private set; }
 
         public Task<SessionDetailDto?> GetSessionAsync(Guid id, CancellationToken cancellationToken) =>
             Task.FromResult(Session);
@@ -433,6 +603,39 @@ public class TomeViewModelTests
                 await Task.Yield();
 
             }
+
+        }
+
+        public Task<DataSourceResult<EntryDto[]>> GetEntriesAsync(Guid id, int? offset, int? limit, CancellationToken cancellationToken)
+        {
+
+            GetEntriesCallCount++;
+
+            return Task.FromResult(new DataSourceResult<EntryDto[]>(Entries.ToArray(), true, null, null));
+
+        }
+
+        public Task<DataSourceResult<bool>> PinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken)
+        {
+
+            LastPinEntryId = entryId;
+
+            return Task.FromResult(PinResult);
+
+        }
+
+        public Task<DataSourceResult<bool>> UnpinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
+
+        public Task<DataSourceResult<bool>> DeleteEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
+
+        public Task<DataSourceResult<CompactResult>> CompactAsync(Guid id, CancellationToken cancellationToken)
+        {
+
+            CompactCalled = true;
+
+            return Task.FromResult(CompactResult);
 
         }
 

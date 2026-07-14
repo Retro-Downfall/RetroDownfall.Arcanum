@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.CommLink;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -937,7 +938,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         ArcanumSettings settings = DefaultSettings() with
         {
-            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1 },
+            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1, EnableLexiconSystem = false },
         };
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
@@ -962,7 +963,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         ArcanumSettings settings = DefaultSettings() with
         {
-            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1 },
+            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1, EnableLexiconSystem = false },
         };
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
@@ -2454,7 +2455,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         ArcanumSettings settings = DefaultSettings() with
         {
-            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1 },
+            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 1, EnableLexiconSystem = false },
         };
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire);
@@ -3442,6 +3443,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ISagaMemoryStore? sagaMemoryStore = null,
         SagaExtractionService? sagaExtractionService = null,
         SemanticSpellRouter? semanticSpellRouter = null,
+        ILexiconService? lexiconService = null,
         ArcanumDbContext? db = null,
         IInferenceAuditLogger? auditLogger = null,
         GuardrailsPipeline? guardrailsPipeline = null,
@@ -3489,6 +3491,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<SemanticSpellRouter>.Instance);
 
+        lexiconService ??= new FakeLexiconService();
+
         db ??= CreateUnusedDbContext();
 
         budgetMonitor ??= CreateBudgetMonitor(settings);
@@ -3519,6 +3523,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             sagaMemoryStore,
             sagaExtractionService,
             semanticSpellRouter,
+            lexiconService,
             db,
             auditLogger,
             new StructuredOutputValidator(),
@@ -3624,6 +3629,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 Enabled = true,
                 ForbiddenArts = ["execute_command"],
                 AutoDenyInUnattendedMode = true,
+            },
+            Intelligence = new IntelligenceSettings
+            {
+                // Lexicon retrieval is off by default in hub scenario tests so the fallback
+                // LexiconEntityExtractor does not fire an extra LLM call against the scripted
+                // ScriptingChatClient. Production defaults EnableLexiconSystem to true (Option A);
+                // Lexicon-specific scenarios enable it explicitly.
+                EnableLexiconSystem = false,
             },
         };
 

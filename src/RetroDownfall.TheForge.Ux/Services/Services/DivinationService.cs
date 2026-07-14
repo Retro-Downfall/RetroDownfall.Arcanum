@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Serialization;
 
@@ -22,8 +23,8 @@ public sealed class DivinationService
         _apiClient.PostAsync(
             "/api/sessions/divine",
             request,
-            ForgeJsonContext.Default.SemanticSearchRequest,
-            ForgeJsonContext.Default.ApiResponseSemanticSearchResult,
+            TheForgeJsonContext.Default.SemanticSearchRequest,
+            TheForgeJsonContext.Default.ApiResponseSemanticSearchResult,
             cancellationToken);
 
     public Task<ApiResponse<WorkspaceSearchResult[]>?> SearchWorkspaceFilesAsync(
@@ -33,8 +34,17 @@ public sealed class DivinationService
         _apiClient.PostAsync(
             $"/api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/divine",
             request,
-            ForgeJsonContext.Default.WorkspaceSemanticSearchRequest,
-            ForgeJsonContext.Default.ApiResponseWorkspaceSearchResultArray,
+            TheForgeJsonContext.Default.WorkspaceSemanticSearchRequest,
+            TheForgeJsonContext.Default.ApiResponseWorkspaceSearchResultArray,
+            cancellationToken);
+
+    /// <summary><c>POST /api/saga/divine</c> — Saga Divination; gated by Embeddings+SagaEnabled (503 <c>Embeddings.FeatureDisabled</c>).</summary>
+    public Task<ApiResponse<SagaSearchResult>?> SearchSagaAsync(SagaSearchRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            "/api/saga/divine",
+            request,
+            TheForgeJsonContext.Default.SagaSearchRequest,
+            TheForgeJsonContext.Default.ApiResponseSagaSearchResult,
             cancellationToken);
 
 }

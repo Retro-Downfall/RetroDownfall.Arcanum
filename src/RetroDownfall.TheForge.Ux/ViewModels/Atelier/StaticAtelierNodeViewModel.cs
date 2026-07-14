@@ -1,6 +1,6 @@
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
-/// <summary>Simple leaf used for static campaign children like CODEX.md and Sanctum until their feature panels land.</summary>
+/// <summary>Simple leaf used for static campaign children like Sanctum until their feature panels land.</summary>
 public sealed class StaticAtelierNodeViewModel : AtelierNodeViewModel
 {
 

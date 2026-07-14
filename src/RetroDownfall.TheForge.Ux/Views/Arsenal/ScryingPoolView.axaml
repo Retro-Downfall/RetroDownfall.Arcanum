@@ -1,0 +1,30 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Arsenal.ScryingPoolView"
+             x:DataType="vm:ScryingPoolViewModel">
+  <Grid RowDefinitions="Auto,Auto,Auto,*">
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding InvocationNote}" Opacity="0.7" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+    <TextBlock Grid.Row="2" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <Grid Grid.Row="3" ColumnDefinitions="*,*">
+      <ListBox Grid.Column="0" ItemsSource="{Binding NativeTools}" SelectedItem="{Binding SelectedTool}" BorderThickness="0" Margin="0,0,8,0" />
+
+      <StackPanel Grid.Column="1" Spacing="8">
+        <TextBlock Text="Arguments (JSON)" Opacity="0.7" />
+        <TextBox Text="{Binding ArgumentsText}" FontFamily="Cascadia Mono, Consolas, monospace" AcceptsReturn="True" MinHeight="60" />
+        <Button Content="Invoke" Command="{Binding InvokeCommand}" HorizontalAlignment="Left" />
+        <TextBlock Text="Result" Opacity="0.7" />
+        <TextBox Text="{Binding ResultText}" FontFamily="Cascadia Mono, Consolas, monospace" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</UserControl>

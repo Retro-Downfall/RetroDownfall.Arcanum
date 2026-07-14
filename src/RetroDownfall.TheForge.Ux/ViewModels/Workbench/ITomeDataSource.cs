@@ -20,4 +20,14 @@ public interface ITomeDataSource
 
     IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid sessionId, DateTimeOffset? since, CancellationToken cancellationToken);
 
+    Task<DataSourceResult<EntryDto[]>> GetEntriesAsync(Guid sessionId, int? offset, int? limit, CancellationToken cancellationToken);
+
+    Task<DataSourceResult<bool>> PinEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken);
+
+    Task<DataSourceResult<bool>> UnpinEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken);
+
+    Task<DataSourceResult<bool>> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken);
+
+    Task<DataSourceResult<CompactResult>> CompactAsync(Guid sessionId, CancellationToken cancellationToken);
+
 }

@@ -25,7 +25,7 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
     private readonly INavigationService _navigation;
 
-    private readonly IOptionsMonitor<ForgeSettings> _settings;
+    private readonly IOptionsMonitor<TheForgeSettings> _settings;
 
     private readonly ILogger<AnvilViewModel> _logger;
 
@@ -66,7 +66,7 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         IArcanumConnection connection,
         IAnvilDataSource dataSource,
         INavigationService navigation,
-        IOptionsMonitor<ForgeSettings> settings,
+        IOptionsMonitor<TheForgeSettings> settings,
         ILogger<AnvilViewModel> logger)
     {
 
@@ -98,6 +98,10 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     {
         ConnectionState.Connected => "Arcanum connected",
         ConnectionState.Connecting => "Seeking Arcanum...",
+        ConnectionState.Error when string.Equals(
+            _connection.LastErrorCode,
+            "Security.MissingApiKey",
+            StringComparison.Ordinal) => "API key required",
         ConnectionState.Error => "Arcanum unreachable",
         _ => "Arcanum disconnected",
     };
@@ -279,14 +283,15 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     private void OnConnectionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
 
-        if (e.PropertyName == nameof(IArcanumConnection.State))
+        if (e.PropertyName is nameof(IArcanumConnection.State) or nameof(IArcanumConnection.LastErrorCode))
         {
 
             ConnectionState = _connection.State;
 
             OnPropertyChanged(nameof(ConnectionStatusText));
 
-            if (ConnectionState == ConnectionState.Connected)
+            if (e.PropertyName == nameof(IArcanumConnection.State)
+                && ConnectionState == ConnectionState.Connected)
             {
 
                 TaskUtilities.FireAndForget(RefreshAsync(CancellationToken.None), _logger);
@@ -297,7 +302,7 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
     }
 
-    private void ApplyCampaignFromSettings(ForgeSettings settings)
+    private void ApplyCampaignFromSettings(TheForgeSettings settings)
     {
 
         ActiveCampaignName = settings.LastCampaignId is { } id

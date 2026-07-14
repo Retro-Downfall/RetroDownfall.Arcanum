@@ -214,7 +214,7 @@ public sealed class ReadSagaToolTests
 
         IntelligenceSettings intelligenceSettings = new()
         {
-            EnableLoreSystem = false,
+            EnableLexiconSystem = false,
             EnableArchiveSearch = false,
         };
 

@@ -4,16 +4,16 @@ using RetroDownfall.TheForge.Core.Models;
 namespace RetroDownfall.TheForge.Ux.ViewModels.Docking;
 
 /// <summary>
-/// Source-generated serialize/deserialize for <see cref="ForgeDockLayoutDto"/> with validation,
+/// Source-generated serialize/deserialize for <see cref="TheForgeDockLayoutDto"/> with validation,
 /// unknown-id tolerance, and default insertion for missing tools.
 /// </summary>
 public static class DockLayoutSerializer
 {
 
-    public static string Serialize(ForgeDockLayoutDto layout) =>
-        JsonSerializer.Serialize(layout, ForgeSettingsJsonContext.Default.ForgeDockLayoutDto);
+    public static string Serialize(TheForgeDockLayoutDto layout) =>
+        JsonSerializer.Serialize(layout, TheForgeSettingsJsonContext.Default.TheForgeDockLayoutDto);
 
-    public static ForgeDockLayoutDto DeserializeOrDefault(string? layoutState)
+    public static TheForgeDockLayoutDto DeserializeOrDefault(string? layoutState)
     {
 
         if (string.IsNullOrWhiteSpace(layoutState))
@@ -23,12 +23,12 @@ public static class DockLayoutSerializer
 
         }
 
-        ForgeDockLayoutDto? dto;
+        TheForgeDockLayoutDto? dto;
 
         try
         {
 
-            dto = JsonSerializer.Deserialize(layoutState, ForgeSettingsJsonContext.Default.ForgeDockLayoutDto);
+            dto = JsonSerializer.Deserialize(layoutState, TheForgeSettingsJsonContext.Default.TheForgeDockLayoutDto);
 
         }
         catch (JsonException)
@@ -49,11 +49,11 @@ public static class DockLayoutSerializer
 
     }
 
-    public static ForgeDockLayoutDto CreateDefaultDto()
+    public static TheForgeDockLayoutDto CreateDefaultDto()
     {
 
-        List<ForgeDockToolLayoutDto> tools = DockLayoutDefaults.Tools
-            .Select(static t => new ForgeDockToolLayoutDto(
+        List<TheForgeDockToolLayoutDto> tools = DockLayoutDefaults.Tools
+            .Select(static t => new TheForgeDockToolLayoutDto(
                 t.ToolId,
                 RegionToString(t.Region),
                 RegionToString(t.Region),
@@ -61,7 +61,7 @@ public static class DockLayoutSerializer
                 t.Order))
             .ToList();
 
-        return new ForgeDockLayoutDto(
+        return new TheForgeDockLayoutDto(
             DockLayoutDefaults.SchemaVersion,
             tools,
             ActiveLeftToolId: DockToolId.Atelier,
@@ -73,12 +73,12 @@ public static class DockLayoutSerializer
 
     }
 
-    public static ForgeDockLayoutDto Normalize(ForgeDockLayoutDto dto)
+    public static TheForgeDockLayoutDto Normalize(TheForgeDockLayoutDto dto)
     {
 
-        Dictionary<string, ForgeDockToolLayoutDto> byId = new(StringComparer.Ordinal);
+        Dictionary<string, TheForgeDockToolLayoutDto> byId = new(StringComparer.Ordinal);
 
-        foreach (ForgeDockToolLayoutDto tool in dto.Tools ?? [])
+        foreach (TheForgeDockToolLayoutDto tool in dto.Tools ?? [])
         {
 
             if (string.IsNullOrWhiteSpace(tool.ToolId) || !DockToolId.All.Contains(tool.ToolId))
@@ -113,7 +113,7 @@ public static class DockLayoutSerializer
 
             }
 
-            byId[tool.ToolId] = new ForgeDockToolLayoutDto(
+            byId[tool.ToolId] = new TheForgeDockToolLayoutDto(
                 tool.ToolId,
                 RegionToString(region),
                 RegionToString(lastRegion),
@@ -132,7 +132,7 @@ public static class DockLayoutSerializer
 
             }
 
-            byId[def.ToolId] = new ForgeDockToolLayoutDto(
+            byId[def.ToolId] = new TheForgeDockToolLayoutDto(
                 def.ToolId,
                 RegionToString(def.Region),
                 RegionToString(def.Region),
@@ -141,13 +141,13 @@ public static class DockLayoutSerializer
 
         }
 
-        List<ForgeDockToolLayoutDto> tools = byId.Values
+        List<TheForgeDockToolLayoutDto> tools = byId.Values
             .OrderBy(static t => ParseRegion(t.Region) ?? DockRegion.Hidden)
             .ThenBy(static t => t.Order)
             .ThenBy(static t => t.ToolId, StringComparer.Ordinal)
             .ToList();
 
-        return new ForgeDockLayoutDto(
+        return new TheForgeDockLayoutDto(
             SchemaVersion: DockLayoutDefaults.SchemaVersion,
             tools,
             ClampActiveId(dto.ActiveLeftToolId, tools, DockRegion.Left, DockToolId.Atelier),
@@ -191,7 +191,7 @@ public static class DockLayoutSerializer
 
     private static string? ClampActiveId(
         string? activeId,
-        IReadOnlyList<ForgeDockToolLayoutDto> tools,
+        IReadOnlyList<TheForgeDockToolLayoutDto> tools,
         DockRegion region,
         string fallback)
     {
@@ -206,7 +206,7 @@ public static class DockLayoutSerializer
 
         }
 
-        ForgeDockToolLayoutDto? first = tools
+        TheForgeDockToolLayoutDto? first = tools
             .Where(t => t.IsVisible && t.Region == regionName)
             .OrderBy(t => t.Order)
             .FirstOrDefault();

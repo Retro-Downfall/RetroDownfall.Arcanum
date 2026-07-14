@@ -207,7 +207,7 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
-    private static JsonElement BuildReadLoreSchema()
+    private static JsonElement BuildScribeLexiconSchema()
     {
         return BuildSchema(static w =>
         {
@@ -217,14 +217,35 @@ internal sealed partial class ArcanumInternalToolServer
 
             WriteStringProperty(
                 w,
-                "key",
-                "Lore key (e.g. Architecture_State, User_Preferences). Stored in the encrypted Grimoire database.");
+                "name",
+                "Entity name (e.g. a person, project, or API). Matched case-insensitively; an existing name appends facts instead of creating a duplicate.");
+
+            WriteStringProperty(
+                w,
+                "type",
+                "Entity type such as Person, Project, API, or DaemonState. Omit to default to General (new entity) or keep the existing type.");
+
+            w.WriteStartObject("facts");
+
+            w.WriteString("type", "array");
+
+            w.WriteStartObject("items");
+
+            w.WriteString("type", "string");
+
+            w.WriteEndObject();
+
+            w.WriteString("description", "Non-empty fact strings to record for this entity. Duplicates are ignored.");
+
+            w.WriteEndObject();
 
             w.WriteEndObject();
 
             w.WriteStartArray("required");
 
-            w.WriteStringValue("key");
+            w.WriteStringValue("name");
+
+            w.WriteStringValue("facts");
 
             w.WriteEndArray();
 
@@ -232,7 +253,7 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
-    private static JsonElement BuildScribeLoreSchema()
+    private static JsonElement BuildDeleteLexiconSchema()
     {
         return BuildSchema(static w =>
         {
@@ -242,40 +263,14 @@ internal sealed partial class ArcanumInternalToolServer
 
             WriteStringProperty(
                 w,
-                "key",
-                "Descriptive lore key under which the fact is stored (upsert).");
-
-            WriteStringProperty(w, "value", "Compressed factual summary to persist for later turns.");
+                "name",
+                "Entity name to remove from the Lexicon (matched case-insensitively).");
 
             w.WriteEndObject();
 
             w.WriteStartArray("required");
 
-            w.WriteStringValue("key");
-
-            w.WriteStringValue("value");
-
-            w.WriteEndArray();
-
-            w.WriteBoolean("additionalProperties", false);
-        });
-    }
-
-    private static JsonElement BuildDeleteLoreSchema()
-    {
-        return BuildSchema(static w =>
-        {
-            w.WriteString("type", "object");
-
-            w.WriteStartObject("properties");
-
-            WriteStringProperty(w, "key", "Lore key to remove from the Grimoire.");
-
-            w.WriteEndObject();
-
-            w.WriteStartArray("required");
-
-            w.WriteStringValue("key");
+            w.WriteStringValue("name");
 
             w.WriteEndArray();
 

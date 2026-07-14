@@ -2,13 +2,14 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
 /// <summary>
-/// Root ViewModel for The Atelier (project explorer). Phase 4 establishes the live tree roots and
-/// lazy-loading node model; later phases add creation/deletion/export dialogs behind the existing
-/// context-menu command seams.
+/// Root ViewModel for The Atelier (project explorer). Establishes the live tree roots
+/// (Campaigns, Workspaces, Global Spells, Global Prompts, Sessions) with lazy-loading nodes, and
+/// threads the creation seams into the campaign node and the creation-capable roots.
 /// </summary>
 public sealed partial class AtelierViewModel : ViewModelBase
 {
@@ -17,15 +18,32 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     private readonly INavigationService _navigation;
 
+    private readonly IArtifactCreationDataSource _creationDataSource;
+
+    private readonly IArtifactCreationDialogService _dialogService;
+
+    private readonly FoundryFloorViewModel _foundryFloor;
+
     [ObservableProperty]
     private bool _isLoading;
 
-    public AtelierViewModel(IAtelierDataSource dataSource, INavigationService navigation)
+    public AtelierViewModel(
+        IAtelierDataSource dataSource,
+        INavigationService navigation,
+        IArtifactCreationDataSource creationDataSource,
+        IArtifactCreationDialogService dialogService,
+        FoundryFloorViewModel foundryFloor)
     {
 
         _dataSource = dataSource;
 
         _navigation = navigation;
+
+        _creationDataSource = creationDataSource;
+
+        _dialogService = dialogService;
+
+        _foundryFloor = foundryFloor;
 
         Title = "The Atelier";
 
@@ -34,7 +52,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
     public ObservableCollection<AtelierNodeViewModel> Roots { get; } = [];
 
     public string EmptyState => Roots.Count == 0
-        ? "Refresh The Atelier to reveal campaigns, workspaces, spells, and sessions."
+        ? "Refresh The Atelier to reveal campaigns, workspaces, spells, prompts, and sessions."
         : string.Empty;
 
     [RelayCommand]
@@ -54,6 +72,8 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
             Roots.Add(CreateGlobalSpellsRoot());
 
+            Roots.Add(CreateGlobalPromptsRoot());
+
             Roots.Add(CreateSessionsRoot());
 
             OnPropertyChanged(nameof(EmptyState));
@@ -68,44 +88,39 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     }
 
-    private AtelierRootNodeViewModel CreateCampaignsRoot() =>
-        new(
+    private AtelierNodeViewModel CreateCampaignsRoot() =>
+        new AtelierRootNodeViewModel(
             "Campaigns",
             "IconCampaign",
             async ct => (await _dataSource.GetCampaignsAsync(ct).ConfigureAwait(true))
                 .OrderBy(static campaign => campaign.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(campaign => new CampaignNodeViewModel(campaign, _dataSource, _navigation))
+                .Select(campaign => new CampaignNodeViewModel(
+                    campaign,
+                    _dataSource,
+                    _navigation,
+                    _creationDataSource,
+                    _dialogService,
+                    _foundryFloor))
                 .Cast<AtelierNodeViewModel>()
                 .ToArray());
 
-    private AtelierRootNodeViewModel CreateWorkspacesRoot() =>
-        new(
+    private AtelierNodeViewModel CreateWorkspacesRoot() =>
+        new AtelierRootNodeViewModel(
             "Workspaces",
             "IconWorkspace",
             async ct => (await _dataSource.GetWorkspacesAsync(ct).ConfigureAwait(true))
                 .OrderBy(static workspace => workspace.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(static workspace => new WorkspaceNodeViewModel(workspace))
+                .Select(workspace => new WorkspaceNodeViewModel(workspace, _navigation))
                 .Cast<AtelierNodeViewModel>()
                 .ToArray());
 
-    private AtelierRootNodeViewModel CreateGlobalSpellsRoot() =>
-        new(
-            "Global Spells",
-            "IconSpell",
-            async ct => (await _dataSource.GetGlobalSpellsAsync(ct).ConfigureAwait(true))
-                .OrderBy(static spell => spell.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(spell => new SpellNodeViewModel(spell, _navigation))
-                .Cast<AtelierNodeViewModel>()
-                .ToArray());
+    private AtelierNodeViewModel CreateGlobalSpellsRoot() =>
+        new GlobalSpellsRootNodeViewModel(_dataSource, _navigation, _creationDataSource, _dialogService, _foundryFloor);
 
-    private AtelierRootNodeViewModel CreateSessionsRoot() =>
-        new(
-            "Sessions",
-            "IconSession",
-            async ct => (await _dataSource.GetRecentSessionsAsync(ct).ConfigureAwait(true))
-                .OrderByDescending(static session => session.UpdatedAt)
-                .Select(session => new SessionNodeViewModel(session, _navigation))
-                .Cast<AtelierNodeViewModel>()
-                .ToArray());
+    private AtelierNodeViewModel CreateGlobalPromptsRoot() =>
+        new GlobalPromptsRootNodeViewModel(_dataSource, _navigation, _creationDataSource, _dialogService, _foundryFloor);
+
+    private AtelierNodeViewModel CreateSessionsRoot() =>
+        new SessionsRootNodeViewModel(_dataSource, _navigation, _creationDataSource, _dialogService, _foundryFloor);
 
 }

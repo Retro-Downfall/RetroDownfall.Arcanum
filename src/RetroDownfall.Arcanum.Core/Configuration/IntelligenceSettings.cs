@@ -7,13 +7,27 @@ public sealed record IntelligenceSettings
 
     public int SemanticRouterPreflightTimeoutSeconds { get; init; } = 15;
 
-    public int SemanticRouterMaxTokens { get; init; } = 50;
+    public int SemanticRouterMaxTokens { get; init; } = 128;
 
     public float SemanticRouterTemperature { get; init; } = 0.0f;
 
     public int ListDirectoryMaxPaths { get; init; } = 500;
 
     public bool EnableLoreSystem { get; init; } = true;
+
+    /// <summary>
+    /// Gates the <c>scribe_lexicon</c> / <c>delete_lexicon</c> MCP tools and the Lexicon retrieval /
+    /// DATA injection path. Default <c>true</c> (Option A): operators who previously disabled
+    /// model-writable memory via <c>EnableLoreSystem</c> must now set this to <c>false</c>. The legacy
+    /// <c>EnableLoreSystem</c> flag no longer gates any MCP tool — Lore tools are removed.
+    /// </summary>
+    public bool EnableLexiconSystem { get; init; } = true;
+
+    /// <summary>Maximum Lexicon entries returned per inference-turn <c>MatchEntitiesAsync</c> query.</summary>
+    public int LexiconMaxMatchedEntries { get; init; } = 16;
+
+    /// <summary>Hard cap (bytes) on the rendered <c>### Lexicon (Known Context)</c> DATA block.</summary>
+    public int LexiconMaxInjectedBytes { get; init; } = 4096;
 
     public bool EnableArchiveSearch { get; init; } = true;
 

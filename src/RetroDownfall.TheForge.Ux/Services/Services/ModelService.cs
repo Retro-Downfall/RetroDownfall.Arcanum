@@ -18,9 +18,14 @@ public sealed class ModelService
     }
 
     public Task<ApiResponse<ModelInfoDto[]>?> ListModelsAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/models", ForgeJsonContext.Default.ApiResponseModelInfoDtoArray, cancellationToken);
+        _apiClient.GetAsync("/api/models", TheForgeJsonContext.Default.ApiResponseModelInfoDtoArray, cancellationToken);
 
     public Task<ApiResponse<ProviderInfoDto[]>?> ListProvidersAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/providers", ForgeJsonContext.Default.ApiResponseProviderInfoDtoArray, cancellationToken);
+        _apiClient.GetAsync("/api/providers", TheForgeJsonContext.Default.ApiResponseProviderInfoDtoArray, cancellationToken);
+
+    public Task<ApiResponse<ProviderTestResult>?> TestProviderAsync(ProviderTestRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync("/api/providers/test", request,
+            TheForgeJsonContext.Default.ProviderTestRequest,
+            TheForgeJsonContext.Default.ApiResponseProviderTestResult, cancellationToken);
 
 }

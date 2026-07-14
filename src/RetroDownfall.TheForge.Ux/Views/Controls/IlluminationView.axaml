@@ -1,0 +1,19 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Controls.IlluminationView">
+  <Grid RowDefinitions="Auto,*">
+    <TextBlock x:Name="TruncationNotice"
+               Grid.Row="0"
+               Text="Preview truncated"
+               Opacity="0.65"
+               Margin="0,0,0,6"
+               IsVisible="False" />
+    <ScrollViewer x:Name="PreviewScroll"
+                  Grid.Row="1"
+                  HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Auto">
+      <ContentControl x:Name="PreviewHost"
+                      Margin="4" />
+    </ScrollViewer>
+  </Grid>
+</UserControl>

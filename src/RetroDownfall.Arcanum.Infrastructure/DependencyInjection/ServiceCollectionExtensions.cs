@@ -22,6 +22,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -42,6 +43,7 @@ using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -198,6 +200,8 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
 
+        services.AddSingleton<IPostConfigureOptions<ArcanumSettings>, LoreToLexiconSettingsPostConfigure>();
+
         services.AddHostedService<PidFileService>();
 
         services.AddSingleton<ConfigurationWriter>();
@@ -280,6 +284,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IBudgetAlertRepository, BudgetAlertRepository>();
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
+
+        services.AddScoped<ILexiconService, LexiconService>();
 
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();

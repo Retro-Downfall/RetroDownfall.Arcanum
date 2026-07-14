@@ -1,0 +1,112 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Divination"
+             xmlns:theForge="using:RetroDownfall.Arcanum.Core.TheForge"
+             xmlns:weave="using:RetroDownfall.Arcanum.Core.Weave"
+             xmlns:workspaces="using:RetroDownfall.Arcanum.Core.Workspaces"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Divination.DivinationView"
+             x:DataType="vm:DivinationViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <TabControl Grid.Row="2">
+
+      <TabItem Header="Sessions">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SessionsFeatureDisabled}" />
+            <DockPanel LastChildFill="False">
+              <TextBox DockPanel.Dock="Left" Text="{Binding SessionQuery}" Watermark="Session Divination query…" MinWidth="200" />
+              <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchSessionsCommand}" Margin="6,0,0,0" IsEnabled="{Binding !SessionsFeatureDisabled}" />
+              <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearchingSessions}" />
+            </DockPanel>
+          </StackPanel>
+          <ListBox Grid.Row="1" ItemsSource="{Binding SessionResults}" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="theForge:SemanticSessionSearchResult">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="3">
+                    <DockPanel LastChildFill="False">
+                      <TextBlock DockPanel.Dock="Left" Text="{Binding SessionTitle}" FontWeight="SemiBold" />
+                      <Button DockPanel.Dock="Right" Content="Open" Command="{Binding $parent[UserControl].DataContext.OpenSessionResultCommand}" CommandParameter="{Binding}" />
+                    </DockPanel>
+                    <TextBlock Text="{Binding EntryContentPreview}" TextWrapping="Wrap" MaxLines="3" Opacity="0.85" />
+                    <TextBlock Text="{Binding Similarity, StringFormat=Similarity: {0:0.00}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Workspace Files">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding WorkspaceFeatureDisabled}" />
+            <DockPanel LastChildFill="False">
+              <TextBlock DockPanel.Dock="Left" Text="Workspace" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,6,0" />
+              <ComboBox DockPanel.Dock="Left" ItemsSource="{Binding Workspaces}" SelectedItem="{Binding SelectedWorkspace}" MinWidth="150">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="workspaces:WorkspaceInfo">
+                    <TextBlock Text="{Binding Name}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <TextBox DockPanel.Dock="Left" Text="{Binding WorkspaceQuery}" Watermark="Query…" MinWidth="150" Margin="6,0,0,0" />
+              <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchWorkspaceCommand}" Margin="6,0,0,0" IsEnabled="{Binding !WorkspaceFeatureDisabled}" />
+              <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearchingWorkspace}" />
+            </DockPanel>
+          </StackPanel>
+          <ListBox Grid.Row="1" ItemsSource="{Binding WorkspaceResults}" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="workspaces:WorkspaceSearchResult">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="{Binding RelativePath}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding ContentPreview}" TextWrapping="Wrap" MaxLines="4" Opacity="0.85" />
+                    <TextBlock Text="{Binding Similarity, StringFormat=Similarity: {0:0.00}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Saga">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SagaFeatureDisabled}" />
+            <DockPanel LastChildFill="False">
+              <TextBox DockPanel.Dock="Left" Text="{Binding SagaQuery}" Watermark="Saga Divination query…" MinWidth="200" />
+              <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchSagaCommand}" Margin="6,0,0,0" IsEnabled="{Binding !SagaFeatureDisabled}" />
+              <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearchingSaga}" />
+            </DockPanel>
+          </StackPanel>
+          <ListBox Grid.Row="1" ItemsSource="{Binding SagaResults}" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="weave:SagaMemoryDto">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="{Binding Content}" TextWrapping="Wrap" MaxLines="4" />
+                    <TextBlock Text="{Binding CreatedAt, StringFormat={}{0:g}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </TabItem>
+
+    </TabControl>
+  </Grid>
+</UserControl>

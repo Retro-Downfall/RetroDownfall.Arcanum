@@ -16,4 +16,8 @@ public enum DocumentKind
 
     Config,
 
+    Codex,
+
+    Markdown,
+
 }

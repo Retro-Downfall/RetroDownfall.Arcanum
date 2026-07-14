@@ -125,7 +125,7 @@ public partial class MainWindow : Window
             ConfigSection.Security => new SecurityPage(),
             ConfigSection.CommLink => new CommLinkPage(),
             ConfigSection.Storage => new StoragePage(),
-            ConfigSection.Forge => new ForgePage(),
+            ConfigSection.Forge => new TheForgePage(),
             ConfigSection.ProvingGrounds => new ProvingGroundsPage(),
             ConfigSection.Cli => new CliPage(),
             ConfigSection.Scrying => new ScryingPage(),

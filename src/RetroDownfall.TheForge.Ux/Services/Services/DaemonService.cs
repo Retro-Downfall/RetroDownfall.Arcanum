@@ -27,18 +27,18 @@ public sealed class DaemonService
     }
 
     public Task<ApiResponse<DaemonJobInfo[]>?> ListAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/daemons", ForgeJsonContext.Default.ApiResponseDaemonJobInfoArray, cancellationToken);
+        _apiClient.GetAsync("/api/daemons", TheForgeJsonContext.Default.ApiResponseDaemonJobInfoArray, cancellationToken);
 
     public Task<ApiResponse<DaemonJobInfo>?> GetAsync(string id, CancellationToken cancellationToken) =>
-        _apiClient.GetAsync($"/api/daemons/{Uri.EscapeDataString(id)}", ForgeJsonContext.Default.ApiResponseDaemonJobInfo, cancellationToken);
+        _apiClient.GetAsync($"/api/daemons/{Uri.EscapeDataString(id)}", TheForgeJsonContext.Default.ApiResponseDaemonJobInfo, cancellationToken);
 
     public Task<ApiResponse<DaemonExecutionSummary>?> RunAsync(string id, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/daemons/{Uri.EscapeDataString(id)}/run", ForgeJsonContext.Default.ApiResponseDaemonExecutionSummary, cancellationToken);
+        _apiClient.PostAsync($"/api/daemons/{Uri.EscapeDataString(id)}/run", TheForgeJsonContext.Default.ApiResponseDaemonExecutionSummary, cancellationToken);
 
     public Task<ApiResponse<DaemonExecutionSummary[]>?> HistoryAsync(string id, CancellationToken cancellationToken) =>
         _apiClient.GetAsync(
             $"/api/daemons/{Uri.EscapeDataString(id)}/history",
-            ForgeJsonContext.Default.ApiResponseDaemonExecutionSummaryArray,
+            TheForgeJsonContext.Default.ApiResponseDaemonExecutionSummaryArray,
             cancellationToken);
 
     public IAsyncEnumerable<DaemonEvent> StreamEventsAsync(CancellationToken cancellationToken) =>

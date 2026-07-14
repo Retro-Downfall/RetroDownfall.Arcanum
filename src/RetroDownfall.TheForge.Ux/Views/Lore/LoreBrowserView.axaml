@@ -1,0 +1,42 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Lore"
+             xmlns:models="using:RetroDownfall.Arcanum.Core.Intelligence.Models"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Lore.LoreBrowserView"
+             x:DataType="vm:LoreBrowserViewModel">
+  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <Grid Grid.Row="2">
+      <TextBlock Text="{Binding EmptyState}" Opacity="0.7" Margin="0,8,0,0" IsVisible="{Binding HasNoLore}" />
+      <ListBox ItemsSource="{Binding Lore}" SelectedItem="{Binding SelectedLore}" IsVisible="{Binding !HasNoLore}" BorderThickness="0">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="models:LoreDto">
+            <TextBlock Text="{Binding Key}" Margin="0,2" />
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <StackPanel Grid.Row="3" Spacing="6" Margin="0,8,0,4">
+      <TextBlock Text="Key" Opacity="0.7" />
+      <TextBox Text="{Binding EditKey}" />
+      <TextBlock Text="Value" Opacity="0.7" />
+      <TextBox Text="{Binding EditValue}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" />
+    </StackPanel>
+
+    <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+      <Button Content="New" Command="{Binding ClearEditorCommand}" />
+      <Button Content="Save" Command="{Binding SaveCommand}" />
+      <Button Content="Delete" Command="{Binding DeleteCommand}" />
+    </StackPanel>
+  </Grid>
+</UserControl>

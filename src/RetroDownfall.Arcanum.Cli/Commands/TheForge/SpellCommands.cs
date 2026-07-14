@@ -480,7 +480,7 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
             return 1;
         }
 
-        await ForgeExecuteRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
+        await TheForgeExecuteRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
 
         return 0;
 

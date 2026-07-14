@@ -18,7 +18,7 @@ public sealed class ExportImportService
     }
 
     public Task<ApiResponse<CampaignExportDto>?> ExportCampaignAsync(Guid campaignId, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/campaigns/{campaignId}/export", ForgeJsonContext.Default.ApiResponseCampaignExportDto, cancellationToken);
+        _apiClient.PostAsync($"/api/campaigns/{campaignId}/export", TheForgeJsonContext.Default.ApiResponseCampaignExportDto, cancellationToken);
 
     public Task<ApiResponse<CampaignImportResultDto>?> ImportCampaignAsync(
         Guid campaignId,
@@ -28,8 +28,8 @@ public sealed class ExportImportService
         _apiClient.PostAsync(
             $"/api/campaigns/{campaignId}/import",
             new CampaignImportRequest(strategy, payload),
-            ForgeJsonContext.Default.CampaignImportRequest,
-            ForgeJsonContext.Default.ApiResponseCampaignImportResultDto,
+            TheForgeJsonContext.Default.CampaignImportRequest,
+            TheForgeJsonContext.Default.ApiResponseCampaignImportResultDto,
             cancellationToken);
 
 }

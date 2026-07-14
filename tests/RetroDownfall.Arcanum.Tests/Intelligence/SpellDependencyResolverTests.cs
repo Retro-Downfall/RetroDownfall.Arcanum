@@ -57,7 +57,7 @@ public sealed class SpellDependencyResolverTests : IDisposable
             _maxFileSizeBytes,
             CancellationToken.None);
 
-        Assert.Equal("Primary", resolved.Primary.Name);
+        Assert.Equal("Primary", resolved.Primary!.Name);
 
         Assert.Equal(["SpellA", "SpellB", "SpellC"], resolved.Resonants.Select(static s => s.Name));
 

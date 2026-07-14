@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Serialization;
@@ -38,12 +39,12 @@ public sealed class PromptService
             ("limit", limit?.ToString()),
             ("offset", offset?.ToString()));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseListPageResultPromptSummaryDto, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseListPageResultPromptSummaryDto, cancellationToken);
 
     }
 
     public Task<ApiResponse<PromptDetailDto>?> GetAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.GetAsync($"/api/prompts/{id}", ForgeJsonContext.Default.ApiResponsePromptDetailDto, cancellationToken);
+        _apiClient.GetAsync($"/api/prompts/{id}", TheForgeJsonContext.Default.ApiResponsePromptDetailDto, cancellationToken);
 
     public Task<ApiResponse<PromptVersionDto[]>?> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken)
     {
@@ -52,8 +53,53 @@ public sealed class PromptService
             $"/api/prompts/by-name/{Uri.EscapeDataString(name)}/versions",
             ("campaignId", campaignId?.ToString()));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponsePromptVersionDtoArray, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponsePromptVersionDtoArray, cancellationToken);
 
     }
+
+    /// <summary><c>POST /api/prompts</c> — creates a prompt; <c>CampaignId</c> may be null for a global prompt.</summary>
+    public Task<ApiResponse<PromptDetailDto>?> CreateAsync(CreatePromptRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            "/api/prompts",
+            request,
+            TheForgeJsonContext.Default.CreatePromptRequest,
+            TheForgeJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken);
+
+    /// <summary><c>PUT /api/prompts/{id}</c> — partial update; a field is preserved when the request sends <c>null</c> for it.</summary>
+    public Task<ApiResponse<PromptDetailDto>?> UpdateAsync(Guid id, UpdatePromptRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PutAsync(
+            $"/api/prompts/{id}",
+            request,
+            TheForgeJsonContext.Default.UpdatePromptRequest,
+            TheForgeJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken);
+
+    /// <summary><c>POST /api/prompts/{id}/render</c> — renders the template with the supplied parameters (no LLM cost).</summary>
+    public Task<ApiResponse<PromptRenderResultDto>?> RenderAsync(Guid id, PromptRenderRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/prompts/{id}/render",
+            request,
+            TheForgeJsonContext.Default.PromptRenderRequest,
+            TheForgeJsonContext.Default.ApiResponsePromptRenderResultDto,
+            cancellationToken);
+
+    /// <summary><c>POST /api/prompts/{id}/test</c> — assembles the system prompt with default parameters (no LLM cost).</summary>
+    public Task<ApiResponse<PromptTestResultDto>?> TestAsync(Guid id, TestPromptRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/prompts/{id}/test",
+            request,
+            TheForgeJsonContext.Default.TestPromptRequest,
+            TheForgeJsonContext.Default.ApiResponsePromptTestResultDto,
+            cancellationToken);
+
+    /// <summary><c>POST /api/prompts/{id}/execute-stream</c> — live prompt execution, NDJSON <see cref="IntelligenceEvent"/> stream.</summary>
+    public IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(Guid id, PromptExecuteRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostNdjsonStreamAsync(
+            $"/api/prompts/{id}/execute-stream",
+            request,
+            TheForgeJsonContext.Default.PromptExecuteRequest,
+            TheForgeJsonContext.Default.IntelligenceEvent,
+            cancellationToken);
 
 }

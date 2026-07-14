@@ -32,7 +32,11 @@
 
     <PackageReference Include="Avalonia.AvaloniaEdit" Version="11.4.1" />
 
+    <PackageReference Include="ColorCode.Core" Version="2.0.15" />
+
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+
+    <PackageReference Include="Markdig" Version="1.2.0" />
 
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
 

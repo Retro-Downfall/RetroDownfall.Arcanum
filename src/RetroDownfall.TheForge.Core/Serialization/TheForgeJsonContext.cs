@@ -99,6 +99,11 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(PingRequest))]
 [JsonSerializable(typeof(IntelligenceEvent))]
 
+// Sessions — memory management (Milestone H — Context and Memory)
+[JsonSerializable(typeof(CompactResult))]
+[JsonSerializable(typeof(ApiResponse<CompactResult>))]
+[JsonSerializable(typeof(ApiResponse<EntryDto[]>))]
+
 // Apprentices
 [JsonSerializable(typeof(ApiResponse<ListPageResult<ApprenticeSummaryDto>>), TypeInfoPropertyName = "ApiResponseListPageResultApprenticeSummaryDto")]
 [JsonSerializable(typeof(ApiResponse<ApprenticeDetailDto>))]
@@ -120,6 +125,16 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<McpServerInfo[]>))]
 [JsonSerializable(typeof(McpServerEvent))]
 
+// MCP lifecycle actions + Arsenal aggregation (Milestone G — Operate Inference)
+[JsonSerializable(typeof(OptionalWorkspaceRequest))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceArsenalDto>))]
+[JsonSerializable(typeof(WorkspaceArsenalDto))]
+
+// Built-in tool invocation — The Scrying Pool (POST /api/tools/invoke)
+[JsonSerializable(typeof(ToolInvokeRequest))]
+[JsonSerializable(typeof(ApiResponse<ToolInvokeResponse>))]
+[JsonSerializable(typeof(ToolInvokeResponse))]
+
 // LlamaCpp (The Reliquary)
 [JsonSerializable(typeof(PullModelRequestDto))]
 [JsonSerializable(typeof(LlamaPullProgress))]
@@ -140,6 +155,10 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(SagaSearchRequest))]
 [JsonSerializable(typeof(ApiResponse<SagaSearchResult>))]
 
+// The Archive — Saga stats (Milestone H — Context and Memory)
+[JsonSerializable(typeof(SagaStats))]
+[JsonSerializable(typeof(ApiResponse<SagaStats>))]
+
 // Compendium (Arcanum configuration)
 [JsonSerializable(typeof(ArcanumSettings))]
 [JsonSerializable(typeof(ApiResponse<ArcanumSettings>))]
@@ -147,9 +166,32 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 // Models / Providers
 [JsonSerializable(typeof(ApiResponse<ModelInfoDto[]>))]
 [JsonSerializable(typeof(ApiResponse<ProviderInfoDto[]>))]
+[JsonSerializable(typeof(ProviderTestRequest))]
+[JsonSerializable(typeof(ApiResponse<ProviderTestResult>))]
+[JsonSerializable(typeof(ProviderTestResult))]
 
 // Workspaces (The Atelier)
 [JsonSerializable(typeof(ApiResponse<WorkspaceInfo[]>))]
+
+// Workspaces — file browser (Milestone H — Context and Memory)
+[JsonSerializable(typeof(FileListResult))]
+[JsonSerializable(typeof(ApiResponse<FileListResult>))]
+[JsonSerializable(typeof(FileEntry))]
+[JsonSerializable(typeof(ApiResponse<FileEntry>))]
+[JsonSerializable(typeof(FileReadResult))]
+[JsonSerializable(typeof(ApiResponse<FileReadResult>))]
+
+// Workspaces — file write (Milestone H, optional; server-gated by Arcanum:Workspaces:EnableFileWrite)
+[JsonSerializable(typeof(FileWriteRequest))]
+[JsonSerializable(typeof(FileWriteResult))]
+[JsonSerializable(typeof(ApiResponse<FileWriteResult>))]
+[JsonSerializable(typeof(TextBlockReplaceRequest))]
+[JsonSerializable(typeof(TextBlockReplaceResult))]
+[JsonSerializable(typeof(ApiResponse<TextBlockReplaceResult>))]
+[JsonSerializable(typeof(FileDeleteResult))]
+[JsonSerializable(typeof(ApiResponse<FileDeleteResult>))]
+[JsonSerializable(typeof(DirectoryCreateResult))]
+[JsonSerializable(typeof(ApiResponse<DirectoryCreateResult>))]
 
 // Divination (semantic search)
 [JsonSerializable(typeof(SemanticSearchRequest))]

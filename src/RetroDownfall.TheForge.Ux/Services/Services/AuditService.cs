@@ -34,7 +34,7 @@ public sealed class AuditService
             ("sessionId", sessionId),
             ("limit", limit?.ToString()));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseInferenceAuditRecordArray, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseInferenceAuditRecordArray, cancellationToken);
 
     }
 

@@ -40,7 +40,7 @@ public sealed class ArcanumSseClient
             ? $"/api/sessions/{sessionId}/stream"
             : $"/api/sessions/{sessionId}/stream?since={Uri.EscapeDataString(since.Value.ToString("O"))}";
 
-        return DeserializeStreamAsync(path, ForgeJsonContext.Default.EntryDto, cancellationToken);
+        return DeserializeStreamAsync(path, TheForgeJsonContext.Default.EntryDto, cancellationToken);
 
     }
 
@@ -49,19 +49,19 @@ public sealed class ArcanumSseClient
     /// shape rather than <c>ApprenticeEvent</c> directly; see <see cref="ChronicleFrame"/> for why.
     /// </summary>
     public IAsyncEnumerable<ChronicleFrame> StreamChronicleAsync(Guid apprenticeId, CancellationToken cancellationToken) =>
-        DeserializeStreamAsync($"/api/apprentices/{apprenticeId}/chronicle", ForgeJsonContext.Default.ChronicleFrame, cancellationToken);
+        DeserializeStreamAsync($"/api/apprentices/{apprenticeId}/chronicle", TheForgeJsonContext.Default.ChronicleFrame, cancellationToken);
 
     /// <summary><c>GET /api/events/mcp</c> — live MCP server lifecycle events (The Arsenal).</summary>
     public IAsyncEnumerable<McpServerEvent> StreamMcpEventsAsync(CancellationToken cancellationToken) =>
-        DeserializeStreamAsync("/api/events/mcp", ForgeJsonContext.Default.McpServerEvent, cancellationToken);
+        DeserializeStreamAsync("/api/events/mcp", TheForgeJsonContext.Default.McpServerEvent, cancellationToken);
 
     /// <summary><c>GET /api/events/logs</c> — live log tail (The Foundry Floor).</summary>
     public IAsyncEnumerable<LogEntry> StreamLogsAsync(CancellationToken cancellationToken) =>
-        DeserializeStreamAsync("/api/events/logs", ForgeJsonContext.Default.LogEntry, cancellationToken);
+        DeserializeStreamAsync("/api/events/logs", TheForgeJsonContext.Default.LogEntry, cancellationToken);
 
     /// <summary><c>GET /api/events/daemon</c> — live daemon/Unseen Servant events (The Servants' Quarters).</summary>
     public IAsyncEnumerable<DaemonEvent> StreamDaemonEventsAsync(CancellationToken cancellationToken) =>
-        DeserializeStreamAsync("/api/events/daemon", ForgeJsonContext.Default.DaemonEvent, cancellationToken);
+        DeserializeStreamAsync("/api/events/daemon", TheForgeJsonContext.Default.DaemonEvent, cancellationToken);
 
     private async IAsyncEnumerable<TFrame> DeserializeStreamAsync<TFrame>(
         string path,

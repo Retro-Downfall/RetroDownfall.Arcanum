@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -5,9 +7,10 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Daemons;
 
@@ -62,40 +65,41 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
 
         int clampedInterval = ArcanumSettingClamps.UnseenServantIntervalMinutes(_pacer.GetEffectiveInterval(_job));
 
-        bool loreEnabled = _optionsMonitor.CurrentValue.Intelligence.EnableLoreSystem;
+        bool lexiconEnabled = _optionsMonitor.CurrentValue.Intelligence.EnableLexiconSystem;
 
-        LoreDto? prior = null;
+        LexiconEntryDto? priorState = null;
 
-        string jobKey = string.Empty;
+        string stateName = string.Empty;
 
-        if (loreEnabled)
+        if (lexiconEnabled)
         {
-            IGrimoireRepository repository =
-                scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
+            ILexiconService lexicon = scope.ServiceProvider.GetRequiredService<ILexiconService>();
 
-            jobKey = $"daemon_state_{_job.Name}";
+            stateName = BuildDaemonStateName(_job.Name, TargetSpell);
 
             try
             {
-                prior = await repository
-                    .GetLoreAsync(jobKey, ct)
+                Result<LexiconEntryDto?> lookup = await lexicon
+                    .GetByNameAsync(stateName, ct)
                     .ConfigureAwait(false);
+
+                priorState = lookup.IsSuccess ? lookup.Value : null;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(
                     ex,
-                    "Unseen Servant job {JobName} could not read daemon lore for key {JobKey}.",
+                    "Unseen Servant job {JobName} could not read Lexicon daemon state for {StateName}.",
                     _job.Name,
-                    jobKey);
+                    stateName);
 
-                prior = null;
+                priorState = null;
             }
         }
 
         string kickoff;
 
-        if (!loreEnabled)
+        if (!lexiconEnabled)
         {
             kickoff =
                 $"""
@@ -106,7 +110,7 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
         }
         else
         {
-            string previousState = prior?.Value ?? "No previous state recorded.";
+            string previousState = FormatPreviousState(priorState);
 
             kickoff =
                 $"""
@@ -117,7 +121,7 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
                 ### Previous State
                 {previousState}
 
-                Instructions: Analyze the environment. If you calculate new moving averages, trends, or state that you need for your next waking cycle, you MUST use the `scribe_lore` tool to update the key `{jobKey}` before you complete your turn.
+                Instructions: Analyze the environment. If you calculate new moving averages, trends, or state that you need for your next waking cycle, you MUST use the `scribe_lexicon` tool to update the entity named `{stateName}` (type `{LexiconLimits.DaemonStateType}`) with concise facts before you complete your turn.
                 If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
                 """;
         }
@@ -149,6 +153,74 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
             result.Error.Message);
 
         throw new InvalidOperationException($"{result.Error.Code}: {result.Error.Message}");
+    }
+
+    /// <summary>
+    /// Deterministic, low-cardinality Lexicon state key for a daemon job:
+    /// <c>daemon_state:{job.Name}:{shortHash(targetSpell)}</c>. The target-spell suffix is hashed so
+    /// long or odd-character spell names stay within the Lexicon name length bound while remaining
+    /// stable across runs.
+    /// </summary>
+    internal static string BuildDaemonStateName(string jobName, string targetSpell)
+    {
+
+        string trimmedJob = jobName.Trim();
+
+        string spellSuffix = string.IsNullOrEmpty(targetSpell)
+            ? "default"
+            : ShortHash(targetSpell);
+
+        string candidate = $"daemon_state:{trimmedJob}:{spellSuffix}";
+
+        if (candidate.Length <= LexiconLimits.MaxNameLength)
+        {
+            return candidate;
+        }
+
+        // Job names can exceed MaxNameLength; hash the job portion so the key stays stable and valid.
+        return $"daemon_state:{ShortHash(trimmedJob)}:{spellSuffix}";
+    }
+
+    private static string ShortHash(string value)
+    {
+
+        byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+
+        StringBuilder sb = new(12);
+
+        for (int i = 0; i < 6; i++)
+        {
+            _ = sb.Append(bytes[i].ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return sb.ToString();
+    }
+
+    private static string FormatPreviousState(LexiconEntryDto? priorState)
+    {
+
+        if (priorState is null || priorState.Facts.Length == 0)
+        {
+            return "No previous state recorded.";
+        }
+
+        StringBuilder sb = new();
+
+        foreach (string fact in priorState.Facts)
+        {
+            string sanitized = SystemPromptBuilder.SanitizeLexiconText(fact);
+
+            if (sanitized.Length == 0)
+            {
+                continue;
+            }
+
+            _ = sb.Append("- ").AppendLine(sanitized);
+        }
+
+        string formatted = sb.ToString().TrimEnd();
+
+        return formatted.Length == 0 ? "No previous state recorded." : formatted;
     }
 
 }

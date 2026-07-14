@@ -16,7 +16,7 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
     private readonly Dictionary<string, DockToolViewModel> _toolsById = new(StringComparer.Ordinal);
 
-    private readonly IForgeSettingsStore? _settingsStore;
+    private readonly ITheForgeSettingsStore? _settingsStore;
 
     private readonly ILogger<DockLayoutViewModel>? _logger;
 
@@ -35,7 +35,7 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
     private DockRegion? _dragPreviewRegion;
 
     public DockLayoutViewModel(
-        IForgeSettingsStore? settingsStore = null,
+        ITheForgeSettingsStore? settingsStore = null,
         string? layoutState = null,
         TimeSpan? persistDebounce = null,
         ILogger<DockLayoutViewModel>? logger = null)
@@ -380,11 +380,11 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
     }
 
-    public ForgeDockLayoutDto CaptureDto()
+    public TheForgeDockLayoutDto CaptureDto()
     {
 
-        List<ForgeDockToolLayoutDto> tools = AllTools
-            .Select(t => new ForgeDockToolLayoutDto(
+        List<TheForgeDockToolLayoutDto> tools = AllTools
+            .Select(t => new TheForgeDockToolLayoutDto(
                 t.ToolId,
                 DockLayoutSerializer.RegionToString(t.IsVisible ? t.Region : DockRegion.Hidden),
                 DockLayoutSerializer.RegionToString(t.LastRegion == DockRegion.Hidden
@@ -394,7 +394,7 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
                 t.Order))
             .ToList();
 
-        return DockLayoutSerializer.Normalize(new ForgeDockLayoutDto(
+        return DockLayoutSerializer.Normalize(new TheForgeDockLayoutDto(
             DockLayoutDefaults.SchemaVersion,
             tools,
             Left.SelectedTool?.ToolId,
@@ -437,7 +437,7 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
     }
 
-    private void ApplyDto(ForgeDockLayoutDto dto, bool persist)
+    private void ApplyDto(TheForgeDockLayoutDto dto, bool persist)
     {
 
         _suppressPersist = true;
@@ -457,7 +457,7 @@ public sealed partial class DockLayoutViewModel : ObservableObject, IDisposable
 
             Bottom.Size = dto.BottomHeight;
 
-            foreach (ForgeDockToolLayoutDto toolDto in dto.Tools.OrderBy(t => t.Order).ThenBy(t => t.ToolId))
+            foreach (TheForgeDockToolLayoutDto toolDto in dto.Tools.OrderBy(t => t.Order).ThenBy(t => t.ToolId))
             {
 
                 if (!_toolsById.TryGetValue(toolDto.ToolId, out DockToolViewModel? tool))

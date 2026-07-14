@@ -22,6 +22,10 @@ public static class ArcanumSettingClamps
 
     public static int SemanticRouterMaxTokens(int value) => Math.Clamp(value, 1, 4096);
 
+    public static int LexiconMaxMatchedEntries(int value) => Math.Clamp(value, 1, 100);
+
+    public static int LexiconMaxInjectedBytes(int value) => Math.Clamp(value, 256, 65_536);
+
     public static float SemanticRouterTemperature(float value) => Math.Clamp(value, 0f, 2f);
 
     public static int MaxEnumerationSteps(int value) => Math.Clamp(value, 1, 10_000_000);

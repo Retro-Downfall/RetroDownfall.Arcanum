@@ -20,7 +20,8 @@ public sealed class AvaloniaApiKeyPrompt : IApiKeyPrompt
             || desktop.MainWindow is null)
         {
 
-            return Task.FromResult<string?>(null);
+            throw new InvalidOperationException(
+                "Main window is not ready; cannot show the API key paste prompt yet.");
 
         }
 
@@ -40,7 +41,7 @@ public sealed class AvaloniaApiKeyPrompt : IApiKeyPrompt
 
             Button cancel = new() { Content = "Cancel", IsCancel = true };
 
-            TaskCompletionSource<string?> tcs = new();
+            TaskCompletionSource<string?> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             Window dialog = new()
             {
@@ -94,6 +95,26 @@ public sealed class AvaloniaApiKeyPrompt : IApiKeyPrompt
             };
 
             dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+            await using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+            {
+
+                tcs.TrySetCanceled(cancellationToken);
+
+                try
+                {
+
+                    dialog.Close();
+
+                }
+                catch
+                {
+
+                    // Dialog may already be closed.
+
+                }
+
+            });
 
             await dialog.ShowDialog(desktop.MainWindow).ConfigureAwait(true);
 

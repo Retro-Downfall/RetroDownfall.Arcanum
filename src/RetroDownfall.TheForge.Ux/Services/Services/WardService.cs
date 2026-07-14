@@ -22,14 +22,14 @@ public sealed class WardService
     }
 
     public Task<ApiResponse<WardDto[]>?> ListAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/wards", ForgeJsonContext.Default.ApiResponseWardDtoArray, cancellationToken);
+        _apiClient.GetAsync("/api/wards", TheForgeJsonContext.Default.ApiResponseWardDtoArray, cancellationToken);
 
     public Task<ApiResponse<WardResolutionDto>?> ResolveAsync(string wardId, bool allow, string? reason, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/wards/{Uri.EscapeDataString(wardId)}",
             new ResolveWardRequest(allow, reason),
-            ForgeJsonContext.Default.ResolveWardRequest,
-            ForgeJsonContext.Default.ApiResponseWardResolutionDto,
+            TheForgeJsonContext.Default.ResolveWardRequest,
+            TheForgeJsonContext.Default.ApiResponseWardResolutionDto,
             cancellationToken);
 
 }

@@ -26,6 +26,9 @@
           <Border.ContextMenu>
             <ContextMenu>
               <MenuItem Header="Open" Command="{Binding PrimaryCommand}" />
+              <MenuItem Header="{Binding NewSpellLabel}" Command="{Binding NewSpellCommand}" IsVisible="{Binding HasNewSpell}" />
+              <MenuItem Header="{Binding NewPromptLabel}" Command="{Binding NewPromptCommand}" IsVisible="{Binding HasNewPrompt}" />
+              <MenuItem Header="{Binding NewSessionLabel}" Command="{Binding NewSessionCommand}" IsVisible="{Binding HasNewSession}" />
               <Separator />
               <MenuItem Header="Refresh" Command="{Binding ReloadCommand}" />
             </ContextMenu>

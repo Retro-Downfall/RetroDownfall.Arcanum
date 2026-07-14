@@ -18,7 +18,7 @@ public sealed class TheForgeApiKeyProviderTests
 
         store.Set(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MasterApiKeyAccount, "key-from-os");
 
-        ApiKeyResolver resolver = new(store, NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -37,7 +37,7 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
 
         TheForgeSettings settings = new() { ApiKey = "legacy-plaintext" };
 
@@ -66,7 +66,7 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -92,7 +92,7 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -105,6 +105,64 @@ public sealed class TheForgeApiKeyProviderTests
 
     }
 
+    [Fact]
+    public async Task GetApiKeyAsync_DoesNotCacheNullWhenPromptUnavailable()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+
+        int promptCalls = 0;
+
+        TheForgeApiKeyProvider provider = new(
+            resolver,
+            new StaticOptions(new TheForgeSettings()),
+            NullLogger<TheForgeApiKeyProvider>.Instance,
+            _ =>
+            {
+                promptCalls++;
+
+                throw new InvalidOperationException("Main window is not ready");
+            });
+
+        Assert.Null(await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Null(await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Equal(2, promptCalls);
+
+    }
+
+    [Fact]
+    public async Task GetApiKeyAsync_DoesNotRepromptAfterUserDecline()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+
+        int promptCalls = 0;
+
+        TheForgeApiKeyProvider provider = new(
+            resolver,
+            new StaticOptions(new TheForgeSettings()),
+            NullLogger<TheForgeApiKeyProvider>.Instance,
+            _ =>
+            {
+                promptCalls++;
+
+                return Task.FromResult<string?>(null);
+            });
+
+        Assert.Null(await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Null(await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Equal(1, promptCalls);
+
+    }
+
     private sealed class StaticOptions(TheForgeSettings current) : IOptionsMonitor<TheForgeSettings>
     {
 
@@ -113,6 +171,22 @@ public sealed class TheForgeApiKeyProviderTests
         public TheForgeSettings Get(string? name) => CurrentValue;
 
         public IDisposable? OnChange(Action<TheForgeSettings, string?> listener) => null;
+
+    }
+
+    private sealed class NullSettingsStore : ITheForgeSettingsStore
+    {
+
+        public string SettingsPath { get; } = Path.Combine(Path.GetTempPath(), "forge-test-null.json");
+
+        public Task<TheForgeSettings> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TheForgeSettings());
+
+        public Task SaveAsync(TheForgeSettings settings, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task SavePatchAsync(Func<TheForgeSettings, TheForgeSettings> patch, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
     }
 

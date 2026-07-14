@@ -12,9 +12,13 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
+using RetroDownfall.Arcanum.Core.Lexicon;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+
+using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
@@ -141,7 +145,10 @@ public sealed class InferenceContextBuilder(
         IReadOnlyList<ParsedSpell>? dependencySpells,
         Session? thread,
         string newUserPrompt,
-        ChatClientLease lease)
+        ChatClientLease lease,
+        SemanticContextChunk[]? semanticContext = null,
+        SagaMemory[]? sagaMemories = null,
+        IReadOnlyList<LexiconEntryDto>? lexiconEntries = null)
     {
 
         if (!settings.Value.Intelligence.EnableContextCompression)
@@ -206,7 +213,12 @@ public sealed class InferenceContextBuilder(
             request.AttachedFiles,
             thread.Summary,
             dependencySpells,
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes));
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
+            semanticContext: semanticContext,
+            sagaMemories: sagaMemories,
+            lexiconEntries: lexiconEntries,
+            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                settings.Value.Intelligence.LexiconMaxInjectedBytes));
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 

@@ -11,6 +11,16 @@
              xmlns:arsenal="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
              xmlns:hearth="using:RetroDownfall.TheForge.Ux.ViewModels.Hearth"
              xmlns:hearthViews="using:RetroDownfall.TheForge.Ux.Views.Hearth"
+             xmlns:arsenalViews="using:RetroDownfall.TheForge.Ux.Views.Arsenal"
+             xmlns:treasuryViews="using:RetroDownfall.TheForge.Ux.Views.Treasury"
+             xmlns:lore="using:RetroDownfall.TheForge.Ux.ViewModels.Lore"
+             xmlns:loreViews="using:RetroDownfall.TheForge.Ux.Views.Lore"
+             xmlns:archive="using:RetroDownfall.TheForge.Ux.ViewModels.Archive"
+             xmlns:archiveViews="using:RetroDownfall.TheForge.Ux.Views.Archive"
+             xmlns:divination="using:RetroDownfall.TheForge.Ux.ViewModels.Divination"
+             xmlns:divinationViews="using:RetroDownfall.TheForge.Ux.Views.Divination"
+             xmlns:workspaceExplorer="using:RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer"
+             xmlns:workspaceExplorerViews="using:RetroDownfall.TheForge.Ux.Views.WorkspaceExplorer"
              xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
              x:Class="RetroDownfall.TheForge.Ux.Views.Docking.DockGroupView"
              x:DataType="dock:DockGroupViewModel">
@@ -69,13 +79,25 @@
                 <warTableViews:WarTableView />
               </DataTemplate>
               <DataTemplate DataType="treasury:TreasuryViewModel">
-                <TextBlock Text="{Binding EmptyState}" TextWrapping="Wrap" Margin="8" />
+                <treasuryViews:TreasuryView />
               </DataTemplate>
               <DataTemplate DataType="arsenal:ArsenalViewModel">
-                <TextBlock Text="{Binding EmptyState}" TextWrapping="Wrap" Margin="8" />
+                <arsenalViews:ArsenalView />
               </DataTemplate>
               <DataTemplate DataType="hearth:HearthViewModel">
                 <hearthViews:HearthView />
+              </DataTemplate>
+              <DataTemplate DataType="lore:LoreBrowserViewModel">
+                <loreViews:LoreBrowserView />
+              </DataTemplate>
+              <DataTemplate DataType="archive:SagaArchiveViewModel">
+                <archiveViews:SagaArchiveView />
+              </DataTemplate>
+              <DataTemplate DataType="divination:DivinationViewModel">
+                <divinationViews:DivinationView />
+              </DataTemplate>
+              <DataTemplate DataType="workspaceExplorer:WorkspaceExplorerViewModel">
+                <workspaceExplorerViews:WorkspaceExplorerView />
               </DataTemplate>
               <DataTemplate DataType="dock:OutputToolContent">
                 <TextBlock Text="{Binding FoundryFloor.OutputEmptyState}" TextWrapping="Wrap" Margin="8" />

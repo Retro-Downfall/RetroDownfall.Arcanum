@@ -1,0 +1,56 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Archive"
+             xmlns:models="using:RetroDownfall.Arcanum.Core.Weave"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Archive.SagaArchiveView"
+             x:DataType="vm:SagaArchiveViewModel">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatsText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,8">
+      <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IsFeatureDisabled}" />
+      <DockPanel LastChildFill="False">
+        <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" Watermark="Divination query…" MinWidth="180" />
+        <Button DockPanel.Dock="Left" Content="Search" Command="{Binding DivineCommand}" Margin="6,0,0,0" IsEnabled="{Binding !IsFeatureDisabled}" />
+        <Button DockPanel.Dock="Left" Content="Clear" Command="{Binding ClearSearchCommand}" Margin="6,0,0,0" IsVisible="{Binding IsSearchActive}" />
+        <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearching}" />
+      </DockPanel>
+    </StackPanel>
+
+    <Grid Grid.Row="3">
+      <TextBlock Text="{Binding EmptyState}" Opacity="0.7" Margin="0,8,0,0" IsVisible="{Binding HasNoMemories}" />
+      <ListBox ItemsSource="{Binding Memories}" SelectedItem="{Binding SelectedMemory}" IsVisible="{Binding !HasNoMemories}" BorderThickness="0">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="models:SagaMemoryDto">
+            <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+              <StackPanel Spacing="3">
+                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" MaxLines="3" />
+                <TextBlock Text="{Binding CreatedAt, StringFormat={}{0:g}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <Border Grid.Row="4" Margin="0,8,0,8" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" IsVisible="{Binding SelectedMemory, Converter={x:Static ObjectConverters.IsNotNull}}">
+      <StackPanel Spacing="4">
+        <TextBlock Text="Detail" FontWeight="SemiBold" Opacity="0.8" />
+        <TextBlock Text="{Binding SelectedMemory.Content}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding SelectedMemory.CreatedAt, StringFormat=Created: {0:g}}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+        <TextBlock Text="{Binding SelectedMemory.SessionId, StringFormat=Session: {0}}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding SelectedMemory.SessionId, Converter={x:Static ObjectConverters.IsNotNull}}" />
+        <TextBlock Text="{Binding SelectedMemory.Tags, StringFormat=Tags: {0}}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding SelectedMemory.Tags, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <TextBlock Text="{Binding SelectedMemory.Source, StringFormat=Source: {0}}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding SelectedMemory.Source, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <Button Content="Delete memory" Command="{Binding DeleteMemoryCommand}" Margin="0,4,0,0" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</UserControl>

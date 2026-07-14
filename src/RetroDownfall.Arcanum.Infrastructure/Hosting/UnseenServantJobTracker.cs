@@ -64,8 +64,10 @@ internal sealed class UnseenServantJobTracker : IUnseenServantJobTracker
             bool isOverdue = watermark.EffectiveIntervalMinutes > 0
                 && watermark.LastRunAt.AddMinutes(watermark.EffectiveIntervalMinutes) < now;
 
+            // Keep the real LastRunAt so overdue jobs remain due and dispatch on the first tick
+            // after hydrate (instead of pretending they just ran and skipping a full interval).
             _records[watermark.JobKey] = isOverdue
-                ? new JobRecord(now, "Skipped (host was down)")
+                ? new JobRecord(watermark.LastRunAt, "Overdue (host was down)")
                 : new JobRecord(watermark.LastRunAt, "Restored from Grimoire");
 
         }

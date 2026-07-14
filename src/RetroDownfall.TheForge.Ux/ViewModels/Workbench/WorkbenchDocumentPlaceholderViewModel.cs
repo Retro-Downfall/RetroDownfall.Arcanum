@@ -10,7 +10,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 public sealed class WorkbenchDocumentPlaceholderViewModel : ViewModelBase
 {
 
-    public WorkbenchDocumentPlaceholderViewModel(DocumentKind kind, string id)
+    public WorkbenchDocumentPlaceholderViewModel(DocumentKind kind, string id, string? emptyState = null)
     {
 
         Kind = kind;
@@ -19,13 +19,16 @@ public sealed class WorkbenchDocumentPlaceholderViewModel : ViewModelBase
 
         Title = $"{kind}: {id}";
 
+        EmptyState = emptyState
+            ?? "This Workbench document is reserved for a later phase of The Forge.";
+
     }
 
     public override DocumentKind? Kind { get; }
 
     public string DocumentId { get; }
 
-    public string EmptyState => "This Workbench document is reserved for a later Forge phase.";
+    public string EmptyState { get; }
 
 }
 

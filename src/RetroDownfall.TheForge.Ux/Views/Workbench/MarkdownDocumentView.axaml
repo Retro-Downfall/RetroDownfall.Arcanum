@@ -1,0 +1,61 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:md="using:RetroDownfall.TheForge.Ux.Markdown"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
+             xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.MarkdownDocumentView"
+             x:DataType="vm:MarkdownDocumentViewModel">
+  <Grid RowDefinitions="Auto,*">
+    <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+      <StackPanel DockPanel.Dock="Left" Spacing="2">
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+        <TextBlock Text="The Illumination" Opacity="0.68" />
+      </StackPanel>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Source" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Source}" />
+        <Button Content="Split" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Split}" />
+        <Button Content="The Illumination" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Preview}" />
+        <CheckBox Content="Remote images" IsChecked="{Binding LoadRemoteImages}" VerticalAlignment="Center" />
+        <CheckBox Content="Sync scroll" IsChecked="{Binding SyncScrollEnabled}" VerticalAlignment="Center" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="{Binding IsSourceVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
+        <ColumnDefinition Width="{Binding IsSplitterVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=5}" />
+        <ColumnDefinition Width="{Binding IsPreviewVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
+      </Grid.ColumnDefinitions>
+
+      <Border Grid.Column="0"
+              BorderThickness="1"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              Padding="4"
+              IsVisible="{Binding IsSourceVisible}">
+        <avaloniaEdit:TextEditor x:Name="SourceEditor"
+                                 ShowLineNumbers="True"
+                                 WordWrap="True" />
+      </Border>
+
+      <GridSplitter Grid.Column="1"
+                    Width="5"
+                    ResizeDirection="Columns"
+                    IsVisible="{Binding IsSplitterVisible}" />
+
+      <Border Grid.Column="2"
+              BorderThickness="1"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              Padding="4"
+              IsVisible="{Binding IsPreviewVisible}">
+        <controls:IlluminationView x:Name="Illumination"
+                                   MarkdownSource="{Binding MarkdownSource}"
+                                   LoadRemoteImages="{Binding LoadRemoteImages}"
+                                   SyncScrollEnabled="{Binding SyncScrollEnabled}"
+                                   WorkspaceId="{Binding WorkspaceId}"
+                                   RelativePath="{Binding RelativePath}"
+                                   BaseRelativeDirectory="{Binding BaseRelativeDirectory}" />
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>

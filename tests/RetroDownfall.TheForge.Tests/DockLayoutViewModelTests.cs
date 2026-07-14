@@ -30,6 +30,38 @@ public class DockLayoutViewModelTests
 
         Assert.Equal(DockToolId.Output, layout.Bottom.SelectedTool?.ToolId);
 
+        DockToolViewModel? lore = layout.FindTool(DockToolId.Lore);
+
+        Assert.NotNull(lore);
+
+        Assert.False(lore.IsVisible);
+
+        Assert.DoesNotContain(layout.Left.Tools, t => t.ToolId == DockToolId.Lore);
+
+        Assert.DoesNotContain(layout.Right.Tools, t => t.ToolId == DockToolId.Lore);
+
+        Assert.DoesNotContain(layout.Bottom.Tools, t => t.ToolId == DockToolId.Lore);
+
+    }
+
+    [Fact]
+    public void ShowTool_Lore_UsesPreferredLeftRegion()
+    {
+
+        using DockLayoutViewModel layout = new();
+
+        layout.ShowTool(DockToolId.Lore);
+
+        Assert.Contains(layout.Left.Tools, t => t.ToolId == DockToolId.Lore);
+
+        Assert.Equal(DockToolId.Lore, layout.Left.SelectedTool?.ToolId);
+
+        DockToolViewModel lore = layout.FindTool(DockToolId.Lore)!;
+
+        Assert.True(lore.IsVisible);
+
+        Assert.Equal(DockRegion.Left, lore.Region);
+
     }
 
     [Fact]
@@ -161,9 +193,9 @@ public class DockLayoutViewModelTests
         try
         {
 
-            ForgeSettingsStore store = new(path);
+            TheForgeSettingsStore store = new(path);
 
-            await store.SaveAsync(new ForgeSettings { Theme = "light" });
+            await store.SaveAsync(new TheForgeSettings { Theme = "light" });
 
             DockLayoutViewModel layout = new(store, persistDebounce: TimeSpan.FromSeconds(30));
 
@@ -171,7 +203,7 @@ public class DockLayoutViewModelTests
 
             layout.Dispose();
 
-            ForgeSettings loaded = await store.LoadAsync();
+            TheForgeSettings loaded = await store.LoadAsync();
 
             Assert.Equal("light", loaded.Theme);
 

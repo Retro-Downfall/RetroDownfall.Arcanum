@@ -18,22 +18,22 @@ public sealed class ConfigService
     }
 
     public Task<ApiResponse<ArcanumSettings>?> GetAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/config", ForgeJsonContext.Default.ApiResponseArcanumSettings, cancellationToken);
+        _apiClient.GetAsync("/api/config", TheForgeJsonContext.Default.ApiResponseArcanumSettings, cancellationToken);
 
     public Task<ApiResponse<bool>?> UpdateAsync(ArcanumSettings settings, CancellationToken cancellationToken) =>
         _apiClient.PutAsync(
             "/api/config",
             settings,
-            ForgeJsonContext.Default.ArcanumSettings,
-            ForgeJsonContext.Default.ApiResponseBoolean,
+            TheForgeJsonContext.Default.ArcanumSettings,
+            TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
     public Task<ApiResponse<bool>?> ValidateAsync(ArcanumSettings settings, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             "/api/config/validate",
             settings,
-            ForgeJsonContext.Default.ArcanumSettings,
-            ForgeJsonContext.Default.ApiResponseBoolean,
+            TheForgeJsonContext.Default.ArcanumSettings,
+            TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
 }

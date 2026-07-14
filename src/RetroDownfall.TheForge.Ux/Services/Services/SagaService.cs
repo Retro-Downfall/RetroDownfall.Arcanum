@@ -17,15 +17,42 @@ public sealed class SagaService
 
     }
 
-    public Task<ApiResponse<SagaMemoryDto[]>?> ListAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/saga", ForgeJsonContext.Default.ApiResponseSagaMemoryDtoArray, cancellationToken);
+    public Task<ApiResponse<SagaMemoryDto[]>?> ListAsync(
+        string? query,
+        Guid? sessionId,
+        int? limit,
+        int? offset,
+        CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build(
+            "/api/saga",
+            ("q", query),
+            ("sessionId", sessionId?.ToString()),
+            ("limit", limit?.ToString()),
+            ("offset", offset?.ToString()));
+
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSagaMemoryDtoArray, cancellationToken);
+
+    }
 
     public Task<ApiResponse<SagaSearchResult>?> SearchAsync(string query, int? limit, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             "/api/saga/divine",
             new SagaSearchRequest(query, limit),
-            ForgeJsonContext.Default.SagaSearchRequest,
-            ForgeJsonContext.Default.ApiResponseSagaSearchResult,
+            TheForgeJsonContext.Default.SagaSearchRequest,
+            TheForgeJsonContext.Default.ApiResponseSagaSearchResult,
             cancellationToken);
+
+    /// <summary><c>DELETE /api/saga/{id}</c> — 204 / 404 <c>Saga.NotFound</c>. <paramref name="id"/> is the Saga memory's string id.</summary>
+    public Task<ApiResponse<bool>?> DeleteAsync(string id, CancellationToken cancellationToken) =>
+        _apiClient.DeleteAsync(
+            $"/api/saga/{Uri.EscapeDataString(id)}",
+            TheForgeJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    /// <summary><c>GET /api/saga/stats</c> — always available (not gated on SagaEnabled).</summary>
+    public Task<ApiResponse<SagaStats>?> GetStatsAsync(CancellationToken cancellationToken) =>
+        _apiClient.GetAsync("/api/saga/stats", TheForgeJsonContext.Default.ApiResponseSagaStats, cancellationToken);
 
 }

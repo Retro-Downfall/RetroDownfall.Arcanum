@@ -10,7 +10,7 @@ public sealed record WardSettings
         "execute_command",
         "write_file",
         "replace_text_block",
-        "delete_lore",
+        "delete_lexicon",
         "run_spell_script",
     };
 

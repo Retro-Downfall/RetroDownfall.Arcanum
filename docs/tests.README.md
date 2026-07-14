@@ -79,6 +79,11 @@ The following test classes gained cases directly from the bug-squash plan. Each 
 | `OpenAiV1EndpointTests` / `OpenAiV1BatchesEndpointTests` | Structured-output failure maps to `validation_failed`/`invalid_schema` (not generic `inference_failed`); batch reset cleans orphan output/error files. |
 | `SessionEndpointTests` | SSE `since` 404 returned with clean headers (no SSE headers leaked); `ErrorCodes.Session.EntryNotFound`/`InvalidStatus` constants used. |
 | `CostCalculatorTests` | Cached prompt tokens billed at zero (only non-cached portion priced). |
+| `LexiconServiceTests` | The Lexicon raw-SQL store: create + case-insensitive upsert, append non-duplicate facts, type `General`/keep/refresh, fact-per-upsert cap, `delete` removes the FTS hit, exact-name match before column-weighted FTS (`bm25(lexicon_fts, 3.0, 2.0, 1.0)`), FTS-by-fact-text, empty-entity no-op, FTS special-char sanitization, update retires old fact / indexes new fact, `GetByNameAsync` missing → null. |
+| `ArcanumInternalToolServerTests` (Lexicon) | `tools/list` advertises `scribe_lexicon`/`delete_lexicon` when enabled and omits them (and all lore tools) when disabled; `scribe_lexicon` creates via `ILexiconService`; `delete_lexicon` removes; disabled gate returns a tool error. |
+| `SemanticRouterTests` | Router returns `SemanticSpellRoutingResult(Spell, Entities)`; entities survive `NONE`; missing entities → empty; fenced JSON; malformed JSON → null; cap/dedupe; `LexiconEntityExtractor` extracts from JSON, returns empty on invalid JSON / empty prompt (no LLM call). |
+| `SystemPromptBuilderTests` (Lexicon) | `### Lexicon (Known Context)` injected inside DATA; omitted when no entries; newline/control-char hardening; `LexiconMaxInjectedBytes` truncation. |
+| `UnseenServantDaemonJobTests` | `BuildDaemonStateName` deterministic/bounded; enabled → kickoff instructs `scribe_lexicon` and injects Previous State; disabled → no `scribe_lexicon` instruction; missing state does not fail kickoff. |
 
 ## Budget
 

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
@@ -102,7 +103,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         IntelligenceSettings allFeatures = new()
         {
 
-            EnableLoreSystem = true,
+            EnableLexiconSystem = true,
 
             EnableArchiveSearch = true,
 
@@ -179,7 +180,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         IntelligenceSettings intelligenceSettings = new()
         {
-            EnableLoreSystem = false,
+            EnableLexiconSystem = false,
             EnableArchiveSearch = false,
             ToolOutputCapBytes = 4_096,
         };
@@ -353,7 +354,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         IntelligenceSettings settings = new()
         {
-            EnableLoreSystem = false,
+            EnableLexiconSystem = false,
             EnableArchiveSearch = false,
         };
 
@@ -644,20 +645,106 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ToolsCall_read_lore_when_disabled_returns_error()
+    public async Task ToolsCall_scribe_lexicon_when_disabled_returns_error()
     {
 
         await using TestMcpSession session = await CreateSessionAsync();
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
-            new ReadLoreParams("test"),
-            McpJsonSerializerContext.Default.ReadLoreParams);
+            new ScribeLexiconParams("Test", null, ["fact"]),
+            McpJsonSerializerContext.Default.ScribeLexiconParams);
 
-        McpToolsCallResultWire result = await session.CallToolAsync("read_lore", arguments);
+        McpToolsCallResultWire result = await session.CallToolAsync("scribe_lexicon", arguments);
 
         Assert.True(result.IsError);
 
-        Assert.Contains("Lore system is disabled", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Lexicon system is disabled", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ToolsList_advertises_lexicon_tools_when_enabled()
+    {
+
+        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
+
+        await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        Assert.Contains(tools.Tools, static t => t.Name == "scribe_lexicon");
+
+        Assert.Contains(tools.Tools, static t => t.Name == "delete_lexicon");
+
+        Assert.DoesNotContain(tools.Tools, static t => t.Name is "read_lore" or "scribe_lore" or "delete_lore");
+
+    }
+
+    [Fact]
+    public async Task ToolsList_omits_lexicon_tools_when_disabled()
+    {
+
+        IntelligenceSettings settings = new() { EnableLexiconSystem = false, EnableArchiveSearch = false };
+
+        await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        Assert.DoesNotContain(tools.Tools, static t => t.Name is "scribe_lexicon" or "delete_lexicon");
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_scribe_lexicon_creates_entry()
+    {
+
+        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
+
+        await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ScribeLexiconParams("Alice", "Person", ["Prefers concise answers."]),
+            McpJsonSerializerContext.Default.ScribeLexiconParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("scribe_lexicon", arguments);
+
+        Assert.False(result.IsError);
+
+        Assert.Contains("Alice", result.Content![0].Text!, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_delete_lexicon_removes_entry()
+    {
+
+        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
+
+        await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
+
+        JsonElement scribeArgs = JsonSerializer.SerializeToElement(
+            new ScribeLexiconParams("Bob", "Person", ["Initial."]),
+            McpJsonSerializerContext.Default.ScribeLexiconParams);
+
+        _ = await session.CallToolAsync("scribe_lexicon", scribeArgs);
+
+        JsonElement deleteArgs = JsonSerializer.SerializeToElement(
+            new DeleteLexiconParams("Bob"),
+            McpJsonSerializerContext.Default.DeleteLexiconParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("delete_lexicon", deleteArgs);
+
+        Assert.False(result.IsError);
+
+        Assert.Contains("Bob", result.Content![0].Text!, StringComparison.Ordinal);
 
     }
 
@@ -924,7 +1011,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         IntelligenceSettings settings = intelligenceSettings ?? new IntelligenceSettings
         {
-            EnableLoreSystem = false,
+            EnableLexiconSystem = false,
             EnableArchiveSearch = false,
         };
 
@@ -933,6 +1020,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 
         services.AddSingleton<RetroDownfall.Arcanum.Core.Platform.IProcessResourceLimiter, ProcessResourceLimiter>();
+
+        services.AddSingleton<ILexiconService, FakeLexiconService>();
 
         if (a2aClientService is not null)
         {

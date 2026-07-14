@@ -1,0 +1,66 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Reliquary"
+             xmlns:llama="using:RetroDownfall.Arcanum.Core.LlamaCpp"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Reliquary.ReliquaryView"
+             x:DataType="vm:ReliquaryViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <Grid Grid.Row="2" RowDefinitions="*,Auto,Auto">
+      <Grid Grid.Row="0" ColumnDefinitions="*,*">
+        <Grid Grid.Column="0" RowDefinitions="Auto,*" Margin="0,0,8,0">
+          <TextBlock Grid.Row="0" Text="Cached models" FontWeight="SemiBold" Margin="0,0,0,4" />
+          <ListBox Grid.Row="1" ItemsSource="{Binding CachedModels}" SelectedItem="{Binding SelectedModel}" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="llama:CachedModelInfo">
+                <StackPanel Spacing="2" Margin="0,0,0,6">
+                  <TextBlock Text="{Binding CacheKey}" FontWeight="SemiBold" />
+                  <TextBlock Text="{Binding SourceUrl}" Opacity="0.6" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+        <Grid Grid.Column="1" RowDefinitions="Auto,*">
+          <TextBlock Grid.Row="0" Text="Servers" FontWeight="SemiBold" Margin="0,0,0,4" />
+          <ListBox Grid.Row="1" ItemsSource="{Binding Servers}" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="llama:LlamaServerInfo">
+                <StackPanel Spacing="2" Margin="0,0,0,6">
+                  <TextBlock Text="{Binding CacheKey}" FontWeight="SemiBold" />
+                  <TextBlock Text="{Binding State}" Opacity="0.75" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                  <TextBlock Text="{Binding Endpoint}" Opacity="0.6" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                  <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Grid>
+
+      <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Margin="0,8,0,8">
+        <Button Content="Start" Command="{Binding StartServerCommand}" />
+        <Button Content="Stop" Command="{Binding StopServerCommand}" />
+        <Button Content="Warmup" Command="{Binding WarmupServerCommand}" />
+      </StackPanel>
+
+      <StackPanel Grid.Row="2" Spacing="6">
+        <Grid ColumnDefinitions="*,Auto,Auto">
+          <TextBox Grid.Column="0" Text="{Binding PullSourceUrl}" Watermark="GGUF source URL…" />
+          <Button Grid.Column="1" Content="Pull" Command="{Binding PullCommand}" Margin="6,0,0,0" />
+          <Button Grid.Column="2" Content="Cancel" Command="{Binding CancelPullCommand}" Margin="6,0,0,0" IsVisible="{Binding IsPulling}" />
+        </Grid>
+        <TextBlock Text="Pulling…" Opacity="0.7" IsVisible="{Binding IsPulling}" />
+        <ListBox ItemsSource="{Binding PullLines}" Height="120" BorderThickness="0" FontFamily="Cascadia Mono, Consolas, monospace" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</UserControl>

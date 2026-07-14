@@ -17,6 +17,15 @@
     <DataTemplate DataType="workbench:TomeViewModel">
       <workbenchViews:TomeView />
     </DataTemplate>
+    <DataTemplate DataType="workbench:ScriptoriumViewModel">
+      <workbenchViews:ScriptoriumView />
+    </DataTemplate>
+    <DataTemplate DataType="workbench:CodexViewModel">
+      <workbenchViews:CodexView />
+    </DataTemplate>
+    <DataTemplate DataType="workbench:MarkdownDocumentViewModel">
+      <workbenchViews:MarkdownDocumentView />
+    </DataTemplate>
     <DataTemplate DataType="workbench:WorkbenchDocumentPlaceholderViewModel">
       <Border Padding="24">
         <StackPanel Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -44,6 +53,11 @@
           <MenuItem Header="Output" Command="{Binding ShowOutputCommand}" />
           <MenuItem Header="Logs" Command="{Binding ShowLogsCommand}" />
           <MenuItem Header="The Hearth" Command="{Binding ShowHearthCommand}" />
+          <MenuItem Header="Lore Browser" Command="{Binding ShowLoreCommand}" />
+          <MenuItem Header="The Archive" Command="{Binding ShowArchiveCommand}" />
+          <MenuItem Header="Divination" Command="{Binding ShowDivinationCommand}" />
+          <MenuItem Header="Workspace Explorer" Command="{Binding ShowWorkspaceExplorerCommand}" />
+          <MenuItem Header="The Codex" Command="{Binding OpenGlobalCodexCommand}" />
           <Separator />
           <MenuItem Header="Connect to Arcanum" Command="{Binding ConnectCommand}" />
           <MenuItem Header="Disconnect" Command="{Binding DisconnectCommand}" />

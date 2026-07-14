@@ -7,12 +7,16 @@ namespace RetroDownfall.TheForge.Core.Services;
 /// <summary>
 /// Callback used when automatic resolution fails and the user must paste a key.
 /// Kept as a delegate so TheForge.Core stays free of Avalonia.
+/// Returns the trimmed key, <see langword="null"/> when the user declined, or throws
+/// <see cref="InvalidOperationException"/> when the UI is not ready to prompt yet.
 /// </summary>
 public delegate Task<string?> ApiKeyPastePrompt(CancellationToken cancellationToken);
 
 /// <summary>
 /// Default <see cref="ITheForgeApiKeyProvider"/>: resolves via <see cref="ApiKeyResolver"/> once and
-/// caches the result in memory for the process lifetime. Optionally prompts for a paste when empty.
+/// caches a successful key in memory for the process lifetime. Optionally prompts for a paste when empty.
+/// A missing key does not permanently suppress future resolution — only an explicit user decline skips
+/// re-prompting until <see cref="PersistPastedKeyAsync"/> succeeds.
 /// </summary>
 public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 {
@@ -30,6 +34,8 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
     private string? _cached;
 
     private bool _resolved;
+
+    private bool _pasteDeclined;
 
     public TheForgeApiKeyProvider(
         ApiKeyResolver resolver,
@@ -72,34 +78,60 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 
             string? key = await _resolver.ResolveAsync(_settings.CurrentValue, cancellationToken).ConfigureAwait(false);
 
-            if (string.IsNullOrWhiteSpace(key) && _pastePrompt is not null)
+            if (string.IsNullOrWhiteSpace(key) && _pastePrompt is not null && !_pasteDeclined)
             {
 
-                string? pasted = await _pastePrompt(cancellationToken).ConfigureAwait(false);
-
-                if (!string.IsNullOrWhiteSpace(pasted))
+                try
                 {
 
-                    await _resolver.PersistAsync(_settings.CurrentValue, pasted.Trim(), cancellationToken)
-                        .ConfigureAwait(false);
+                    string? pasted = await _pastePrompt(cancellationToken).ConfigureAwait(false);
 
-                    key = pasted.Trim();
+                    if (!string.IsNullOrWhiteSpace(pasted))
+                    {
+
+                        await _resolver.PersistAsync(_settings.CurrentValue, pasted.Trim(), cancellationToken)
+                            .ConfigureAwait(false);
+
+                        key = pasted.Trim();
+
+                    }
+                    else
+                    {
+
+                        // User dismissed the dialog — do not spam re-prompts on every health poll.
+                        _pasteDeclined = true;
+
+                    }
+
+                }
+                catch (InvalidOperationException ex)
+                {
+
+                    // UI not ready (e.g. MainWindow not yet assigned). Leave unresolved so the next
+                    // call can prompt once the shell is up.
+                    _logger.LogDebug(ex, "API key paste prompt unavailable; will retry.");
+
+                    return null;
 
                 }
 
             }
 
-            _cached = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-
-            _resolved = true;
-
-            if (_cached is null)
+            if (string.IsNullOrWhiteSpace(key))
             {
 
                 _logger.LogWarning(
                     "No master API key found in the OS credential store, forge.json, or `arcanum key show`.");
 
+                return null;
+
             }
+
+            _cached = key.Trim();
+
+            _resolved = true;
+
+            _pasteDeclined = false;
 
             return _cached;
 
@@ -130,6 +162,8 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
             _cached = trimmed;
 
             _resolved = true;
+
+            _pasteDeclined = false;
 
         }
         finally

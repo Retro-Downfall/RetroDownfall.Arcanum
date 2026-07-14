@@ -61,4 +61,51 @@ public sealed class TomeDataSource : ITomeDataSource
     public IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid sessionId, DateTimeOffset? since, CancellationToken cancellationToken) =>
         _sessionService.StreamEntriesAsync(sessionId, since, cancellationToken);
 
+    public async Task<DataSourceResult<EntryDto[]>> GetEntriesAsync(Guid sessionId, int? offset, int? limit, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<EntryDto[]>? response = await _sessionService
+            .GetEntriesAsync(sessionId, offset, limit, cancellationToken)
+            .ConfigureAwait(false);
+
+        return DataSourceResult<EntryDto[]>.FromResponse(response);
+
+    }
+
+    public async Task<DataSourceResult<bool>> PinEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<bool>? response = await _sessionService.PinEntryAsync(sessionId, entryId, cancellationToken).ConfigureAwait(false);
+
+        return DataSourceResult<bool>.FromResponse(response);
+
+    }
+
+    public async Task<DataSourceResult<bool>> UnpinEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<bool>? response = await _sessionService.UnpinEntryAsync(sessionId, entryId, cancellationToken).ConfigureAwait(false);
+
+        return DataSourceResult<bool>.FromResponse(response);
+
+    }
+
+    public async Task<DataSourceResult<bool>> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<bool>? response = await _sessionService.DeleteEntryAsync(sessionId, entryId, cancellationToken).ConfigureAwait(false);
+
+        return DataSourceResult<bool>.FromResponse(response);
+
+    }
+
+    public async Task<DataSourceResult<CompactResult>> CompactAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<CompactResult>? response = await _sessionService.CompactAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        return DataSourceResult<CompactResult>.FromResponse(response);
+
+    }
+
 }

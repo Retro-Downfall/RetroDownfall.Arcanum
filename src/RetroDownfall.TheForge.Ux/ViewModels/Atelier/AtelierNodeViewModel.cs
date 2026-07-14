@@ -25,6 +25,12 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
     [ObservableProperty]
     private string _icon = "IconSpell";
 
+    [ObservableProperty]
+    private string? _lastError;
+
+    [ObservableProperty]
+    private string? _statusText;
+
     private bool _childrenLoaded;
 
     private bool _expandLoadQueued;
@@ -36,6 +42,32 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
 
     /// <summary>The node's primary action (usually Open) for double-click and context menus, if any.</summary>
     public virtual ICommand? PrimaryCommand => null;
+
+    /// <summary>
+    /// Creation commands surfaced in the context menu. Base defaults are <c>null</c> so the menu
+    /// items stay hidden. Creation-capable derived nodes override the ones they expose with manual
+    /// get-only auto-properties initialized to <c>new AsyncRelayCommand(...)</c> — <b>not</b>
+    /// <c>[RelayCommand]</c>, which would hide the base property instead of overriding it and leave
+    /// <see cref="HasNewSpell"/>/<see cref="HasNewPrompt"/>/<see cref="HasNewSession"/> seeing <c>null</c>.
+    /// </summary>
+    public virtual IAsyncRelayCommand? NewSpellCommand => null;
+
+    public virtual IAsyncRelayCommand? NewPromptCommand => null;
+
+    public virtual IAsyncRelayCommand? NewSessionCommand => null;
+
+    public bool HasNewSpell => NewSpellCommand is not null;
+
+    public bool HasNewPrompt => NewPromptCommand is not null;
+
+    public bool HasNewSession => NewSessionCommand is not null;
+
+    /// <summary>Context-menu label for the New Spell command, or <c>null</c> when the node does not expose it.</summary>
+    public virtual string? NewSpellLabel => null;
+
+    public virtual string? NewPromptLabel => null;
+
+    public virtual string? NewSessionLabel => null;
 
     /// <summary>
     /// Expands the node, loading its children on first expansion. Safe to call repeatedly — children

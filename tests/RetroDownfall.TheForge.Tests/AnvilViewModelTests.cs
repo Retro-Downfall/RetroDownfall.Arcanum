@@ -117,7 +117,7 @@ public class AnvilViewModelTests
             connection,
             dataSource,
             navigation,
-            new StaticOptionsMonitor(new ForgeSettings()),
+            new StaticOptionsMonitor(new TheForgeSettings()),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AnvilViewModel>.Instance);
 
     private static WardDto NewWard() =>
@@ -161,6 +161,8 @@ public class AnvilViewModelTests
 
         public HealthReportDto? LastReport { get; private set; }
 
+        public string? LastErrorCode { get; private set; }
+
         public void Connect()
         {
         }
@@ -180,14 +182,14 @@ public class AnvilViewModelTests
 
     }
 
-    private sealed class StaticOptionsMonitor(ForgeSettings current) : IOptionsMonitor<ForgeSettings>
+    private sealed class StaticOptionsMonitor(TheForgeSettings current) : IOptionsMonitor<TheForgeSettings>
     {
 
-        public ForgeSettings CurrentValue { get; } = current;
+        public TheForgeSettings CurrentValue { get; } = current;
 
-        public ForgeSettings Get(string? name) => CurrentValue;
+        public TheForgeSettings Get(string? name) => CurrentValue;
 
-        public IDisposable? OnChange(Action<ForgeSettings, string?> listener) => null;
+        public IDisposable? OnChange(Action<TheForgeSettings, string?> listener) => null;
 
     }
 

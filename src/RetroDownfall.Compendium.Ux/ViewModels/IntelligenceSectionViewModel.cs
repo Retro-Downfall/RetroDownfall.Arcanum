@@ -18,6 +18,8 @@ public sealed partial class IntelligenceSectionViewModel : ObservableObject
 
     [ObservableProperty] private bool _enableLoreSystem;
 
+    [ObservableProperty] private bool _enableLexiconSystem;
+
     [ObservableProperty] private bool _enableArchiveSearch;
 
     [ObservableProperty] private int _archiveSearchMaxResults;
@@ -79,6 +81,8 @@ public sealed partial class IntelligenceSectionViewModel : ObservableObject
 
         EnableLoreSystem = settings.EnableLoreSystem;
 
+        EnableLexiconSystem = settings.EnableLexiconSystem;
+
         EnableArchiveSearch = settings.EnableArchiveSearch;
 
         ArchiveSearchMaxResults = settings.ArchiveSearchMaxResults;
@@ -137,6 +141,8 @@ public sealed partial class IntelligenceSectionViewModel : ObservableObject
         ListDirectoryMaxPaths = ListDirectoryMaxPaths,
 
         EnableLoreSystem = EnableLoreSystem,
+
+        EnableLexiconSystem = EnableLexiconSystem,
 
         EnableArchiveSearch = EnableArchiveSearch,
 

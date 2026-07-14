@@ -22,8 +22,8 @@ public sealed class CommLinkService
         _apiClient.PostAsync(
             "/api/commlink/send",
             new CommLinkMessageRequestDto(title, body, severity, source),
-            ForgeJsonContext.Default.CommLinkMessageRequestDto,
-            ForgeJsonContext.Default.ApiResponseBoolean,
+            TheForgeJsonContext.Default.CommLinkMessageRequestDto,
+            TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
 }

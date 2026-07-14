@@ -55,7 +55,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public StorageSectionViewModel Storage { get; } = new();
 
-    public ForgeSectionViewModel Forge { get; } = new();
+    public TheForgeSectionViewModel Forge { get; } = new();
 
     public ProvingGroundsSectionViewModel ProvingGrounds { get; } = new();
 

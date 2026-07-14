@@ -1,3 +1,4 @@
+using System.Globalization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Compendium.Ux.Converters;
 using Xunit;
@@ -39,9 +40,9 @@ public sealed class EnumToStringConverterTests
 
         EnumToStringConverter converter = new();
 
-        Assert.Equal("OpenAI Compatible", (string)converter.Convert(AiProviderKind.OpenAICompatible, null, null, null));
+        Assert.Equal("OpenAI Compatible", (string?)converter.Convert(AiProviderKind.OpenAICompatible, typeof(string), null, CultureInfo.InvariantCulture));
 
-        Assert.Equal("Llama Cpp Server", (string)converter.Convert(AiProviderKind.LlamaCppServer, null, null, null));
+        Assert.Equal("Llama Cpp Server", (string?)converter.Convert(AiProviderKind.LlamaCppServer, typeof(string), null, CultureInfo.InvariantCulture));
 
     }
 
@@ -52,7 +53,7 @@ public sealed class EnumToStringConverterTests
 
         EnumToStringConverter converter = new();
 
-        Assert.Equal(string.Empty, (string)converter.Convert(null, null, null, null));
+        Assert.Equal(string.Empty, (string?)converter.Convert(null, typeof(string), null, CultureInfo.InvariantCulture));
 
     }
 

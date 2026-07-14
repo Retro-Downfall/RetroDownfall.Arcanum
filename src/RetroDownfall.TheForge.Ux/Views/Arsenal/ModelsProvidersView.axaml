@@ -1,0 +1,59 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
+             xmlns:config="using:RetroDownfall.Arcanum.Core.Configuration"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Arsenal.ModelsProvidersView"
+             x:DataType="vm:ModelsProvidersViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <Grid Grid.Row="2" RowDefinitions="*,Auto">
+      <Grid Grid.Row="0" ColumnDefinitions="*,*">
+        <ListBox Grid.Column="0" ItemsSource="{Binding Models}" BorderThickness="0" Margin="0,0,8,0">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="config:ModelInfoDto">
+              <StackPanel Spacing="2" Margin="0,0,0,6">
+                <TextBlock Text="{Binding Model}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding ProviderName}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="{Binding ProviderType}" Opacity="0.55" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="{Binding ContextWindowLimit, StringFormat=Context: {0} tokens}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="vision" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding SupportsVision}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <ListBox Grid.Column="1" ItemsSource="{Binding Providers}" BorderThickness="0">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="config:ProviderInfoDto">
+              <StackPanel Spacing="2" Margin="0,0,0,6">
+                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Type}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="{Binding Endpoint}" Opacity="0.55" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="API key redacted by API" Opacity="0.5" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding ApiKey, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+
+      <StackPanel Grid.Row="1" Spacing="6" Margin="0,8,0,0">
+        <TextBlock Text="{Binding TestNote}" Opacity="0.7" />
+        <Grid ColumnDefinitions="Auto,*,Auto,*,Auto">
+          <TextBlock Grid.Column="0" Text="Endpoint" VerticalAlignment="Center" Margin="0,0,6,0" />
+          <TextBox Grid.Column="1" Text="{Binding TestEndpoint}" Margin="0,0,8,0" />
+          <TextBlock Grid.Column="2" Text="API key" VerticalAlignment="Center" Margin="0,0,6,0" />
+          <TextBox Grid.Column="3" Text="{Binding TestApiKey}" PasswordChar="*" Margin="0,0,8,0" />
+          <Button Grid.Column="4" Content="Test" Command="{Binding TestProviderCommand}" />
+        </Grid>
+        <TextBlock Text="{Binding TestResultText}" TextWrapping="Wrap" Foreground="{DynamicResource ForgeAccentBrush}" IsVisible="{Binding TestResultText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</UserControl>

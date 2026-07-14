@@ -29,16 +29,16 @@ public sealed class ArcanumApiClient
 
     private readonly IHttpClientFactory _httpClientFactory;
 
-    private readonly IOptionsMonitor<ForgeSettings> _settingsMonitor;
+    private readonly IOptionsMonitor<TheForgeSettings> _settingsMonitor;
 
-    private readonly IForgeApiKeyProvider _apiKeyProvider;
+    private readonly ITheForgeApiKeyProvider _apiKeyProvider;
 
     private readonly ILogger<ArcanumApiClient> _logger;
 
     public ArcanumApiClient(
         IHttpClientFactory httpClientFactory,
-        IOptionsMonitor<ForgeSettings> settingsMonitor,
-        IForgeApiKeyProvider apiKeyProvider,
+        IOptionsMonitor<TheForgeSettings> settingsMonitor,
+        ITheForgeApiKeyProvider apiKeyProvider,
         ILogger<ArcanumApiClient> logger)
     {
 
@@ -123,6 +123,19 @@ public sealed class ArcanumApiClient
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
         CancellationToken cancellationToken) =>
         SendAsync(HttpMethod.Put, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
+
+    /// <summary>
+    /// <c>PATCH</c> with a JSON body — used by <c>PATCH /api/workspaces/{id}/files/contents</c>
+    /// (text-block replace). Mirrors <see cref="PutAsync{TRequest, TResponse}"/>; <see cref="SendAsync"/>
+    /// already accepts any <see cref="HttpMethod"/>.
+    /// </summary>
+    public Task<ApiResponse<TResponse>?> PatchAsync<TRequest, TResponse>(
+        string path,
+        TRequest body,
+        JsonTypeInfo<TRequest> requestTypeInfo,
+        JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
+        CancellationToken cancellationToken) =>
+        SendAsync(HttpMethod.Patch, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
 
     /// <summary>
     /// NDJSON streaming (<c>POST /api/intelligence/ping-stream</c>, <c>POST /api/spells/{name}/execute-stream</c>,
@@ -273,7 +286,7 @@ public sealed class ArcanumApiClient
     private async Task<HttpClient> CreateClientAsync(CancellationToken cancellationToken)
     {
 
-        ForgeSettings settings = _settingsMonitor.CurrentValue;
+        TheForgeSettings settings = _settingsMonitor.CurrentValue;
 
         string? apiKey = await _apiKeyProvider.GetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 

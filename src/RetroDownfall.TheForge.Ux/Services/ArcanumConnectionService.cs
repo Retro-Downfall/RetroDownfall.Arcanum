@@ -10,7 +10,7 @@ namespace RetroDownfall.TheForge.Ux.Services;
 
 /// <summary>
 /// Singleton background poller for <c>GET /api/health</c>, registered once and started (when
-/// <see cref="ForgeSettings.AutoConnect"/> is set) in DI so The Anvil's connection indicator reflects
+/// <see cref="TheForgeSettings.AutoConnect"/> is set) in DI so The Anvil's connection indicator reflects
 /// live server state throughout the app's lifetime. Reacts to <c>forge.json</c> changes (base URL,
 /// API key, AutoConnect toggle) via <see cref="IOptionsMonitor{TOptions}"/>.
 /// </summary>
@@ -27,7 +27,12 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
     [ObservableProperty]
     private HealthReportDto? _lastReport;
 
+    [ObservableProperty]
+    private string? _lastErrorCode;
+
     private readonly ArcanumApiClient _apiClient;
+
+    private readonly IOptionsMonitor<TheForgeSettings> _settingsMonitor;
 
     private readonly ILogger<ArcanumConnectionService> _logger;
 
@@ -39,17 +44,33 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
     public ArcanumConnectionService(
         ArcanumApiClient apiClient,
-        IOptionsMonitor<ForgeSettings> settingsMonitor,
+        IOptionsMonitor<TheForgeSettings> settingsMonitor,
         ILogger<ArcanumConnectionService> logger)
     {
 
         _apiClient = apiClient;
 
+        _settingsMonitor = settingsMonitor;
+
         _logger = logger;
 
         _settingsChangeSubscription = settingsMonitor.OnChange(OnSettingsChanged);
 
-        if (settingsMonitor.CurrentValue.AutoConnect)
+        // Do not AutoConnect from the ctor: DI resolves this singleton while building MainViewModel,
+        // before App assigns desktop.MainWindow. Starting polls that early permanently races the
+        // API-key paste prompt (MainWindow is still null). Call StartAutoConnectIfConfigured() after
+        // the main window exists.
+
+    }
+
+    /// <summary>
+    /// Starts the health poller when <see cref="TheForgeSettings.AutoConnect"/> is enabled.
+    /// Must be called after the Avalonia main window is assigned so API-key prompts can show.
+    /// </summary>
+    public void StartAutoConnectIfConfigured()
+    {
+
+        if (_settingsMonitor.CurrentValue.AutoConnect)
         {
 
             Connect();
@@ -91,7 +112,7 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
     }
 
-    private void OnSettingsChanged(ForgeSettings settings)
+    private void OnSettingsChanged(TheForgeSettings settings)
     {
 
         if (settings.AutoConnect)
@@ -142,7 +163,7 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
         {
 
             ApiResponse<HealthReportDto>? response = await _apiClient
-                .GetAsync("/api/health", ForgeJsonContext.Default.ApiResponseHealthReportDto, cancellationToken)
+                .GetAsync("/api/health", TheForgeJsonContext.Default.ApiResponseHealthReportDto, cancellationToken)
                 .ConfigureAwait(false);
 
             if (response is { IsSuccess: true })
@@ -152,11 +173,15 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
                 LastReport = response.Data;
 
+                LastErrorCode = null;
+
                 State = ConnectionState.Connected;
 
                 return;
 
             }
+
+            LastErrorCode = response?.Error?.Code;
 
             RegisterFailure();
 

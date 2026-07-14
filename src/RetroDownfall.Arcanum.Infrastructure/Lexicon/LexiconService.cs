@@ -1,0 +1,813 @@
+using System.Data;
+using System.Data.Common;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
+
+/// <summary>
+/// Raw-SQL persistence for The Lexicon, reusing the scoped <see cref="ArcanumDbContext"/>'s
+/// connection. Neither <c>lexicon_entries</c> nor <c>lexicon_fts</c> is part of the compiled EF
+/// model (they are created by <see cref="LexiconSchemaInitializer"/>, not a migration), so all
+/// access goes through <see cref="DbCommand"/> rather than LINQ, mirroring <c>SagaMemoryStore</c>.
+/// Writes use <c>BEGIN IMMEDIATE</c> inside <see cref="SqliteBusyRetry"/> so concurrent
+/// <c>scribe_lexicon</c> appends serialize and cannot lose facts.
+/// </summary>
+internal sealed class LexiconService(
+    ArcanumDbContext db,
+    ILogger<LexiconService> logger) : ILexiconService
+{
+
+    private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt";
+
+    public async Task<Result<LexiconEntryDto>> UpsertAsync(
+        string name,
+        string? type,
+        IReadOnlyList<string> facts,
+        CancellationToken cancellationToken = default)
+    {
+
+        string trimmedName = name?.Trim() ?? string.Empty;
+
+        if (trimmedName.Length == 0)
+        {
+            return new Error(ErrorCodes.Lexicon.InvalidName, "Lexicon entity name is required.");
+        }
+
+        if (trimmedName.Length > LexiconLimits.MaxNameLength)
+        {
+            return new Error(
+                ErrorCodes.Lexicon.InvalidName,
+                $"Lexicon entity name exceeds the {LexiconLimits.MaxNameLength} character limit.");
+        }
+
+        string normalized = NormalizeName(trimmedName);
+
+        List<string> incoming = NormalizeIncomingFacts(facts);
+
+        if (incoming.Count == 0)
+        {
+            return new Error(ErrorCodes.Lexicon.InvalidFact, "scribe_lexicon requires at least one non-empty fact.");
+        }
+
+        string trimmedType = type?.Trim() ?? string.Empty;
+
+        if (trimmedType.Length > LexiconLimits.MaxTypeLength)
+        {
+            return new Error(
+                ErrorCodes.Lexicon.InvalidFact,
+                $"Lexicon entity type exceeds the {LexiconLimits.MaxTypeLength} character limit.");
+        }
+
+        try
+        {
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    // BEGIN IMMEDIATE acquires the write lock up front so the read-merge-write is
+                    // serialized against other concurrent scribe_lexicon appends. SqliteBusyRetry
+                    // re-runs the whole delegate (fresh BEGIN) on SQLITE_BUSY/LOCKED.
+                    await ExecuteNonQueryAsync(connection, cancellationToken, "BEGIN IMMEDIATE").ConfigureAwait(false);
+
+                    try
+                    {
+                        LexiconEntryDto? existing = await ReadByNormalizedAsync(connection, normalized, cancellationToken).ConfigureAwait(false);
+
+                        string resolvedType = ResolveType(existing, trimmedType);
+
+                        List<string> merged = MergeFacts(existing, incoming);
+
+                        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+                        string factsJson = SerializeFacts(merged);
+
+                        string factsText = BuildFactsText(merged);
+
+                        Guid id = existing?.Id ?? Guid.NewGuid();
+
+                        if (existing is null)
+                        {
+                            await InsertAsync(connection, id, trimmedName, normalized, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await UpdateAsync(connection, id, trimmedName, normalized, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
+                        }
+
+                        await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
+
+                        return Result<LexiconEntryDto>.Success(new LexiconEntryDto(id, trimmedName, resolvedType, merged.ToArray(), now));
+                    }
+                    catch
+                    {
+                        await TryRollbackAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                        throw;
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Lexicon upsert failed for entity {Name}.", trimmedName);
+
+            return new Error(ErrorCodes.Lexicon.WriteFailed, "Lexicon write failed.");
+        }
+
+    }
+
+    public async Task<Result<bool>> DeleteByNameAsync(string name, CancellationToken cancellationToken = default)
+    {
+
+        string trimmedName = name?.Trim() ?? string.Empty;
+
+        if (trimmedName.Length == 0)
+        {
+            return new Error(ErrorCodes.Lexicon.InvalidName, "Lexicon entity name is required.");
+        }
+
+        string normalized = NormalizeName(trimmedName);
+
+        try
+        {
+            bool removed = await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    await ExecuteNonQueryAsync(connection, cancellationToken, "BEGIN IMMEDIATE").ConfigureAwait(false);
+
+                    try
+                    {
+                        await using DbCommand cmd = connection.CreateCommand();
+
+                        cmd.CommandText = """DELETE FROM lexicon_entries WHERE NameNormalized = @normalized""";
+
+                        AddParameter(cmd, "@normalized", normalized);
+
+                        int affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                        await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
+
+                        return affected > 0;
+                    }
+                    catch
+                    {
+                        await TryRollbackAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                        throw;
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<bool>.Success(removed);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Lexicon delete failed for entity {Name}.", trimmedName);
+
+            return new Error(ErrorCodes.Lexicon.WriteFailed, "Lexicon delete failed.");
+        }
+
+    }
+
+    public async Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
+        IReadOnlyList<string> entities,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (entities is null || entities.Count == 0)
+        {
+            return Result<IReadOnlyList<LexiconEntryDto>>.Success(Array.Empty<LexiconEntryDto>());
+        }
+
+        int clampedLimit = Math.Clamp(limit, 1, 100);
+
+        List<string> normalized = entities
+            .Select(static e => NormalizeName(e ?? string.Empty))
+            .Where(static n => n.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (normalized.Count == 0)
+        {
+            return Result<IReadOnlyList<LexiconEntryDto>>.Success(Array.Empty<LexiconEntryDto>());
+        }
+
+        try
+        {
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    // Exact-name hits first (ordered by UpdatedAt DESC), then FTS hits (bm25 ASC).
+                    // Deduplicate by Id across both passes.
+                    List<LexiconEntryDto> exactHits = new(clampedLimit);
+
+                    HashSet<Guid> seenIds = new(clampedLimit);
+
+                    HashSet<string> exactNames = new(StringComparer.Ordinal);
+
+                    await FillExactMatchesAsync(connection, normalized, clampedLimit, exactHits, seenIds, exactNames, cancellationToken).ConfigureAwait(false);
+
+                    List<LexiconEntryDto> ftsHits = new(Math.Max(0, clampedLimit - exactHits.Count));
+
+                    if (exactHits.Count < clampedLimit)
+                    {
+                        List<string> unresolved = normalized.Where(n => !exactNames.Contains(n)).ToList();
+
+                        if (unresolved.Count > 0)
+                        {
+                            await FillFtsMatchesAsync(connection, unresolved, clampedLimit - exactHits.Count, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+
+                    List<LexiconEntryDto> ordered = new(exactHits.Count + ftsHits.Count);
+
+                    ordered.AddRange(exactHits);
+
+                    ordered.AddRange(ftsHits);
+
+                    if (ordered.Count > clampedLimit)
+                    {
+                        ordered = ordered.GetRange(0, clampedLimit);
+                    }
+
+                    return Result<IReadOnlyList<LexiconEntryDto>>.Success(ordered);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Lexicon match failed.");
+
+            return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon search failed.");
+        }
+
+    }
+
+    public async Task<Result<LexiconEntryDto?>> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+    {
+
+        string trimmedName = name?.Trim() ?? string.Empty;
+
+        if (trimmedName.Length == 0)
+        {
+            return new Error(ErrorCodes.Lexicon.InvalidName, "Lexicon entity name is required.");
+        }
+
+        string normalized = NormalizeName(trimmedName);
+
+        try
+        {
+            LexiconEntryDto? entry = await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    return await ReadByNormalizedAsync(connection, normalized, cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<LexiconEntryDto?>.Success(entry);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Lexicon get failed for entity {Name}.", trimmedName);
+
+            return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon lookup failed.");
+        }
+
+    }
+
+    private static string NormalizeName(string value) =>
+        value.Trim().ToUpperInvariant();
+
+    private static List<string> NormalizeIncomingFacts(IReadOnlyList<string> facts)
+    {
+
+        List<string> result = new(LexiconLimits.MaxFactsPerUpsert);
+
+        if (facts is null)
+        {
+            return result;
+        }
+
+        foreach (string fact in facts)
+        {
+            if (result.Count >= LexiconLimits.MaxFactsPerUpsert)
+            {
+                break;
+            }
+
+            string trimmed = fact?.Trim() ?? string.Empty;
+
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            if (trimmed.Length > LexiconLimits.MaxFactLength)
+            {
+                trimmed = trimmed[..LexiconLimits.MaxFactLength];
+            }
+
+            result.Add(trimmed);
+        }
+
+        return result;
+    }
+
+    private static string ResolveType(LexiconEntryDto? existing, string incomingType)
+    {
+
+        if (!string.IsNullOrEmpty(incomingType))
+        {
+            return incomingType;
+        }
+
+        if (existing is not null)
+        {
+            return existing.Type;
+        }
+
+        return LexiconLimits.DefaultType;
+    }
+
+    private static List<string> MergeFacts(LexiconEntryDto? existing, List<string> incoming)
+    {
+
+        List<string> merged = new(LexiconLimits.MaxFactsRetainedPerEntry);
+
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        if (existing is not null)
+        {
+            foreach (string fact in existing.Facts)
+            {
+                if (seen.Add(fact))
+                {
+                    merged.Add(fact);
+                }
+            }
+        }
+
+        foreach (string fact in incoming)
+        {
+            if (seen.Add(fact))
+            {
+                merged.Add(fact);
+            }
+        }
+
+        if (merged.Count > LexiconLimits.MaxFactsRetainedPerEntry)
+        {
+            // Keep the most recently appended facts: drop the oldest overflow from the front.
+            merged = merged.GetRange(merged.Count - LexiconLimits.MaxFactsRetainedPerEntry, LexiconLimits.MaxFactsRetainedPerEntry);
+        }
+
+        return merged;
+    }
+
+    private static string SerializeFacts(List<string> facts) =>
+        JsonSerializer.Serialize(facts, LexiconJsonContext.Default.ListString);
+
+    private static string BuildFactsText(List<string> facts)
+    {
+
+        StringBuilder sb = new(facts.Count * 32);
+
+        for (int i = 0; i < facts.Count; i++)
+        {
+            if (i > 0)
+            {
+                _ = sb.Append('\n');
+            }
+
+            _ = sb.Append(facts[i]);
+        }
+
+        return sb.ToString();
+    }
+
+    private static string[] DeserializeFacts(string factsJson)
+    {
+
+        if (string.IsNullOrWhiteSpace(factsJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            List<string>? facts = JsonSerializer.Deserialize(factsJson, LexiconJsonContext.Default.ListString);
+
+            return facts?.ToArray() ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+
+    }
+
+    private async Task FillExactMatchesAsync(
+        DbConnection connection,
+        List<string> normalized,
+        int limit,
+        List<LexiconEntryDto> exactHits,
+        HashSet<Guid> seenIds,
+        HashSet<string> exactNames,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        StringBuilder sql = new();
+        _ = sql.Append("SELECT ")
+            .Append(SelectColumns)
+            .Append(" FROM lexicon_entries WHERE NameNormalized IN (");
+
+        for (int i = 0; i < normalized.Count; i++)
+        {
+            if (i > 0)
+            {
+                _ = sql.Append(", ");
+            }
+
+            string paramName = "@n" + i.ToString(CultureInfo.InvariantCulture);
+
+            _ = sql.Append(paramName);
+
+            AddParameter(cmd, paramName, normalized[i]);
+        }
+
+        _ = sql.Append(") ORDER BY UpdatedAt DESC LIMIT @limit");
+
+        AddParameter(cmd, "@limit", limit);
+
+        cmd.CommandText = sql.ToString();
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            LexiconEntryDto entry = ReadEntry(reader);
+
+            if (seenIds.Add(entry.Id))
+            {
+                exactHits.Add(entry);
+
+                exactNames.Add(NormalizeName(entry.Name));
+            }
+        }
+
+    }
+
+    private async Task FillFtsMatchesAsync(
+        DbConnection connection,
+        List<string> unresolved,
+        int remaining,
+        HashSet<Guid> seenIds,
+        List<LexiconEntryDto> ftsHits,
+        CancellationToken cancellationToken)
+    {
+
+        string matchQuery = BuildFtsMatchQuery(unresolved);
+
+        if (matchQuery.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await FillFtsMatchesViaMatchAsync(connection, matchQuery, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException ex)
+        {
+            logger.LogWarning(ex, "Lexicon FTS MATCH failed; falling back to LIKE search.");
+
+            await FillFtsMatchesViaLikeAsync(connection, unresolved, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+        }
+
+    }
+
+    private static async Task FillFtsMatchesViaMatchAsync(
+        DbConnection connection,
+        string matchQuery,
+        int remaining,
+        HashSet<Guid> seenIds,
+        List<LexiconEntryDto> ftsHits,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        // bm25() weight arguments map positionally to the FTS5 columns (Name, Type, FactsText):
+        // 3.0 for Name, 2.0 for Type, 1.0 for FactsText. FTS5 bm25 returns more-negative values for
+        // better matches, so sort ASC. No Lucene caret boosting inside MATCH — SQLite FTS5 does not
+        // support it; mathematical boosting lives only in bm25().
+        cmd.CommandText =
+            """
+            SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt
+            FROM lexicon_fts
+            INNER JOIN lexicon_entries e ON e.rowid = lexicon_fts.rowid
+            WHERE lexicon_fts MATCH @query
+            ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC
+            LIMIT @limit
+            """;
+
+        AddParameter(cmd, "@query", matchQuery);
+
+        AddParameter(cmd, "@limit", remaining);
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (ftsHits.Count >= remaining)
+            {
+                break;
+            }
+
+            LexiconEntryDto entry = ReadEntry(reader);
+
+            if (seenIds.Add(entry.Id))
+            {
+                ftsHits.Add(entry);
+            }
+        }
+
+    }
+
+    private static async Task FillFtsMatchesViaLikeAsync(
+        DbConnection connection,
+        List<string> unresolved,
+        int remaining,
+        HashSet<Guid> seenIds,
+        List<LexiconEntryDto> ftsHits,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        StringBuilder sql = new();
+        _ = sql.Append("SELECT ")
+            .Append(SelectColumns)
+            .Append(" FROM lexicon_entries WHERE ");
+
+        for (int i = 0; i < unresolved.Count; i++)
+        {
+            if (i > 0)
+            {
+                _ = sql.Append(" OR ");
+            }
+
+            string nameParam = "@name" + i.ToString(CultureInfo.InvariantCulture);
+
+            string factsParam = "@facts" + i.ToString(CultureInfo.InvariantCulture);
+
+            _ = sql.Append("Name LIKE ").Append(nameParam).Append(" ESCAPE '\\'");
+
+            _ = sql.Append(" OR FactsText LIKE ").Append(factsParam).Append(" ESCAPE '\\'");
+
+            AddParameter(cmd, nameParam, "%" + EscapeLikePattern(unresolved[i]) + "%");
+
+            AddParameter(cmd, factsParam, "%" + EscapeLikePattern(unresolved[i]) + "%");
+        }
+
+        _ = sql.Append(" ORDER BY UpdatedAt DESC LIMIT @limit");
+
+        AddParameter(cmd, "@limit", remaining);
+
+        cmd.CommandText = sql.ToString();
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (ftsHits.Count >= remaining)
+            {
+                break;
+            }
+
+            LexiconEntryDto entry = ReadEntry(reader);
+
+            if (seenIds.Add(entry.Id))
+            {
+                ftsHits.Add(entry);
+            }
+        }
+
+    }
+
+    private static string BuildFtsMatchQuery(List<string> unresolved)
+    {
+
+        StringBuilder sb = new();
+
+        foreach (string term in unresolved)
+        {
+            string sanitized = FtsMatchQuerySanitizer.Sanitize(term);
+
+            if (sanitized.Length == 0)
+            {
+                continue;
+            }
+
+            if (sb.Length > 0)
+            {
+                _ = sb.Append(" OR ");
+            }
+
+            _ = sb.Append(sanitized);
+        }
+
+        return sb.ToString();
+    }
+
+    private static string EscapeLikePattern(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
+
+    private async Task<LexiconEntryDto?> ReadByNormalizedAsync(
+        DbConnection connection,
+        string normalized,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = $"SELECT {SelectColumns} FROM lexicon_entries WHERE NameNormalized = @normalized LIMIT 1";
+
+        AddParameter(cmd, "@normalized", normalized);
+
+        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return ReadEntry(reader);
+
+    }
+
+    private static async Task InsertAsync(
+        DbConnection connection,
+        Guid id,
+        string name,
+        string normalized,
+        string type,
+        string factsJson,
+        string factsText,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            INSERT INTO lexicon_entries (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
+            VALUES (@id, @name, @normalized, @type, @factsJson, @factsText, @updatedAt)
+            """;
+
+        AddParameter(cmd, "@id", id.ToString("N"));
+        AddParameter(cmd, "@name", name);
+        AddParameter(cmd, "@normalized", normalized);
+        AddParameter(cmd, "@type", type);
+        AddParameter(cmd, "@factsJson", factsJson);
+        AddParameter(cmd, "@factsText", factsText);
+        AddParameter(cmd, "@updatedAt", updatedAt.ToString("o", CultureInfo.InvariantCulture));
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task UpdateAsync(
+        DbConnection connection,
+        Guid id,
+        string name,
+        string normalized,
+        string type,
+        string factsJson,
+        string factsText,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            UPDATE lexicon_entries
+            SET Name = @name,
+                NameNormalized = @normalized,
+                Type = @type,
+                FactsJson = @factsJson,
+                FactsText = @factsText,
+                UpdatedAt = @updatedAt
+            WHERE Id = @id
+            """;
+
+        AddParameter(cmd, "@id", id.ToString("N"));
+        AddParameter(cmd, "@name", name);
+        AddParameter(cmd, "@normalized", normalized);
+        AddParameter(cmd, "@type", type);
+        AddParameter(cmd, "@factsJson", factsJson);
+        AddParameter(cmd, "@factsText", factsText);
+        AddParameter(cmd, "@updatedAt", updatedAt.ToString("o", CultureInfo.InvariantCulture));
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static LexiconEntryDto ReadEntry(DbDataReader reader)
+    {
+
+        Guid id = Guid.Parse(reader.GetString(0));
+
+        string name = reader.GetString(1);
+
+        string type = reader.GetString(2);
+
+        string factsJson = reader.GetString(3);
+
+        DateTimeOffset updatedAt = DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture);
+
+        return new LexiconEntryDto(id, name, type, DeserializeFacts(factsJson), updatedAt);
+
+    }
+
+    private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
+    {
+
+        DbConnection connection = db.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return connection;
+
+    }
+
+    private static async Task ExecuteNonQueryAsync(DbConnection connection, CancellationToken cancellationToken, string commandText)
+    {
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = commandText;
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task TryRollbackAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+
+        try
+        {
+            await ExecuteNonQueryAsync(connection, cancellationToken, "ROLLBACK").ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Best-effort rollback: a failed BEGIN or already-closed connection is not actionable here.
+        }
+
+    }
+
+    private static void AddParameter(DbCommand cmd, string name, object value)
+    {
+
+        DbParameter parameter = cmd.CreateParameter();
+
+        parameter.ParameterName = name;
+
+        parameter.Value = value;
+
+        cmd.Parameters.Add(parameter);
+
+    }
+
+}

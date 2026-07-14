@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -27,6 +28,87 @@ public sealed class SystemPromptBuilderTests
 
         Assert.Contains("[None]", prompt, StringComparison.Ordinal);
 
+    }
+
+    [Fact]
+    public void Build_WithLexiconEntries_InjectsKnownContextInsideData()
+    {
+
+        List<LexiconEntryDto> entries =
+        [
+            new(Guid.NewGuid(), "Alice", "Person", ["Prefers concise answers.", "Works on Arcanum."], DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), "Project Phoenix", "Project", ["Uses PostgreSQL."], DateTimeOffset.UtcNow),
+        ];
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            lexiconEntries: entries);
+
+        Assert.Contains("### Lexicon (Known Context)", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("**Alice** (Person): \"Prefers concise answers.\"; \"Works on Arcanum.\"", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("**Project Phoenix** (Project): \"Uses PostgreSQL.\"", prompt, StringComparison.Ordinal);
+
+        string dataSection = prompt.Split("## CONTEXT")[0];
+
+        Assert.Contains("### Lexicon (Known Context)", dataSection, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("[None]", dataSection, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Build_WithoutLexiconEntries_OmitsKnownContextHeading()
+    {
+
+        string prompt = SystemPromptBuilder.Build(new PingRequest("hello"), codexContent: null);
+
+        Assert.DoesNotContain("### Lexicon (Known Context)", prompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Build_WithLexiconEntries_StripsNewlinesAndControlCharsFromFacts()
+    {
+
+        List<LexiconEntryDto> entries =
+        [
+            new(Guid.NewGuid(), "Alice", "Person", ["line1\nline2\r\nline3", "tab\there"], DateTimeOffset.UtcNow),
+        ];
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            lexiconEntries: entries);
+
+        Assert.DoesNotContain("line1\nline2", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("line1 line2 line3", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("tab here", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Build_WithLexiconEntries_TruncatesAtByteCap()
+    {
+
+        List<LexiconEntryDto> entries =
+        [
+            new(Guid.NewGuid(), "Alice", "Person", ["a long fact that repeats"], DateTimeOffset.UtcNow),
+            new(Guid.NewGuid(), "Bob", "Person", ["another fact"], DateTimeOffset.UtcNow),
+        ];
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            lexiconEntries: entries,
+            maxLexiconInjectedBytes: 60);
+
+        // The cap is small enough that Bob must be dropped; Alice's bullet still renders.
+        Assert.Contains("Alice", prompt, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Bob", prompt, StringComparison.Ordinal);
     }
 
     [Fact]

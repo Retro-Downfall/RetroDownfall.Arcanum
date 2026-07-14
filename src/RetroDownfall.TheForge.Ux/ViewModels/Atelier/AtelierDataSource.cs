@@ -16,12 +16,15 @@ public sealed class AtelierDataSource : IAtelierDataSource
 
     private readonly SpellService _spellService;
 
+    private readonly PromptService _promptService;
+
     private readonly SessionService _sessionService;
 
     public AtelierDataSource(
         CampaignService campaignService,
         WorkspaceService workspaceService,
         SpellService spellService,
+        PromptService promptService,
         SessionService sessionService)
     {
 
@@ -30,6 +33,8 @@ public sealed class AtelierDataSource : IAtelierDataSource
         _workspaceService = workspaceService;
 
         _spellService = spellService;
+
+        _promptService = promptService;
 
         _sessionService = sessionService;
 
@@ -65,6 +70,17 @@ public sealed class AtelierDataSource : IAtelierDataSource
             .ConfigureAwait(false);
 
         return response?.Data ?? [];
+
+    }
+
+    public async Task<IReadOnlyList<PromptSummaryDto>> GetGlobalPromptsAsync(CancellationToken cancellationToken)
+    {
+
+        ApiResponse<ListPageResult<PromptSummaryDto>>? response = await _promptService
+            .ListAsync(campaignId: null, query: null, tag: null, limit: null, offset: null, cancellationToken)
+            .ConfigureAwait(false);
+
+        return response?.Data?.Items ?? [];
 
     }
 

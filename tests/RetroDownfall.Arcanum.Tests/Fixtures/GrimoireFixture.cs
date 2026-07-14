@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -267,6 +268,11 @@ public sealed class GrimoireFixture : IDisposable
             availability: new WeaveIndexAvailability(),
             logger: null,
             cancellationToken).ConfigureAwait(false);
+
+        // The Lexicon — mirrors GrimoireDatabaseBootstrapper.EnsureLexiconSchemaAsync, which runs
+        // LexiconSchemaInitializer right after The Weave's schema. Always creates lexicon_entries +
+        // lexicon_fts so LexiconServiceTests and downstream injection tests have real tables.
+        await LexiconSchemaInitializer.EnsureSchemaAsync(connection, logger: null, cancellationToken).ConfigureAwait(false);
 
         await using SqliteCommand checkpoint = connection.CreateCommand();
 

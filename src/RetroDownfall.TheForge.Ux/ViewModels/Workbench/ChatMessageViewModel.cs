@@ -9,7 +9,15 @@ public sealed partial class ChatMessageViewModel : ObservableObject
     [ObservableProperty]
     private string _content = string.Empty;
 
-    public ChatMessageViewModel(string role, string content, ToolCallCardViewModel? toolCall = null)
+    [ObservableProperty]
+    private bool _isPinned;
+
+    public ChatMessageViewModel(
+        string role,
+        string content,
+        ToolCallCardViewModel? toolCall = null,
+        Guid? entryId = null,
+        bool isPinned = false)
     {
 
         Role = role;
@@ -18,9 +26,44 @@ public sealed partial class ChatMessageViewModel : ObservableObject
 
         ToolCall = toolCall;
 
+        EntryId = entryId;
+
+        IsPinned = isPinned;
+
     }
 
     public string Role { get; }
+
+    private Guid? _entryId;
+
+    public Guid? EntryId
+    {
+
+        get => _entryId;
+
+        set
+        {
+
+            if (_entryId == value)
+            {
+
+                return;
+
+            }
+
+            _entryId = value;
+
+            OnPropertyChanged();
+
+            OnPropertyChanged(nameof(HasEntryId));
+
+            OnPropertyChanged(nameof(CanPin));
+
+            OnPropertyChanged(nameof(CanUnpin));
+
+        }
+
+    }
 
     public ToolCallCardViewModel? ToolCall { get; }
 
@@ -36,6 +79,21 @@ public sealed partial class ChatMessageViewModel : ObservableObject
 
     public bool IsError => string.Equals(Role, "error", StringComparison.OrdinalIgnoreCase);
 
+    public bool HasEntryId => EntryId.HasValue;
+
+    public bool CanPin => HasEntryId && !IsPinned;
+
+    public bool CanUnpin => HasEntryId && IsPinned;
+
     public void AppendContent(string data) => Content += data;
+
+    partial void OnIsPinnedChanged(bool value)
+    {
+
+        OnPropertyChanged(nameof(CanPin));
+
+        OnPropertyChanged(nameof(CanUnpin));
+
+    }
 
 }

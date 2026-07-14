@@ -7,9 +7,24 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 public sealed record ResolvedSpell(
-    ParsedSpell Primary,
+    ParsedSpell? Primary,
     IReadOnlyList<ParsedSpell> Resonants,
-    IReadOnlyDictionary<string, IReadOnlyList<string>> DependencyEdges);
+    IReadOnlyDictionary<string, IReadOnlyList<string>> DependencyEdges,
+    IReadOnlyList<string> Entities)
+{
+
+    /// <summary>
+    /// Lexicon entity names extracted by the SemanticRouter when no spell was selected (or the
+    /// matched spell file failed to load). Downstream retrieval still uses these entities.
+    /// </summary>
+    public static ResolvedSpell EntitiesOnly(IReadOnlyList<string> entities) =>
+        new(
+            Primary: null,
+            Resonants: [],
+            DependencyEdges: new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase),
+            Entities: entities);
+
+}
 
 internal static class SpellDependencyResolver
 {
@@ -29,7 +44,7 @@ internal static class SpellDependencyResolver
 
         if (primaryDependencies.Count == 0)
         {
-            return new ResolvedSpell(primary, [], new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase));
+            return new ResolvedSpell(primary, [], new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase), Array.Empty<string>());
         }
 
         IReadOnlyList<SpellMetadata> catalog = spellCatalog
@@ -141,7 +156,7 @@ internal static class SpellDependencyResolver
             }
         }
 
-        return new ResolvedSpell(primary, resonants, dependencyEdges);
+        return new ResolvedSpell(primary, resonants, dependencyEdges, Array.Empty<string>());
     }
 
 }

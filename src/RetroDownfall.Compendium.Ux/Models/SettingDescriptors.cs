@@ -107,7 +107,13 @@ public static class SettingDescriptors
 
         new("intelligence.listDirectoryMaxPaths", ConfigSection.Intelligence, "List directory max paths", "Maximum file/dir entries returned by the list_directory tool in one call.", SettingKind.Int, 1, 2000, 1, ClampName: nameof(ArcanumSettingClamps.ListDirectoryMaxPaths)),
 
-        new("intelligence.enableLoreSystem", ConfigSection.Intelligence, "Enable Lore system", "When true, the operator key-value Lore memory is consulted during inference.", SettingKind.Bool),
+        new("intelligence.enableLoreSystem", ConfigSection.Intelligence, "Enable Lore system (legacy)", "Legacy/operator-only. No longer gates any MCP tool — the Lore MCP tools are removed. Retained for backward compatibility; /api/lore and arcanum lore still manage MageSettings as an operator key-value surface.", SettingKind.Bool),
+
+        new("intelligence.enableLexiconSystem", ConfigSection.Intelligence, "Enable Lexicon system", "Gates the scribe_lexicon / delete_lexicon MCP tools and the Lexicon retrieval / DATA injection path. Default true (Option A): operators who previously disabled model-writable memory via EnableLoreSystem must now set this to false.", SettingKind.Bool),
+
+        new("intelligence.lexiconMaxMatchedEntries", ConfigSection.Intelligence, "Lexicon max matched entries", "Maximum Lexicon entries returned per inference-turn MatchEntitiesAsync query.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.LexiconMaxMatchedEntries)),
+
+        new("intelligence.lexiconMaxInjectedBytes", ConfigSection.Intelligence, "Lexicon max injected bytes", "Hard cap (bytes) on the rendered ### Lexicon (Known Context) DATA block in the Master system prompt.", SettingKind.Int, 256, 65536, 1, ClampName: nameof(ArcanumSettingClamps.LexiconMaxInjectedBytes)),
 
         new("intelligence.enableArchiveSearch", ConfigSection.Intelligence, "Enable archive search", "When true, the archive search tool can be invoked to query past sessions.", SettingKind.Bool),
 

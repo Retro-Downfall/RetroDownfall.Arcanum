@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Avalonia.Controls;
+using AvaloniaEdit;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 
 namespace RetroDownfall.TheForge.Ux.Views.Workbench;
@@ -11,6 +12,8 @@ public partial class SpellEditorView : UserControl
 
     private bool _isSynchronizing;
 
+    private bool _syncingFromPreview;
+
     public SpellEditorView()
     {
 
@@ -20,7 +23,11 @@ public partial class SpellEditorView : UserControl
 
         BodyEditor.TextChanged += OnBodyEditorTextChanged;
 
+        BodyEditor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
+
         SkillJsonEditor.TextChanged += OnSkillJsonEditorTextChanged;
+
+        Illumination.GoToSourceRequested += OnIlluminationGoToSource;
 
     }
 
@@ -84,6 +91,55 @@ public partial class SpellEditorView : UserControl
         }
 
         _viewModel.SkillJson = SkillJsonEditor.Text;
+
+    }
+
+    private void OnCaretPositionChanged(object? sender, EventArgs e)
+    {
+
+        if (_syncingFromPreview || _viewModel is null || !_viewModel.SyncScrollEnabled)
+        {
+
+            return;
+
+        }
+
+        int line = Math.Max(0, BodyEditor.TextArea.Caret.Line - 1);
+
+        Illumination.NavigateToSourceLine = line;
+
+    }
+
+    private void OnIlluminationGoToSource(object? sender, int sourceLine)
+    {
+
+        if (_viewModel is null || !_viewModel.SyncScrollEnabled)
+        {
+
+            return;
+
+        }
+
+        _syncingFromPreview = true;
+
+        try
+        {
+
+            int avaloniaLine = Math.Max(1, sourceLine + 1);
+
+            BodyEditor.TextArea.Caret.Line = avaloniaLine;
+
+            BodyEditor.TextArea.Caret.Column = 1;
+
+            BodyEditor.TextArea.Caret.BringCaretToView();
+
+        }
+        finally
+        {
+
+            _syncingFromPreview = false;
+
+        }
 
     }
 

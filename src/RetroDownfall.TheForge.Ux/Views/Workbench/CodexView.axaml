@@ -1,0 +1,67 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:md="using:RetroDownfall.TheForge.Ux.Markdown"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.CodexView"
+             x:DataType="vm:CodexViewModel">
+  <Grid RowDefinitions="Auto,*">
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+      <StackPanel DockPanel.Dock="Left" Spacing="2">
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding StatusText}" Opacity="0.68" />
+        <TextBlock Text="{Binding CodexPath}" Opacity="0.6" IsVisible="{Binding CodexPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" MaxWidth="480" />
+      </StackPanel>
+
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <StackPanel Orientation="Horizontal" Spacing="2" Margin="0,0,8,0">
+          <Button Content="Source" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Source}" />
+          <Button Content="Split" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Split}" />
+          <Button Content="The Illumination" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Preview}" />
+        </StackPanel>
+        <CheckBox Content="Remote images" IsChecked="{Binding LoadRemoteImages}" VerticalAlignment="Center" />
+        <CheckBox Content="Sync scroll"
+                  IsChecked="{Binding SyncScrollEnabled}"
+                  VerticalAlignment="Center"
+                  ToolTip.Tip="Best-effort only: Codex uses a TextBox source editor (not AvaloniaEdit), so scroll sync is approximate and defaults off." />
+        <TextBlock Text="Busy…" Opacity="0.65" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+        <Button Content="Load" Command="{Binding LoadCommand}" />
+        <Button Content="Save" Command="{Binding SaveCommand}" />
+        <Button Content="Delete" Command="{Binding DeleteCommand}" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="{Binding IsSourceVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
+        <ColumnDefinition Width="{Binding IsSplitterVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=5}" />
+        <ColumnDefinition Width="{Binding IsPreviewVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
+      </Grid.ColumnDefinitions>
+
+      <TextBox Grid.Column="0"
+               Text="{Binding Content}"
+               AcceptsReturn="True"
+               TextWrapping="Wrap"
+               FontFamily="{DynamicResource ForgeCodeFontFamily}"
+               Watermark="CODEX.md…"
+               IsVisible="{Binding IsSourceVisible}" />
+
+      <GridSplitter Grid.Column="1"
+                    Width="5"
+                    ResizeDirection="Columns"
+                    IsVisible="{Binding IsSplitterVisible}" />
+
+      <Border Grid.Column="2"
+              BorderThickness="1"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              Padding="4"
+              IsVisible="{Binding IsPreviewVisible}">
+        <controls:IlluminationView MarkdownSource="{Binding Content}"
+                                   LoadRemoteImages="{Binding LoadRemoteImages}"
+                                   SyncScrollEnabled="{Binding SyncScrollEnabled}" />
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>

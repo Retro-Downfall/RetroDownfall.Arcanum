@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 
@@ -49,6 +50,18 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
     [ObservableProperty]
     private SpellVersionDto? _selectedVersion;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsSourceVisible))]
+    [NotifyPropertyChangedFor(nameof(IsPreviewVisible))]
+    [NotifyPropertyChangedFor(nameof(IsSplitterVisible))]
+    private MarkdownViewMode _viewMode = MarkdownViewMode.Source;
+
+    [ObservableProperty]
+    private bool _loadRemoteImages;
+
+    [ObservableProperty]
+    private bool _syncScrollEnabled = true;
+
     public SpellEditorViewModel(string spellName, ISpellEditorDataSource dataSource, INavigationService navigation, string? workspace = null)
     {
 
@@ -74,9 +87,18 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     public ObservableCollection<IntelligenceEvent> ExecutionEvents { get; } = [];
 
+    public bool IsSourceVisible => MarkdownViewModeHelper.IsSourceVisible(ViewMode);
+
+    public bool IsPreviewVisible => MarkdownViewModeHelper.IsPreviewVisible(ViewMode);
+
+    public bool IsSplitterVisible => MarkdownViewModeHelper.IsSplitterVisible(ViewMode);
+
     public string ScriptsSummary => Spell is null || Spell.Tools.Length == 0
         ? "No attuned tools yet."
         : string.Join(Environment.NewLine, Spell.Tools.Select(static tool => $"- {tool}"));
+
+    [RelayCommand]
+    private void SetViewMode(MarkdownViewMode mode) => ViewMode = mode;
 
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)

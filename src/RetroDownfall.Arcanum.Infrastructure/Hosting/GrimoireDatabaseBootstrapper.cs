@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Serilog;
@@ -171,6 +172,8 @@ public static class GrimoireDatabaseBootstrapper
 
         await EnsureWeaveSchemaAsync(migrationConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
 
+        await EnsureLexiconSchemaAsync(migrationConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
+
         await migrationConnection.CloseAsync().ConfigureAwait(false);
 
         if (File.Exists(dbPath))
@@ -234,6 +237,40 @@ public static class GrimoireDatabaseBootstrapper
         {
 
             Log.Warning(ex, "The Weave schema bootstrap could not run; RAG features relying on it will report unavailable until this is resolved.");
+
+        }
+
+    }
+
+    /// <summary>
+    /// Creates The Lexicon's raw-SQL schema (<c>lexicon_entries</c> + <c>lexicon_fts</c> + sync
+    /// triggers; see <see cref="LexiconSchemaInitializer"/>) right after The Weave's schema, on the
+    /// same connection, before it is closed. Never fails startup: the initializer swallows and logs
+    /// its own failures, and this wrapper adds a second belt-and-suspenders catch around resolving
+    /// the DI-scoped logger.
+    /// </summary>
+    private static async Task EnsureLexiconSchemaAsync(
+        SqliteConnection migrationConnection,
+        IServiceScopeFactory scopeFactory,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            Microsoft.Extensions.Logging.ILogger logger = scope.ServiceProvider
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Lexicon.LexiconSchemaInitializer");
+
+            await LexiconSchemaInitializer.EnsureSchemaAsync(migrationConnection, logger, cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            Log.Warning(ex, "The Lexicon schema bootstrap could not run; Lexicon memory features will be unavailable until this is resolved.");
 
         }
 

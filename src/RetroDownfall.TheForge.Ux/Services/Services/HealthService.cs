@@ -23,12 +23,12 @@ public sealed class HealthService
     }
 
     public Task<ApiResponse<HealthReportDto>?> GetHealthAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/health", ForgeJsonContext.Default.ApiResponseHealthReportDto, cancellationToken);
+        _apiClient.GetAsync("/api/health", TheForgeJsonContext.Default.ApiResponseHealthReportDto, cancellationToken);
 
     public Task<ApiResponse<InstanceMetadataDto>?> GetMetaAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/meta", ForgeJsonContext.Default.ApiResponseInstanceMetadataDto, cancellationToken);
+        _apiClient.GetAsync("/api/meta", TheForgeJsonContext.Default.ApiResponseInstanceMetadataDto, cancellationToken);
 
     public Task<ApiResponse<GrimoireStatsDto>?> GetGrimoireStatsAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/grimoire/stats", ForgeJsonContext.Default.ApiResponseGrimoireStatsDto, cancellationToken);
+        _apiClient.GetAsync("/api/grimoire/stats", TheForgeJsonContext.Default.ApiResponseGrimoireStatsDto, cancellationToken);
 
 }

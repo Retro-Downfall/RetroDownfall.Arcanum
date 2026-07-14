@@ -80,7 +80,9 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 
             try
             {
-                element = JsonDocument.Parse(text).RootElement;
+                using JsonDocument document = JsonDocument.Parse(text);
+
+                element = document.RootElement.Clone();
             }
             catch (JsonException)
             {

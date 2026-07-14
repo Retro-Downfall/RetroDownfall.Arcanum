@@ -30,6 +30,61 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
     public async Task<TheForgeSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
 
+        return await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task SaveAsync(TheForgeSettings settings, CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(settings);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+
+            await SaveCoreAsync(settings, cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _writeLock.Release();
+
+        }
+
+    }
+
+    public async Task SavePatchAsync(Func<TheForgeSettings, TheForgeSettings> patch, CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(patch);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+
+            TheForgeSettings current = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+
+            TheForgeSettings updated = patch(current);
+
+            await SaveCoreAsync(updated, cancellationToken).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _writeLock.Release();
+
+        }
+
+    }
+
+    private async Task<TheForgeSettings> LoadCoreAsync(CancellationToken cancellationToken)
+    {
+
         if (!File.Exists(SettingsPath))
         {
 
@@ -66,85 +121,57 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 
     }
 
-    public async Task SaveAsync(TheForgeSettings settings, CancellationToken cancellationToken = default)
+    private async Task SaveCoreAsync(TheForgeSettings settings, CancellationToken cancellationToken)
     {
 
-        ArgumentNullException.ThrowIfNull(settings);
+        string? directory = Path.GetDirectoryName(SettingsPath);
 
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(directory))
+        {
+
+            Directory.CreateDirectory(directory);
+
+            TrySetUnixDirectoryMode(directory);
+
+        }
+
+        string tempPath = SettingsPath + $".{Guid.NewGuid():N}.tmp";
 
         try
         {
 
-            string? directory = Path.GetDirectoryName(SettingsPath);
-
-            if (!string.IsNullOrEmpty(directory))
+            await using (FileStream stream = new(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
 
-                Directory.CreateDirectory(directory);
+                await JsonSerializer
+                    .SerializeAsync(stream, settings, TheForgeSettingsJsonContext.Default.TheForgeSettings, cancellationToken)
+                    .ConfigureAwait(false);
 
-                TrySetUnixDirectoryMode(directory);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 
             }
 
-            string tempPath = SettingsPath + $".{Guid.NewGuid():N}.tmp";
+            TrySetUnixFileMode(tempPath);
 
-            try
-            {
+            File.Move(tempPath, SettingsPath, overwrite: true);
 
-                await using (FileStream stream = new(
-                    tempPath,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 4096,
-                    FileOptions.Asynchronous | FileOptions.WriteThrough))
-                {
-
-                    await JsonSerializer
-                        .SerializeAsync(stream, settings, TheForgeSettingsJsonContext.Default.TheForgeSettings, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-                }
-
-                TrySetUnixFileMode(tempPath);
-
-                File.Move(tempPath, SettingsPath, overwrite: true);
-
-                TrySetUnixFileMode(SettingsPath);
-
-            }
-            catch
-            {
-
-                TryDelete(tempPath);
-
-                throw;
-
-            }
+            TrySetUnixFileMode(SettingsPath);
 
         }
-        finally
+        catch
         {
 
-            _writeLock.Release();
+            TryDelete(tempPath);
+
+            throw;
 
         }
-
-    }
-
-    public async Task SavePatchAsync(Func<TheForgeSettings, TheForgeSettings> patch, CancellationToken cancellationToken = default)
-    {
-
-        ArgumentNullException.ThrowIfNull(patch);
-
-        TheForgeSettings current = await LoadAsync(cancellationToken).ConfigureAwait(false);
-
-        TheForgeSettings updated = patch(current);
-
-        await SaveAsync(updated, cancellationToken).ConfigureAwait(false);
 
     }
 

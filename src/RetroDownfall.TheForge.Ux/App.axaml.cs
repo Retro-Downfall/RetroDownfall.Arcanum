@@ -1,6 +1,9 @@
+using System.Reflection;
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
@@ -46,6 +49,9 @@ public partial class App : Application
                 DataContext = mainViewModel,
             };
 
+            // Start AutoConnect only after MainWindow exists so the API-key paste prompt can show.
+            services.GetRequiredService<ArcanumConnectionService>().StartAutoConnectIfConfigured();
+
             desktop.MainWindow.Closed += (_, _) =>
             {
 
@@ -64,6 +70,59 @@ public partial class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+
+    }
+
+    private async void OnAboutClick(object? sender, EventArgs e)
+    {
+
+        Window? owner = (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+
+        if (owner is null)
+        {
+
+            return;
+
+        }
+
+        string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0-alpha";
+
+        Window dialog = new()
+        {
+            Title = "About The Forge",
+            Width = 420,
+            Height = 160,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(24),
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "The Forge — Inference IDE",
+                        FontWeight = FontWeight.SemiBold,
+                        FontSize = 16,
+                    },
+                    new TextBlock
+                    {
+                        Text = $"Version {version}",
+                        Opacity = 0.8,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Arcanum HTTP API client for campaigns, spells, sessions, and apprentices.",
+                        TextWrapping = TextWrapping.Wrap,
+                        Opacity = 0.72,
+                        Margin = new Thickness(0, 4, 0, 0),
+                    },
+                },
+            },
+        };
+
+        await dialog.ShowDialog(owner);
 
     }
 

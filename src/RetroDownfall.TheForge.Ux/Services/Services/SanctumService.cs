@@ -23,14 +23,14 @@ public sealed class SanctumService
     }
 
     public Task<ApiResponse<SanctumConfig>?> GetConfigAsync(Guid campaignId, CancellationToken cancellationToken) =>
-        _apiClient.GetAsync($"/api/campaigns/{campaignId}/sanctum", ForgeJsonContext.Default.ApiResponseSanctumConfig, cancellationToken);
+        _apiClient.GetAsync($"/api/campaigns/{campaignId}/sanctum", TheForgeJsonContext.Default.ApiResponseSanctumConfig, cancellationToken);
 
     public Task<ApiResponse<SanctumConfig>?> UpdateConfigAsync(Guid campaignId, SanctumConfig config, CancellationToken cancellationToken) =>
         _apiClient.PutAsync(
             $"/api/campaigns/{campaignId}/sanctum",
             config,
-            ForgeJsonContext.Default.SanctumConfig,
-            ForgeJsonContext.Default.ApiResponseSanctumConfig,
+            TheForgeJsonContext.Default.SanctumConfig,
+            TheForgeJsonContext.Default.ApiResponseSanctumConfig,
             cancellationToken);
 
 }

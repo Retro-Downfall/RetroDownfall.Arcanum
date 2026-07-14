@@ -4,7 +4,7 @@
              xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.TomeView"
              x:DataType="vm:TomeViewModel">
-  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
 
     <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Spacing="2">
@@ -13,6 +13,9 @@
       </StackPanel>
 
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Refresh" Command="{Binding RefreshEntriesCommand}" />
+        <Button Content="Compact" Command="{Binding CompactCommand}" IsEnabled="{Binding !MemoryManagementDisabled}" />
+        <Button Content="Divination" Command="{Binding DivineSessionCommand}" />
         <Button Content="Fork" Command="{Binding ForkCommand}" />
         <Button Content="Export" Command="{Binding ExportCommand}" />
         <Button Content="Manual Entry" Command="{Binding AppendManualEntryCommand}" />
@@ -20,12 +23,20 @@
       </StackPanel>
     </DockPanel>
 
-    <controls:ManaBar Grid.Row="1"
+    <StackPanel Grid.Row="1" Spacing="2" Margin="0,0,0,8">
+      <TextBlock Text="{Binding MemoryStatusText}" Opacity="0.7" TextWrapping="Wrap" IsVisible="{Binding MemoryStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <TextBlock Text="Session memory management is disabled (Arcanum:Sessions:AllowMemoryManagement)."
+                 Foreground="{DynamicResource ForgeErrorBrush}"
+                 TextWrapping="Wrap"
+                 IsVisible="{Binding MemoryManagementDisabled}" />
+    </StackPanel>
+
+    <controls:ManaBar Grid.Row="2"
                        ManaPercent="{Binding ManaPercent}"
                        Height="10"
                        Margin="0,0,0,8" />
 
-    <ScrollViewer Grid.Row="2">
+    <ScrollViewer Grid.Row="3">
       <ItemsControl ItemsSource="{Binding Messages}">
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="vm:ChatMessageViewModel">
@@ -34,9 +45,36 @@
                     BorderThickness="1"
                     BorderBrush="{DynamicResource ForgeBorderBrush}">
               <StackPanel Spacing="6">
-                <TextBlock Text="{Binding Role}"
-                           FontWeight="SemiBold"
-                           Opacity="0.8" />
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left"
+                             Text="{Binding Role}"
+                             FontWeight="SemiBold"
+                             Opacity="0.8" />
+                  <TextBlock DockPanel.Dock="Left"
+                             Text="Pinned"
+                             Opacity="0.65"
+                             Margin="8,0,0,0"
+                             IsVisible="{Binding IsPinned}" />
+                  <StackPanel DockPanel.Dock="Right"
+                              Orientation="Horizontal"
+                              Spacing="4"
+                              IsVisible="{Binding HasEntryId}">
+                    <Button Content="Pin"
+                            Command="{Binding $parent[UserControl].DataContext.PinEntryCommand}"
+                            CommandParameter="{Binding}"
+                            IsVisible="{Binding CanPin}"
+                            IsEnabled="{Binding !$parent[UserControl].DataContext.MemoryManagementDisabled}" />
+                    <Button Content="Unpin"
+                            Command="{Binding $parent[UserControl].DataContext.UnpinEntryCommand}"
+                            CommandParameter="{Binding}"
+                            IsVisible="{Binding CanUnpin}"
+                            IsEnabled="{Binding !$parent[UserControl].DataContext.MemoryManagementDisabled}" />
+                    <Button Content="Delete"
+                            Command="{Binding $parent[UserControl].DataContext.DeleteEntryCommand}"
+                            CommandParameter="{Binding}"
+                            IsEnabled="{Binding !$parent[UserControl].DataContext.MemoryManagementDisabled}" />
+                  </StackPanel>
+                </DockPanel>
 
                 <TextBlock Text="{Binding Content}"
                            TextWrapping="Wrap"
@@ -61,7 +99,7 @@
       </ItemsControl>
     </ScrollViewer>
 
-    <StackPanel Grid.Row="3" Spacing="8" Margin="0,8,0,4">
+    <StackPanel Grid.Row="4" Spacing="8" Margin="0,8,0,4">
       <StackPanel Orientation="Horizontal" Spacing="12">
         <TextBlock Text="{Binding ManaPercent, StringFormat=Mana: {0:0}%}" Opacity="0.72" />
         <TextBlock Text="{Binding LastUsage.TotalTokens, StringFormat=Tokens: {0}}" Opacity="0.72" />
@@ -76,7 +114,7 @@
                MinHeight="36" />
     </StackPanel>
 
-    <TextBox Grid.Row="4"
+    <TextBox Grid.Row="5"
              Text="{Binding InputText}"
              AcceptsReturn="True"
              TextWrapping="Wrap"

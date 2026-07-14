@@ -102,6 +102,12 @@ internal sealed partial class ArcanumInternalToolServer
 
         string name = args.Name.Trim();
 
+        if (IsProtectedDaemonStateName(name))
+        {
+            return ToolError(
+                "delete_lexicon cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
+        }
+
         try
         {
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
@@ -139,6 +145,9 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("An internal error occurred during tool execution.");
         }
     }
+
+    private static bool IsProtectedDaemonStateName(string name) =>
+        name.StartsWith("daemon_state:", StringComparison.OrdinalIgnoreCase);
 
     private async Task<McpToolsCallResultWire> ExecuteSearchArchivesAsync(
         JsonElement arguments,

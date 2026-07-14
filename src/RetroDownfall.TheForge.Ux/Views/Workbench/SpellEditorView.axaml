@@ -1,6 +1,8 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:md="using:RetroDownfall.TheForge.Ux.Markdown"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
              xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.SpellEditorView"
              x:DataType="vm:SpellEditorViewModel">
@@ -12,6 +14,13 @@
       </StackPanel>
 
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <StackPanel Orientation="Horizontal" Spacing="2" Margin="0,0,8,0">
+          <Button Content="Source" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Source}" />
+          <Button Content="Split" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Split}" />
+          <Button Content="The Illumination" Command="{Binding SetViewModeCommand}" CommandParameter="{x:Static md:MarkdownViewMode.Preview}" />
+        </StackPanel>
+        <CheckBox Content="Remote images" IsChecked="{Binding LoadRemoteImages}" VerticalAlignment="Center" />
+        <CheckBox Content="Sync scroll" IsChecked="{Binding SyncScrollEnabled}" VerticalAlignment="Center" />
         <Button Content="Load" Command="{Binding LoadCommand}" />
         <Button Content="Save" Command="{Binding SaveCommand}" />
         <Button Content="Cast" Command="{Binding CastCommand}" />
@@ -21,11 +30,39 @@
     </DockPanel>
 
     <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
-      <Border Grid.Column="0" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4">
-        <avaloniaEdit:TextEditor x:Name="BodyEditor"
-                                 ShowLineNumbers="True"
-                                 WordWrap="True" />
-      </Border>
+      <Grid Grid.Column="0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="{Binding IsSourceVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
+          <ColumnDefinition Width="{Binding IsSplitterVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=5}" />
+          <ColumnDefinition Width="{Binding IsPreviewVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0"
+                BorderThickness="1"
+                BorderBrush="{DynamicResource ForgeBorderBrush}"
+                Padding="4"
+                IsVisible="{Binding IsSourceVisible}">
+          <avaloniaEdit:TextEditor x:Name="BodyEditor"
+                                   ShowLineNumbers="True"
+                                   WordWrap="True" />
+        </Border>
+
+        <GridSplitter Grid.Column="1"
+                      Width="5"
+                      ResizeDirection="Columns"
+                      IsVisible="{Binding IsSplitterVisible}" />
+
+        <Border Grid.Column="2"
+                BorderThickness="1"
+                BorderBrush="{DynamicResource ForgeBorderBrush}"
+                Padding="4"
+                IsVisible="{Binding IsPreviewVisible}">
+          <controls:IlluminationView x:Name="Illumination"
+                                     MarkdownSource="{Binding MarkdownBody}"
+                                     LoadRemoteImages="{Binding LoadRemoteImages}"
+                                     SyncScrollEnabled="{Binding SyncScrollEnabled}" />
+        </Border>
+      </Grid>
 
       <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
 
@@ -58,7 +95,7 @@
             <Button Grid.Row="1" Content="Activate Version" Command="{Binding ActivateVersionCommand}" CommandParameter="{Binding SelectedVersion}" HorizontalAlignment="Right" Margin="0,8,0,0" />
           </Grid>
         </TabItem>
-        <TabItem Header="Preview">
+        <TabItem Header="Cast Preview">
           <ScrollViewer>
             <StackPanel Spacing="10" Margin="8">
               <TextBlock Text="Cast Preview" FontWeight="SemiBold" />

@@ -120,7 +120,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     {
         string normalizedRoot = Path.GetFullPath(_workspace.Root);
 
-        IntelligenceSettings settings = new() { EnableLoreSystem = false, EnableArchiveSearch = false };
+        IntelligenceSettings settings = new() { EnableLexiconSystem = false, EnableArchiveSearch = false };
 
         ServiceCollection services = new();
 

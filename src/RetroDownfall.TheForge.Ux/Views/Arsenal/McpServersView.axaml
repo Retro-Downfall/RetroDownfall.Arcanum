@@ -1,0 +1,41 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Arsenal.McpServersView"
+             x:DataType="vm:McpServersViewModel">
+  <Grid RowDefinitions="Auto,Auto,Auto,*">
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Margin="0,0,0,8">
+      <Button Content="Start" Command="{Binding StartCommand}" />
+      <Button Content="Stop" Command="{Binding StopCommand}" />
+      <Button Content="Restart" Command="{Binding RestartCommand}" />
+      <Button Content="Reload" Command="{Binding ReloadCommand}" />
+      <TextBlock Text="{Binding StatusText}" Opacity="0.7" VerticalAlignment="Center" Margin="8,0,0,0" />
+    </StackPanel>
+
+    <TextBlock Grid.Row="2" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <ListBox Grid.Row="3" ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}" BorderThickness="0">
+      <ListBox.ItemTemplate>
+        <DataTemplate x:DataType="vm:McpServerCardViewModel">
+          <Border Margin="0,0,0,8" Padding="10" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+            <StackPanel Spacing="4">
+              <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="{Binding Name}" FontWeight="SemiBold" />
+                <TextBlock DockPanel.Dock="Right" Text="{Binding StateText}" Opacity="0.85" />
+              </DockPanel>
+              <TextBlock Text="{Binding Transport}" Opacity="0.65" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+              <TextBlock Text="{Binding ToolsText}" TextWrapping="Wrap" Opacity="0.8" FontFamily="Cascadia Mono, Consolas, monospace" />
+              <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+          </Border>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </Grid>
+</UserControl>

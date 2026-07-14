@@ -17,6 +17,8 @@ public interface IAtelierDataSource
 
     Task<IReadOnlyList<SpellSummary>> GetGlobalSpellsAsync(CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<PromptSummaryDto>> GetGlobalPromptsAsync(CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SessionSummaryDto>> GetRecentSessionsAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<SpellSummary>> GetCampaignSpellsAsync(Guid campaignId, CancellationToken cancellationToken);

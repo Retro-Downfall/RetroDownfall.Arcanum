@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
+using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
 using RetroDownfall.TheForge.Ux.Services.Terminal;
@@ -15,9 +16,14 @@ using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
+using RetroDownfall.TheForge.Ux.ViewModels.Reliquary;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
+using RetroDownfall.TheForge.Ux.ViewModels.Archive;
+using RetroDownfall.TheForge.Ux.ViewModels.Divination;
+using RetroDownfall.TheForge.Ux.ViewModels.Lore;
+using RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
 
 namespace RetroDownfall.TheForge.Ux;
 
@@ -42,26 +48,30 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton(configuration);
 
-        services.AddOptions<ForgeSettings>().Bind(configuration);
+        services.AddOptions<TheForgeSettings>().Bind(configuration);
 
-        services.AddSingleton<IForgeSettingsStore>(sp => new ForgeSettingsStore(
+        services.AddSingleton<ITheForgeSettingsStore>(sp => new TheForgeSettingsStore(
             forgeJsonPath,
-            sp.GetService<ILogger<ForgeSettingsStore>>()));
+            sp.GetService<ILogger<TheForgeSettingsStore>>()));
 
         services.AddLogging(builder => builder.AddDebug());
 
         services.AddHttpClient(ArcanumApiClient.HttpClientName);
 
-        services.AddSingleton<IOsCredentialStore, OsCredentialStore>();
+        // Must use the parameterless-ctor factory, not AddSingleton<IOsCredentialStore, OsCredentialStore>():
+        // the generic overload lets the container pick OsCredentialStore's test-seam constructor
+        // (OsCredentialStore(IOsCredentialStore inner)), which requests IOsCredentialStore again and
+        // self-cycles at resolution time (instant quit before MainWindow).
+        services.AddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
 
         services.AddSingleton<ApiKeyResolver>();
 
         services.AddSingleton<IApiKeyPrompt, AvaloniaApiKeyPrompt>();
 
-        services.AddSingleton<IForgeApiKeyProvider>(static sp => new ForgeApiKeyProvider(
+        services.AddSingleton<ITheForgeApiKeyProvider>(static sp => new TheForgeApiKeyProvider(
             sp.GetRequiredService<ApiKeyResolver>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<ForgeSettings>>(),
-            sp.GetRequiredService<ILogger<ForgeApiKeyProvider>>(),
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>(),
+            sp.GetRequiredService<ILogger<TheForgeApiKeyProvider>>(),
             ct => sp.GetRequiredService<IApiKeyPrompt>().PromptForApiKeyAsync(ct)));
 
         services.AddSingleton<ArcanumApiClient>();
@@ -78,11 +88,39 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<ISpellEditorDataSource, SpellEditorDataSource>();
 
+        services.AddSingleton<IPromptEditorDataSource, PromptEditorDataSource>();
+
         services.AddSingleton<ITomeDataSource, TomeDataSource>();
+
+        services.AddSingleton<IArtifactCreationDataSource, ArtifactCreationDataSource>();
+
+        services.AddSingleton<IArtifactCreationDialogService, AvaloniaArtifactCreationDialogService>();
+
+        services.AddSingleton<IConfirmationDialogService, AvaloniaConfirmationDialogService>();
 
         services.AddSingleton<IGatehouseDataSource, GatehouseDataSource>();
 
         services.AddSingleton<IAnvilDataSource, AnvilDataSource>();
+
+        services.AddSingleton<IArsenalDataSource, ArsenalDataSource>();
+
+        services.AddSingleton<IModelsProvidersDataSource, ModelsProvidersDataSource>();
+
+        services.AddSingleton<IReliquaryDataSource, ReliquaryDataSource>();
+
+        services.AddSingleton<ITreasuryDataSource, TreasuryDataSource>();
+
+        services.AddSingleton<ILoreDataSource, LoreDataSource>();
+
+        services.AddSingleton<ISagaArchiveDataSource, SagaArchiveDataSource>();
+
+        services.AddSingleton<IDivinationDataSource, DivinationDataSource>();
+
+        services.AddSingleton<IWorkspaceExplorerDataSource, WorkspaceExplorerDataSource>();
+
+        services.AddSingleton<ICodexDataSource, CodexDataSource>();
+
+        services.AddSingleton<IMarkdownDocumentContentStore, MarkdownDocumentContentStore>();
 
         services.AddSingleton<ThemeApplicationService>();
 
@@ -117,12 +155,28 @@ internal static class ServiceCollectionConfigurator
 
         services.AddTransient<ArsenalViewModel>();
 
+        services.AddTransient<McpServersViewModel>();
+
+        services.AddTransient<ScryingPoolViewModel>();
+
+        services.AddTransient<ModelsProvidersViewModel>();
+
+        services.AddTransient<ReliquaryViewModel>();
+
         // Singleton so Workbench documents (The Tome) and the shell share one log surface.
         services.AddSingleton<FoundryFloorViewModel>();
 
         services.AddTransient<HearthViewModel>();
 
         services.AddTransient<AnvilViewModel>();
+
+        services.AddTransient<LoreBrowserViewModel>();
+
+        services.AddTransient<SagaArchiveViewModel>();
+
+        services.AddTransient<DivinationViewModel>();
+
+        services.AddTransient<WorkspaceExplorerViewModel>();
 
     }
 
@@ -148,6 +202,8 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<TrialService>();
 
         services.AddSingleton<McpService>();
+
+        services.AddSingleton<ToolInvokeService>();
 
         services.AddSingleton<LlamaService>();
 

@@ -1,0 +1,116 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer"
+             xmlns:ws="using:RetroDownfall.Arcanum.Core.Workspaces"
+             x:Class="RetroDownfall.TheForge.Ux.Views.WorkspaceExplorer.WorkspaceExplorerView"
+             x:DataType="vm:WorkspaceExplorerViewModel">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshWorkspacesCommand}" />
+    </DockPanel>
+
+    <StackPanel Grid.Row="1" Spacing="4" Margin="0,0,0,8">
+      <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IndexFeatureDisabled}" />
+      <TextBlock Text="{Binding WriteDisabledBanner}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IsWriteDisabled}" />
+    </StackPanel>
+
+    <DockPanel Grid.Row="2" LastChildFill="False" Margin="0,0,0,8">
+      <ComboBox DockPanel.Dock="Left"
+                ItemsSource="{Binding Workspaces}"
+                SelectedItem="{Binding SelectedWorkspace}"
+                MinWidth="180"
+                PlaceholderText="Workspace…">
+        <ComboBox.ItemTemplate>
+          <DataTemplate x:DataType="ws:WorkspaceInfo">
+            <TextBlock Text="{Binding Name}" />
+          </DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+      <Button DockPanel.Dock="Left" Content="Up" Command="{Binding UpCommand}" Margin="6,0,0,0" IsEnabled="{Binding CanGoUp}" />
+      <Button DockPanel.Dock="Left" Content="Refresh dir" Command="{Binding RefreshDirectoryCommand}" Margin="6,0,0,0" />
+      <Button DockPanel.Dock="Left" Content="Index" Command="{Binding IndexWorkspaceCommand}" Margin="6,0,0,0" IsEnabled="{Binding !IndexFeatureDisabled}" />
+      <TextBlock DockPanel.Dock="Left" Text="Indexing…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsIndexing}" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding CurrentRelativePath}" Opacity="0.7" Margin="12,0,0,0" VerticalAlignment="Center" />
+    </DockPanel>
+
+    <Grid Grid.Row="3" ColumnDefinitions="*,5,*">
+      <Grid Grid.Column="0" RowDefinitions="*,Auto">
+        <Grid>
+          <TextBlock Text="{Binding EmptyWorkspacesState}" Opacity="0.7" Margin="0,8,0,0" IsVisible="{Binding HasNoWorkspaces}" />
+          <TextBlock Text="{Binding EmptyEntriesState}" Opacity="0.7" Margin="0,8,0,0" IsVisible="{Binding HasNoEntries}" />
+          <ListBox ItemsSource="{Binding Entries}"
+                   SelectedItem="{Binding SelectedEntry}"
+                   DoubleTapped="OnEntriesDoubleTapped"
+                   BorderThickness="0"
+                   IsVisible="{Binding !HasNoEntries}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="ws:FileEntry">
+                <DockPanel LastChildFill="True" Margin="0,2">
+                  <TextBlock DockPanel.Dock="Right" Text="{Binding Size, StringFormat={}{0} B}" Opacity="0.55" Margin="8,0,0,0" />
+                  <TextBlock Text="{Binding Name}" />
+                </DockPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Margin="0,8,0,0" IsVisible="{Binding WritesEnabled}">
+          <TextBox Text="{Binding NewDirectoryName}" Watermark="New folder name…" MinWidth="120" />
+          <Button Content="Create dir" Command="{Binding CreateDirectoryCommand}" />
+          <Button Content="Delete" Command="{Binding DeleteFileCommand}" />
+        </StackPanel>
+      </Grid>
+
+      <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+
+      <Grid Grid.Column="2" RowDefinitions="Auto,*,Auto">
+        <StackPanel Grid.Row="0" Spacing="2" Margin="0,0,0,8" IsVisible="{Binding FileInfo, Converter={x:Static ObjectConverters.IsNotNull}}">
+          <TextBlock Text="{Binding FileInfo.RelativePath}" FontWeight="SemiBold" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding FileInfo.Size, StringFormat=Size: {0} bytes}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+          <TextBlock Text="{Binding FileInfo.LastModified, StringFormat=Modified: {0:g}}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+          <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,4,0,0">
+            <Button Content="Copy path" Command="{Binding CopyPathCommand}" HorizontalAlignment="Left" />
+            <Button Content="Open Preview" Command="{Binding OpenMarkdownPreviewCommand}" IsEnabled="{Binding CanOpenMarkdownPreview}" />
+          </StackPanel>
+        </StackPanel>
+
+        <TextBox Grid.Row="1"
+                 Text="{Binding FileContentsText}"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 FontFamily="{DynamicResource ForgeCodeFontFamily}"
+                 IsReadOnly="{Binding !WritesEnabled}"
+                 Watermark="Select a file to view contents…" />
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6" Margin="0,8,0,0" IsVisible="{Binding WritesEnabled}">
+          <Button Content="Save" Command="{Binding SaveFileCommand}" IsEnabled="{Binding IsFileSelected}" />
+        </StackPanel>
+      </Grid>
+    </Grid>
+
+    <StackPanel Grid.Row="4" Spacing="6" Margin="0,8,0,4">
+      <DockPanel LastChildFill="False">
+        <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" Watermark="Workspace Divination…" MinWidth="180" />
+        <Button DockPanel.Dock="Left" Content="Divine" Command="{Binding DivineWorkspaceFilesCommand}" Margin="6,0,0,0" IsEnabled="{Binding !IndexFeatureDisabled}" />
+        <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearching}" />
+      </DockPanel>
+      <ListBox ItemsSource="{Binding DivinationResults}" MaxHeight="140" BorderThickness="0">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="ws:WorkspaceSearchResult">
+            <Border Margin="0,0,0,4" Padding="6" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+              <StackPanel Spacing="2">
+                <TextBlock Text="{Binding RelativePath}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Similarity, StringFormat=Similarity: {0:P0}}" Opacity="0.65" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="{Binding ContentPreview}" TextWrapping="Wrap" MaxLines="2" Opacity="0.85" />
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </StackPanel>
+  </Grid>
+</UserControl>

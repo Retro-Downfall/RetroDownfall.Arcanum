@@ -12,11 +12,11 @@ public class DockLayoutSerializerTests
     public void RoundTrip_PreservesDefaultLayout()
     {
 
-        ForgeDockLayoutDto original = DockLayoutSerializer.CreateDefaultDto();
+        TheForgeDockLayoutDto original = DockLayoutSerializer.CreateDefaultDto();
 
         string json = DockLayoutSerializer.Serialize(original);
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.DeserializeOrDefault(json);
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.DeserializeOrDefault(json);
 
         Assert.Equal(DockLayoutDefaults.SchemaVersion, restored.SchemaVersion);
 
@@ -32,16 +32,16 @@ public class DockLayoutSerializerTests
     public void Deserialize_IgnoresUnknownToolIds()
     {
 
-        ForgeDockLayoutDto dto = DockLayoutSerializer.CreateDefaultDto() with
+        TheForgeDockLayoutDto dto = DockLayoutSerializer.CreateDefaultDto() with
         {
             Tools = DockLayoutSerializer.CreateDefaultDto().Tools
-                .Append(new ForgeDockToolLayoutDto("floatingPane", "Left", "Left", true, 99))
+                .Append(new TheForgeDockToolLayoutDto("floatingPane", "Left", "Left", true, 99))
                 .ToList(),
         };
 
         string json = DockLayoutSerializer.Serialize(dto);
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.DeserializeOrDefault(json);
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.DeserializeOrDefault(json);
 
         Assert.DoesNotContain(restored.Tools, t => t.ToolId == "floatingPane");
 
@@ -53,9 +53,9 @@ public class DockLayoutSerializerTests
     public void Deserialize_InsertsMissingKnownTools()
     {
 
-        ForgeDockLayoutDto dto = new(
+        TheForgeDockLayoutDto dto = new(
             1,
-            [new ForgeDockToolLayoutDto(DockToolId.Atelier, "Left", "Left", true, 0)],
+            [new TheForgeDockToolLayoutDto(DockToolId.Atelier, "Left", "Left", true, 0)],
             DockToolId.Atelier,
             null,
             null,
@@ -63,7 +63,7 @@ public class DockLayoutSerializerTests
             330,
             190);
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
 
         foreach (string id in DockToolId.All)
         {
@@ -78,7 +78,7 @@ public class DockLayoutSerializerTests
     public void Deserialize_CorruptString_FallsBackToDefaults()
     {
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.DeserializeOrDefault("{ not json");
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.DeserializeOrDefault("{ not json");
 
         Assert.Equal(DockLayoutDefaults.SchemaVersion, restored.SchemaVersion);
 
@@ -90,14 +90,14 @@ public class DockLayoutSerializerTests
     public void Normalize_ClampsInvalidSizes()
     {
 
-        ForgeDockLayoutDto dto = DockLayoutSerializer.CreateDefaultDto() with
+        TheForgeDockLayoutDto dto = DockLayoutSerializer.CreateDefaultDto() with
         {
             LeftWidth = double.NaN,
             RightWidth = double.PositiveInfinity,
             BottomHeight = -50,
         };
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
 
         Assert.Equal(DockLayoutDefaults.DefaultLeftWidth, restored.LeftWidth);
 
@@ -105,7 +105,7 @@ public class DockLayoutSerializerTests
 
         Assert.Equal(DockLayoutDefaults.DefaultBottomHeight, restored.BottomHeight);
 
-        ForgeDockLayoutDto huge = DockLayoutSerializer.Normalize(
+        TheForgeDockLayoutDto huge = DockLayoutSerializer.Normalize(
             DockLayoutSerializer.CreateDefaultDto() with { LeftWidth = 10_000 });
 
         Assert.Equal(DockLayoutDefaults.DefaultLeftWidth, huge.LeftWidth);
@@ -116,11 +116,11 @@ public class DockLayoutSerializerTests
     public void Normalize_InvalidRegions_FallBackWithoutCrash()
     {
 
-        ForgeDockLayoutDto dto = new(
+        TheForgeDockLayoutDto dto = new(
             1,
             [
-                new ForgeDockToolLayoutDto(DockToolId.Gatehouse, "Floating", "Document", true, 0),
-                new ForgeDockToolLayoutDto(DockToolId.Atelier, "Left", "Left", true, 0),
+                new TheForgeDockToolLayoutDto(DockToolId.Gatehouse, "Floating", "Document", true, 0),
+                new TheForgeDockToolLayoutDto(DockToolId.Atelier, "Left", "Left", true, 0),
             ],
             DockToolId.Atelier,
             DockToolId.Gatehouse,
@@ -129,9 +129,9 @@ public class DockLayoutSerializerTests
             330,
             190);
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
 
-        ForgeDockToolLayoutDto gatehouse = Assert.Single(restored.Tools, t => t.ToolId == DockToolId.Gatehouse);
+        TheForgeDockToolLayoutDto gatehouse = Assert.Single(restored.Tools, t => t.ToolId == DockToolId.Gatehouse);
 
         Assert.Equal("Right", gatehouse.Region);
 
@@ -141,11 +141,11 @@ public class DockLayoutSerializerTests
     public void Normalize_DuplicateToolIds_KeepsOne()
     {
 
-        ForgeDockLayoutDto dto = new(
+        TheForgeDockLayoutDto dto = new(
             1,
             [
-                new ForgeDockToolLayoutDto(DockToolId.Atelier, "Left", "Left", true, 0),
-                new ForgeDockToolLayoutDto(DockToolId.Atelier, "Right", "Right", true, 1),
+                new TheForgeDockToolLayoutDto(DockToolId.Atelier, "Left", "Left", true, 0),
+                new TheForgeDockToolLayoutDto(DockToolId.Atelier, "Right", "Right", true, 1),
             ],
             DockToolId.Atelier,
             null,
@@ -154,7 +154,7 @@ public class DockLayoutSerializerTests
             330,
             190);
 
-        ForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
+        TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
 
         Assert.Equal(1, restored.Tools.Count(t => t.ToolId == DockToolId.Atelier));
 
@@ -166,11 +166,11 @@ public class DockLayoutSerializerTests
     public void Serialize_UsesSourceGeneratedContext()
     {
 
-        ForgeDockLayoutDto dto = DockLayoutSerializer.CreateDefaultDto();
+        TheForgeDockLayoutDto dto = DockLayoutSerializer.CreateDefaultDto();
 
         string viaHelper = DockLayoutSerializer.Serialize(dto);
 
-        string viaContext = JsonSerializer.Serialize(dto, ForgeSettingsJsonContext.Default.ForgeDockLayoutDto);
+        string viaContext = JsonSerializer.Serialize(dto, TheForgeSettingsJsonContext.Default.TheForgeDockLayoutDto);
 
         Assert.Equal(viaContext, viaHelper);
 

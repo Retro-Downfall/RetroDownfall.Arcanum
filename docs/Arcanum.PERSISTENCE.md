@@ -10,7 +10,8 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 
 | State | Table | Status |
 |---|---|---|
-| Sessions, Entries, MageSettings (Lore), Campaigns, Apprentices, WorkspaceContexts | `Sessions`, `Entries`, `MageSettings`, `Campaigns`, `Apprentices`, `WorkspaceContexts` | Existing |
+| Sessions, Entries, MageSettings (Lore — legacy operator key-value), Campaigns, Apprentices, WorkspaceContexts | `Sessions`, `Entries`, `MageSettings`, `Campaigns`, `Apprentices`, `WorkspaceContexts` | Existing. `MageSettings` is no longer model-directed — the Lore MCP tools are removed; it remains an operator-only surface (`/api/lore`, `arcanum lore`). Agent memory is The Lexicon. |
+| **The Lexicon** (agent-directed entity memory: Name + Type + Facts per entity) | `lexicon_entries` + FTS5 `lexicon_fts` | Existing — raw-SQL tables created by `LexiconSchemaInitializer` at Grimoire bootstrap (alongside `WeaveSchemaInitializer`), **not** part of the compiled EF model and **not** an EF migration. Accessed via `LexiconService` over the scoped `ArcanumDbContext` connection + `SqliteBusyRetry`. See DESIGN.md §10.6. |
 | Migration history | `__EFMigrationsHistory` | Existing |
 | **Unseen Servant watermarks** (last-run timestamp + dynamic interval override, per job) | `UnseenServantWatermarks` | Existing |
 | Daemon execution history | — | Deferred (in-memory, `InMemoryDaemonExecutionRepository`) |
@@ -81,6 +82,8 @@ A failed watermark write is logged as a warning and swallowed — it never crash
 
 **Cooldown window (warm-start behavior):** if the host was down longer than a job's effective interval, the persisted `LastRunAt + EffectiveIntervalMinutes` is already in the past. Without correction, every such job would fire immediately on the first tick after hydration — the exact restart-storm this change exists to prevent. To avoid this, `IUnseenServantJobTracker.HydrateAsync` checks each watermark: if `LastRunAt + EffectiveIntervalMinutes < now`, the tracker seeds the in-memory record with `DateTimeOffset.UtcNow` (not the stale persisted value) and `LastResult = "Skipped (host was down)"`. The job is treated as having just run, so it waits one full interval before its next real execution — trading one skipped cycle for eliminating duplicate-inference storms after extended downtime.
 
+**Cooldown.** If `UnseenServantWatermarks` is lost or corrupt, hydrate falls back to in-memory state plus startup jitter (same path as a failed `GetAllAsync`). Recreate or repair the Grimoire to restore durable watermarks, or accept one-interval cooldown after restore when rows come back (warm-start seeding may treat restored timestamps as stale).
+
 ## 7. What is NOT persisted
 
 - **Wards** (`WardGate`) — inherently ephemeral. A ward holds a `TaskCompletionSource` correlated to a specific in-flight inference turn in a specific process. On restart, the process (and the awaiting caller) is gone — there is nothing meaningful to resume. `WardGate` is a fresh, empty singleton on every process start, so "auto-deny on restart" is a no-op in practice; the `HostRestartedReason` constant exists purely as a documented contract value for future use, not as an active code path.
@@ -88,6 +91,33 @@ A failed watermark write is logged as a warning and swallowed — it never crash
 - **Live token streams** — an in-flight `/v1` or `/api/intelligence/ping-stream` response is bound to one HTTP connection and one process; it cannot survive a restart by definition.
 - **`_firstDispatchAfterUtc` startup jitter** (`UnseenServantService`) — intentionally regenerated fresh on every process start (a random 0-60s delay per job) to spread first-tick load; it is not a watermark and persisting it would serve no purpose.
 - **A2A task mappings** (`ArcanumA2AAgentHandler`'s in-memory task-id ↔ Apprentice-id map; DESIGN.md §5.7.1) — an A2A Task maps to an Apprentice, and the Apprentice itself is already fully persisted in `Apprentices`/`Sessions`/`Entries`; the mapping is a cheap runtime index, not new state. On restart, in-flight external A2A tasks are lost (the remote client will see the connection drop and can re-poll `GetTaskAsync`, which will 404 since `InMemoryTaskStore` is also process-lifetime) exactly like any other live SSE/streaming connection in this document. The Archmage Client's outbound delegations (`dispatch_sending`) are also ephemeral: the remote agent's task id lives only in the `sendingDispatched`/`sendingCompleted`/`sendingFailed` Chronicle events on the calling Apprentice, not in a queryable table.
+
+## 7a. The Lexicon (raw-SQL, no EF migration)
+
+The Lexicon is agent-directed entity memory, replacing the legacy key-value Lore MCP tools for model use. It follows the same raw-SQL-over-`ArcanumDbContext`-connection pattern as `SagaMemoryStore`, `SanctumBreachRepository`, `UnseenServantWatermarkStore`, and `BudgetAlertRepository` — deliberately **not** part of the compiled EF model, so it required no `dotnet ef dbcontext optimize` regeneration and no entry in `GrimoireSqlSchemaMigrator.MigrationOrder`.
+
+- **Schema** is created idempotently by `LexiconSchemaInitializer.EnsureSchemaAsync`, invoked from `GrimoireDatabaseBootstrapper.EnsureInitializedAsync` right after `GrimoireSqlSchemaMigrator.ApplyPendingAsync` and alongside `WeaveSchemaInitializer`. Every statement uses `CREATE ... IF NOT EXISTS`. A failure is logged and swallowed — the Lexicon is optional agent memory and must never fail host startup; `LexiconService` degrades to empty matches / logged write failures when the tables are absent.
+
+```sql
+CREATE TABLE IF NOT EXISTS lexicon_entries (
+    Id TEXT PRIMARY KEY,
+    Name TEXT NOT NULL,
+    NameNormalized TEXT NOT NULL,
+    Type TEXT NOT NULL,
+    FactsJson TEXT NOT NULL,
+    FactsText TEXT NOT NULL,
+    UpdatedAt TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS IX_lexicon_entries_NameNormalized ON lexicon_entries(NameNormalized);
+CREATE VIRTUAL TABLE IF NOT EXISTS lexicon_fts USING fts5(
+    Name, Type, FactsText, content='lexicon_entries', content_rowid='rowid'
+);
+```
+
+- **Triggers** `lexicon_entries_ai` / `_ad` / `_au` sync the FTS5 external-content index on insert/delete/update using the FTS5 `'delete'` command for the old row. Triggers copy `Name`, `Type`, `FactsText` only — no JSON parsing happens inside SQLite. `FactsJson` is the durable array (serialized via the source-generated `LexiconJsonContext`); `FactsText` is a newline-joined plain-text projection for FTS tokenization.
+- **Writes** (`scribe_lexicon`) upsert by `NameNormalized` (trim + invariant) under `BEGIN IMMEDIATE` inside `SqliteBusyRetry`, so concurrent appends cannot lose facts. Non-duplicate facts are appended; counts and lengths are capped by `LexiconLimits` (max name/type length, max facts per upsert, max fact length, max facts retained per entry). Type semantics: new + blank → `General`; existing + blank → keep; non-empty → refresh. `delete_lexicon` removes the row; its FTS row is removed by the `_ad` trigger.
+- **Reads** (`MatchEntitiesAsync`) are tiered: exact `NameNormalized IN (...)` hits first (ordered `UpdatedAt DESC`), then for unresolved terms a column-weighted FTS5 query `WHERE lexicon_fts MATCH 'Term' ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC` (3.0 Name, 2.0 Type, 1.0 FactsText — boosting lives in `bm25()`, not in the `MATCH` string; SQLite FTS5 does not support Lucene caret boosting). Results are deduplicated by `Id`, exact hits before FTS hits, and capped by `LexiconMaxMatchedEntries`. If the FTS query fails it degrades to a bounded `LIKE` fallback over `Name`/`FactsText`, or empty matches — never an exception.
+- **No data to migrate:** the Lexicon is a net-new feature with no existing rows; `MageSettings` Lore is not migrated into it and remains intact as the operator key-value surface.
 
 ## 8. Existing patterns followed
 

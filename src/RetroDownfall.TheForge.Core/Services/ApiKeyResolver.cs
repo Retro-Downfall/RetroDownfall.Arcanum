@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -11,7 +10,7 @@ namespace RetroDownfall.TheForge.Core.Services;
 /// (same identity Arcanum writes at bootstrap). Resolution order:
 /// <list type="number">
 /// <item>OS keychain (<see cref="ArcanumCredentialIdentity"/>).</item>
-/// <item>Legacy plaintext <c>forge.json</c> <see cref="ForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
+/// <item>Legacy plaintext <c>forge.json</c> <see cref="TheForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
 /// <item>Optional shell-out to <c>arcanum key show</c> — result persisted into the keychain.</item>
 /// <item>Otherwise <see langword="null"/> — caller prompts the user to paste and calls <see cref="PersistAsync"/>.</item>
 /// </list>
@@ -21,12 +20,19 @@ public sealed class ApiKeyResolver
 
     private readonly IOsCredentialStore _osStore;
 
+    private readonly ITheForgeSettingsStore _settingsStore;
+
     private readonly ILogger<ApiKeyResolver> _logger;
 
-    public ApiKeyResolver(IOsCredentialStore osStore, ILogger<ApiKeyResolver> logger)
+    public ApiKeyResolver(
+        IOsCredentialStore osStore,
+        ITheForgeSettingsStore settingsStore,
+        ILogger<ApiKeyResolver> logger)
     {
 
         _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
+
+        _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
 
         _logger = logger;
 
@@ -37,7 +43,7 @@ public sealed class ApiKeyResolver
     /// <see langword="null"/> when no source yields a key; callers should prompt the user to paste
     /// one and call <see cref="PersistAsync"/>.
     /// </summary>
-    public async Task<string?> ResolveAsync(ForgeSettings currentSettings, CancellationToken cancellationToken)
+    public async Task<string?> ResolveAsync(TheForgeSettings currentSettings, CancellationToken cancellationToken)
     {
 
         OsCredentialStoreResult os = _osStore.TryGet(
@@ -120,7 +126,7 @@ public sealed class ApiKeyResolver
     /// Persists a pasted (or otherwise obtained) key into the OS credential store. Also strips any
     /// legacy plaintext <c>apiKey</c> from <c>forge.json</c>.
     /// </summary>
-    public async Task PersistAsync(ForgeSettings currentSettings, string apiKey, CancellationToken cancellationToken)
+    public async Task PersistAsync(TheForgeSettings currentSettings, string apiKey, CancellationToken cancellationToken)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
@@ -142,30 +148,20 @@ public sealed class ApiKeyResolver
 
     }
 
-    private async Task StripForgeJsonApiKeyAsync(ForgeSettings currentSettings, CancellationToken cancellationToken)
+    private async Task StripForgeJsonApiKeyAsync(TheForgeSettings currentSettings, CancellationToken cancellationToken)
     {
 
         if (string.IsNullOrWhiteSpace(currentSettings.ApiKey)
-            && !File.Exists(Path.Combine(ArcanumPaths.GrimoireDirectory, "forge.json")))
+            && !File.Exists(_settingsStore.SettingsPath))
         {
 
             return;
 
         }
 
-        string directory = ArcanumPaths.GrimoireDirectory;
-
-        Directory.CreateDirectory(directory);
-
-        string path = Path.Combine(directory, "forge.json");
-
-        ForgeSettings updated = currentSettings with { ApiKey = null };
-
-        string json = JsonSerializer.Serialize(updated, ForgeSettingsJsonContext.Default.ForgeSettings);
-
-        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
-
-        TrySetUnixFileMode(path);
+        await _settingsStore
+            .SavePatchAsync(static s => s with { ApiKey = null }, cancellationToken)
+            .ConfigureAwait(false);
 
     }
 
@@ -230,30 +226,6 @@ public sealed class ApiKeyResolver
 
             return null;
 
-        }
-
-    }
-
-    private static void TrySetUnixFileMode(string path)
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
-
-        try
-        {
-
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
-        }
-        catch (IOException)
-        {
-
-            // Best-effort — some filesystems (e.g. certain network mounts) reject chmod.
         }
 
     }

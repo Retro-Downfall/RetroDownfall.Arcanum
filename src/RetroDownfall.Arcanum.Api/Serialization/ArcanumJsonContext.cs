@@ -252,6 +252,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(CommLinkMessageRequestDto))]
 [JsonSerializable(typeof(CommLinkSeverity))]
 [JsonSerializable(typeof(SemanticSpellResponse))]
+[JsonSerializable(typeof(LexiconEntityExtractionResponse))]
 [JsonSerializable(typeof(DataStreamPayload))]
 [JsonSerializable(typeof(List<DataStreamPayload>))]
 [JsonSerializable(typeof(DaemonEvent))]

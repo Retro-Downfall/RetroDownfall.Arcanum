@@ -40,4 +40,10 @@
 
   </ItemGroup>
 
+  <ItemGroup>
+
+    <None Include="Fixtures\illumination-kitchen-sink.md" CopyToOutputDirectory="PreserveNewest" />
+
+  </ItemGroup>
+
 </Project>

@@ -22,15 +22,15 @@ public sealed class LlamaService
         _apiClient.PostNdjsonStreamAsync(
             "/api/llama/models/pull",
             request,
-            ForgeJsonContext.Default.PullModelRequestDto,
-            ForgeJsonContext.Default.LlamaPullProgress,
+            TheForgeJsonContext.Default.PullModelRequestDto,
+            TheForgeJsonContext.Default.LlamaPullProgress,
             cancellationToken);
 
     public Task<ApiResponse<CachedModelInfo[]>?> ListModelsAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/llama/models", ForgeJsonContext.Default.ApiResponseCachedModelInfoArray, cancellationToken);
+        _apiClient.GetAsync("/api/llama/models", TheForgeJsonContext.Default.ApiResponseCachedModelInfoArray, cancellationToken);
 
     public Task<ApiResponse<LlamaServerInfo[]>?> ListServersAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/llama/servers", ForgeJsonContext.Default.ApiResponseLlamaServerInfoArray, cancellationToken);
+        _apiClient.GetAsync("/api/llama/servers", TheForgeJsonContext.Default.ApiResponseLlamaServerInfoArray, cancellationToken);
 
     public Task<ApiResponse<LlamaServerInfo>?> StartServerAsync(
         string cacheKey,
@@ -39,25 +39,25 @@ public sealed class LlamaService
         _apiClient.PostAsync(
             $"/api/llama/servers/{Uri.EscapeDataString(cacheKey)}/start",
             request ?? new StartLlamaServerRequestDto(),
-            ForgeJsonContext.Default.StartLlamaServerRequestDto,
-            ForgeJsonContext.Default.ApiResponseLlamaServerInfo,
+            TheForgeJsonContext.Default.StartLlamaServerRequestDto,
+            TheForgeJsonContext.Default.ApiResponseLlamaServerInfo,
             cancellationToken);
 
     public Task<ApiResponse<bool>?> StopServerAsync(string cacheKey, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/llama/servers/{Uri.EscapeDataString(cacheKey)}/stop",
-            ForgeJsonContext.Default.ApiResponseBoolean,
+            TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
     public Task<ApiResponse<bool>?> StopAllServersAsync(CancellationToken cancellationToken) =>
-        _apiClient.PostAsync("/api/llama/servers/stop", ForgeJsonContext.Default.ApiResponseBoolean, cancellationToken);
+        _apiClient.PostAsync("/api/llama/servers/stop", TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken);
 
     public Task<ApiResponse<WarmupResultDto>?> WarmupAsync(string cacheKey, WarmupRequestDto request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/llama/servers/{Uri.EscapeDataString(cacheKey)}/warmup",
             request,
-            ForgeJsonContext.Default.WarmupRequestDto,
-            ForgeJsonContext.Default.ApiResponseWarmupResultDto,
+            TheForgeJsonContext.Default.WarmupRequestDto,
+            TheForgeJsonContext.Default.ApiResponseWarmupResultDto,
             cancellationToken);
 
 }

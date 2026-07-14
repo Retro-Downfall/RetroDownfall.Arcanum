@@ -65,11 +65,9 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _askHumanSchema;
 
-    private readonly JsonElement _readLoreSchema;
+    private readonly JsonElement _scribeLexiconSchema;
 
-    private readonly JsonElement _scribeLoreSchema;
-
-    private readonly JsonElement _deleteLoreSchema;
+    private readonly JsonElement _deleteLexiconSchema;
 
     private readonly JsonElement _searchArchivesSchema;
 
@@ -207,11 +205,9 @@ internal sealed partial class ArcanumInternalToolServer
 
         _askHumanSchema = BuildAskHumanSchema();
 
-        _readLoreSchema = BuildReadLoreSchema();
+        _scribeLexiconSchema = BuildScribeLexiconSchema();
 
-        _scribeLoreSchema = BuildScribeLoreSchema();
-
-        _deleteLoreSchema = BuildDeleteLoreSchema();
+        _deleteLexiconSchema = BuildDeleteLexiconSchema();
 
         _searchArchivesSchema = BuildSearchArchivesSchema();
 
@@ -580,32 +576,23 @@ internal sealed partial class ArcanumInternalToolServer
                 });
         }
 
-        if (_settings.EnableLoreSystem)
+        if (_settings.EnableLexiconSystem)
         {
             tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "read_lore",
+                    Name = "scribe_lexicon",
                     Description =
-                        "Reads a persistent key-value fact from the Grimoire (MageSettings). Use before answering when recalling operator context or project state.",
-                    InputSchema = _readLoreSchema,
+                        "Records structured agent memory: creates or updates a named Lexicon entity (Name + Type + Facts). Appends non-duplicate facts to an existing entity matched case-insensitively by name. Use to remember durable facts about people, projects, APIs, or daemon state.",
+                    InputSchema = _scribeLexiconSchema,
                 });
 
             tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "scribe_lore",
-                    Description =
-                        "Writes or updates a compressed factual summary in the Grimoire under a descriptive key for cross-session recall.",
-                    InputSchema = _scribeLoreSchema,
-                });
-
-            tools.Add(
-                new McpToolDefinitionWire
-                {
-                    Name = "delete_lore",
-                    Description = "Removes a lore key from the Grimoire when the operator asks to forget or the fact is obsolete.",
-                    InputSchema = _deleteLoreSchema,
+                    Name = "delete_lexicon",
+                    Description = "Removes a Lexicon entity by name when a memory is obsolete or the operator asks to forget it.",
+                    InputSchema = _deleteLexiconSchema,
                 });
         }
 
@@ -668,9 +655,9 @@ internal sealed partial class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("tools/call params missing required 'name'."));
         }
 
-        if ((call.Name is "read_lore" or "scribe_lore" or "delete_lore") && !_settings.EnableLoreSystem)
+        if ((call.Name is "scribe_lexicon" or "delete_lexicon") && !_settings.EnableLexiconSystem)
         {
-            return BuildToolsCallResponse(rpcId, ToolError("The Lore system is disabled in configuration."));
+            return BuildToolsCallResponse(rpcId, ToolError("The Lexicon system is disabled in configuration."));
         }
 
         if (call.Name == "search_archives" && !_settings.EnableArchiveSearch)

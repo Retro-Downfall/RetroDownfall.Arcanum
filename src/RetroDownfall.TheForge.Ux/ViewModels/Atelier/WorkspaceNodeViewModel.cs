@@ -1,13 +1,21 @@
+using System.Windows.Input;
+using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.TheForge.Ux.Models;
+using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
-/// <summary>Leaf node for a registered workspace.</summary>
-public sealed class WorkspaceNodeViewModel : AtelierNodeViewModel
+/// <summary>Leaf node for a registered workspace. Open focuses the Workspace Explorer dock tool.</summary>
+public sealed partial class WorkspaceNodeViewModel : AtelierNodeViewModel
 {
 
-    public WorkspaceNodeViewModel(WorkspaceInfo workspace)
+    private readonly INavigationService _navigation;
+
+    public WorkspaceNodeViewModel(WorkspaceInfo workspace, INavigationService navigation)
     {
+
+        _navigation = navigation;
 
         Workspace = workspace;
 
@@ -20,5 +28,10 @@ public sealed class WorkspaceNodeViewModel : AtelierNodeViewModel
     public WorkspaceInfo Workspace { get; }
 
     public override bool HasChildren => false;
+
+    public override ICommand? PrimaryCommand => OpenCommand;
+
+    [RelayCommand]
+    private void Open() => _navigation.FocusPanel(PanelKind.WorkspaceExplorer);
 
 }

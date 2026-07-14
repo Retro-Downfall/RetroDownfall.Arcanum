@@ -28,45 +28,45 @@ public sealed class ApprenticeService
     }
 
     public Task<ApiResponse<ListPageResult<ApprenticeSummaryDto>>?> ListAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/apprentices", ForgeJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto, cancellationToken);
+        _apiClient.GetAsync("/api/apprentices", TheForgeJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto, cancellationToken);
 
     public Task<ApiResponse<ApprenticeDetailDto>?> GetAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.GetAsync($"/api/apprentices/{id}", ForgeJsonContext.Default.ApiResponseApprenticeDetailDto, cancellationToken);
+        _apiClient.GetAsync($"/api/apprentices/{id}", TheForgeJsonContext.Default.ApiResponseApprenticeDetailDto, cancellationToken);
 
     public Task<ApiResponse<ApprenticeDetailDto>?> CreateAsync(CreateApprenticeRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             "/api/apprentices",
             request,
-            ForgeJsonContext.Default.CreateApprenticeRequest,
-            ForgeJsonContext.Default.ApiResponseApprenticeDetailDto,
+            TheForgeJsonContext.Default.CreateApprenticeRequest,
+            TheForgeJsonContext.Default.ApiResponseApprenticeDetailDto,
             cancellationToken);
 
     public Task<ApiResponse<string>?> StartAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/apprentices/{id}/start", ForgeJsonContext.Default.ApiResponseString, cancellationToken);
+        _apiClient.PostAsync($"/api/apprentices/{id}/start", TheForgeJsonContext.Default.ApiResponseString, cancellationToken);
 
     public Task<ApiResponse<string>?> PauseAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/apprentices/{id}/pause", ForgeJsonContext.Default.ApiResponseString, cancellationToken);
+        _apiClient.PostAsync($"/api/apprentices/{id}/pause", TheForgeJsonContext.Default.ApiResponseString, cancellationToken);
 
     public Task<ApiResponse<string>?> ResumeAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/apprentices/{id}/resume", ForgeJsonContext.Default.ApiResponseString, cancellationToken);
+        _apiClient.PostAsync($"/api/apprentices/{id}/resume", TheForgeJsonContext.Default.ApiResponseString, cancellationToken);
 
     public Task<ApiResponse<string>?> CancelAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/apprentices/{id}/cancel", ForgeJsonContext.Default.ApiResponseString, cancellationToken);
+        _apiClient.PostAsync($"/api/apprentices/{id}/cancel", TheForgeJsonContext.Default.ApiResponseString, cancellationToken);
 
     public Task<ApiResponse<ApprenticeDetailDto>?> ReweaveAsync(Guid id, ReweaveApprenticeRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/apprentices/{id}/reweave",
             request,
-            ForgeJsonContext.Default.ReweaveApprenticeRequest,
-            ForgeJsonContext.Default.ApiResponseApprenticeDetailDto,
+            TheForgeJsonContext.Default.ReweaveApprenticeRequest,
+            TheForgeJsonContext.Default.ApiResponseApprenticeDetailDto,
             cancellationToken);
 
     public Task<ApiResponse<string>?> InterveneAsync(Guid id, InterveneApprenticeRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/apprentices/{id}/intervene",
             request,
-            ForgeJsonContext.Default.InterveneApprenticeRequest,
-            ForgeJsonContext.Default.ApiResponseString,
+            TheForgeJsonContext.Default.InterveneApprenticeRequest,
+            TheForgeJsonContext.Default.ApiResponseString,
             cancellationToken);
 
     /// <summary>

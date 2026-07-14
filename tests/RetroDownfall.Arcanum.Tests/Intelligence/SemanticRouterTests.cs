@@ -14,7 +14,7 @@ public sealed class SemanticRouterTests
     {
         FakeChatClient client = new();
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "any prompt",
             [],
@@ -33,7 +33,7 @@ public sealed class SemanticRouterTests
     {
         FakeChatClient client = new()
         {
-            NextText = """{"spellName":"Summoner"}""",
+            NextText = """{"spellName":"Summoner","entities":["Alice"]}""",
         };
 
         List<SpellMetadata> spells =
@@ -42,7 +42,7 @@ public sealed class SemanticRouterTests
             new SpellMetadata("Other", "other", "/spells/other/SPELL.md"),
         ];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "please summon",
             spells,
@@ -53,7 +53,11 @@ public sealed class SemanticRouterTests
 
         Assert.NotNull(result);
 
-        Assert.Equal("Summoner", result!.Name);
+        Assert.Equal("Summoner", result!.Spell!.Name);
+
+        Assert.Single(result.Entities);
+
+        Assert.Equal("Alice", result.Entities[0]);
     }
 
     [Fact]
@@ -64,7 +68,7 @@ public sealed class SemanticRouterTests
             NextText = """
 
                 ```json
-                {"spellName":"Summoner"}
+                {"spellName":"Summoner","entities":[]}
                 ```
 
                 """,
@@ -72,7 +76,7 @@ public sealed class SemanticRouterTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "summon",
             spells,
@@ -81,20 +85,22 @@ public sealed class SemanticRouterTests
             0f,
             CancellationToken.None);
 
-        Assert.Equal("Summoner", result!.Name);
+        Assert.Equal("Summoner", result!.Spell!.Name);
+
+        Assert.Empty(result.Entities);
     }
 
     [Fact]
-    public async Task DetermineActiveSpellAsync_None_ReturnsNull()
+    public async Task DetermineActiveSpellAsync_None_StillReturnsEntities()
     {
         FakeChatClient client = new()
         {
-            NextText = """{"spellName":"NONE"}""",
+            NextText = """{"spellName":"NONE","entities":["Project Phoenix"]}""",
         };
 
         List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "unrelated",
             spells,
@@ -103,7 +109,37 @@ public sealed class SemanticRouterTests
             0f,
             CancellationToken.None);
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+
+        Assert.Null(result!.Spell);
+
+        Assert.Single(result.Entities);
+
+        Assert.Equal("Project Phoenix", result.Entities[0]);
+    }
+
+    [Fact]
+    public async Task DetermineActiveSpellAsync_MissingEntities_ReturnsEmpty()
+    {
+        FakeChatClient client = new()
+        {
+            NextText = """{"spellName":"Summoner"}""",
+        };
+
+        List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
+
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "summon",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None);
+
+        Assert.Equal("Summoner", result!.Spell!.Name);
+
+        Assert.Empty(result.Entities);
     }
 
     [Fact]
@@ -116,7 +152,7 @@ public sealed class SemanticRouterTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "summon",
             spells,
@@ -139,7 +175,7 @@ public sealed class SemanticRouterTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "summon",
             spells,
@@ -158,12 +194,12 @@ public sealed class SemanticRouterTests
         FakeChatClient client = new()
         {
             Delay = TimeSpan.FromSeconds(2),
-            NextText = """{"spellName":"Summoner"}""",
+            NextText = """{"spellName":"Summoner","entities":[]}""",
         };
 
         List<SpellMetadata> spells = [new SpellMetadata("Summoner", "desc", "/x/SPELL.md")];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "summon",
             spells,
@@ -181,7 +217,7 @@ public sealed class SemanticRouterTests
     {
         FakeChatClient client = new()
         {
-            NextText = """{"spellName":"NONE"}""",
+            NextText = """{"spellName":"NONE","entities":[]}""",
         };
 
         await SemanticRouter.DetermineActiveSpellAsync(
@@ -203,7 +239,7 @@ public sealed class SemanticRouterTests
     {
         FakeChatClient client = new()
         {
-            NextText = """{"spellName":"NONE"}""",
+            NextText = """{"spellName":"NONE","entities":[]}""",
         };
 
         List<SpellMetadata> spells =
@@ -234,7 +270,7 @@ public sealed class SemanticRouterTests
     {
         FakeChatClient client = new()
         {
-            NextText = """{"spellName":"Alpha"}""",
+            NextText = """{"spellName":"Alpha","entities":[]}""",
         };
 
         List<SpellMetadata> spells =
@@ -246,7 +282,7 @@ public sealed class SemanticRouterTests
 
         List<SpellMetadata> candidates = [spells[0]];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "any prompt",
             spells,
@@ -266,11 +302,11 @@ public sealed class SemanticRouterTests
 
         // Name resolution runs against the offered candidate set, so a match within that set still
         // resolves correctly.
-        Assert.Equal("Alpha", result!.Name);
+        Assert.Equal("Alpha", result!.Spell!.Name);
     }
 
     [Fact]
-    public async Task DetermineActiveSpellAsync_ResponseNamesSpellOutsideCandidates_ReturnsNull()
+    public async Task DetermineActiveSpellAsync_ResponseNamesSpellOutsideCandidates_ReturnsNullSpell()
     {
 
         // A hallucinated (or otherwise out-of-set) response naming a real spell that exists in the
@@ -278,7 +314,7 @@ public sealed class SemanticRouterTests
         // otherwise the whole point of the top-K candidate filter would be silently defeated.
         FakeChatClient client = new()
         {
-            NextText = """{"spellName":"Gamma"}""",
+            NextText = """{"spellName":"Gamma","entities":["foo"]}""",
         };
 
         List<SpellMetadata> spells =
@@ -290,7 +326,7 @@ public sealed class SemanticRouterTests
 
         List<SpellMetadata> candidates = [spells[0], spells[1]];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "any prompt",
             spells,
@@ -300,7 +336,9 @@ public sealed class SemanticRouterTests
             CancellationToken.None,
             candidates: candidates);
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+
+        Assert.Null(result!.Spell);
 
     }
 
@@ -311,7 +349,7 @@ public sealed class SemanticRouterTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md")];
 
-        SpellMetadata? result = await SemanticRouter.DetermineActiveSpellAsync(
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
             client,
             "any prompt",
             spells,
@@ -322,6 +360,86 @@ public sealed class SemanticRouterTests
             candidates: []);
 
         Assert.Null(result);
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task DetermineActiveSpellAsync_DedupesAndCapsEntities()
+    {
+        List<string> many = Enumerable.Range(0, 12).Select(i => i % 2 == 0 ? $"entity{i}" : $"Entity{i}").ToList();
+
+        string entitiesJson = string.Join(",", many.Select(e => $"\"{e}\""));
+
+        FakeChatClient client = new()
+        {
+            NextText = $$"""{"spellName":"NONE","entities":[{{entitiesJson}}]}""",
+        };
+
+        List<SpellMetadata> spells = [new SpellMetadata("A", "d", "/a/SPELL.md")];
+
+        SemanticSpellRoutingResult? result = await SemanticRouter.DetermineActiveSpellAsync(
+            client,
+            "prompt",
+            spells,
+            TimeSpan.FromSeconds(5),
+            32,
+            0f,
+            CancellationToken.None);
+
+        // entity0/Entity0 collapse under case-insensitive dedupe; total capped at MaxExtractedEntities (8).
+        Assert.Equal(8, result!.Entities.Count);
+    }
+
+    [Fact]
+    public async Task LexiconEntityExtractor_ExtractsEntitiesFromJson()
+    {
+        FakeChatClient client = new()
+        {
+            NextText = """{"entities":["Alice","Project Phoenix"]}""",
+        };
+
+        IReadOnlyList<string> entities = await LexiconEntityExtractor.ExtractAsync(
+            client,
+            "tell me about Alice and Project Phoenix",
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        Assert.Equal(2, entities.Count);
+
+        Assert.Contains("Alice", entities);
+    }
+
+    [Fact]
+    public async Task LexiconEntityExtractor_InvalidJson_ReturnsEmpty()
+    {
+        FakeChatClient client = new()
+        {
+            NextText = "not json",
+        };
+
+        IReadOnlyList<string> entities = await LexiconEntityExtractor.ExtractAsync(
+            client,
+            "prompt",
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None,
+            NullLogger.Instance);
+
+        Assert.Empty(entities);
+    }
+
+    [Fact]
+    public async Task LexiconEntityExtractor_EmptyPrompt_ReturnsEmptyWithoutCallingLlm()
+    {
+        FakeChatClient client = new();
+
+        IReadOnlyList<string> entities = await LexiconEntityExtractor.ExtractAsync(
+            client,
+            "   ",
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        Assert.Empty(entities);
 
         Assert.Empty(client.Calls);
     }

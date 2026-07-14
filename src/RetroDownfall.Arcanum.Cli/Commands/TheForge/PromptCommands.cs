@@ -567,7 +567,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
             return 1;
         }
 
-        await ForgeExecuteRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
+        await TheForgeExecuteRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
 
         return 0;
 

@@ -28,6 +28,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -61,6 +62,7 @@ public sealed class WizardIntelligenceProvider(
     ISagaMemoryStore sagaMemoryStore,
     SagaExtractionService sagaExtractionService,
     SemanticSpellRouter semanticSpellRouter,
+    ILexiconService lexiconService,
     ArcanumDbContext db,
     IInferenceAuditLogger inferenceAuditLogger,
     StructuredOutputValidator structuredOutputValidator,
@@ -348,6 +350,12 @@ public sealed class WizardIntelligenceProvider(
 
         SagaMemory[]? sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, inferenceToken).ConfigureAwait(false);
 
+        IReadOnlyList<LexiconEntryDto>? lexiconEntries = await RetrieveLexiconEntriesAsync(
+            request,
+            resolvedSpell?.Entities ?? Array.Empty<string>(),
+            chatClient,
+            inferenceToken).ConfigureAwait(false);
+
         string builtSystemPrompt = SystemPromptBuilder.Build(
             request,
             codexContent,
@@ -356,7 +364,9 @@ public sealed class WizardIntelligenceProvider(
             dependencySpells: resonants,
             maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
             semanticContext: semanticContext,
-            sagaMemories: sagaMemories);
+            sagaMemories: sagaMemories,
+            lexiconEntries: lexiconEntries,
+            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes));
 
         List<AITool> toolSet = request.ForwardClientTools
             ? BuildClientForwardedToolSet(request)
@@ -382,7 +392,10 @@ public sealed class WizardIntelligenceProvider(
                     resonants,
                     thread,
                     prompt,
-                    lease);
+                    lease,
+                    semanticContext: semanticContext,
+                    sagaMemories: sagaMemories,
+                    lexiconEntries: lexiconEntries);
 
                 chatMessages = syncMessages;
 
@@ -1096,6 +1109,12 @@ public sealed class WizardIntelligenceProvider(
 
         SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
 
+        IReadOnlyList<LexiconEntryDto>? streamLexiconEntries = await RetrieveLexiconEntriesAsync(
+            request,
+            streamResolvedSpell?.Entities ?? Array.Empty<string>(),
+            chatClient,
+            inferenceToken).ConfigureAwait(false);
+
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
             request,
             streamCodexContent,
@@ -1104,7 +1123,9 @@ public sealed class WizardIntelligenceProvider(
             dependencySpells: streamResonants,
             maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
             semanticContext: streamSemanticContext,
-            sagaMemories: streamSagaMemories);
+            sagaMemories: streamSagaMemories,
+            lexiconEntries: streamLexiconEntries,
+            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes));
 
         InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -1116,7 +1137,10 @@ public sealed class WizardIntelligenceProvider(
             streamResonants,
             thread,
             prompt,
-            lease);
+            lease,
+            semanticContext: streamSemanticContext,
+            sagaMemories: streamSagaMemories,
+            lexiconEntries: streamLexiconEntries);
 
         chatMessages = streamMessages;
 
@@ -1743,6 +1767,8 @@ public sealed class WizardIntelligenceProvider(
 
         SpellMetadata? matchedMetadata;
 
+        IReadOnlyList<string> routerEntities = Array.Empty<string>();
+
         if (!string.IsNullOrWhiteSpace(request.OverrideSpellName))
         {
             if (!TryResolveOverrideSpellMetadata(request.OverrideSpellName, spellMetadata, out SpellMetadata? overridePick))
@@ -1766,7 +1792,7 @@ public sealed class WizardIntelligenceProvider(
             if (routingDecision.Mode == SpellRoutingDecisionMode.DirectResonance)
             {
                 // RAG Phase 5 — pure embedding mode already resolved (or ruled out) an active spell by
-                // vector similarity alone; no LLM call is made.
+                // vector similarity alone; no LLM call is made, so no router-extracted entities.
                 matchedMetadata = routingDecision.ResolvedSpell;
             }
             else
@@ -1803,7 +1829,7 @@ public sealed class WizardIntelligenceProvider(
                         routerClient = routerLease.ChatClient;
                     }
 
-                    matchedMetadata = await SemanticRouter
+                    SemanticSpellRoutingResult? routingResult = await SemanticRouter
                         .DetermineActiveSpellAsync(
                             routerClient,
                             semanticProbe,
@@ -1815,6 +1841,10 @@ public sealed class WizardIntelligenceProvider(
                             logger,
                             candidates)
                         .ConfigureAwait(false);
+
+                    matchedMetadata = routingResult?.Spell;
+
+                    routerEntities = routingResult?.Entities ?? Array.Empty<string>();
                 }
                 finally
                 {
@@ -1825,7 +1855,10 @@ public sealed class WizardIntelligenceProvider(
 
         if (matchedMetadata is null)
         {
-            return Result<ResolvedSpell?>.Success(null);
+            return Result<ResolvedSpell?>.Success(
+                routerEntities.Count == 0
+                    ? null
+                    : ResolvedSpell.EntitiesOnly(routerEntities));
         }
 
         ParsedSpell? activeSpell = await SpellScanner
@@ -1834,7 +1867,10 @@ public sealed class WizardIntelligenceProvider(
 
         if (activeSpell is null)
         {
-            return Result<ResolvedSpell?>.Success(null);
+            return Result<ResolvedSpell?>.Success(
+                routerEntities.Count == 0
+                    ? null
+                    : ResolvedSpell.EntitiesOnly(routerEntities));
         }
 
         ResolvedSpell resolved = await SpellDependencyResolver
@@ -1848,7 +1884,113 @@ public sealed class WizardIntelligenceProvider(
                 maxResonantDependencies: ArcanumSettingClamps.MaxResonantDependencies(settings.Value.Spells.MaxResonantDependencies))
             .ConfigureAwait(false);
 
-        return Result<ResolvedSpell?>.Success(resolved);
+        return Result<ResolvedSpell?>.Success(resolved with { Entities = routerEntities });
+    }
+
+    /// <summary>
+    /// Lexicon retrieval gate. Skips only true internal headless tasks (Campaign Logger
+    /// summarization, Saga extraction) that set all three of <c>SkipSpellRouting</c>,
+    /// <c>DisableMcpTools</c>, and <c>UnattendedMode</c>. User-facing turns — including
+    /// <c>OverrideSpellName</c>, pure embedding spell routing, and no-spell paths — still retrieve
+    /// Lexicon context via the fallback extractor when the router supplied no entities.
+    /// </summary>
+    private static bool ShouldUseLexiconForTurn(PingRequest request)
+    {
+        if (request.SkipSpellRouting && request.DisableMcpTools && request.UnattendedMode)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Best-effort Lexicon retrieval for the current inference turn. Uses router-extracted entities
+    /// when present; otherwise runs <see cref="LexiconEntityExtractor"/> on the fast model (when
+    /// configured) for non-router paths. Failures (DB or extractor) are logged and swallowed —
+    /// Lexicon never fails the inference turn. Returns null when disabled, gated out, or no matches.
+    /// </summary>
+    private async Task<IReadOnlyList<LexiconEntryDto>?> RetrieveLexiconEntriesAsync(
+        PingRequest request,
+        IReadOnlyList<string> routerEntities,
+        IChatClient chatClient,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.Value.Intelligence.EnableLexiconSystem)
+        {
+            return null;
+        }
+
+        if (!ShouldUseLexiconForTurn(request))
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> entities = routerEntities;
+
+        if (entities.Count == 0)
+        {
+            // Unseen Servant injects Previous State into the kickoff user prompt and bypasses the
+            // SemanticRouter via OverrideSpellName — skip a redundant LexiconEntityExtractor LLM call.
+            if (request.UnattendedMode && !string.IsNullOrWhiteSpace(request.OverrideSpellName))
+            {
+                return null;
+            }
+
+            IChatClient extractorClient = chatClient;
+
+            ChatClientLease? extractorLease = null;
+
+            try
+            {
+                if (settings.Value.Intelligence.UseFastModelForSpellRouting
+                    && !string.IsNullOrWhiteSpace(settings.Value.FastModel))
+                {
+                    extractorLease = await chatClientFactory
+                        .ResolveClientAsync(settings.Value.FastModel.Trim(), cancellationToken)
+                        .ConfigureAwait(false);
+
+                    extractorClient = extractorLease.ChatClient;
+                }
+
+                TimeSpan preflight = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(settings.Value.Intelligence.SemanticRouterPreflightTimeoutSeconds));
+
+                entities = await LexiconEntityExtractor
+                    .ExtractAsync(extractorClient, GetSemanticRouterUserProbe(request), preflight, cancellationToken, logger)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Lexicon entity extraction failed; continuing without Lexicon context.");
+
+                return null;
+            }
+            finally
+            {
+                extractorLease?.Dispose();
+            }
+        }
+
+        if (entities.Count == 0)
+        {
+            return null;
+        }
+
+        int limit = ArcanumSettingClamps.LexiconMaxMatchedEntries(settings.Value.Intelligence.LexiconMaxMatchedEntries);
+
+        Result<IReadOnlyList<LexiconEntryDto>> match = await lexiconService
+            .MatchEntitiesAsync(entities, limit, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (match.IsFailure)
+        {
+            logger.LogWarning("Lexicon retrieval failed ({ErrorCode}); continuing without Lexicon context.", match.Error.Code);
+
+            return null;
+        }
+
+        return match.Value.Count == 0 ? null : match.Value;
     }
 
     private static string GetSemanticRouterUserProbe(PingRequest request)
@@ -1857,7 +1999,6 @@ public sealed class WizardIntelligenceProvider(
         {
             return request.Prompt;
         }
-
         IReadOnlyList<CoreChatMessage> msgs = request.StatelessMessages!;
 
         for (int i = msgs.Count - 1; i >= 0; i--)
@@ -2435,10 +2576,9 @@ public sealed class WizardIntelligenceProvider(
 
         var roots = new List<string>();
 
-        if (resolvedSpell.Primary.AvailableScripts is { Count: > 0 }
-            && !string.IsNullOrWhiteSpace(resolvedSpell.Primary.DirectoryPath))
+        if (resolvedSpell.Primary is { AvailableScripts.Count: > 0, DirectoryPath: { Length: > 0 } directoryPath })
         {
-            roots.Add(Path.Combine(resolvedSpell.Primary.DirectoryPath, "scripts"));
+            roots.Add(Path.Combine(directoryPath, "scripts"));
         }
 
         foreach (ParsedSpell dep in resolvedSpell.Resonants)

@@ -380,6 +380,22 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Lexicon — structured agent-directed entity memory (replaces model-facing Lore).</summary>
+    public static class Lexicon
+    {
+
+        public const string InvalidName = "Lexicon.InvalidName";
+
+        public const string InvalidFact = "Lexicon.InvalidFact";
+
+        public const string NotFound = "Lexicon.NotFound";
+
+        public const string WriteFailed = "Lexicon.WriteFailed";
+
+        public const string SearchFailed = "Lexicon.SearchFailed";
+
+    }
+
     /// <summary>Scrying — vision/multimodality capability gate and image validation.</summary>
     public static class Scrying
     {

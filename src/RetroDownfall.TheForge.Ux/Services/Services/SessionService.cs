@@ -29,6 +29,15 @@ public sealed class SessionService
 
     }
 
+    /// <summary><c>POST /api/sessions</c> — creates a session; <c>CampaignId</c> may be null for a no-campaign session.</summary>
+    public Task<ApiResponse<SessionDetailDto>?> CreateAsync(CreateSessionRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            "/api/sessions",
+            request,
+            TheForgeJsonContext.Default.CreateSessionRequest,
+            TheForgeJsonContext.Default.ApiResponseSessionDetailDto,
+            cancellationToken);
+
     public Task<ApiResponse<SessionQueryResult>?> QueryAsync(
         Guid? campaignId,
         string? status,
@@ -46,19 +55,19 @@ public sealed class SessionService
             ("limit", limit?.ToString()),
             ("beforeUpdatedAt", beforeUpdatedAt?.ToString("O")));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseSessionQueryResult, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSessionQueryResult, cancellationToken);
 
     }
 
     public Task<ApiResponse<SessionDetailDto>?> GetAsync(Guid id, CancellationToken cancellationToken) =>
-        _apiClient.GetAsync($"/api/sessions/{id}", ForgeJsonContext.Default.ApiResponseSessionDetailDto, cancellationToken);
+        _apiClient.GetAsync($"/api/sessions/{id}", TheForgeJsonContext.Default.ApiResponseSessionDetailDto, cancellationToken);
 
     public Task<ApiResponse<SessionDetailDto>?> ForkAsync(Guid id, ForkSessionRequest? request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/sessions/{id}/fork",
             request ?? new ForkSessionRequest(),
-            ForgeJsonContext.Default.ForkSessionRequest,
-            ForgeJsonContext.Default.ApiResponseSessionDetailDto,
+            TheForgeJsonContext.Default.ForkSessionRequest,
+            TheForgeJsonContext.Default.ApiResponseSessionDetailDto,
             cancellationToken);
 
     public Task<ApiResponse<SessionExportResult>?> ExportAsync(Guid id, string format, CancellationToken cancellationToken)
@@ -66,7 +75,7 @@ public sealed class SessionService
 
         string path = QueryStringBuilder.Build($"/api/sessions/{id}/export", ("format", format));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseSessionExportResult, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSessionExportResult, cancellationToken);
 
     }
 
@@ -75,8 +84,8 @@ public sealed class SessionService
         _apiClient.PostAsync(
             $"/api/sessions/{id}/entries",
             request,
-            ForgeJsonContext.Default.AppendEntryRequest,
-            ForgeJsonContext.Default.ApiResponseEntryDto,
+            TheForgeJsonContext.Default.AppendEntryRequest,
+            TheForgeJsonContext.Default.ApiResponseEntryDto,
             cancellationToken);
 
     /// <summary>Standalone chat from The Tome — NDJSON <see cref="IntelligenceEvent"/> stream.</summary>
@@ -84,8 +93,8 @@ public sealed class SessionService
         _apiClient.PostNdjsonStreamAsync(
             "/api/intelligence/ping-stream",
             request,
-            ForgeJsonContext.Default.PingRequest,
-            ForgeJsonContext.Default.IntelligenceEvent,
+            TheForgeJsonContext.Default.PingRequest,
+            TheForgeJsonContext.Default.IntelligenceEvent,
             cancellationToken);
 
     /// <summary>
@@ -95,5 +104,46 @@ public sealed class SessionService
     /// </summary>
     public IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, DateTimeOffset? since, CancellationToken cancellationToken) =>
         _sseClient.StreamSessionEntriesAsync(id, since, cancellationToken);
+
+    /// <summary><c>GET /api/sessions/{id}/entries</c> — entry history with keyset pagination.</summary>
+    public Task<ApiResponse<EntryDto[]>?> GetEntriesAsync(Guid id, int? offset, int? limit, CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build(
+            $"/api/sessions/{id}/entries",
+            ("offset", offset?.ToString()),
+            ("limit", limit?.ToString()));
+
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseEntryDtoArray, cancellationToken);
+
+    }
+
+    /// <summary><c>DELETE /api/sessions/{id}/entries/{entryId}</c> — 204 / 400 <c>Session.MemoryManagementDisabled</c> / 404 <c>Session.EntryNotFound</c>.</summary>
+    public Task<ApiResponse<bool>?> DeleteEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
+        _apiClient.DeleteAsync(
+            $"/api/sessions/{id}/entries/{entryId}",
+            TheForgeJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    /// <summary><c>POST /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Sessions:AllowMemoryManagement</c>; 409 <c>Session.TooManyPinned</c>.</summary>
+    public Task<ApiResponse<bool>?> PinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/sessions/{id}/entries/{entryId}/pin",
+            TheForgeJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    /// <summary><c>DELETE /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Sessions:AllowMemoryManagement</c>.</summary>
+    public Task<ApiResponse<bool>?> UnpinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
+        _apiClient.DeleteAsync(
+            $"/api/sessions/{id}/entries/{entryId}/pin",
+            TheForgeJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    /// <summary><c>POST /api/sessions/{id}/compact</c> — gated by <c>Arcanum:Sessions:AllowMemoryManagement</c>.</summary>
+    public Task<ApiResponse<CompactResult>?> CompactAsync(Guid id, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/sessions/{id}/compact",
+            TheForgeJsonContext.Default.ApiResponseCompactResult,
+            cancellationToken);
 
 }

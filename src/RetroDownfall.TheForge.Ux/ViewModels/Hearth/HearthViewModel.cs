@@ -142,7 +142,7 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
         try
         {
 
-            Progress<TerminalOutputEvent> progress = new(OnTerminalOutput);
+            IProgress<TerminalOutputEvent> progress = new SyncProgress<TerminalOutputEvent>(OnTerminalOutput);
 
             TerminalCommandResult result = await _runner
                 .RunAsync(command, CurrentDirectory, progress, cts.Token)
@@ -260,6 +260,7 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
         try
         {
 
+            // Cancel only — RunAsync's finally disposes the CTS.
             _runCts?.Cancel();
 
         }
@@ -267,12 +268,6 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
         {
 
         }
-
-        CancellationTokenSource? cts = _runCts;
-
-        _runCts = null;
-
-        cts?.Dispose();
 
         Lines.CollectionChanged -= OnLinesCollectionChanged;
 
@@ -287,6 +282,13 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
     private void OnTerminalOutput(TerminalOutputEvent output)
     {
 
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
         HearthLineKind kind = output.Kind == TerminalOutputKind.StandardError
             ? HearthLineKind.StandardError
             : HearthLineKind.StandardOutput;
@@ -298,8 +300,22 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
     private void EnqueueLine(HearthLineViewModel line)
     {
 
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
         lock (_lineGate)
         {
+
+            if (_disposed)
+            {
+
+                return;
+
+            }
 
             _pendingLines.Add(line);
 
@@ -320,6 +336,13 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
 
     private void ScheduleFlush()
     {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
 
         if (TryGetUiDispatcher(out Dispatcher? dispatcher) && dispatcher is not null)
         {
@@ -353,8 +376,10 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
 
             _flushScheduled = false;
 
-            if (_pendingLines.Count == 0)
+            if (_disposed || _pendingLines.Count == 0)
             {
+
+                _pendingLines.Clear();
 
                 return;
 
@@ -368,6 +393,13 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
 
         void Apply()
         {
+
+            if (_disposed)
+            {
+
+                return;
+
+            }
 
             foreach (HearthLineViewModel line in batch)
             {
@@ -398,8 +430,22 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
     private void AppendLine(HearthLineViewModel line)
     {
 
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
         void Apply()
         {
+
+            if (_disposed)
+            {
+
+                return;
+
+            }
 
             Lines.Add(line);
 
@@ -627,6 +673,27 @@ public sealed partial class HearthViewModel : ViewModelBase, IDisposable
             dispatcher = null;
 
             return false;
+
+        }
+
+    }
+
+    private sealed class SyncProgress<T> : IProgress<T>
+    {
+
+        private readonly Action<T> _handler;
+
+        public SyncProgress(Action<T> handler)
+        {
+
+            _handler = handler;
+
+        }
+
+        public void Report(T value)
+        {
+
+            _handler(value);
 
         }
 

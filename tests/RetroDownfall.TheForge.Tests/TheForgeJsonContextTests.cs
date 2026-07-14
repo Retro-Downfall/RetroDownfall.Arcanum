@@ -1,8 +1,12 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Serialization;
 using Xunit;
 
@@ -312,6 +316,375 @@ public class TheForgeJsonContextTests
         Assert.Equal("greeting", roundTripped.ResolvedSpell.Name);
 
         Assert.Equal(2, roundTripped.McpServerCount);
+
+    }
+
+    [Fact]
+    public void ToolInvokeRequest_RoundTrips()
+    {
+
+        ToolInvokeRequest request = new("echo", JsonDocument.Parse("""{"path":"/tmp"}""").RootElement.Clone());
+
+        string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.ToolInvokeRequest);
+
+        ToolInvokeRequest? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ToolInvokeRequest);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal("echo", roundTripped.ToolName);
+
+        Assert.Equal("/tmp", roundTripped.Arguments.GetProperty("path").GetString());
+
+    }
+
+    [Fact]
+    public void ApiResponse_ToolInvokeResponse_RoundTrips()
+    {
+
+        ToolInvokeResponse result = new(JsonDocument.Parse("""{"ok":true}""").RootElement.Clone());
+
+        ApiResponse<ToolInvokeResponse> original = new(result, true, null, "trace-ti");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseToolInvokeResponse);
+
+        ApiResponse<ToolInvokeResponse>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseToolInvokeResponse);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Equal(JsonValueKind.Object, roundTripped.Data!.Result.ValueKind);
+
+        Assert.True(roundTripped.Data.Result.GetProperty("ok").GetBoolean());
+
+    }
+
+    [Fact]
+    public void ProviderTestRequest_RoundTrips()
+    {
+
+        ProviderTestRequest request = new("http://localhost:8080", "sk-test", AiProviderKind.OpenAICompatible);
+
+        string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.ProviderTestRequest);
+
+        ProviderTestRequest? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ProviderTestRequest);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal("http://localhost:8080", roundTripped.Endpoint);
+
+        Assert.Equal(AiProviderKind.OpenAICompatible, roundTripped.Type);
+
+    }
+
+    [Fact]
+    public void ApiResponse_ProviderTestResult_RoundTrips()
+    {
+
+        ProviderTestResult result = new(true, 42, ["gpt-4o"], null);
+
+        ApiResponse<ProviderTestResult> original = new(result, true, null, "trace-pt");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseProviderTestResult);
+
+        ApiResponse<ProviderTestResult>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseProviderTestResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.True(roundTripped.Data!.IsReachable);
+
+        Assert.Equal(42L, roundTripped.Data.LatencyMs);
+
+        Assert.Equal(["gpt-4o"], roundTripped.Data.ModelsFound);
+
+    }
+
+    [Fact]
+    public void OptionalWorkspaceRequest_RoundTripsNonNullAndNull()
+    {
+
+        OptionalWorkspaceRequest nonNull = new("/tmp/campaign");
+
+        string json = JsonSerializer.Serialize(nonNull, TheForgeJsonContext.Default.OptionalWorkspaceRequest);
+
+        OptionalWorkspaceRequest? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.OptionalWorkspaceRequest);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal("/tmp/campaign", roundTripped.WorkingDirectory);
+
+        string nullJson = JsonSerializer.Serialize(new OptionalWorkspaceRequest(null), TheForgeJsonContext.Default.OptionalWorkspaceRequest);
+
+        OptionalWorkspaceRequest? nullRoundTripped = JsonSerializer.Deserialize(nullJson, TheForgeJsonContext.Default.OptionalWorkspaceRequest);
+
+        Assert.NotNull(nullRoundTripped);
+
+        Assert.Null(nullRoundTripped.WorkingDirectory);
+
+    }
+
+    [Fact]
+    public void WorkspaceArsenalDto_RoundTrips()
+    {
+
+        WorkspaceArsenalDto arsenal = new([], ["fs.read", "fs.write"], [], []);
+
+        string json = JsonSerializer.Serialize(arsenal, TheForgeJsonContext.Default.WorkspaceArsenalDto);
+
+        WorkspaceArsenalDto? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.WorkspaceArsenalDto);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(["fs.read", "fs.write"], roundTripped.NativeTools);
+
+        ApiResponse<WorkspaceArsenalDto> original = new(arsenal, true, null, "trace-a");
+
+        string envelopeJson = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseWorkspaceArsenalDto);
+
+        ApiResponse<WorkspaceArsenalDto>? envelopeRoundTripped = JsonSerializer.Deserialize(envelopeJson, TheForgeJsonContext.Default.ApiResponseWorkspaceArsenalDto);
+
+        Assert.NotNull(envelopeRoundTripped);
+
+        Assert.True(envelopeRoundTripped.IsSuccess);
+
+        Assert.NotNull(envelopeRoundTripped.Data);
+
+        Assert.Equal(["fs.read", "fs.write"], envelopeRoundTripped.Data!.NativeTools);
+
+    }
+
+    [Fact]
+    public void CompactResult_RoundTrips()
+    {
+
+        CompactResult original = new(120, 45, 5);
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.CompactResult);
+
+        CompactResult? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.CompactResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(120, roundTripped.TokensBefore);
+
+        Assert.Equal(45, roundTripped.TokensAfter);
+
+        Assert.Equal(5, roundTripped.EntriesRemoved);
+
+    }
+
+    [Fact]
+    public void ApiResponse_CompactResult_RoundTrips()
+    {
+
+        CompactResult compact = new(80, 30, 2);
+
+        ApiResponse<CompactResult> original = new(compact, true, null, "trace-compact");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseCompactResult);
+
+        ApiResponse<CompactResult>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseCompactResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Equal(2, roundTripped.Data!.EntriesRemoved);
+
+    }
+
+    [Fact]
+    public void ApiResponse_EntryDtoArray_RoundTrips()
+    {
+
+        EntryDto[] entries =
+        [
+            new(Guid.NewGuid(), Guid.NewGuid(), "user", "hello", null, null, DateTimeOffset.UtcNow),
+        ];
+
+        ApiResponse<EntryDto[]> original = new(entries, true, null, "trace-entries");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseEntryDtoArray);
+
+        ApiResponse<EntryDto[]>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseEntryDtoArray);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Single(roundTripped.Data!);
+
+        Assert.Equal("hello", roundTripped.Data![0].Content);
+
+    }
+
+    [Fact]
+    public void SagaStats_RoundTrips()
+    {
+
+        SagaStats original = new(10, 3, DateTimeOffset.UtcNow.AddDays(-7), DateTimeOffset.UtcNow);
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.SagaStats);
+
+        SagaStats? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.SagaStats);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(10, roundTripped.TotalCount);
+
+        Assert.Equal(3, roundTripped.SessionCount);
+
+    }
+
+    [Fact]
+    public void ApiResponse_SagaStats_RoundTrips()
+    {
+
+        SagaStats stats = new(4, 2, null, DateTimeOffset.UtcNow);
+
+        ApiResponse<SagaStats> original = new(stats, true, null, "trace-saga-stats");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseSagaStats);
+
+        ApiResponse<SagaStats>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseSagaStats);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Equal(4, roundTripped.Data!.TotalCount);
+
+    }
+
+    [Fact]
+    public void FileReadResult_RoundTrips()
+    {
+
+        FileReadResult original = new("notes.md", "# Notes", "utf-8", 128, DateTimeOffset.UtcNow);
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.FileReadResult);
+
+        FileReadResult? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.FileReadResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal("notes.md", roundTripped.RelativePath);
+
+        Assert.Equal("# Notes", roundTripped.Content);
+
+    }
+
+    [Fact]
+    public void ApiResponse_FileReadResult_RoundTrips()
+    {
+
+        FileReadResult read = new("readme.md", "hello", "utf-8", 5, DateTimeOffset.UtcNow);
+
+        ApiResponse<FileReadResult> original = new(read, true, null, "trace-read");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseFileReadResult);
+
+        ApiResponse<FileReadResult>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseFileReadResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Equal("hello", roundTripped.Data!.Content);
+
+    }
+
+    [Fact]
+    public void FileWriteResult_RoundTrips()
+    {
+
+        FileWriteResult original = new("draft.md", 256, DateTimeOffset.UtcNow);
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.FileWriteResult);
+
+        FileWriteResult? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.FileWriteResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal("draft.md", roundTripped.RelativePath);
+
+        Assert.Equal(256, roundTripped.BytesWritten);
+
+    }
+
+    [Fact]
+    public void ApiResponse_FileWriteResult_RoundTrips()
+    {
+
+        FileWriteResult write = new("save.md", 64, DateTimeOffset.UtcNow);
+
+        ApiResponse<FileWriteResult> original = new(write, true, null, "trace-write");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseFileWriteResult);
+
+        ApiResponse<FileWriteResult>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseFileWriteResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Equal(64, roundTripped.Data!.BytesWritten);
+
+    }
+
+    [Fact]
+    public void CodexContentDto_RoundTrips()
+    {
+
+        CodexContentDto original = new("CODEX.md", "# Codex", true);
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.CodexContentDto);
+
+        CodexContentDto? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.CodexContentDto);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal("CODEX.md", roundTripped.Path);
+
+        Assert.True(roundTripped.Exists);
+
+    }
+
+    [Fact]
+    public void ApiResponse_CodexContentDto_RoundTrips()
+    {
+
+        CodexContentDto codex = new("campaigns/foo/CODEX.md", "# Campaign", true);
+
+        ApiResponse<CodexContentDto> original = new(codex, true, null, "trace-codex");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseCodexContentDto);
+
+        ApiResponse<CodexContentDto>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseCodexContentDto);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.Equal("# Campaign", roundTripped.Data!.Content);
 
     }
 

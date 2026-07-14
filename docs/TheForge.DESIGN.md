@@ -70,7 +70,7 @@ flowchart LR
     `data: [DONE]\n\n` terminator, and `: keep-alive` comment lines to ignore. `ArcanumSseClient`
     layers typed deserialization on top for each route.
 - **Connection state**: `ArcanumConnectionService` is a DI singleton that polls `GET /api/health`
-  every 5 seconds (only started when `ForgeSettings.AutoConnect` is true) and exposes
+  every 5 seconds (only started when `TheForgeSettings.AutoConnect` is true) and exposes
   `ConnectionState` + the last `HealthReportDto` as observable properties for The Anvil.
 
 ## 4. Wire contract notes (verified against the Arcanum source, not just the API surface map)
@@ -82,14 +82,21 @@ suggest — recorded here so future changes don't silently drift from the real w
   `{ data?, isSuccess, error?, traceId? }`, camelCase. `data` is omitted both on failure and when it
   equals `default(T)`. `Error` is a `readonly record struct` — `{ code, message, details? }` — not a
   class.
-- **Re-declared DTOs**: only four types are re-declared in `TheForge.Core.Models` because their
-  source lives in `RetroDownfall.Arcanum.Api.Models` (an ASP.NET-heavy project The Forge deliberately
-  does not reference): `HealthReportDto`, `HealthComponentDto`, `HealthStatus`, `InstanceMetadataDto`,
-  `GrimoireStatsDto`, `BudgetSummaryDto`. `HealthStatus` serializes as an **integer** (0/1/2) — it
-  carries no `JsonStringEnumConverter`, and the re-declared mirror must not add one either. Every
-  other DTO The Forge touches (campaigns, spells, sessions, apprentices, wards, trials, MCP, llama,
-  lore, saga, config, models, workspaces, divination, comm link, sanctum config, logs, audit, daemon)
-  lives in `RetroDownfall.Arcanum.Core` and comes for free via the project reference.
+- **Re-declared DTOs**: the following types are re-declared in `TheForge.Core.Models` because their
+  source lives in the ASP.NET-heavy `RetroDownfall.Arcanum.Api` project The Forge deliberately does
+  not reference: `HealthReportDto`, `HealthComponentDto`, `HealthStatus`, `InstanceMetadataDto`,
+  `GrimoireStatsDto`, `BudgetSummaryDto` (Health/Meta/Budget), and the Milestone G operational
+  mirrors `OptionalWorkspaceRequest` (from `Api.Serialization` — body of `POST /api/mcp/reload` and
+  `POST /api/intelligence/arsenal`) and `ToolInvokeRequest` / `ToolInvokeResponse` (from `Api.Models`
+  — body/result of `POST /api/tools/invoke`; `Arguments`/`Result` are untyped `JsonElement`).
+  `HealthStatus` serializes as an **integer** (0/1/2) — it carries no `JsonStringEnumConverter`, and
+  the re-declared mirror must not add one either. Every other DTO The Forge touches (campaigns,
+  spells, sessions, apprentices, wards, trials, MCP, llama, lore, saga, config, models, workspaces,
+  divination, comm link, sanctum config, logs, audit, daemon, arsenal aggregation) lives in
+  `RetroDownfall.Arcanum.Core` and comes for free via the project reference. **`POST
+  /api/providers/test`** accepts only `AiProviderKind.OpenAICompatible`; **`POST
+  /api/intelligence/arsenal`** takes an `OptionalWorkspaceRequest?` body and returns
+  `WorkspaceArsenalDto` (whose `NativeTools` lists the built-in tools The Scrying Pool offers).
 - **Streaming is genuinely two different shapes** — see §3. `ping-stream` and `execute-stream` are
   NDJSON; session/chronicle/event routes are SSE. Do not assume one shape covers both.
 - **`WardDto`**: `WardId` is a `string`; the expiry field is `ExpiresAt` (`DateTimeOffset`) — there is
@@ -122,9 +129,9 @@ suggest — recorded here so future changes don't silently drift from the real w
   API key is **not** stored in `forge.json`: Arcanum and The Forge share the OS credential store
   identity `arcanum` / `master-api-key` (`RetroDownfall.Arcanum.Secrets`). Legacy `security.dat`
   remains a Data Protection mirror/fallback for Arcanum only; The Forge resolves via
-  `IForgeApiKeyProvider` → `ApiKeyResolver` (OS store → migrate forge.json → `arcanum key show` →
+  `ITheForgeApiKeyProvider` → `ApiKeyResolver` (OS store → migrate forge.json → `arcanum key show` →
   paste). The CLI writes `arcanum key show` to **stderr**.
-- **Enum serialization discipline**: `ForgeJsonContext` and `ForgeSettingsJsonContext` never register
+- **Enum serialization discipline**: `TheForgeJsonContext` and `TheForgeSettingsJsonContext` never register
   a blanket `JsonStringEnumConverter` in `[JsonSourceGenerationOptions]`. Every Core enum that
   serializes as a string already carries its own
   `[JsonConverter(typeof(JsonStringEnumConverter<T>))]` + `[JsonStringEnumMemberName]` attributes;
@@ -152,6 +159,7 @@ suggest — recorded here so future changes don't silently drift from the real w
 | Multi-session tab management | The Council Chamber | Notifications/toasts | Whispers |
 | Global search | The Eye of the World | Context help/docs | The Codex |
 | Entry inspector | The Loupe | Export/import wizard | Export / Import Wizard *(literal)* |
+| Markdown preview | The Illumination | | |
 
 `Compendium` here refers to Forge's Settings panel concept, distinct from the existing
 `RetroDownfall.Compendium.Ux` Avalonia project (Arcanum's separate configuration-editor app) already in
@@ -173,9 +181,9 @@ Milestone B established the shell that feature panels plug into. The shell has s
 - **Required UX:** tool header context menu — Move Left / Move Right / Move Bottom / Hide / Reset
   Layout. View menu: Reset Window Layout plus show-or-focus items for each tool. Drag-and-drop onto
   dock targets is preferred when small/stable; this pass ships the menu path first (DnD may follow).
-- **Persistence:** versioned `ForgeDockLayoutDto` (`SchemaVersion = 1`) is source-gen serialized into
-  `ForgeSettings.LayoutState` via `ForgeSettingsJsonContext` and written through path-injected
-  `IForgeSettingsStore` (debounced). Corrupt/missing layout falls back to defaults; unknown tool ids
+- **Persistence:** versioned `TheForgeDockLayoutDto` (`SchemaVersion = 1`) is source-gen serialized into
+  `TheForgeSettings.LayoutState` via `TheForgeSettingsJsonContext` and written through path-injected
+  `ITheForgeSettingsStore` (debounced). Corrupt/missing layout falls back to defaults; unknown tool ids
   are ignored; missing known tools are inserted; sizes are clamped.
 - **Reset** replaces the entire layout with `DockLayoutDefaults` (today’s default shell) and persists.
 - `MainViewModel` disposes owned documents, transient child VMs, and `DockLayoutViewModel` on window
@@ -188,19 +196,27 @@ Logs, Hearth; center = Workbench; fixed bottom = Anvil.
 
 Milestone C begins with the live **Atelier** project explorer:
 
-- `AtelierViewModel` exposes four root branches: **Campaigns**, **Workspaces**, **Global Spells**,
-  and **Sessions**. `RefreshAsync` creates the roots without fetching all child content up front.
+- `AtelierViewModel` exposes five root branches: **Campaigns**, **Workspaces**, **Global Spells**,
+  **Global Prompts**, and **Sessions**. `RefreshAsync` creates the roots without fetching all child
+  content up front. **Global Prompts** lazy-loads `PromptService.ListAsync(campaignId: null)` — only
+  prompts with no campaign (the server filters `CampaignId IS NULL`).
 - `AtelierNodeViewModel` is the lazy-loading base node (`IsExpanded`, `IsLoading`, `Children`,
-  `ExpandAsync`, `ReloadAsync`). Roots and campaign nodes load children on first expansion.
+  `ExpandAsync`, `ReloadAsync`). Roots and campaign nodes load children on first expansion. It also
+  declares virtual nullable `NewSpellCommand` / `NewPromptCommand` / `NewSessionCommand` plus
+  `HasNew*` and `New*Label` properties for context-menu binding; creation-capable nodes override the
+  commands they expose **manually** (`new AsyncRelayCommand(...)`, plain execute methods) — not via
+  `[RelayCommand]`, which would hide the base property instead of overriding it.
 - `AtelierDataSource` adapts the API service layer for the tree: campaigns (`GET /api/campaigns`),
-  workspaces (`GET /api/workspaces`), global spells (`GET /api/spells`), recent sessions
-  (`GET /api/sessions?limit=20`), plus campaign-scoped spells/prompts/sessions via the verified
-  campaign endpoints.
+  workspaces (`GET /api/workspaces`), global spells (`GET /api/spells`), global prompts
+  (`GET /api/prompts` with no `campaignId`), recent sessions (`GET /api/sessions?limit=20`), plus
+  campaign-scoped spells/prompts/sessions via the verified campaign endpoints.
 - `CampaignNodeViewModel` lazy-loads **Spells**, **Prompts**, **Sessions**, `CODEX.md`, and
-  **Sanctum**. Spell/session/prompt leaves expose a primary Open command routed through
-  `NavigationService` into Workbench documents.
-- `Views/Controls/SpellTreeView.axaml` hosts the reusable `TreeView` / `TreeDataTemplate` and keeps
-  double-click handling in code-behind as event wiring only.
+  **Sanctum**, and exposes **New Spell / New Prompt / New Session** context-menu commands that
+  create artifacts scoped to the campaign and open them in the Workbench (see §5.9). Spell/session/
+  prompt leaves expose a primary Open command routed through `NavigationService`.
+- `Views/Controls/SpellTreeView.axaml` hosts the reusable `TreeView` / `TreeDataTemplate`, keeps
+  double-click handling in code-behind as event wiring only, and binds `New Spell` / `New Prompt` /
+  `New Session` `MenuItem`s to the node's `New*Command` (visible only where `HasNew*` is true).
 
 ### 5.3 Phase 5 Spell editor
 
@@ -270,7 +286,7 @@ Phase 8 replaces the Gatehouse placeholder with live ward governance:
 
 Phase 9 expands The Anvil from a connection indicator into a live status bar:
 
-- Aggregates `ConnectionState`, `ActiveCampaignName` (from `ForgeSettings.LastCampaignId`),
+- Aggregates `ConnectionState`, `ActiveCampaignName` (from `TheForgeSettings.LastCampaignId`),
   `ActiveModelName` (from health-report component detail when present), `ManaPercent` /
   `TodaySpendUsd` (`GET /api/budget`), `ActiveWardsCount`, `RunningApprenticesCount`, and
   `McpOnlineTotal` (`online/total` from `GET /api/mcp`).
@@ -284,7 +300,7 @@ Milestone E restyles The Forge to mirror Visual Studio 2026 Fluent IDE chrome:
 
 - `Themes/Typography.axaml` — `ForgeUiFontFamily` (Segoe UI Variable / Segoe UI), `ForgeCodeFontFamily` (Cascadia Mono / Cascadia Code), sizes 12 / 11 / 14.
 - `Themes/DarkTheme.axaml` / `Themes/LightTheme.axaml` — VS Fluent-inspired tokens (`#1C1C1C` / `#EEEEEE` bodies, `#9184EE` / `#5649B0` accents). Legacy `ForgeShell*` brush keys alias the new tokens.
-- `ThemeApplicationService` applies `ForgeSettings.Theme` (`dark`/`light`) to `RequestedThemeVariant` and swaps the theme dictionary.
+- `ThemeApplicationService` applies `TheForgeSettings.Theme` (`dark`/`light`) to `RequestedThemeVariant` and swaps the theme dictionary.
 - `Views/Controls/ManaBar.axaml` — reusable utilization bar; Anvil and Tome consume it.
 - `Themes/Icons.axaml` — outline `PathGeometry` catalog (spell, apprentice, ward, campaign, session, MCP, model).
 - App styles set compact VS-like density; AvaloniaEdit uses the code font resources. Views use `{DynamicResource}` only (no inline hex).
@@ -316,6 +332,232 @@ from The Hearth until **The Ledger** (dedicated Git UI) ships.
 **Limitations (honest):** not a full PTY — interactive TTY apps may misbehave; no dedicated Git UI
 yet; no folder picker for cwd; no automatic command execution.
 
+### 5.9 Phase 11 — Author & test (Milestone F)
+
+Milestone F makes The Forge capable of creating and authoring primary inference artifacts from the
+GUI, all through the existing Arcanum HTTP routes via the Forge service layer (no server-side
+changes):
+
+- **Atelier creation.** Campaign nodes expose **New Spell / New Prompt / New Session** context-menu
+  commands. New Spell writes a spell into the campaign workspace (`Campaign.Path` as the
+  `?workspace=` query); New Prompt creates a campaign-scoped prompt (`CampaignId = Campaign.Id`);
+  New Session creates a campaign-scoped session. On success the node reloads and the new artifact
+  opens in the Workbench (Spell editor / Scriptorium / Tome). Top-level creation is wired only
+  where the backing API supports it: the **Global Spells** root offers **New Workspace Spell…**
+  (the operator picks a workspace; built-in spells stay read-only and the new spell does not
+  necessarily appear under that root), the **Global Prompts** root offers **New Prompt**
+  (`CampaignId: null`), and the **Sessions** root offers **New Session** (`CampaignId: null`).
+- **Creation seams.** `IArtifactCreationDataSource` (`ArtifactCreationDataSource`) forwards
+  `CreateSpellAsync(workspace, CreateSpellRequest)` / `CreatePromptAsync` / `CreateSessionAsync` to
+  the route services and maps `ApiResponse` failures to error strings; `IArtifactCreationDialogService`
+  (`AvaloniaArtifactCreationDialogService`) shows Whispers-style `Window.ShowDialog` modals and
+  returns `null` on cancel. The node builds the `Create*Request` from dialog inputs. Success/failure
+  is surfaced via the existing `FoundryFloorViewModel.AppendLine` + an inline node
+  `LastError`/`StatusText` — no new notification subsystem.
+- **The Scriptorium.** `WorkbenchDocumentFactory` maps `DocumentKind.Prompt` (Guid id) to
+  `ScriptoriumViewModel` (non-Guid ids fall back to the placeholder). `ScriptoriumView` edits the
+  template in AvaloniaEdit (text sync in code-behind) plus the metadata supported by
+  `UpdatePromptRequest` (Description, Version, Tags, Model, Provider). **Load** pulls
+  `PromptDetailDto`; **Save** sends `UpdatePromptRequest` with null/clear semantics (a field is
+  preserved when `null`, cleared with `""`/`[]`; `ParameterSchema`/`DefaultParameters` send `null`
+  to preserve); **Render** parses `key=value` parameter lines into `PromptRenderRequest`;
+  **Test** assembles the system prompt with default parameters at no LLM cost; **Run** streams
+  `POST /api/prompts/{id}/execute-stream` (NDJSON `IntelligenceEvent`) into a results pane (requires
+  a non-empty user message) and opens the bound session in The Tome on `sessionBound`; **Stop**
+  cancels the run. Numeric sampling fields and advanced parameter-schema JSON editing are deferred
+  (shown read-only or omitted).
+- **`TheForgeJsonContext`.** New source-gen registrations: `CreateSpellRequest`, `CreatePromptRequest`,
+  `UpdatePromptRequest`, `PromptRenderRequest`, `ApiResponse<PromptRenderResultDto>`,
+  `TestPromptRequest`, `ApiResponse<PromptTestResultDto>`, `PromptExecuteRequest`,
+  `CreateSessionRequest` (plus bare `PromptRenderResultDto` / `PromptTestResultDto` for tests). No
+  blanket `JsonStringEnumConverter` was added.
+
+**Known limitations (honest):** opening a created spell uses the spell name and relies on the server
+`SpellWorkspaceResolver` fallback (the same path existing Atelier spell open uses); spells in a
+non-default campaign workspace may not load by name alone and will appear in the refreshed campaign
+tree. Passing the workspace through navigation is a follow-up. Numeric sampling and advanced
+parameter-schema JSON editing in The Scriptorium, prompt clone/delete/import/export, spell
+clone/validate, The Mirror, visual SKILL.json designer, full campaign CRUD, Proving Grounds, Arsenal
+/Treasury dashboards, The Ledger, and a true PTY Hearth remain gaps (Arsenal/Treasury now ship in
+Milestone G — see §5.10).
+
+### 5.10 Phase 12 — Operate Inference (Milestone G)
+
+Milestone G replaces the Arsenal and Treasury placeholders with real API-backed operational panels
+for running inference infrastructure — all through existing Arcanum HTTP routes via the Forge
+service layer (no server-side changes). The Arsenal becomes a tabbed panel; the Treasury becomes a
+budget dashboard. The Forge stays a pure API client: no `HttpClient` outside `ArcanumApiClient`, no
+reference to `RetroDownfall.Arcanum.Api`, no Grimoire access.
+
+- **The Arsenal — MCP servers.** `McpServersViewModel` lists servers from `GET /api/mcp`
+  (`McpServerInfo` cards: name, `McpServerState`, transport, exposed tools, error) and runs
+  `POST /api/mcp/{name}/start|stop|restart` and `POST /api/mcp/reload` (body `OptionalWorkspaceRequest`)
+  via `McpService`. Actions refresh the list; the action `StatusText` is set *after* the refresh so it
+  is not overwritten by the refresh status.
+- **The Scrying Pool — built-in tool invocation.** `ScryingPoolViewModel` lists built-in tools from
+  `POST /api/intelligence/arsenal` (`WorkspaceArsenalDto.NativeTools`) and invokes the selected one
+  via `POST /api/tools/invoke` (`ToolInvokeRequest`/`ToolInvokeResponse` mirror DTOs; arguments are
+  operator-supplied JSON, the result is rendered via `JsonElement.GetRawText()` — AOT-safe, no
+  reflection `JsonSerializerOptions`). **External MCP direct invocation is not exposed by Arcanum
+  yet** — the UI says so.
+- **Models & Providers.** `ModelsProvidersViewModel` lists `GET /api/models` (`ModelInfoDto`) and
+  `GET /api/providers` (`ProviderInfoDto`, endpoint/API key returned redacted by the API) read-only,
+  and offers a provider connectivity test via `POST /api/providers/test`
+  (`ProviderTestRequest`/`ProviderTestResult`; only `AiProviderKind.OpenAICompatible` is accepted;
+  credentials are not stored). No provider/config editing.
+- **The Reliquary — local LlamaCpp.** `ReliquaryViewModel` lists cached GGUF models
+  (`GET /api/llama/models`) and llama-server status (`GET /api/llama/servers`), runs
+  `POST /api/llama/servers/{cacheKey}/start|stop|warmup`, and pulls models via
+  `POST /api/llama/models/pull` (NDJSON `LlamaPullProgress`) — progress lines append here and to the
+  Foundry Floor; **Stop** cancels an in-flight pull via a linked `CancellationTokenSource`. No cache
+  pruning or model-metadata editing.
+- **The Treasury — budget dashboard.** `TreasuryViewModel` is a read-only dashboard over
+  `GET /api/budget` (`BudgetSummaryDto` mirror): enabled, daily limit, today's spend, remaining,
+  spent percent (reusing `ManaBar`), alert threshold, and a disabled empty state. No budget/pricing
+  editing.
+- **Seams.** New per-area data sources (`IArsenalDataSource`, `IModelsProvidersDataSource`,
+  `IReliquaryDataSource`, `ITreasuryDataSource`) wrap the route services and map `ApiResponse<T>`
+  failures to null/false without throwing. `ArsenalViewModel` is an `IDisposable` tab container that
+  refreshes its four children when Arcanum connects; `MainViewModel` disposes Arsenal and Treasury.
+  New route service `ToolInvokeService`; `McpService` gained start/stop/restart/reload/
+  `GetArsenalAsync`; `ModelService` gained `TestProviderAsync`.
+- **`TheForgeJsonContext`.** New source-gen registrations: `OptionalWorkspaceRequest`,
+  `ApiResponse<WorkspaceArsenalDto>` + `WorkspaceArsenalDto`, `ToolInvokeRequest`,
+  `ApiResponse<ToolInvokeResponse>` + `ToolInvokeResponse`, `ProviderTestRequest`,
+  `ApiResponse<ProviderTestResult>` + `ProviderTestResult`. No blanket `JsonStringEnumConverter`.
+- **Naming.** Per the "The Forge" naming rule, the bare `Forge*` type identifiers were renamed to
+  `TheForge*` across TheForge.* + Compendium + Arcanum.Cli + docs (the Arcanum server was already
+  `TheForge*`-compliant and was not touched); the `forge.json` filename and the XAML theme resource
+  key strings were kept.
+
+**Known limitations (honest):** no arbitrary external-MCP direct invocation (only built-in
+`POST /api/tools/invoke`); no provider/config or budget/pricing editing; no advanced Llama cache
+pruning or model-metadata editing; no model/session token/cost breakdown (no such route). Proving
+Grounds UI, The Ledger Git UI, The Mirror, full import/export, a true PTY Hearth, and a Whispers
+toast framework remain gaps.
+
+### 5.11 Milestone H — Context and Memory
+
+Milestone H adds the Context & Memory surfaces as a pure API client of existing Arcanum routes —
+no Grimoire/database access, no direct workspace disk IO, no client-side embeddings, and no
+`RetroDownfall.Arcanum.Api` reference. Lore Browser, The Archive, Divination, and Workspace Explorer
+are **separate dock tools** (hidden by default so the default shell is unchanged); The Codex is a
+**Workbench document**. Session memory controls extend The Tome.
+
+- **`DataSourceResult<T>` seam.** Data sources map `ApiResponse<T>?` into
+  `DataSourceResult<T>(Data, Success, ErrorCode, ErrorMessage)` so ViewModels can render honest
+  disabled / not-found / write-off states from `ErrorCodes.*` (not from HTTP status alone). A null
+  response from `ArcanumApiClient` is treated as success (204 empty body); transport faults synthesize
+  failure envelopes.
+- **`ArcanumApiClient.PatchAsync`.** Added for workspace text-block replace (`PATCH` file contents).
+- **`IConfirmationDialogService`.** Avalonia modal OK/Cancel for destructive workspace deletes
+  (including recursive directory delete). Tests fake the interface.
+- **Lore Browser.** List / get / upsert / delete via `/api/lore/*`. Refreshes on first show.
+- **The Archive (Saga).** List memories, stats, delete-**single**, Saga Divination. No delete-all.
+  `Embeddings.FeatureDisabled` → honest disabled UI. Requires Arcanum embeddings + Saga enabled
+  server-side for Divination.
+- **Divination.** Tabbed Sessions / Workspace Files / Saga search over verified Divination routes.
+  Per-tab disabled states on `Embeddings.FeatureDisabled`. Session hits open The Tome; workspace/Saga
+  hits show detail in-place.
+- **Workspace Explorer.** Browse workspaces and directories through Arcanum file APIs (`relativePath`),
+  view info/contents, **trigger the server's** `/files/index` endpoint (not client-side indexing),
+  and workspace Divination. Optional Save / Delete / CreateDirectory are **server-gated** by
+  `Arcanum:Workspaces:EnableFileWrite`; `403 Workspace.FileWriteDisabled` sets `IsWriteDisabled` and
+  disables write buttons. Deletes require confirmation. Too-large / not-found surface via error codes
+  (e.g. `Workspace.FileTooLarge`, `Workspace.FileNotFound`).
+- **Session memory controls (The Tome).** Refresh entries (authoritative `EntryId` / `IsPinned`),
+  pin / unpin / delete entry, compact, and Divination focus. Disabled when
+  `Session.MemoryManagementDisabled` (`Arcanum:Sessions:AllowMemoryManagement`); `Session.TooManyPinned`
+  surfaces the server message. Conservative SSE backfill attaches identity only on an unambiguous
+  single role+content match.
+- **The Codex.** `DocumentKind.Codex` Workbench editor for campaign `CODEX.md` and the Grimoire-global
+  Codex (`id == "global"`). Atelier campaign tree opens via `CodexNodeViewModel`; View → The Codex
+  opens the global document. Load/save/delete through `/api/campaigns/{id}/codex` and `/api/codex`.
+  Missing Codex (`Exists=false`) → empty editable state. No disk reads.
+- **Shell.** New dock tool ids (`lore`, `archive`, `divination`, `workspaceExplorer`) default to
+  `DockRegion.Hidden` with `PreferredShowRegions` (Lore/Workspace Explorer → Left; Archive/Divination
+  → Right). View menu shows each tool + The Codex. `PanelKind` focus wiring for Anvil / Atelier /
+  Tome Divination. Workspace Atelier nodes focus Workspace Explorer.
+- **`TheForgeJsonContext`.** Registrations for workspace file browse/write DTOs, CompactResult /
+  EntryDto[], Saga stats, and related `ApiResponse<T>` wrappers. No duplicate JSON context; no blanket
+  `JsonStringEnumConverter`.
+
+**Known limitations (honest):** no client-side embeddings or vector search; workspace writes may be
+unavailable until the server enables `EnableFileWrite`; advanced file diff/merge deferred; Saga
+delete-all is not exposed; pre-selecting a workspace when opening Explorer from Atelier is a
+follow-up. Proving Grounds UI, The Ledger, The Mirror, full import/export, and a true PTY Hearth
+remain gaps.
+
+### 5.12 Milestone H1 — Markdown Rendering & Preview (The Illumination)
+
+Milestone H1 is an interstitial after H (H remains complete). It adds **The Illumination** — a
+native Avalonia markdown preview for The Forge — with no WebView, no disk reads for images, and no
+new HTTP client usage outside `ArcanumApiClient`.
+
+- **Renderer.** `Markdown.Avalonia.Tight` 11.0.3 (MIT) in `RetroDownfall.TheForge.Ux` only. CommonMark-
+  oriented preview with common GFM features where the library supports them (headings, emphasis,
+  lists, tables, task lists, fenced code, blockquotes, hr, links). Markdig is **not** referenced
+  (unused); a Markdig AST → Avalonia path remains the escape hatch if Tight coverage becomes
+  insufficient.
+- **`IlluminationView`.** Bindable markdown source; ~250ms debounce; hard preview cap
+  (`MarkdownSafetySanitizer.MaxPreviewChars` = 256 KiB) with a muted “Preview truncated” notice.
+  Visual construction stays on the UI thread after debounce (no off-thread rendering claim).
+- **Safety.** Raw HTML is replaced with `[HTML omitted]` before render (never executed). Images are
+  rewritten to `[Image: alt — url]` placeholders; `BlockingPathResolver` refuses all image streams
+  (no network/disk). Remote image loading toggle is **deferred**. Links open only on explicit click
+  via `IlluminationHyperlinkCommand` + `MarkdownLinkPolicy` (`http` / `https` / `mailto` only).
+- **View modes.** Source / Split / Preview. Spell editor and The Codex default to **Source**;
+  standalone markdown documents default to **Preview**. The Codex keeps its TextBox source editor
+  (Milestone H load/save/delete preserved).
+- **Standalone tab.** `DocumentKind.Markdown` + `IMarkdownDocumentContentStore` (bounded last 16;
+  remove on document dispose). Missing payload → honest placeholder (“reopen from Workspace
+  Explorer”), never a crash.
+- **Workspace Explorer.** “Open Preview” when the selected file is `.md`/`.markdown` and
+  `FileContentsText` is already loaded from `FileReadResult` — no new routes, no disk reads.
+- **Scriptorium.** Out of scope (server “Render” is template render, not markdown preview).
+- **Regression fixture.** `tests/RetroDownfall.TheForge.Tests/Fixtures/illumination-kitchen-sink.md`.
+
+**Known limitations (honest):** remote images never load (toggle deferred); relative/local images
+unresolved; raw HTML omitted rather than escaped inline; syntax highlighting deferred; scroll sync
+deferred; Mermaid/math/footnotes not rendered; GFM coverage is library-dependent — document any
+parsed-but-unrendered edge cases against the kitchen-sink fixture during manual smoke.
+
+### 5.13 Milestone H2 — The Illumination Completion
+
+Milestone H2 closes H1’s honest gaps while keeping The Illumination **WebView-free** and API-client-
+only. H1 remains complete; H2 is additive.
+
+- **Renderer.** Replaces `Markdown.Avalonia.Tight` with **Markdig 1.2.0** (exact CLI pin) AST →
+  native Avalonia via `MarkdigAstAvaloniaRenderer` behind `IlluminationView`. Pipeline
+  (`IlluminationMarkdownPipeline`) enables only compile-gated extensions:
+  `UsePreciseSourceLocation`, `UsePipeTables`, `UseTaskLists`, `UseEmphasisExtras`, `UseAutoLinks`,
+  `UseFootnotes`, `UseMathematics`. Do not upgrade Markdig casually.
+- **Raw HTML.** Always muted `[HTML omitted]` (never escaped HTML as body text; never executed).
+- **Syntax highlighting.** `ColorCode.Core` → Avalonia inlines; colors only via Dark/Light Forge
+  brushes (`ForgeCodeKeywordBrush`, `ForgeCodeStringBrush`, `ForgeCodeCommentBrush`,
+  `ForgeCodeNumberBrush`, `ForgeCodeTypeBrush`). Unknown languages → plain themed blocks.
+- **Images.** Opt-in remote toggle (default **off**). Dedicated `IRemoteMarkdownImageLoader` (not
+  `ArcanumApiClient`; no auth/cookies) with SSRF/local-network reject (localhost, loopback,
+  link-local, RFC1918, ULA, metadata `169.254.169.254`; DNS resolve; re-validate redirect targets),
+  Content-Type allowlist, byte/dimension/pixel caps, no SVG. Data URIs allowed under MIME + size
+  caps. Relative images remain **placeholders** (workspace file API is UTF-8 text only); payload
+  still carries `WorkspaceId` / `RelativePath` / `BaseRelativeDirectory` for a future binary API.
+- **Scroll sync.** Toggle (default on in Split when maps exist). AvaloniaEdit hosts (Spell,
+  MarkdownDocument): caret/scroll ↔ nearest source-line block + go-to-source. The Codex (TextBox):
+  sync **disabled by default** (honest best-effort gap — no fragile caret math).
+- **Math.** Markdig math nodes render as labeled themed source blocks (CSharpMath not shipped —
+  unused package forbidden).
+- **Mermaid.** Fenced `mermaid` → labeled “Mermaid diagram source” block only (no graph/WebView/
+  JS/CLI/remote).
+- **Footnotes.** Rendered via Markdig footnote extension.
+- **Hosts.** Spell / Codex / MarkdownDocument expose Remote images; Spell + MarkdownDocument also
+  Sync scroll. Workspace Explorer Open Preview puts extended payload context.
+- **Tests.** Fake HTTP handlers only — no live-network remote image tests.
+
+**Known limitations (honest):** relative workspace inline images until a binary/base64 workspace API
+exists; Mermaid graphs; perfect pixel scroll sync; Codex may lack full sync; SVG; intranet remote
+images; native math only if a future spike ships a used package.
+
 ## 6. Feature catalog (phased)
 
 Delivered in buildable milestones rather than one drop — each keeps `dotnet build`/`dotnet test`
@@ -327,21 +569,30 @@ green before the next begins.
 | B — Shell | 3 | Full main window: menu bar, dockable tool windows (Left/Right/Bottom), Workbench document well, Anvil; layout persistence via `LayoutState` |
 | C — Create & converse | 4–6 | The Atelier tree, the Spell editor (Save/Cast/Execute/EstimateMana/versions), The Tome (NDJSON chat, tool cards, manual entry, session SSE) |
 | D — Orchestrate & govern | 7–9 | The War Table + Chronicle SSE + lineage walk, The Gatehouse (ward poll/approve/deny), The Anvil status aggregation |
-| E — Polish | 10 | VS 2026 Fluent-inspired Dark/Light themes, Cascadia/Segoe typography, `Icons.axaml`, `ManaBar`, theme swap via `ForgeSettings.Theme` |
+| E — Polish | 10 | VS 2026 Fluent-inspired Dark/Light themes, Cascadia/Segoe typography, `Icons.axaml`, `ManaBar`, theme swap via `TheForgeSettings.Theme` |
+| F — Author & test | 11 | Atelier artifact creation (campaign + global: New Spell / New Prompt / New Session), The Scriptorium (Prompt editor: load/edit/save/render/test/execute-stream), session create → The Tome |
+| G — Operate Inference | 12 | The Arsenal (MCP servers, Scrying Pool built-in tool invoke, Models & Providers, Reliquary LlamaCpp), The Treasury budget dashboard; `ToolInvokeService` + `McpService`/`ModelService` extensions + mirror DTOs + `TheForgeJsonContext` registrations; `Forge*` → `TheForge*` type rename |
+| H — Context and Memory | — | Lore Browser, The Archive (Saga), Divination, Workspace Explorer (read-first + optional server-gated writes), Tome session memory controls, The Codex; `DataSourceResult<T>`, `PatchAsync`, confirmation dialogs; dock tools hidden-by-default |
+| H1 — The Illumination | — | Native markdown preview (`IlluminationView` / Markdown.Avalonia.Tight); Source/Split/Preview in Spell editor + The Codex; standalone markdown Workbench tab; Workspace Explorer Open Preview; link/image/HTML safety policies |
+| H2 — The Illumination Completion | — | Markdig 1.2.0 AST → Avalonia; ColorCode theme brushes; SSRF-safe opt-in remote images + data URIs; approximate AvaloniaEdit scroll sync; footnotes; math/Mermaid source blocks; extended markdown payload context |
 
-As of this document's last update, **Milestones A–E (Phases 1–10) are implemented**, plus **The Hearth**
-local terminal (§5.8): the solution scaffold through The Tome, War Table, Gatehouse, Anvil, VS 2026
-Fluent-inspired theme polish, and the dockable Hearth command runner.
+As of this document's last update, **Milestones A–H are implemented**, plus **Milestone H1 (The
+Illumination)**, **Milestone H2 (The Illumination Completion)**, and **The Hearth** local terminal
+(§5.8): the solution scaffold through The Tome, War
+Table, Gatehouse, Anvil, VS 2026 Fluent-inspired theme polish, the dockable Hearth command runner,
+Atelier artifact creation, The Scriptorium (§5.9), the operational panels — The Arsenal, Models &
+Providers, The Reliquary, and The Treasury (§5.10), Context & Memory (§5.11), and markdown preview
+(§5.12–§5.13).
 
-**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are disabled until create UX exists. Treasury and Arsenal show explicit “not implemented yet” empty states. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass.
+**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table / Milestone H tool visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are enabled (Milestone F, §5.9), with top-level New Workspace Spell / New Prompt / New Session on the Global Spells / Global Prompts / Sessions roots. Treasury and Arsenal are real API-backed panels (Milestone G, §5.10) — no longer placeholders. Milestone H Context & Memory tools are API-backed and hidden by default until shown from the View menu. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass. No client-side embeddings; workspace file writes are server-gated (`Arcanum:Workspaces:EnableFileWrite`) and may be unavailable; Saga delete-all is not exposed; advanced file diff/merge is deferred.
 
 ## 7. API integration notes
 
-- **Base URL**: configurable via `ForgeSettings.BaseUrl`, default `http://localhost:5001`.
+- **Base URL**: configurable via `TheForgeSettings.BaseUrl`, default `http://localhost:5001`.
 - **Auth**: `X-Arcanum-Key` header on every `/api/*` request (`Authorization: Bearer` is also
   accepted server-side, but The Forge always sends the dedicated header).
 - **Settings file**: `~/.config/arcanum/forge.json`, loaded with `reloadOnChange: true` so
-  `IOptionsMonitor<ForgeSettings>` subscribers (the HTTP client, the connection service) see edits
+  `IOptionsMonitor<TheForgeSettings>` subscribers (the HTTP client, the connection service) see edits
   without a restart.
 - **Error handling**: every `ArcanumApiClient` call is wrapped; transport failures synthesize a
   failure `ApiResponse<T>` with code `Connection.Failed` (or `Connection.Timeout`) rather than

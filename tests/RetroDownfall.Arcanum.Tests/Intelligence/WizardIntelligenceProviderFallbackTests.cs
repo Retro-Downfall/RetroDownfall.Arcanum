@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -426,6 +427,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 MaxFallbackAttempts = maxFallbackAttempts,
             },
 
+            Intelligence = new IntelligenceSettings { EnableLexiconSystem = false },
+
         };
 
         FakeGrimoireRepository grimoire = new();
@@ -471,6 +474,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 new NoopWeaveService(),
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 NullLogger<SemanticSpellRouter>.Instance),
+            new FakeLexiconService(),
             CreateUnusedDbContext(),
             new FakeInferenceAuditLogger(),
             new StructuredOutputValidator(),

@@ -29,7 +29,7 @@ public sealed class SpellService
 
         string path = QueryStringBuilder.Build("/api/spells", ("workspace", workspace));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseSpellSummaryArray, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSpellSummaryArray, cancellationToken);
 
     }
 
@@ -48,7 +48,7 @@ public sealed class SpellService
             ("tag", tag),
             ("tool", tool));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseSpellSummaryArray, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSpellSummaryArray, cancellationToken);
 
     }
 
@@ -57,7 +57,22 @@ public sealed class SpellService
 
         string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseSpellDetail, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSpellDetail, cancellationToken);
+
+    }
+
+    /// <summary><c>POST /api/spells?workspace={path}</c> — writes a new workspace spell (built-in spells are read-only).</summary>
+    public Task<ApiResponse<bool>?> CreateAsync(string workspace, CreateSpellRequest request, CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build("/api/spells", ("workspace", workspace));
+
+        return _apiClient.PostAsync(
+            path,
+            request,
+            TheForgeJsonContext.Default.CreateSpellRequest,
+            TheForgeJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
 
     }
 
@@ -65,8 +80,8 @@ public sealed class SpellService
         _apiClient.PutAsync(
             $"/api/spells/{Uri.EscapeDataString(name)}",
             request,
-            ForgeJsonContext.Default.UpdateSpellRequest,
-            ForgeJsonContext.Default.ApiResponseBoolean,
+            TheForgeJsonContext.Default.UpdateSpellRequest,
+            TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
     /// <summary>Dry-run preview — consumes no tokens.</summary>
@@ -74,8 +89,8 @@ public sealed class SpellService
         _apiClient.PostAsync(
             $"/api/spells/{Uri.EscapeDataString(name)}/cast",
             request ?? new SpellCastRequest(),
-            ForgeJsonContext.Default.SpellCastRequest,
-            ForgeJsonContext.Default.ApiResponseSpellCastResult,
+            TheForgeJsonContext.Default.SpellCastRequest,
+            TheForgeJsonContext.Default.ApiResponseSpellCastResult,
             cancellationToken);
 
     /// <summary>Live execution — NDJSON <see cref="IntelligenceEvent"/> stream, opens a Tome tab in the Workbench.</summary>
@@ -86,8 +101,8 @@ public sealed class SpellService
         _apiClient.PostNdjsonStreamAsync(
             $"/api/spells/{Uri.EscapeDataString(name)}/execute-stream",
             request,
-            ForgeJsonContext.Default.SpellExecuteRequest,
-            ForgeJsonContext.Default.IntelligenceEvent,
+            TheForgeJsonContext.Default.SpellExecuteRequest,
+            TheForgeJsonContext.Default.IntelligenceEvent,
             cancellationToken);
 
     public Task<ApiResponse<SpellVersionDto[]>?> ListVersionsAsync(string name, string? workspace, CancellationToken cancellationToken)
@@ -95,7 +110,7 @@ public sealed class SpellService
 
         string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}/versions", ("workspace", workspace));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseSpellVersionDtoArray, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSpellVersionDtoArray, cancellationToken);
 
     }
 
@@ -107,8 +122,8 @@ public sealed class SpellService
         _apiClient.PostAsync(
             $"/api/spells/{Uri.EscapeDataString(name)}/versions/{Uri.EscapeDataString(version)}/activate",
             request,
-            ForgeJsonContext.Default.ActivateSpellVersionRequest,
-            ForgeJsonContext.Default.ApiResponseSpellVersionDto,
+            TheForgeJsonContext.Default.ActivateSpellVersionRequest,
+            TheForgeJsonContext.Default.ApiResponseSpellVersionDto,
             cancellationToken);
 
     /// <summary><c>POST /api/intelligence/mana</c> — read-only token estimate; call before Execute.</summary>
@@ -116,8 +131,8 @@ public sealed class SpellService
         _apiClient.PostAsync(
             "/api/intelligence/mana",
             request,
-            ForgeJsonContext.Default.ManaCountRequest,
-            ForgeJsonContext.Default.ApiResponseManaCountResult,
+            TheForgeJsonContext.Default.ManaCountRequest,
+            TheForgeJsonContext.Default.ApiResponseManaCountResult,
             cancellationToken);
 
 }

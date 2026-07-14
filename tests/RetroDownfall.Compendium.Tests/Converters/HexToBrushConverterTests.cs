@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using Avalonia.Data;
 
 using Avalonia.Media;
@@ -18,7 +20,7 @@ public sealed class HexToBrushConverterTests
 
         HexToBrushConverter converter = new();
 
-        object? result = converter.Convert("#00ff84", typeof(IBrush), null, null);
+        object? result = converter.Convert("#00ff84", typeof(IBrush), null, CultureInfo.InvariantCulture);
 
         SolidColorBrush brush = Assert.IsType<SolidColorBrush>(result);
 
@@ -41,7 +43,7 @@ public sealed class HexToBrushConverterTests
 
         HexToBrushConverter converter = new();
 
-        object? result = converter.Convert(hex, typeof(IBrush), null, null);
+        object? result = converter.Convert(hex, typeof(IBrush), null, CultureInfo.InvariantCulture);
 
         Assert.Equal(Brushes.Transparent, result);
 
@@ -54,7 +56,7 @@ public sealed class HexToBrushConverterTests
 
         HexToBrushConverter converter = new();
 
-        object? result = converter.Convert(null, typeof(IBrush), null, null);
+        object? result = converter.Convert(null, typeof(IBrush), null, CultureInfo.InvariantCulture);
 
         Assert.Equal(Brushes.Transparent, result);
 

@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
@@ -68,6 +69,12 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private bool _isBusy;
 
+    [ObservableProperty]
+    private bool _memoryManagementDisabled;
+
+    [ObservableProperty]
+    private string? _memoryStatusText;
+
     public TomeViewModel(
         Guid sessionId,
         ITomeDataSource dataSource,
@@ -116,6 +123,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
                     : Session.Title!;
 
             }
+
+            await RefreshEntriesAsync(linked.Token).ConfigureAwait(true);
 
             StartSessionObservation();
 
@@ -264,6 +273,246 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         LastExportContent = export?.Content;
 
     }
+
+    [RelayCommand]
+    public async Task RefreshEntriesAsync(CancellationToken cancellationToken)
+    {
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCts.Token);
+
+        DataSourceResult<EntryDto[]> result = await _dataSource
+            .GetEntriesAsync(SessionId, offset: null, limit: null, linked.Token)
+            .ConfigureAwait(true);
+
+        if (!result.Success)
+        {
+
+            MemoryStatusText = result.ErrorMessage ?? "Failed to load session entries.";
+
+            _foundryFloor.AppendLine($"Tome entries refresh failed: {MemoryStatusText}");
+
+            return;
+
+        }
+
+        Messages.Clear();
+
+        _toolCardsByCallId.Clear();
+
+        _streamingAssistant = null;
+
+        if (result.Data is { } entries)
+        {
+
+            foreach (EntryDto entry in entries.OrderBy(static e => e.CreatedAt))
+            {
+
+                AppendEntryIfNew(entry);
+
+            }
+
+        }
+
+        MemoryStatusText = $"{Messages.Count} entries.";
+
+    }
+
+    [RelayCommand]
+    public async Task PinEntryAsync(ChatMessageViewModel? message, CancellationToken cancellationToken)
+    {
+
+        if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
+        {
+
+            return;
+
+        }
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCts.Token);
+
+        DataSourceResult<bool> result = await _dataSource
+            .PinEntryAsync(SessionId, entryId, linked.Token)
+            .ConfigureAwait(true);
+
+        if (result.Success)
+        {
+
+            message.IsPinned = true;
+
+            MemoryStatusText = "Entry pinned.";
+
+            return;
+
+        }
+
+        if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
+        {
+
+            ApplyMemoryManagementDisabled(result.ErrorMessage);
+
+            return;
+
+        }
+
+        if (result.ErrorCode == ErrorCodes.Session.TooManyPinned)
+        {
+
+            MemoryStatusText = result.ErrorMessage ?? "Too many pinned entries.";
+
+            _foundryFloor.AppendLine($"Tome pin failed: {MemoryStatusText}");
+
+            return;
+
+        }
+
+        MemoryStatusText = result.ErrorMessage ?? "Failed to pin entry.";
+
+        _foundryFloor.AppendLine($"Tome pin failed: {MemoryStatusText}");
+
+    }
+
+    [RelayCommand]
+    public async Task UnpinEntryAsync(ChatMessageViewModel? message, CancellationToken cancellationToken)
+    {
+
+        if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
+        {
+
+            return;
+
+        }
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCts.Token);
+
+        DataSourceResult<bool> result = await _dataSource
+            .UnpinEntryAsync(SessionId, entryId, linked.Token)
+            .ConfigureAwait(true);
+
+        if (result.Success)
+        {
+
+            message.IsPinned = false;
+
+            MemoryStatusText = "Entry unpinned.";
+
+            return;
+
+        }
+
+        if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
+        {
+
+            ApplyMemoryManagementDisabled(result.ErrorMessage);
+
+            return;
+
+        }
+
+        MemoryStatusText = result.ErrorMessage ?? "Failed to unpin entry.";
+
+        _foundryFloor.AppendLine($"Tome unpin failed: {MemoryStatusText}");
+
+    }
+
+    [RelayCommand]
+    public async Task DeleteEntryAsync(ChatMessageViewModel? message, CancellationToken cancellationToken)
+    {
+
+        if (message?.EntryId is not { } entryId || MemoryManagementDisabled)
+        {
+
+            return;
+
+        }
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCts.Token);
+
+        DataSourceResult<bool> result = await _dataSource
+            .DeleteEntryAsync(SessionId, entryId, linked.Token)
+            .ConfigureAwait(true);
+
+        if (result.Success)
+        {
+
+            Messages.Remove(message);
+
+            MemoryStatusText = "Entry deleted.";
+
+            return;
+
+        }
+
+        if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
+        {
+
+            ApplyMemoryManagementDisabled(result.ErrorMessage);
+
+            return;
+
+        }
+
+        MemoryStatusText = result.ErrorMessage ?? "Failed to delete entry.";
+
+        _foundryFloor.AppendLine($"Tome delete entry failed: {MemoryStatusText}");
+
+    }
+
+    [RelayCommand]
+    public async Task CompactAsync(CancellationToken cancellationToken)
+    {
+
+        if (MemoryManagementDisabled)
+        {
+
+            return;
+
+        }
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _lifetimeCts.Token);
+
+        DataSourceResult<CompactResult> result = await _dataSource
+            .CompactAsync(SessionId, linked.Token)
+            .ConfigureAwait(true);
+
+        if (result.Success && result.Data is { } compact)
+        {
+
+            MemoryStatusText =
+                $"Compacted: {compact.EntriesRemoved} entries removed ({compact.TokensBefore} → {compact.TokensAfter} tokens).";
+
+            await RefreshEntriesAsync(linked.Token).ConfigureAwait(true);
+
+            return;
+
+        }
+
+        if (result.ErrorCode == ErrorCodes.Session.MemoryManagementDisabled)
+        {
+
+            ApplyMemoryManagementDisabled(result.ErrorMessage);
+
+            return;
+
+        }
+
+        MemoryStatusText = result.ErrorMessage ?? "Failed to compact session.";
+
+        _foundryFloor.AppendLine($"Tome compact failed: {MemoryStatusText}");
+
+    }
+
+    [RelayCommand]
+    private void DivineSession() => _navigation.FocusPanel(PanelKind.Divination);
 
     public void Dispose()
     {
@@ -526,14 +775,38 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     private void AppendEntryIfNew(EntryDto entry)
     {
 
-        // Avoid duplicating the user bubble we already added locally for the in-flight Send.
-        bool alreadyPresent = Messages.Any(m =>
-            string.Equals(m.Role, entry.Role, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(m.Content, entry.Content, StringComparison.Ordinal));
-
-        if (alreadyPresent)
+        if (Messages.Any(m => m.EntryId == entry.Id))
         {
 
+            return;
+
+        }
+
+        // Conservative backfill: attach server identity only when exactly one transient bubble matches.
+        ChatMessageViewModel[] transientMatches = Messages
+            .Where(m =>
+                m.EntryId is null
+                && string.Equals(m.Role, entry.Role, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(m.Content, entry.Content, StringComparison.Ordinal))
+            .ToArray();
+
+        if (transientMatches.Length == 1)
+        {
+
+            ChatMessageViewModel match = transientMatches[0];
+
+            match.EntryId = entry.Id;
+
+            match.IsPinned = entry.IsPinned;
+
+            return;
+
+        }
+
+        if (transientMatches.Length > 1)
+        {
+
+            // Ambiguous — leave bubbles transient; RefreshEntriesAsync is the source of truth.
             return;
 
         }
@@ -557,13 +830,25 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
             _toolCardsByCallId[callId] = card;
 
-            Messages.Add(new ChatMessageViewModel("tool", entry.ToolName ?? "tool", card));
+            Messages.Add(new ChatMessageViewModel("tool", entry.ToolName ?? "tool", card, entry.Id, entry.IsPinned));
 
             return;
 
         }
 
-        Messages.Add(new ChatMessageViewModel(entry.Role, entry.Content));
+        Messages.Add(new ChatMessageViewModel(entry.Role, entry.Content, entryId: entry.Id, isPinned: entry.IsPinned));
+
+    }
+
+    private void ApplyMemoryManagementDisabled(string? message)
+    {
+
+        MemoryManagementDisabled = true;
+
+        MemoryStatusText = message
+            ?? "Session memory management is disabled (Arcanum:Sessions:AllowMemoryManagement).";
+
+        _foundryFloor.AppendLine($"Tome: {MemoryStatusText}");
 
     }
 

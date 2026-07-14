@@ -1,0 +1,43 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Treasury"
+             xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Treasury.TreasuryView"
+             x:DataType="vm:TreasuryViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <ScrollViewer Grid.Row="2">
+      <StackPanel Spacing="10" Margin="8">
+        <TextBlock Text="{Binding EmptyState}" FontWeight="SemiBold" IsVisible="{Binding EmptyState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" Opacity="0.85" />
+
+        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+          <TextBlock Grid.Row="0" Grid.Column="0" Text="Enabled" Opacity="0.7" Margin="0,0,12,6" />
+          <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding IsEnabled}" Margin="0,0,0,6" />
+          <TextBlock Grid.Row="1" Grid.Column="0" Text="Daily limit" Opacity="0.7" Margin="0,0,12,6" />
+          <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DailyLimitUsd, StringFormat=${0:0.00}}" Margin="0,0,0,6" />
+          <TextBlock Grid.Row="2" Grid.Column="0" Text="Today's spend" Opacity="0.7" Margin="0,0,12,6" />
+          <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding TodaySpendUsd, StringFormat=${0:0.00}}" Margin="0,0,0,6" />
+          <TextBlock Grid.Row="3" Grid.Column="0" Text="Remaining" Opacity="0.7" Margin="0,0,12,6" />
+          <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding RemainingUsd, StringFormat=${0:0.00}}" Margin="0,0,0,6" />
+          <TextBlock Grid.Row="4" Grid.Column="0" Text="Spent" Opacity="0.7" Margin="0,0,12,6" VerticalAlignment="Center" />
+          <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+            <controls:ManaBar Width="160" Height="10" ManaPercent="{Binding SpentPercent}" VerticalAlignment="Center" />
+            <TextBlock Text="{Binding SpentPercent, StringFormat={}{0:0}%}" VerticalAlignment="Center" />
+          </StackPanel>
+          <TextBlock Grid.Row="5" Grid.Column="0" Text="Alert threshold" Opacity="0.7" Margin="0,0,12,6" />
+          <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding AlertThresholdPercent, StringFormat={}{0:0}%}" Margin="0,0,0,6" />
+        </Grid>
+
+        <TextBlock Text="{Binding LastUpdated, StringFormat=Updated {0:g}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

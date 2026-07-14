@@ -21,8 +21,8 @@ public sealed class TrialService
         _apiClient.PostAsync(
             "/api/proving-grounds/trials/run",
             trial,
-            ForgeJsonContext.Default.Trial,
-            ForgeJsonContext.Default.ApiResponseTrialResult,
+            TheForgeJsonContext.Default.Trial,
+            TheForgeJsonContext.Default.ApiResponseTrialResult,
             cancellationToken);
 
 }

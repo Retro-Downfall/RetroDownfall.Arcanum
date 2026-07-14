@@ -18,6 +18,6 @@ public sealed class BudgetService
     }
 
     public Task<ApiResponse<BudgetSummaryDto>?> GetBudgetAsync(CancellationToken cancellationToken) =>
-        _apiClient.GetAsync("/api/budget", ForgeJsonContext.Default.ApiResponseBudgetSummaryDto, cancellationToken);
+        _apiClient.GetAsync("/api/budget", TheForgeJsonContext.Default.ApiResponseBudgetSummaryDto, cancellationToken);
 
 }

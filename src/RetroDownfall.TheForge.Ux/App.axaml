@@ -2,11 +2,21 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
              xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
-             x:Class="RetroDownfall.TheForge.Ux.App">
+             x:Class="RetroDownfall.TheForge.Ux.App"
+             Name="The Forge">
+
+  <!-- macOS app menu (leftmost menu bar item). Without this, Avalonia inserts "About Avalonia". -->
+  <NativeMenu.Menu>
+    <NativeMenu>
+      <NativeMenuItem Header="About The Forge"
+                      Click="OnAboutClick" />
+    </NativeMenu>
+  </NativeMenu.Menu>
 
   <Application.Styles>
     <FluentTheme />
     <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+    <StyleInclude Source="avares://RetroDownfall.TheForge.Ux/Themes/Illumination.axaml" />
     <Style Selector="Window">
       <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />
       <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />

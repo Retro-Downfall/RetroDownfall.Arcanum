@@ -46,11 +46,9 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["ask_human"] = ExecuteAskHumanAsync,
 
-            ["read_lore"] = ExecuteReadLoreAsync,
+            ["scribe_lexicon"] = ExecuteScribeLexiconAsync,
 
-            ["scribe_lore"] = ExecuteScribeLoreAsync,
-
-            ["delete_lore"] = ExecuteDeleteLoreAsync,
+            ["delete_lexicon"] = ExecuteDeleteLexiconAsync,
 
             ["search_archives"] = ExecuteSearchArchivesAsync,
 

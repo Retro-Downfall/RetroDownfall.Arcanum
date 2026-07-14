@@ -24,4 +24,11 @@
   <SolidColorBrush x:Key="ForgeErrorBrush" Color="{StaticResource ForgeErrorColor}" />
   <SolidColorBrush x:Key="ForgeWarningBrush" Color="{StaticResource ForgeWarningColor}" />
   <SolidColorBrush x:Key="ForgeSelectionBrush" Color="{StaticResource ForgeSelectionColor}" />
+
+  <!-- The Illumination code highlighting (ColorCode → DynamicResource keys only) -->
+  <SolidColorBrush x:Key="ForgeCodeKeywordBrush" Color="#569CD6" />
+  <SolidColorBrush x:Key="ForgeCodeStringBrush" Color="#CE9178" />
+  <SolidColorBrush x:Key="ForgeCodeCommentBrush" Color="#6A9955" />
+  <SolidColorBrush x:Key="ForgeCodeNumberBrush" Color="#B5CEA8" />
+  <SolidColorBrush x:Key="ForgeCodeTypeBrush" Color="#4EC9B0" />
 </ResourceDictionary>

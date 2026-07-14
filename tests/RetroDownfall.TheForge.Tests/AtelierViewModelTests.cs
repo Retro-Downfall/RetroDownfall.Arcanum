@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
+using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -13,18 +14,20 @@ public class AtelierViewModelTests
 {
 
     [Fact]
-    public async Task RefreshAsync_CreatesFourRootNodes()
+    public async Task RefreshAsync_CreatesFiveRootNodes()
     {
 
         FakeAtelierDataSource dataSource = new();
 
         NavigationService navigation = new();
 
-        AtelierViewModel viewModel = new(dataSource, navigation);
+        AtelierViewModel viewModel = CreateAtelier(dataSource, navigation);
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
-        Assert.Equal(["Campaigns", "Workspaces", "Global Spells", "Sessions"], viewModel.Roots.Select(static r => r.Label).ToArray());
+        Assert.Equal(
+            ["Campaigns", "Workspaces", "Global Spells", "Global Prompts", "Sessions"],
+            viewModel.Roots.Select(static r => r.Label).ToArray());
 
     }
 
@@ -43,7 +46,7 @@ public class AtelierViewModelTests
 
         NavigationService navigation = new();
 
-        AtelierViewModel viewModel = new(dataSource, navigation);
+        AtelierViewModel viewModel = CreateAtelier(dataSource, navigation);
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -73,7 +76,7 @@ public class AtelierViewModelTests
 
         NavigationService navigation = new();
 
-        AtelierViewModel viewModel = new(dataSource, navigation);
+        AtelierViewModel viewModel = CreateAtelier(dataSource, navigation);
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -110,7 +113,7 @@ public class AtelierViewModelTests
 
         navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
 
-        AtelierViewModel viewModel = new(dataSource, navigation);
+        AtelierViewModel viewModel = CreateAtelier(dataSource, navigation);
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -123,6 +126,35 @@ public class AtelierViewModelTests
         spell.OpenCommand.Execute(null);
 
         Assert.Equal((DocumentKind.Spell, "summon-light"), opened);
+
+    }
+
+    [Fact]
+    public async Task GlobalPromptsRoot_LoadsGlobalPromptLeaves()
+    {
+
+        FakeAtelierDataSource dataSource = new()
+        {
+            GlobalPrompts = [new PromptSummaryDto(Guid.NewGuid(), null, "greeting", "v1", "Say hello", [], DateTimeOffset.UtcNow)],
+        };
+
+        NavigationService navigation = new();
+
+        AtelierViewModel viewModel = CreateAtelier(dataSource, navigation);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        AtelierNodeViewModel globalPromptsRoot = viewModel.Roots.Single(static r => r.Label == "Global Prompts");
+
+        Assert.IsType<GlobalPromptsRootNodeViewModel>(globalPromptsRoot);
+
+        Assert.True(globalPromptsRoot.HasNewPrompt);
+
+        await globalPromptsRoot.ExpandAsync(CancellationToken.None);
+
+        PromptNodeViewModel prompt = Assert.IsType<PromptNodeViewModel>(globalPromptsRoot.Children.Single());
+
+        Assert.Equal("greeting v1", prompt.Label);
 
     }
 
@@ -143,7 +175,7 @@ public class AtelierViewModelTests
 
         navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
 
-        AtelierViewModel viewModel = new(dataSource, navigation);
+        AtelierViewModel viewModel = CreateAtelier(dataSource, navigation);
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -159,6 +191,20 @@ public class AtelierViewModelTests
 
     }
 
+    private static AtelierViewModel CreateAtelier(FakeAtelierDataSource dataSource, NavigationService navigation)
+    {
+
+        FoundryFloorViewModel foundryFloor = new(new NullLogService());
+
+        return new AtelierViewModel(
+            dataSource,
+            navigation,
+            new NullArtifactCreationDataSource(),
+            new NullArtifactCreationDialogService(),
+            foundryFloor);
+
+    }
+
     private static CampaignDto NewCampaign(string name, Guid? id = null) =>
         new(id ?? Guid.NewGuid(), name, $"/campaigns/{name}", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
@@ -170,6 +216,8 @@ public class AtelierViewModelTests
         public IReadOnlyList<WorkspaceInfo> Workspaces { get; init; } = [];
 
         public IReadOnlyList<SpellSummary> GlobalSpells { get; init; } = [];
+
+        public IReadOnlyList<PromptSummaryDto> GlobalPrompts { get; init; } = [];
 
         public IReadOnlyList<SessionSummaryDto> Sessions { get; init; } = [];
 
@@ -184,6 +232,8 @@ public class AtelierViewModelTests
         public Task<IReadOnlyList<WorkspaceInfo>> GetWorkspacesAsync(CancellationToken cancellationToken) => Task.FromResult(Workspaces);
 
         public Task<IReadOnlyList<SpellSummary>> GetGlobalSpellsAsync(CancellationToken cancellationToken) => Task.FromResult(GlobalSpells);
+
+        public Task<IReadOnlyList<PromptSummaryDto>> GetGlobalPromptsAsync(CancellationToken cancellationToken) => Task.FromResult(GlobalPrompts);
 
         public Task<IReadOnlyList<SessionSummaryDto>> GetRecentSessionsAsync(CancellationToken cancellationToken) => Task.FromResult(Sessions);
 

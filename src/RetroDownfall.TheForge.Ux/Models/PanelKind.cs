@@ -22,4 +22,12 @@ public enum PanelKind
 
     Anvil,
 
+    Lore,
+
+    Archive,
+
+    Divination,
+
+    WorkspaceExplorer,
+
 }

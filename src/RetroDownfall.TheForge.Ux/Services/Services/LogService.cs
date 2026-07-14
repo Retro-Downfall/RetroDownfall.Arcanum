@@ -36,7 +36,7 @@ public sealed class LogService : ILogService
             ("search", search),
             ("limit", limit?.ToString()));
 
-        return _apiClient.GetAsync(path, ForgeJsonContext.Default.ApiResponseLogQueryResult, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseLogQueryResult, cancellationToken);
 
     }
 

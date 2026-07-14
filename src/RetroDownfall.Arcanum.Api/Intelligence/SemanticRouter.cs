@@ -4,15 +4,23 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
+/// <summary>
+/// Result of a SemanticRouter preflight: the resolved spell (null when NONE / unmatched / no LLM
+/// call) plus the entity strings the router extracted from the user prompt. Entities survive a
+/// <c>NONE</c> spell so Lexicon retrieval can still run when the router fired but matched no spell.
+/// </summary>
+internal sealed record SemanticSpellRoutingResult(SpellMetadata? Spell, IReadOnlyList<string> Entities);
+
 internal static class SemanticRouter
 {
 
-    internal static async Task<SpellMetadata?> DetermineActiveSpellAsync(
+    internal static async Task<SemanticSpellRoutingResult?> DetermineActiveSpellAsync(
         IChatClient client,
         string userPrompt,
         IReadOnlyList<SpellMetadata> availableSpells,
@@ -63,7 +71,10 @@ internal static class SemanticRouter
         string classificationPrompt = string.Format(
             CultureInfo.InvariantCulture,
             "You are an intent router. Match the user's request to the correct tool. Available tools: [{0}]. User request: '{1}'. "
-            + "You must respond with a single valid JSON object containing exactly one key: spellName. If a spell matches the user's intent, the value must be the exact name of the spell. If no spell matches, the value must be NONE. Do not wrap the JSON in markdown code fences. Do not include any other text.",
+            + "You must respond with a single valid JSON object containing exactly two keys: spellName and entities. "
+            + "If a spell matches the user's intent, spellName must be the exact name of the spell; if no spell matches, spellName must be NONE. "
+            + "entities must be a JSON array of short subject/noun strings (people, projects, APIs, or other named things) mentioned in the user request; use an empty array when none are present. "
+            + "Do not wrap the JSON in markdown code fences. Do not include any other text.",
             toolsList.ToString(),
             safeUser);
 
@@ -142,30 +153,67 @@ internal static class SemanticRouter
             return null;
         }
 
+        IReadOnlyList<string> entities = NormalizeEntities(parsed.Entities);
+
         string spellName = parsed.SpellName.Trim();
 
-        if (string.IsNullOrEmpty(spellName))
+        if (string.IsNullOrEmpty(spellName) || spellName.Equals("NONE", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
-        }
-
-        if (spellName.Equals("NONE", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
+            return new SemanticSpellRoutingResult(null, entities);
         }
 
         foreach (SpellMetadata spell in offeredSpells)
         {
             if (spell.Name.Equals(spellName, StringComparison.OrdinalIgnoreCase))
             {
-                return spell;
+                return new SemanticSpellRoutingResult(spell, entities);
             }
         }
 
-        return null;
+        // Unmatched spell name: no spell, but extracted entities still survive for Lexicon retrieval.
+        return new SemanticSpellRoutingResult(null, entities);
     }
 
-    private static string StripMarkdownFences(string trimmed)
+    internal static IReadOnlyList<string> NormalizeEntities(string[]? entities)
+    {
+        if (entities is null || entities.Length == 0)
+        {
+            return [];
+        }
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        List<string> result = new(LexiconLimits.MaxExtractedEntities);
+
+        foreach (string entity in entities)
+        {
+            if (result.Count >= LexiconLimits.MaxExtractedEntities)
+            {
+                break;
+            }
+
+            string trimmed = entity?.Trim() ?? string.Empty;
+
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            if (trimmed.Length > LexiconLimits.MaxNameLength)
+            {
+                trimmed = trimmed[..LexiconLimits.MaxNameLength];
+            }
+
+            if (seen.Add(trimmed))
+            {
+                result.Add(trimmed);
+            }
+        }
+
+        return result;
+    }
+
+    internal static string StripMarkdownFences(string trimmed)
     {
         if (trimmed.Length < 3 || !trimmed.StartsWith("```", StringComparison.Ordinal))
         {
