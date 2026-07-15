@@ -136,6 +136,10 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj --filter "FullyQualifiedName~SettingDescriptor|FullyQualifiedName~Converter|FullyQualifiedName~ValidationRouting|FullyQualifiedName~GenericSettings"
 ```
 
+## macOS Apple Silicon release
+
+Compendium ships as a signed, notarized, stapled `compendium-osx-arm64.dmg` containing `Compendium.app` (self-contained Avalonia on .NET 10 — **not** Native AOT). Packaging defaults to **multi-file** publish so native libraries can be codesigned individually. See [`RELEASE-MACOS.md`](RELEASE-MACOS.md) for the manual workflow, required **Developer ID Application** secrets, SemVer vs `CFBundle*` versioning, and draft-release steps.
+
 ## Note on headless testing
 
 Unit tests target `net10.0` and do not require a desktop session or Avalonia window. UI XAML compiles as part of the Avalonia desktop project; CI exercises services, ViewModels, converters, and descriptor guards without an X server.

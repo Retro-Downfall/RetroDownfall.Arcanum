@@ -4,8 +4,6 @@
 
     <OutputType>WinExe</OutputType>
 
-    <Version>0.1.0-alpha</Version>
-
     <RootNamespace>RetroDownfall.TheForge.Ux</RootNamespace>
 
     <AssemblyName>RetroDownfall.TheForge.Ux</AssemblyName>

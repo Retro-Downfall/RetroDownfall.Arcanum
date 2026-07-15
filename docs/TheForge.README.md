@@ -307,9 +307,13 @@ dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.cspr
 
 `App.axaml` sets `Name="The Forge"` so the macOS menu bar shows **The Forge** (not “Avalonia Application”) during `dotnet run`. Bundled `.app` builds should also set matching `CFBundleName` / `CFBundleDisplayName` in `Info.plist`.
 
+## macOS Apple Silicon release
+
+The Forge ships as a signed, notarized, stapled `the-forge-osx-arm64.dmg` containing `The Forge.app` (self-contained Avalonia on .NET 10 — **not** Native AOT). Packaging defaults to **multi-file** publish so native libraries can be codesigned individually. See [`RELEASE-MACOS.md`](RELEASE-MACOS.md) for the manual workflow, required **Developer ID Application** secrets, SemVer vs `CFBundle*` versioning, and draft-release steps.
+
 ## Status
 
-The Forge is in **alpha** (`0.1.0-alpha`). **Milestones A–H are complete**, plus **H1/H2 (The
+The Forge is in **beta** (`0.1.0-beta`, inherited from [`Directory.Build.props`](../Directory.Build.props)). **Milestones A–H are complete**, plus **H1/H2 (The
 Illumination)**, and Phases **5–7 polish** (Spell Metadata Designer, Proving Grounds UI, campaign
 CRUD + import/export): Avalonia shell, Atelier, Spell editor, Tome, War Table,
 Gatehouse, Anvil, Visual Studio 2026 Fluent-inspired theming (Cascadia Mono / Segoe UI Variable,

@@ -1,0 +1,246 @@
+name: Release macOS arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Tag will be v<version>."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos-arm64:
+    name: Build, sign, notarize (osx-arm64)
+    runs-on: macos-15-xlarge
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assert Apple Silicon and print toolchain
+        run: |
+          set -euo pipefail
+          echo "sw_vers:"
+          sw_vers
+          echo "uname -m: $(uname -m)"
+          if [[ "$(uname -m)" != "arm64" ]]; then
+            echo "error: expected arm64 runner (got $(uname -m)); use macos-15-xlarge or another Apple Silicon label" >&2
+            exit 1
+          fi
+          echo "dotnet --info:"
+          # dotnet may not be on PATH yet; print after setup if missing
+          if command -v dotnet >/dev/null 2>&1; then
+            dotnet --info
+          else
+            echo "(dotnet not on PATH yet — will re-print after setup)"
+          fi
+
+      - name: Validate version and derive Apple bundle versions
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          # Allow MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-prerelease; reject +build metadata.
+          if [[ "$VERSION" == *+* ]]; then
+            echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: invalid SemVer '$VERSION' (expected 0.1.0, 0.1.0-beta, or 0.1.0-beta.1)" >&2
+            exit 1
+          fi
+          MARKETING_VERSION="${VERSION%%-*}"
+          if [[ ! "$MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: derived marketing version is not numeric: '$MARKETING_VERSION'" >&2
+            exit 1
+          fi
+          BUNDLE_VERSION="${{ github.run_number }}"
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "marketing_version=$MARKETING_VERSION"
+            echo "bundle_version=$BUNDLE_VERSION"
+            if [[ "$VERSION" == *-* ]]; then
+              echo "prerelease=true"
+            else
+              echo "prerelease=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION"
+          echo "MARKETING_VERSION=$MARKETING_VERSION"
+          echo "BUNDLE_VERSION=$BUNDLE_VERSION"
+
+      - name: Require Apple signing and notarization secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [[ -z "${!key}" ]]; then
+              echo "error: missing repository secret: $key" >&2
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+          if [[ "$APPLE_SIGNING_IDENTITY" != Developer\ ID\ Application:* ]]; then
+            echo "error: APPLE_SIGNING_IDENTITY must be a Developer ID Application identity" >&2
+            echo "  got: $APPLE_SIGNING_IDENTITY" >&2
+            exit 1
+          fi
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Print dotnet --info (post-setup)
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m)"
+          dotnet --info
+
+      - name: Import Developer ID certificate into ephemeral keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/arcanum-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed -e s/\"//g)
+          # Allow codesign to use the private key non-interactively in CI.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Package Arcanum (notarized zip)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/packaging/macos/build-arcanum.sh
+          ./scripts/packaging/macos/build-arcanum.sh \
+            --version "${{ steps.ver.outputs.version }}" \
+            --output-dir dist
+
+      - name: Package Compendium (notarized DMG)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/packaging/macos/build-app-dmg.sh
+          ./scripts/packaging/macos/build-app-dmg.sh \
+            --product compendium \
+            --version "${{ steps.ver.outputs.version }}" \
+            --marketing-version "${{ steps.ver.outputs.marketing_version }}" \
+            --bundle-version "${{ steps.ver.outputs.bundle_version }}" \
+            --output-dir dist
+
+      - name: Package The Forge (notarized DMG)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ./scripts/packaging/macos/build-app-dmg.sh \
+            --product the-forge \
+            --version "${{ steps.ver.outputs.version }}" \
+            --marketing-version "${{ steps.ver.outputs.marketing_version }}" \
+            --bundle-version "${{ steps.ver.outputs.bundle_version }}" \
+            --output-dir dist
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-${{ steps.ver.outputs.version }}
+          path: |
+            dist/arcanum-osx-arm64.zip
+            dist/compendium-osx-arm64.dmg
+            dist/the-forge-osx-arm64.dmg
+          if-no-files-found: error
+
+      - name: Create or update draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          PRERELEASE: ${{ steps.ver.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          ASSETS=(
+            dist/arcanum-osx-arm64.zip
+            dist/compendium-osx-arm64.dmg
+            dist/the-forge-osx-arm64.dmg
+          )
+          PRE_ARGS=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            PRE_ARGS+=(--prerelease)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading assets with --clobber"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            echo "Creating draft release $TAG"
+            NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+            {
+              echo "macOS Apple Silicon (arm64) draft release for ${VERSION}."
+              echo
+              echo "Artifacts (GitHub distribution only — not Mac App Store):"
+              echo "- \`arcanum-osx-arm64.zip\` — signed Native AOT \`arcanum\` (notarized zip; not stapled)"
+              echo "- \`compendium-osx-arm64.dmg\` — signed, notarized, stapled Compendium.app"
+              echo "- \`the-forge-osx-arm64.dmg\` — signed, notarized, stapled The Forge.app"
+              echo
+              echo "Signed with Developer ID Application and notarized for Gatekeeper. Publish this draft when ready."
+            } >"$NOTES_FILE"
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --draft \
+              "${PRE_ARGS[@]}" \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE"
+          fi
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "${KEYCHAIN_PATH}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi

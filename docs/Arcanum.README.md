@@ -140,6 +140,7 @@ scripts/coverage_threshold_test.py       # coverage threshold script tests
 scripts/align-csharp-blanklines.sh       # C# blank-line formatter entrypoint
 scripts/align_csharp_blanklines.py       # C# blank-line formatter logic
 scripts/verify-aot-il-warnings.sh        # AOT IL-warning gate
+scripts/packaging/macos/                 # signed macOS arm64 release packaging (see RELEASE-MACOS.md)
 Directory.Build.props                    # shared MSBuild props + CVE pin (Microsoft.Bcl.Memory)
 ```
 
@@ -477,6 +478,10 @@ dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c
 ./scripts/verify-aot-il-warnings.sh all        # osx-arm64, osx-x64, linux-x64, win-x64
 ./scripts/verify-aot-il-warnings.sh all --strict   # fail if any RID is skipped (CI)
 ```
+
+### macOS Apple Silicon release (signed / notarized)
+
+Manual workflow **Release macOS arm64** produces a notarized `arcanum-osx-arm64.zip` (signed Native AOT `arcanum` inside; zip is not stapled), plus Compendium/The Forge DMGs. See [`RELEASE-MACOS.md`](RELEASE-MACOS.md) for secrets (`APPLE_SIGNING_IDENTITY` must be a **Developer ID Application** identity), SemVer rules, runner requirements (`macos-15-xlarge`), and how to publish the draft release.
 
 `dotnet build` is warning-clean in Debug/Release. `dotnet publish` may emit clang `.pcm`/`ld` toolchain notices (not IL diagnostics); on Homebrew `dotnet`, the CLI adds conditional linker paths for keg-only OpenSSL/Brotli, and forces the classic `ld_classic` linker on macOS to work around a confirmed Xcode 15+ `ld64` crash (`"too many large addends"`, [dotnet/runtime#119380](https://github.com/dotnet/runtime/issues/119380)) that large Native AOT binaries can trigger. See [DESIGN.md §9.3](Arcanum.DESIGN.md#93-tradeoffs-and-constraints).
 

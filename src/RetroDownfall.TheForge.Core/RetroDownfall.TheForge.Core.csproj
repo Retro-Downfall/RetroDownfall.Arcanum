@@ -2,8 +2,6 @@
 
   <PropertyGroup>
 
-    <Version>0.1.0-alpha</Version>
-
     <RootNamespace>RetroDownfall.TheForge.Core</RootNamespace>
 
     <AssemblyName>RetroDownfall.TheForge.Core</AssemblyName>

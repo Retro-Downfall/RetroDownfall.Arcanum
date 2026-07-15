@@ -35,9 +35,8 @@ Three projects, added to the existing `RetroDownfall.Arcanum.slnx` solution:
 source-generation context, and the API key resolver — nothing that needs Avalonia. Referencing
 `RetroDownfall.Arcanum.Core` (a pure leaf project, net10.0, AOT-compatible, no project references of
 its own) gives The Forge every wire DTO it needs except a handful of Health/Meta/Budget types that
-live in the ASP.NET-heavy `RetroDownfall.Arcanum.Api` project (see §4). Both new projects override
-`<Version>0.1.0-alpha</Version>` in their `.csproj` (the rest of the solution inherits
-`0.1.0-beta` from `Directory.Build.props`).
+live in the ASP.NET-heavy `RetroDownfall.Arcanum.Api` project (see §4). Both projects inherit
+`0.1.0-beta` from `Directory.Build.props` (no project-level version override).
 
 ## 3. Architecture
 
