@@ -183,10 +183,102 @@ public sealed class SkillJsonIOTests
     }
 
     [Fact]
-    public async Task WriteAsync_writes_SKILL_json_file()
+    public void ResolveSidecarPath_prefers_canonical_SPELL_json()
     {
 
-        string dir = Path.Combine(Path.GetTempPath(), "arcanum-skill-json", Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-sidecar-resolve", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+
+            File.WriteAllText(Path.Combine(dir, SkillJsonIO.LegacyFileName), "{\"name\":\"legacy\"}");
+
+            File.WriteAllText(Path.Combine(dir, SkillJsonIO.CanonicalFileName), "{\"name\":\"canonical\"}");
+
+            string? path = SkillJsonIO.ResolveSidecarPath(dir);
+
+            Assert.NotNull(path);
+
+            Assert.Equal(SkillJsonIO.CanonicalFileName, Path.GetFileName(path));
+
+        }
+        finally
+        {
+
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void ResolveSidecarPath_falls_back_to_legacy_SKILL_json()
+    {
+
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-sidecar-legacy", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+
+            File.WriteAllText(Path.Combine(dir, SkillJsonIO.LegacyFileName), "{\"name\":\"legacy\"}");
+
+            string? path = SkillJsonIO.ResolveSidecarPath(dir);
+
+            Assert.NotNull(path);
+
+            Assert.Equal(SkillJsonIO.LegacyFileName, Path.GetFileName(path));
+
+        }
+        finally
+        {
+
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void ResolveSidecarPath_returns_null_when_neither_exists()
+    {
+
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-sidecar-none", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+
+            Assert.Null(SkillJsonIO.ResolveSidecarPath(dir));
+
+        }
+        finally
+        {
+
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public async Task WriteAsync_writes_canonical_SPELL_json_file()
+    {
+
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-spell-json", Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(dir);
 
@@ -209,11 +301,15 @@ public sealed class SkillJsonIOTests
 
             await SkillJsonIO.WriteAsync(dir, metadata, CancellationToken.None);
 
-            string path = Path.Combine(dir, "SKILL.json");
+            string canonical = Path.Combine(dir, SkillJsonIO.CanonicalFileName);
 
-            Assert.True(File.Exists(path));
+            string legacy = Path.Combine(dir, SkillJsonIO.LegacyFileName);
 
-            string json = await File.ReadAllTextAsync(path);
+            Assert.True(File.Exists(canonical));
+
+            Assert.False(File.Exists(legacy));
+
+            string json = await File.ReadAllTextAsync(canonical);
 
             Assert.Contains("file-spell", json, StringComparison.Ordinal);
 
@@ -230,17 +326,121 @@ public sealed class SkillJsonIOTests
 
     }
 
+    [Fact]
+    public async Task WriteAsync_after_legacy_only_spell_creates_canonical_without_removing_legacy()
+    {
+
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-sidecar-migrate", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+
+            await File.WriteAllTextAsync(
+                Path.Combine(dir, SkillJsonIO.LegacyFileName),
+                """{"name":"legacy-spell","version":"1.0.0","tags":[],"declaredTools":[],"dependencies":[]}""");
+
+            SkillMetadata metadata = new(
+                "legacy-spell",
+                "2.0.0",
+                null,
+                [],
+                null,
+                null,
+                [],
+                [],
+                null,
+                null,
+                null,
+                DateTimeOffset.UtcNow);
+
+            await SkillJsonIO.WriteAsync(dir, metadata, CancellationToken.None);
+
+            Assert.True(File.Exists(Path.Combine(dir, SkillJsonIO.CanonicalFileName)));
+
+            Assert.True(File.Exists(Path.Combine(dir, SkillJsonIO.LegacyFileName)));
+
+            Assert.Equal(
+                Path.Combine(dir, SkillJsonIO.CanonicalFileName),
+                SkillJsonIO.ResolveSidecarPath(dir));
+
+        }
+        finally
+        {
+
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+
+        }
+
+    }
+
+    [Fact]
+    public void MergeMetadata_preserves_active_version()
+    {
+
+        SkillMetadata existingMeta = new(
+            "old",
+            "1.0.0",
+            "old-desc",
+            ["t"],
+            null,
+            null,
+            [],
+            [],
+            "old-model",
+            "old-provider",
+            null,
+            DateTimeOffset.UtcNow,
+            "v1");
+
+        ParsedSpell existing = new(
+            "spell",
+            "old-desc",
+            "/tmp/spell/SPELL.md",
+            "content",
+            "/tmp/spell",
+            [])
+        {
+            Tags = ["t"],
+            Model = "old-model",
+            Provider = "old-provider",
+            SkillMetadata = existingMeta,
+        };
+
+        UpdateSpellRequest update = new(
+            Description: "new-desc",
+            Tags: null,
+            SystemPrompt: null,
+            Template: null,
+            Model: null,
+            Provider: null,
+            Tools: null,
+            RequiredMcpServers: null,
+            Version: "3.0.0");
+
+        SkillMetadata merged = SkillJsonIO.MergeMetadata(existing, update);
+
+        Assert.Equal("v1", merged.ActiveVersion);
+
+        Assert.Equal("3.0.0", merged.Version);
+
+    }
+
     [SkippableFact]
     public async Task WriteAsync_overwrites_atomically_and_leaves_no_temp_files()
     {
 
         Skip.If(OperatingSystem.IsWindows(), "Atomic replace is verified via POSIX open-handle snapshot semantics.");
 
-        string dir = Path.Combine(Path.GetTempPath(), "arcanum-skill-json-atomic", Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(Path.GetTempPath(), "arcanum-spell-json-atomic", Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(dir);
 
-        string path = Path.Combine(dir, "SKILL.json");
+        string path = Path.Combine(dir, SkillJsonIO.CanonicalFileName);
 
         try
         {
@@ -297,7 +497,7 @@ public sealed class SkillJsonIOTests
 
             Assert.Single(remaining);
 
-            Assert.EndsWith("SKILL.json", remaining[0], StringComparison.Ordinal);
+            Assert.EndsWith(SkillJsonIO.CanonicalFileName, remaining[0], StringComparison.Ordinal);
 
         }
         finally

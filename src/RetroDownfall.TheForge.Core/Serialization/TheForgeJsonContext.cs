@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Daemons;
@@ -55,8 +56,11 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<CampaignDto>))]
 [JsonSerializable(typeof(CodexPutRequest))]
 [JsonSerializable(typeof(ApiResponse<CodexContentDto>))]
+[JsonSerializable(typeof(CampaignExportDto))]
+[JsonSerializable(typeof(CampaignExportSpellDto))]
 [JsonSerializable(typeof(ApiResponse<CampaignExportDto>))]
 [JsonSerializable(typeof(CampaignImportRequest))]
+[JsonSerializable(typeof(CampaignImportResultDto))]
 [JsonSerializable(typeof(ApiResponse<CampaignImportResultDto>))]
 
 // Spells
@@ -69,9 +73,22 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(SpellExecuteRequest))]
 [JsonSerializable(typeof(ApiResponse<SpellVersionDto[]>))]
 [JsonSerializable(typeof(ApiResponse<SpellVersionDto>))]
+[JsonSerializable(typeof(SpellVersionDetailDto))]
+[JsonSerializable(typeof(ApiResponse<SpellVersionDetailDto>))]
+[JsonSerializable(typeof(CreateSpellVersionRequest))]
+[JsonSerializable(typeof(UpdateSpellVersionRequest))]
 [JsonSerializable(typeof(ActivateSpellVersionRequest))]
 [JsonSerializable(typeof(ManaCountRequest))]
 [JsonSerializable(typeof(ApiResponse<ManaCountResult>))]
+[JsonSerializable(typeof(SpellValidationResultDto))]
+[JsonSerializable(typeof(ApiResponse<SpellValidationResultDto>))]
+[JsonSerializable(typeof(SpellExportDto))]
+[JsonSerializable(typeof(ApiResponse<SpellExportDto>))]
+[JsonSerializable(typeof(SpellImportRequest))]
+[JsonSerializable(typeof(ApiResponse<SpellSummary>))]
+[JsonSerializable(typeof(CloneSpellRequest))]
+[JsonSerializable(typeof(SkillMetadata))]
+[JsonSerializable(typeof(JsonDocument))]
 
 // Prompts
 [JsonSerializable(typeof(ApiResponse<ListPageResult<PromptSummaryDto>>), TypeInfoPropertyName = "ApiResponseListPageResultPromptSummaryDto")]
@@ -86,6 +103,12 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<PromptTestResultDto>))]
 [JsonSerializable(typeof(PromptTestResultDto))]
 [JsonSerializable(typeof(PromptExecuteRequest))]
+[JsonSerializable(typeof(ClonePromptRequest))]
+[JsonSerializable(typeof(PromptExportDto))]
+[JsonSerializable(typeof(ApiResponse<PromptExportDto>))]
+[JsonSerializable(typeof(PromptImportRequest))]
+[JsonSerializable(typeof(ApiResponse<PromptSummaryDto>))]
+[JsonSerializable(typeof(ApiResponse<PromptVersionDto>))]
 
 // Sessions
 [JsonSerializable(typeof(ApiResponse<SessionQueryResult>))]
@@ -119,6 +142,17 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 
 // Trials (The Proving Grounds)
 [JsonSerializable(typeof(Trial))]
+[JsonSerializable(typeof(Inquisitor))]
+[JsonSerializable(typeof(RegexInquisitor))]
+[JsonSerializable(typeof(JsonSchemaInquisitor))]
+[JsonSerializable(typeof(SemanticInquisitor))]
+[JsonSerializable(typeof(List<Inquisitor>))]
+[JsonSerializable(typeof(Inquisitor[]))]
+[JsonSerializable(typeof(TrialTargetKind))]
+[JsonSerializable(typeof(TrialResult))]
+[JsonSerializable(typeof(InquisitorVerdict))]
+[JsonSerializable(typeof(InquisitorVerdict[]))]
+[JsonSerializable(typeof(List<InquisitorVerdict>))]
 [JsonSerializable(typeof(ApiResponse<TrialResult>))]
 
 // MCP (The Arsenal)

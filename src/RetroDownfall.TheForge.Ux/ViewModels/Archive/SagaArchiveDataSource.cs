@@ -14,6 +14,8 @@ public interface ISagaArchiveDataSource
 
     Task<DataSourceResult<bool>> DeleteAsync(string id, CancellationToken cancellationToken);
 
+    Task<DataSourceResult<bool>> DeleteAllAsync(CancellationToken cancellationToken);
+
     Task<DataSourceResult<SagaStats>> GetStatsAsync(CancellationToken cancellationToken);
 
 }
@@ -59,6 +61,17 @@ public sealed class SagaArchiveDataSource : ISagaArchiveDataSource
         ApiResponse<bool>? response = await _sagaService.DeleteAsync(id, cancellationToken).ConfigureAwait(false);
 
         return DataSourceResult<bool>.FromResponse(response);
+
+    }
+
+    public async Task<DataSourceResult<bool>> DeleteAllAsync(CancellationToken cancellationToken)
+    {
+
+        bool deleted = await _sagaService.DeleteAllAsync(cancellationToken).ConfigureAwait(false);
+
+        return deleted
+            ? new DataSourceResult<bool>(true, true, null, null)
+            : new DataSourceResult<bool>(default, false, "Saga.DeleteAllFailed", "Failed to delete all Saga memories.");
 
     }
 

@@ -20,7 +20,7 @@ public class GatehouseViewModelTests
             ],
         };
 
-        GatehouseViewModel viewModel = new(dataSource);
+        GatehouseViewModel viewModel = new(dataSource, new FakeWhispersService());
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -61,7 +61,7 @@ public class GatehouseViewModelTests
             ],
         };
 
-        GatehouseViewModel viewModel = new(dataSource);
+        GatehouseViewModel viewModel = new(dataSource, new FakeWhispersService());
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -91,7 +91,7 @@ public class GatehouseViewModelTests
             ],
         };
 
-        GatehouseViewModel viewModel = new(dataSource);
+        GatehouseViewModel viewModel = new(dataSource, new FakeWhispersService());
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -119,7 +119,7 @@ public class GatehouseViewModelTests
             ],
         };
 
-        GatehouseViewModel viewModel = new(dataSource);
+        GatehouseViewModel viewModel = new(dataSource, new FakeWhispersService());
 
         await viewModel.RefreshAsync(CancellationToken.None);
 
@@ -141,7 +141,7 @@ public class GatehouseViewModelTests
 
         FakeGatehouseDataSource dataSource = new();
 
-        GatehouseViewModel viewModel = new(dataSource);
+        GatehouseViewModel viewModel = new(dataSource, new FakeWhispersService());
 
         viewModel.IsVisible = true;
 

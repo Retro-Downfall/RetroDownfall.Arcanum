@@ -22,6 +22,8 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
 
     private readonly FoundryFloorViewModel _foundryFloor;
 
+    private readonly IClipboardService _clipboard;
+
     private bool _disposed;
 
     [ObservableProperty]
@@ -39,7 +41,11 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private BudgetSummaryDto? _budget;
 
-    public TreasuryViewModel(IArcanumConnection connection, ITreasuryDataSource dataSource, FoundryFloorViewModel foundryFloor)
+    public TreasuryViewModel(
+        IArcanumConnection connection,
+        ITreasuryDataSource dataSource,
+        FoundryFloorViewModel foundryFloor,
+        IClipboardService clipboard)
     {
 
         _connection = connection;
@@ -47,6 +53,8 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         _dataSource = dataSource;
 
         _foundryFloor = foundryFloor;
+
+        _clipboard = clipboard;
 
         Title = "The Treasury";
 
@@ -66,7 +74,16 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
 
     public int AlertThresholdPercent => Budget?.AlertThresholdPercent ?? 0;
 
-    public string EmptyState => IsEnabled ? string.Empty : "Budget enforcement is disabled.";
+    public string BudgetDisabledMessage =>
+        DisabledSettingPaths.FormatEnableMessage("Budget enforcement", DisabledSettingPaths.Budget);
+
+    public string EmptyState => IsEnabled ? string.Empty : BudgetDisabledMessage;
+
+    [RelayCommand]
+    private async Task CopyDisabledPathsAsync(CancellationToken cancellationToken) =>
+        await _clipboard
+            .SetTextAsync(DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.Budget), cancellationToken)
+            .ConfigureAwait(true);
 
     partial void OnBudgetChanged(BudgetSummaryDto? value)
     {
@@ -82,6 +99,8 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(SpentPercent));
 
         OnPropertyChanged(nameof(AlertThresholdPercent));
+
+        OnPropertyChanged(nameof(BudgetDisabledMessage));
 
         OnPropertyChanged(nameof(EmptyState));
 
@@ -118,7 +137,7 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
             else
             {
 
-                StatusText = budget.Enabled ? "Budget loaded." : "Budget enforcement is disabled.";
+                StatusText = budget.Enabled ? "Budget loaded." : BudgetDisabledMessage;
 
             }
 

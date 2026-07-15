@@ -413,9 +413,9 @@ public static class SettingDescriptors
 
         new("spells.metadataScanCacheTtlSeconds", ConfigSection.Forge, "Metadata scan cache TTL (s)", "TTL for the in-process spell-metadata scan cache used by routing and Arcane Resonance. 0 disables caching.", SettingKind.Int, 0, 300, 1, ClampName: nameof(ArcanumSettingClamps.MetadataScanCacheTtlSeconds)),
 
-        new("spells.maxDependencies", ConfigSection.Forge, "Max dependencies", "Maximum dependencies a single spell may declare in SKILL.json.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxDependencies)),
+        new("spells.maxDependencies", ConfigSection.Forge, "Max dependencies", "Maximum dependencies a single spell may declare in SPELL.json.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxDependencies)),
 
-        new("spells.maxDeclaredTools", ConfigSection.Forge, "Max declared tools", "Maximum tools a single spell may declare in SKILL.json (Artifact Attunement allowlist).", SettingKind.Int, 0, 256, 1, ClampName: nameof(ArcanumSettingClamps.MaxDeclaredTools)),
+        new("spells.maxDeclaredTools", ConfigSection.Forge, "Max declared tools", "Maximum tools a single spell may declare in SPELL.json (Artifact Attunement allowlist).", SettingKind.Int, 0, 256, 1, ClampName: nameof(ArcanumSettingClamps.MaxDeclaredTools)),
 
         new("spells.maxResonantDependencies", ConfigSection.Forge, "Max resonant dependencies", "Maximum Arcane Resonance dependencies resolved recursively per spell (hard depth limit 3, cycle-safe).", SettingKind.Int, 0, 50, 1, ClampName: nameof(ArcanumSettingClamps.MaxResonantDependencies)),
 

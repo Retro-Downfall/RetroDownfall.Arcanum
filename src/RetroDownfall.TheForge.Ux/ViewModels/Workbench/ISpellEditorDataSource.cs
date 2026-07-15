@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 
@@ -11,7 +12,13 @@ public interface ISpellEditorDataSource
 
     Task<IReadOnlyList<SpellVersionDto>> ListVersionsAsync(string name, string? workspace, CancellationToken cancellationToken);
 
-    Task<bool> SaveAsync(string name, UpdateSpellRequest request, CancellationToken cancellationToken);
+    Task<SpellVersionDetailDto?> GetVersionDetailAsync(string name, string version, string? workspace, CancellationToken cancellationToken);
+
+    Task<SpellVersionDto?> CreateVersionAsync(string name, CreateSpellVersionRequest request, CancellationToken cancellationToken);
+
+    Task<SpellVersionDto?> UpdateVersionAsync(string name, string version, UpdateSpellVersionRequest request, CancellationToken cancellationToken);
+
+    Task<bool> SaveAsync(string name, UpdateSpellRequest request, string? workspace, CancellationToken cancellationToken);
 
     Task<SpellCastResult?> CastAsync(string name, SpellCastRequest request, CancellationToken cancellationToken);
 
@@ -19,6 +26,20 @@ public interface ISpellEditorDataSource
 
     IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(string name, SpellExecuteRequest request, CancellationToken cancellationToken);
 
-    Task<bool> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken);
+    Task<SpellVersionDto?> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken);
+
+    Task<SpellValidationResultDto?> ValidateAsync(string name, string? workspace, CancellationToken cancellationToken);
+
+    Task<SpellExportDto?> ExportAsync(string name, string? workspace, CancellationToken cancellationToken);
+
+    Task<SpellSummary?> CloneAsync(string name, CloneSpellRequest request, CancellationToken cancellationToken);
+
+    Task<DataSourceResult<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken);
+
+    Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> ListSpellNamesAsync(string? workspace, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> ListAvailableToolNamesAsync(string? workspace, CancellationToken cancellationToken);
 
 }

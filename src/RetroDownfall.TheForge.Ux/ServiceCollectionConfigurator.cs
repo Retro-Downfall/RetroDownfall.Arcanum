@@ -9,6 +9,7 @@ using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Services;
 using RetroDownfall.TheForge.Ux.Services.Terminal;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 using RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
@@ -94,9 +95,19 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IArtifactCreationDataSource, ArtifactCreationDataSource>();
 
+        services.AddSingleton<ICampaignManagementDataSource, CampaignManagementDataSource>();
+
         services.AddSingleton<IArtifactCreationDialogService, AvaloniaArtifactCreationDialogService>();
 
+        services.AddSingleton<ICampaignDialogService, AvaloniaCampaignDialogService>();
+
         services.AddSingleton<IConfirmationDialogService, AvaloniaConfirmationDialogService>();
+
+        services.AddSingleton<IArtifactFileDialogService, AvaloniaArtifactFileDialogService>();
+
+        services.AddSingleton<ITextInputDialogService, AvaloniaTextInputDialogService>();
+
+        services.AddSingleton<IClipboardService, AvaloniaClipboardService>();
 
         services.AddSingleton<IGatehouseDataSource, GatehouseDataSource>();
 
@@ -120,9 +131,17 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<ICodexDataSource, CodexDataSource>();
 
+        services.AddSingleton<ITrialDataSource, TrialDataSource>();
+
         services.AddSingleton<IMarkdownDocumentContentStore, MarkdownDocumentContentStore>();
 
         services.AddSingleton<ThemeApplicationService>();
+
+        services.AddSingleton<IWhispersClock, SystemWhispersClock>();
+
+        services.AddSingleton<IUiThreadDispatcher, AvaloniaUiThreadDispatcher>();
+
+        services.AddSingleton<IWhispersService, WhispersService>();
 
         services.AddSingleton<IWarTableDataSource, WarTableDataSource>();
 

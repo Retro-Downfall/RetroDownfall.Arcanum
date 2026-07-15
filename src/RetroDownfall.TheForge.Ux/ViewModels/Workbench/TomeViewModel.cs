@@ -26,6 +26,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     private readonly FoundryFloorViewModel _foundryFloor;
 
+    private readonly IClipboardService _clipboard;
+
     private readonly CancellationTokenSource _lifetimeCts = new();
 
     private CancellationTokenSource? _sendCts;
@@ -79,7 +81,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         Guid sessionId,
         ITomeDataSource dataSource,
         INavigationService navigation,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        IClipboardService clipboard)
     {
 
         SessionId = sessionId;
@@ -90,6 +93,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         _foundryFloor = foundryFloor;
 
+        _clipboard = clipboard;
+
         Title = $"Tome: {sessionId:D}";
 
     }
@@ -99,6 +104,15 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
     public Guid SessionId { get; private set; }
 
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
+
+    public string MemoryManagementDisabledMessage =>
+        DisabledSettingPaths.FormatEnableMessage("Session memory management", DisabledSettingPaths.SessionMemoryManagement);
+
+    [RelayCommand]
+    private async Task CopyDisabledPathsAsync(CancellationToken cancellationToken) =>
+        await _clipboard
+            .SetTextAsync(DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.SessionMemoryManagement), cancellationToken)
+            .ConfigureAwait(true);
 
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)
@@ -846,7 +860,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         MemoryManagementDisabled = true;
 
         MemoryStatusText = message
-            ?? "Session memory management is disabled (Arcanum:Sessions:AllowMemoryManagement).";
+            ?? DisabledSettingPaths.FormatEnableMessage("Session memory management", DisabledSettingPaths.SessionMemoryManagement);
 
         _foundryFloor.AppendLine($"Tome: {MemoryStatusText}");
 

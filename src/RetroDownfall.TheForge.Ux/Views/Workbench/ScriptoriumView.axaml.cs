@@ -20,6 +20,10 @@ public partial class ScriptoriumView : UserControl
 
         TemplateEditor.TextChanged += OnTemplateEditorTextChanged;
 
+        ParameterSchemaEditor.TextChanged += OnParameterSchemaEditorTextChanged;
+
+        DefaultParametersEditor.TextChanged += OnDefaultParametersEditorTextChanged;
+
     }
 
     private void OnDataContextChanged(object? sender, EventArgs e)
@@ -41,17 +45,19 @@ public partial class ScriptoriumView : UserControl
 
         }
 
-        SynchronizeTemplateFromViewModel();
+        SynchronizeEditorsFromViewModel();
 
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
 
-        if (e.PropertyName == nameof(ScriptoriumViewModel.Template))
+        if (e.PropertyName is nameof(ScriptoriumViewModel.Template)
+            or nameof(ScriptoriumViewModel.ParameterSchemaJson)
+            or nameof(ScriptoriumViewModel.DefaultParametersJson))
         {
 
-            SynchronizeTemplateFromViewModel();
+            SynchronizeEditorsFromViewModel();
 
         }
 
@@ -71,7 +77,35 @@ public partial class ScriptoriumView : UserControl
 
     }
 
-    private void SynchronizeTemplateFromViewModel()
+    private void OnParameterSchemaEditorTextChanged(object? sender, EventArgs e)
+    {
+
+        if (_isSynchronizing || _viewModel is null)
+        {
+
+            return;
+
+        }
+
+        _viewModel.ParameterSchemaJson = ParameterSchemaEditor.Text;
+
+    }
+
+    private void OnDefaultParametersEditorTextChanged(object? sender, EventArgs e)
+    {
+
+        if (_isSynchronizing || _viewModel is null)
+        {
+
+            return;
+
+        }
+
+        _viewModel.DefaultParametersJson = DefaultParametersEditor.Text;
+
+    }
+
+    private void SynchronizeEditorsFromViewModel()
     {
 
         _isSynchronizing = true;
@@ -80,6 +114,10 @@ public partial class ScriptoriumView : UserControl
         {
 
             TemplateEditor.Text = _viewModel?.Template ?? string.Empty;
+
+            ParameterSchemaEditor.Text = _viewModel?.ParameterSchemaJson ?? string.Empty;
+
+            DefaultParametersEditor.Text = _viewModel?.DefaultParametersJson ?? string.Empty;
 
         }
         finally

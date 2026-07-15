@@ -51,6 +51,10 @@ public sealed class SagaService
             TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
+    /// <summary><c>DELETE /api/saga?confirm=true</c> — success is <c>204 No Content</c>.</summary>
+    public Task<bool> DeleteAllAsync(CancellationToken cancellationToken) =>
+        _apiClient.DeleteNoContentAsync("/api/saga?confirm=true", cancellationToken);
+
     /// <summary><c>GET /api/saga/stats</c> — always available (not gated on SagaEnabled).</summary>
     public Task<ApiResponse<SagaStats>?> GetStatsAsync(CancellationToken cancellationToken) =>
         _apiClient.GetAsync("/api/saga/stats", TheForgeJsonContext.Default.ApiResponseSagaStats, cancellationToken);

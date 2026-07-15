@@ -301,7 +301,12 @@ public class SpellEditorMarkdownViewModeTests
         SpellEditorViewModel vm = new(
             "heal",
             new NullSpellEditorDataSource(),
-            new NavigationService());
+            new NavigationService(),
+            new FoundryFloorViewModel(new NullLogService()),
+            new NullConfirmationDialogService(),
+            new NullArtifactFileDialogService(),
+            new NullTextInputDialogService(),
+            new FakeWhispersService());
 
         Assert.Equal(MarkdownViewMode.Source, vm.ViewMode);
 

@@ -32,4 +32,9 @@ public sealed class WorkbenchDocumentPlaceholderViewModel : ViewModelBase
 
 }
 
-internal readonly record struct DocumentKey(DocumentKind Kind, string Id);
+/// <summary>
+/// Workbench tab identity. <see cref="IdentityWorkspace"/> is normalized via
+/// <c>WorkspacePathHelper.ForIdentity</c> (trim, empty→null, trailing separators stripped).
+/// API calls keep a separate trimmed workspace value and must not use this field as a rewrite of the path.
+/// </summary>
+internal readonly record struct DocumentKey(DocumentKind Kind, string Id, string? IdentityWorkspace = null);

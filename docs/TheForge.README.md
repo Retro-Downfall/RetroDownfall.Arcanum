@@ -3,10 +3,12 @@
 <!-- WAVE1 notes: API key paste prompt is deferred until MainWindow is ready; markdown image SSRF uses ConnectCallback + no auto-redirect; response compression retains Lexicon / RAG / Saga. -->
 
 **The Forge** is the Inference IDE for Arcanum — a cross-platform Avalonia desktop application
-(`RetroDownfall.TheForge.Ux`) that provides a full GUI over Arcanum's HTTP API: browsing campaigns
-and spells, editing and casting/executing spells, chatting in sessions, orchestrating apprentices,
-approving wards, tracking budget, and more. See [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) for
-the full design document, naming metaphor, and phased feature catalog.
+(`RetroDownfall.TheForge.Ux`) that provides a full GUI over Arcanum's HTTP API: browsing and managing
+campaigns, editing spells (including the **Spell Metadata Designer** for `SPELL.json` and **The
+Mirror** for versions), chatting in sessions, running ephemeral **Proving Grounds** Trials,
+orchestrating apprentices, approving wards, tracking budget, and more. See
+[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) for the full design document, naming metaphor, and
+phased feature catalog.
 
 ## What it is (and isn't)
 
@@ -89,6 +91,16 @@ and restored on next launch. The Workbench stays the central document host; The 
 status bar. Drag-and-drop docking is not required for this release — menu/context movement is the
 supported path.
 
+## Whispers (toast notifications)
+
+**Whispers** is The Forge's non-blocking notification surface — short status toasts in the top-right
+of the main window, above the dock. `IWhispersService` is registered as a singleton; the shell hosts
+`WhispersHostView` as an overlay on `MainWindow`. Info/Success/Warning auto-dismiss after five seconds;
+Error stays until dismissed manually. At most five active whispers are shown (oldest non-error dropped
+first when at cap). Major actions in the Spell editor, Scriptorium, Archive, Reliquary, Workspace
+Explorer, and Gatehouse call `Show` with short success/error messages; detailed server error text
+stays on the Foundry Floor (and inline `LastError` / `StatusText` where those panels already use them).
+
 ## The Hearth terminal
 
 The Hearth is The Forge's dockable terminal panel (View → **The Hearth**, default bottom dock). It
@@ -104,7 +116,7 @@ local desktop functionality — it does not call the Arcanum API or go through S
 
 ## Creating spells, prompts, and sessions
 
-The Atelier now supports creating spells, prompts, and sessions from campaign nodes. Campaign spell
+The Atelier supports creating spells, prompts, and sessions from campaign nodes. Campaign spell
 creation writes to the campaign workspace. Top-level spell creation creates a workspace spell after
 the operator chooses a workspace; built-in spells remain read-only. Global prompts can be created
 from the **Global Prompts** root, and sessions can be created without a campaign from the
@@ -114,16 +126,85 @@ refreshes and the new artifact opens in the Workbench — a spell in the Spell e
 The Scriptorium, and a session in The Tome. Creation success and failure are logged to the Foundry
 Floor and shown as inline status on the node.
 
+### Campaign management
+
+Right-click the **Campaigns** root for **New Campaign** (name, path, type, description) or
+**Refresh**. Right-click a campaign for **Edit / Properties**, **Delete Campaign**, **Export
+Campaign**, and **Import into Campaign**, plus New Spell / Prompt / Session. Delete **unregisters**
+the campaign from Arcanum only — disk files remain; the confirmation says so and defaults to Cancel.
+Import targets an **existing** campaign (`POST /api/campaigns/{id}/import` with merge or replace):
+register the campaign first, then import a previously exported JSON bundle. Export writes a
+`CampaignExportDto` JSON file (spell payloads use `spellJson`; legacy `skillJson` is accepted when
+reading older bundles). Path validation errors (`Campaign.InvalidPath`, `Campaign.PathNotAllowed`)
+appear as short Whispers and detailed Foundry Floor lines. A full campaign Settings editor and
+advanced import conflict wizards are not built yet.
+
 ## The Scriptorium
 
 Prompts open in **The Scriptorium**, the Workbench prompt editor. Edit the template (AvaloniaEdit)
-and the metadata supported by the prompt API (description, version, tags, model, provider), then
-**Save**. **Render** previews the template with parameters you supply as `key=value` lines (one per
+and the metadata supported by the prompt API (description, version, tags, model, provider,
+Temperature / TopP / MaxOutputTokens, parameter-schema JSON, and default-parameters JSON), then
+**Save**. Blank Temperature / TopP / MaxOutputTokens preserve the server value; empty or whitespace
+JSON editors save as `{}`. Invalid JSON blocks Save with `LastError` and does not call the API.
+**Render** previews the template with parameters you supply as `key=value` lines (one per
 line; split on the first `=`). **Test** assembles the full system prompt with default parameters at
 no LLM cost. **Run** executes the prompt via the live `execute-stream` (requires a non-empty user
-message) and streams tokens into the results pane; **Stop** cancels the run. Numeric sampling fields
-(Temperature / TopP / MaxOutputTokens) and advanced parameter-schema JSON editing are not exposed
-yet — they are deferred and shown read-only or omitted.
+message) and streams tokens into the results pane; optional run-only overrides (model, sampling,
+seed, stop sequences, response format, penalties) are on the Run tab and are not saved. **Stop**
+cancels the run. **Clone**, **Export**, **Import**, and **Delete** use existing Arcanum prompt routes
+(export/import are persisted server artifacts; file-dialog cancel is a silent no-op). Import surfaces
+`Prompt.DuplicateVersion` clearly. **Versions** lists prompt
+versions by name and opens a selected version by its `Id`. Full prompt-version management beyond
+list/open (diff/activate flows) and advanced import conflict wizards are deferred.
+
+## Spell editor lifecycle
+
+Workspace and campaign spells open with an explicit `?workspace=` context (DocumentKey identity is
+normalized separately from the API workspace value). Same spell name in two workspaces opens two tabs
+(with workspace path tooltips); reopening the same workspace focuses the existing tab. **Validate**,
+**Clone**, **Export**, **Import**, and **Delete** call the matching Arcanum spell routes. Built-in spells are
+read-only for Save/Delete; Clone-to-workspace, Export, and Import remain available. Export uses the server
+export route (persisted artifact). Import reads a JSON file and posts `SpellImportRequest`;
+`Spell.NameCollision` surfaces clearly. Successful delete closes the Workbench tab.
+
+### Spell Metadata Designer (SPELL.json)
+
+The Spell editor **SPELL.json** tab is a nested pair:
+
+- **Spell Metadata Designer** — visual fields for `version`, read-only `activeVersion`, dependencies,
+  declared tools, and input/output schema JSON. Add/remove dependencies and tools from the current
+  catalog when available (manual entry always allowed). Advisory warnings appear when a dependency or
+  tool is missing from the catalog; Arcanum remains authoritative on save.
+- **Raw SPELL.json** — AvalonEdit for advanced edits of the same known metadata.
+
+Save persists `Version`, `InputSchema`, `OutputSchema`, `DeclaredTools`, and `Dependencies` through
+`UpdateSpellRequest` (plus the usual body/description/tags/tools fields). Built-in spells keep both
+surfaces read-only. **Honest limit:** the raw editor round-trips **known** sidecar fields only —
+unknown JSON properties are not preserved through the update API. Canonical on-disk sidecar name is
+`SPELL.json` (Arcanum may still **read** legacy `SKILL.json`; new writes always use `SPELL.json`).
+
+**Create Trial** opens The Proving Grounds (below) with this spell pre-selected when the singleton
+tab is clean; a dirty Trial draft is not overwritten.
+
+### The Mirror
+
+**The Mirror** (Spell editor tab) lists spell versions, fetches a selected version’s markdown body,
+and shows a local LCS line diff against the **persisted active** SPELL.md body (not unsaved editor
+edits — a passive warning appears when the editor is dirty). **Activate**, **Create Version**, and
+**Update Version** are available for workspace spells (Create/Update send markdown body only);
+built-in mutation stays disabled. Activate may note a preserved `PreviousVersion` sidecar. Short
+Whispers toasts and Foundry Floor detail follow other Spell editor actions.
+
+## The Proving Grounds
+
+**The Proving Grounds** is a **singleton** Workbench document (menu **Trial → Proving Grounds**).
+Build an ephemeral **Trial** against a Spell, Prompt, or Apprentice Goal; add key/value variables and
+**Inquisitors** (Regex, JsonSchema, Semantic with bool `expectedAnswer`); **Run** calls
+`POST /api/proving-grounds/trials/run`. Results show pass/fail, output, per-Inquisitor verdicts, and
+usage. Whispers: Success / Warning / Error; Foundry Floor logs start and summary. Shortcuts: Spell
+editor **Create Trial**, Scriptorium **Open in Proving Grounds**. Prefill is refused when the tab
+already has a dirty draft (Reset requires confirmation). There is **no** Trial persistence or library
+UI — that remains deferred.
 
 ## The Arsenal
 
@@ -136,7 +217,8 @@ Stop / Restart** on the selected server plus **Reload** (`POST /api/mcp/{name}/s
 `POST /api/tools/invoke` — external MCP direct invocation is not exposed by Arcanum yet, and the
 panel says so. The **Models & Providers** and **Reliquary** tabs are described below. Every action
 requires a running `arcanum serve` and surfaces busy/status/error inline (failures also go to the
-Foundry Floor); there is no separate toast system.
+Foundry Floor). Short Whispers toasts cover major success/failure outcomes; they do not replace
+Floor detail.
 
 ## Models and Providers
 
@@ -158,8 +240,8 @@ model-metadata editing are not exposed.
 
 **The Treasury** (View → **The Treasury**, default right dock) is a read-only budget dashboard over
 `GET /api/budget`: enabled/disabled, daily limit, today's spend, remaining, spent percent (a Mana
-bar), and alert threshold. When enforcement is disabled it shows "Budget enforcement is disabled."
-Budget/pricing editing is not part of this milestone.
+bar), and alert threshold. When enforcement is disabled the banner names `Arcanum:Budget:Enabled` and
+offers **Copy setting paths**. Budget/pricing editing is not part of this milestone.
 
 ## Lore Browser
 
@@ -169,33 +251,38 @@ through `/api/lore/*` (list / save / delete). API failures surface inline and on
 ## The Archive
 
 **The Archive** (View → **The Archive**; hidden by default) browses Saga memories: list, stats,
-delete-one, and Saga Divination. Saga Divination requires Arcanum embeddings enabled
-(`Arcanum:Embeddings:Enabled`) and Saga (`Arcanum:Embeddings:SagaEnabled`) server-side; when
-disabled the panel shows an honest disabled state. There is no delete-all action.
+delete-one, and Saga Divination. When Saga Divination is disabled the banner names
+`Arcanum:Embeddings:Enabled` and `Arcanum:Embeddings:SagaEnabled` with **Copy setting paths**.
+**Delete all Saga memories** is available behind an explicit confirmation dialog
+(`DELETE /api/saga?confirm=true`); cancel is a no-op.
 
 ## Divination
 
 **Divination** (View → **Divination**; hidden by default) runs semantic search over sessions,
-workspace files, and Saga. Each tab requires embeddings (+ the relevant sub-flag) enabled on the
-server; disabled features surface per-tab. Session hits open The Tome. The Forge never embeds or
-searches client-side.
+workspace files, and Saga. Each tab names the exact embedding paths when disabled (Sessions:
+`Arcanum:Embeddings:Enabled` + `Arcanum:Embeddings:SessionSearchEnabled`; Workspace:
+`Arcanum:Embeddings:Enabled` + `Arcanum:Embeddings:CodebaseRetrievalEnabled`; Saga:
+`Arcanum:Embeddings:Enabled` + `Arcanum:Embeddings:SagaEnabled`) and offers **Copy setting paths**
+per tab. Session hits open The Tome. The Forge never embeds or searches client-side.
 
 ## Workspace Explorer
 
 **Workspace Explorer** (View → **Workspace Explorer**; hidden by default; also opened from an
 Atelier workspace node) browses registered workspaces and files through Arcanum's workspace file
 APIs — never local disk. **Index** triggers the **server's** workspace indexing endpoint (not
-client-side indexing). Workspace Divination likewise requires embeddings + codebase retrieval enabled
-server-side. Optional Save / Delete / Create directory are server-gated by
-`Arcanum:Workspaces:EnableFileWrite` and may return `403 Workspace.FileWriteDisabled`; deletes ask
-for confirmation first.
+client-side indexing). When indexing/Divination is disabled the banner names
+`Arcanum:Embeddings:Enabled` and `Arcanum:Embeddings:CodebaseRetrievalEnabled`. Optional Save /
+Delete / Create directory are server-gated by `Arcanum:Workspaces:EnableFileWrite` and may return
+`403 Workspace.FileWriteDisabled`; the write banner names that path. Each disabled banner offers
+**Copy setting paths**. Deletes ask for confirmation first.
 
 ## Session memory controls
 
 In **The Tome**, Refresh / Pin / Unpin / Delete entry / Compact manage session memory when
-`Arcanum:Sessions:AllowMemoryManagement` is enabled. When disabled, the server returns
-`Session.MemoryManagementDisabled` and those controls turn off (chat still works). Pinning past the
-server pin limit surfaces `Session.TooManyPinned`. Divination focuses the Divination dock tool.
+`Arcanum:Sessions:AllowMemoryManagement` is enabled. When disabled, the banner names that path and
+offers **Copy setting paths**; the server returns `Session.MemoryManagementDisabled` and those
+controls turn off (chat still works). Pinning past the server pin limit surfaces
+`Session.TooManyPinned`. Divination focuses the Divination dock tool.
 
 ## The Codex
 
@@ -223,15 +310,18 @@ dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.cspr
 ## Status
 
 The Forge is in **alpha** (`0.1.0-alpha`). **Milestones A–H are complete**, plus **H1/H2 (The
-Illumination)**: Avalonia shell, Atelier, Spell editor, Tome, War Table,
+Illumination)**, and Phases **5–7 polish** (Spell Metadata Designer, Proving Grounds UI, campaign
+CRUD + import/export): Avalonia shell, Atelier, Spell editor, Tome, War Table,
 Gatehouse, Anvil, Visual Studio 2026 Fluent-inspired theming (Cascadia Mono / Segoe UI Variable,
 Dark/Light resource dictionaries, ManaBar, Icons, `forge.json` `Theme` swap), Atelier artifact
-creation, The Scriptorium prompt editor, Milestone G operational panels — The Arsenal (MCP servers,
-Scrying Pool, Models & Providers, Reliquary) and The Treasury — **The Hearth** local terminal,
-**Milestone H Context and Memory** (Lore Browser, The Archive, Divination, Workspace Explorer, Tome
-session memory controls, The Codex), and **The Illumination** Markdig-backed markdown preview (Spell
-editor / The Codex Source·Split·Preview, Workspace Explorer Open Preview, standalone markdown tabs).
-See [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.13 and §6.
+creation and **campaign New / Edit / Delete (unregister) / Export / Import**, The Scriptorium prompt
+editor, Milestone G operational panels — The Arsenal (MCP servers, Scrying Pool, Models & Providers,
+Reliquary) and The Treasury — **The Hearth** local terminal, **Milestone H Context and Memory** (Lore
+Browser, The Archive, Divination, Workspace Explorer, Tome session memory controls, The Codex),
+**The Illumination** Markdig-backed markdown preview (Spell editor / The Codex Source·Split·Preview,
+Workspace Explorer Open Preview, standalone markdown tabs), **The Mirror** and **Spell Metadata
+Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Workbench tab. See
+[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.18 and §6.
 
 ### Markdown preview (The Illumination)
 
@@ -256,5 +346,5 @@ See [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.13 and §6.
   **Open Preview** to open a Workbench tab (preview-first).
 - The Scriptorium’s **Render** button remains server-side template render — not markdown preview.
 
-**Known gaps (honest UI):** The Arsenal exposes only built-in tool invocation (`POST /api/tools/invoke`); external MCP direct invocation is not exposed by Arcanum yet. No provider/config editing, budget/pricing editing, advanced Llama cache pruning, or model-metadata editing; no model/session token/cost breakdown. Campaign **New Spell / New Prompt / New Session** and the top-level New Workspace Spell / New Prompt / New Session commands are available (Milestone F). Numeric sampling fields and advanced parameter-schema JSON editing in The Scriptorium are deferred; prompt clone/delete/import/export and spell clone/validate are not wired yet. Opening a created spell relies on the server workspace resolver, so a spell in a non-default campaign workspace may need to be opened from the refreshed campaign tree. Dedicated Git UI (The Ledger) is not built yet — use The Hearth for `git` commands. No client-side embeddings; Divination/Archive need embeddings (+ sub-flags) enabled on Arcanum; workspace writes need `Arcanum:Workspaces:EnableFileWrite`; session memory controls need `Arcanum:Sessions:AllowMemoryManagement`. Saga delete-all and advanced file diff/merge are not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. Proving Grounds UI, The Mirror, full import/export, and a true PTY Hearth remain gaps. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet.
+**Known gaps (honest UI):** The Arsenal exposes only built-in tool invocation (`POST /api/tools/invoke`); external MCP direct invocation is not exposed by Arcanum yet. No provider/config editing, budget/pricing editing, advanced Llama cache pruning, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for ephemeral Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; no persistent Trial libraries yet. Full prompt-version management beyond list/open, advanced import conflict wizards, full campaign Settings editing, and dedicated Git UI (The Ledger) are not built yet — use The Hearth for `git` commands. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** (Open Compendium deep-link deferred; Guardrails panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet.
 

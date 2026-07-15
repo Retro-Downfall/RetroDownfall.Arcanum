@@ -1,0 +1,213 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:pg="using:RetroDownfall.Arcanum.Core.ProvingGrounds"
+             xmlns:forge="using:RetroDownfall.Arcanum.Core.TheForge"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.ProvingGroundsView"
+             x:DataType="vm:ProvingGroundsViewModel">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="8">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <StackPanel DockPanel.Dock="Left" Spacing="2">
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding StatusText}" Opacity="0.68" />
+        <TextBlock Text="{Binding ValidationMessage}" Foreground="{DynamicResource ForgeWarningBrush}" TextWrapping="Wrap" MaxWidth="520" />
+        <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" MaxWidth="520" />
+      </StackPanel>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Refresh pickers" Command="{Binding LoadPickersCommand}" />
+        <Button Content="Run" Command="{Binding RunCommand}" IsEnabled="{Binding !IsBusy}" />
+        <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsBusy}" />
+        <Button Content="Reset" Command="{Binding ResetCommand}" IsEnabled="{Binding !IsBusy}" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+
+      <ScrollViewer Grid.Column="0">
+        <StackPanel Spacing="10" Margin="0,0,8,0">
+
+          <StackPanel Spacing="4">
+            <TextBlock Text="Target kind" Opacity="0.72" />
+            <ComboBox ItemsSource="{Binding TargetKinds}"
+                      SelectedItem="{Binding TargetKind}"
+                      MinWidth="200" />
+          </StackPanel>
+
+          <StackPanel Spacing="4" IsVisible="{Binding TargetKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static pg:TrialTargetKind.Spell}}">
+            <TextBlock Text="Spell" Opacity="0.72" />
+            <ComboBox ItemsSource="{Binding SpellNames}"
+                      SelectedItem="{Binding SelectedSpellName}"
+                      MinWidth="240" />
+            <TextBox Watermark="Spell name"
+                     Text="{Binding Target}" />
+          </StackPanel>
+
+          <StackPanel Spacing="4" IsVisible="{Binding TargetKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static pg:TrialTargetKind.Prompt}}">
+            <TextBlock Text="Prompt" Opacity="0.72" />
+            <ComboBox ItemsSource="{Binding Prompts}"
+                      SelectedItem="{Binding SelectedPrompt}"
+                      MinWidth="240">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="forge:PromptSummaryDto">
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <TextBox Watermark="Prompt GUID"
+                     Text="{Binding Target}" />
+          </StackPanel>
+
+          <StackPanel Spacing="4" IsVisible="{Binding TargetKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static pg:TrialTargetKind.ApprenticeGoal}}">
+            <TextBlock Text="Apprentice goal" Opacity="0.72" />
+            <TextBox Watermark="Goal text"
+                     Text="{Binding Target}"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     MinHeight="64" />
+          </StackPanel>
+
+          <StackPanel Spacing="4">
+            <TextBlock Text="Workspace (optional)" Opacity="0.72" />
+            <TextBox Text="{Binding Workspace}" />
+          </StackPanel>
+
+          <StackPanel Spacing="4">
+            <TextBlock Text="Model (optional)" Opacity="0.72" />
+            <TextBox Text="{Binding Model}" />
+          </StackPanel>
+
+          <StackPanel Spacing="4">
+            <TextBlock Text="Trial name (optional)" Opacity="0.72" />
+            <TextBox Text="{Binding TrialName}" />
+          </StackPanel>
+
+          <StackPanel Spacing="6">
+            <DockPanel LastChildFill="False">
+              <TextBlock Text="Variables" FontWeight="SemiBold" VerticalAlignment="Center" />
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                <Button Content="Add" Command="{Binding AddVariableCommand}" />
+                <Button Content="Remove" Command="{Binding RemoveVariableCommand}" />
+              </StackPanel>
+            </DockPanel>
+            <ListBox ItemsSource="{Binding Variables}"
+                     SelectedItem="{Binding SelectedVariable}"
+                     MinHeight="80"
+                     MaxHeight="160">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:TrialVariableRowViewModel">
+                  <Grid ColumnDefinitions="*,*" Margin="0,2">
+                    <TextBox Grid.Column="0" Watermark="Key" Text="{Binding Key}" Margin="0,0,4,0" />
+                    <TextBox Grid.Column="1" Watermark="Value" Text="{Binding Value}" />
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </StackPanel>
+
+          <StackPanel Spacing="6">
+            <DockPanel LastChildFill="False">
+              <TextBlock Text="Inquisitors" FontWeight="SemiBold" VerticalAlignment="Center" />
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4">
+                <Button Content="Regex" Command="{Binding AddRegexInquisitorCommand}" />
+                <Button Content="JSON Schema" Command="{Binding AddJsonSchemaInquisitorCommand}" />
+                <Button Content="Semantic" Command="{Binding AddSemanticInquisitorCommand}" />
+                <Button Content="Remove" Command="{Binding RemoveInquisitorCommand}" />
+              </StackPanel>
+            </DockPanel>
+            <ListBox ItemsSource="{Binding Inquisitors}"
+                     SelectedItem="{Binding SelectedInquisitor}"
+                     MinHeight="100"
+                     MaxHeight="200">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:InquisitorDraftViewModel">
+                  <TextBlock>
+                    <TextBlock.Text>
+                      <MultiBinding StringFormat="{}{0} — {1}">
+                        <Binding Path="Kind" />
+                        <Binding Path="Label" TargetNullValue="(no label)" />
+                      </MultiBinding>
+                    </TextBlock.Text>
+                  </TextBlock>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+
+            <StackPanel Spacing="4" IsVisible="{Binding SelectedInquisitor, Converter={x:Static ObjectConverters.IsNotNull}}">
+              <TextBlock Text="Label (optional)" Opacity="0.72" />
+              <TextBox Text="{Binding SelectedInquisitor.Label}" />
+
+              <StackPanel Spacing="4" IsVisible="{Binding SelectedInquisitor.Kind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static vm:InquisitorDraftKind.Regex}}">
+                <TextBlock Text="Pattern" Opacity="0.72" />
+                <TextBox Text="{Binding SelectedInquisitor.Pattern}" />
+                <CheckBox Content="Should match" IsChecked="{Binding SelectedInquisitor.ShouldMatch}" />
+                <CheckBox Content="Ignore case" IsChecked="{Binding SelectedInquisitor.IgnoreCase}" />
+              </StackPanel>
+
+              <StackPanel Spacing="4" IsVisible="{Binding SelectedInquisitor.Kind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static vm:InquisitorDraftKind.JsonSchema}}">
+                <TextBlock Text="Schema JSON" Opacity="0.72" />
+                <TextBox Text="{Binding SelectedInquisitor.SchemaJson}"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         MinHeight="96"
+                         FontFamily="Menlo, Consolas, monospace" />
+              </StackPanel>
+
+              <StackPanel Spacing="4" IsVisible="{Binding SelectedInquisitor.Kind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static vm:InquisitorDraftKind.Semantic}}">
+                <TextBlock Text="Question" Opacity="0.72" />
+                <TextBox Text="{Binding SelectedInquisitor.Question}" AcceptsReturn="True" TextWrapping="Wrap" />
+                <CheckBox Content="Expected answer: yes" IsChecked="{Binding SelectedInquisitor.ExpectedAnswer}" />
+              </StackPanel>
+            </StackPanel>
+          </StackPanel>
+
+        </StackPanel>
+      </ScrollViewer>
+
+      <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+
+      <ScrollViewer Grid.Column="2" Margin="8,0,0,0">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Results" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding ResultSummary}" IsVisible="{Binding HasResult}" />
+          <TextBlock Text="{Binding UsageSummary}" Opacity="0.72" IsVisible="{Binding HasResult}" />
+          <TextBlock Text="Output" Opacity="0.72" IsVisible="{Binding HasResult}" />
+          <TextBox Text="{Binding LastResult.Output}"
+                   IsReadOnly="True"
+                   AcceptsReturn="True"
+                   TextWrapping="Wrap"
+                   MinHeight="120"
+                   IsVisible="{Binding HasResult}" />
+          <TextBlock Text="Verdicts" Opacity="0.72" IsVisible="{Binding HasResult}" />
+          <ItemsControl ItemsSource="{Binding LastResult.Verdicts}" IsVisible="{Binding HasResult}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="pg:InquisitorVerdict">
+                <Border BorderThickness="0,0,0,1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="0,4">
+                  <Grid ColumnDefinitions="Auto,*,Auto">
+                    <TextBlock Grid.Column="0" Text="{Binding Kind}" FontWeight="SemiBold" Margin="0,0,8,0" />
+                    <TextBlock Grid.Column="1" Text="{Binding Detail}" TextWrapping="Wrap" Opacity="0.85" />
+                    <TextBlock Grid.Column="2" Margin="8,0,0,0">
+                      <TextBlock.Text>
+                        <Binding Path="Passed" StringFormat="{}{0}" />
+                      </TextBlock.Text>
+                    </TextBlock>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Text="Run a Trial to see results."
+                     Opacity="0.6"
+                     IsVisible="{Binding !HasResult}" />
+        </StackPanel>
+      </ScrollViewer>
+
+    </Grid>
+
+    <TextBlock Grid.Row="2"
+               Margin="0,8,0,0"
+               Opacity="0.55"
+               Text="Ephemeral only — Trials are not saved. Persistent Trial libraries are deferred." />
+
+  </Grid>
+</UserControl>

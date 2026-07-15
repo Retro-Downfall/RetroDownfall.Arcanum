@@ -106,7 +106,7 @@ public sealed partial class GlobalSpellsRootNodeViewModel : AtelierNodeViewModel
 
         await ReloadAsync(cancellationToken).ConfigureAwait(true);
 
-        _navigation.OpenDocument(DocumentKind.Spell, inputs.Name);
+        _navigation.OpenDocument(DocumentKind.Spell, inputs.Name, inputs.WorkspacePath);
 
     }
 

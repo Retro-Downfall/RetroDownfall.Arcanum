@@ -14,6 +14,12 @@ public abstract partial class ViewModelBase : ObservableObject
     [ObservableProperty]
     private string _title = string.Empty;
 
+    /// <summary>
+    /// Optional tab tooltip / subtitle (e.g. workspace path) when <see cref="Title"/> alone would collide.
+    /// </summary>
+    [ObservableProperty]
+    private string? _documentTooltip;
+
     /// <summary>The document kind for tab identification, or <see langword="null"/> for non-document ViewModels.</summary>
     public virtual DocumentKind? Kind => null;
 

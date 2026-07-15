@@ -165,6 +165,24 @@ public class WorkbenchDocumentFactoryTests
 
     }
 
+    [Fact]
+    public void Create_Trial_ReturnsProvingGroundsViewModel()
+    {
+
+        WorkbenchDocumentFactory factory = NewFactory();
+
+        ViewModelBase doc = factory.Create(DocumentKind.Trial, ProvingGroundsViewModel.SingletonDocumentId);
+
+        ProvingGroundsViewModel provingGrounds = Assert.IsType<ProvingGroundsViewModel>(doc);
+
+        Assert.Equal(DocumentKind.Trial, provingGrounds.Kind);
+
+        Assert.Equal("Proving Grounds", provingGrounds.Title);
+
+        provingGrounds.Dispose();
+
+    }
+
     private static WorkbenchDocumentFactory NewFactory(IMarkdownDocumentContentStore? store = null)
     {
 
@@ -177,11 +195,55 @@ public class WorkbenchDocumentFactoryTests
             new NullPromptEditorDataSource(),
             new NullTomeDataSource(),
             new NullCodexDataSource(),
+            new NullTrialDataSource(),
             store ?? new MarkdownDocumentContentStore(),
             navigation,
-            foundryFloor);
+            foundryFloor,
+            new NullConfirmationDialogService(),
+            new NullArtifactFileDialogService(),
+            new NullTextInputDialogService(),
+            new FakeClipboardService(),
+            new FakeWhispersService());
 
     }
+
+}
+
+internal sealed class NullTrialDataSource : ITrialDataSource
+{
+
+    public Task<DataSourceResult<RetroDownfall.Arcanum.Core.ProvingGrounds.TrialResult>> RunAsync(
+        RetroDownfall.Arcanum.Core.ProvingGrounds.Trial trial,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.ProvingGrounds.TrialResult>(null, true, null, null));
+
+    public Task<DataSourceResult<IReadOnlyList<string>>> ListSpellNamesAsync(
+        string? workspace,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<IReadOnlyList<string>>([], true, null, null));
+
+    public Task<DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.PromptSummaryDto>>> ListPromptsAsync(
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.TheForge.PromptSummaryDto>>([], true, null, null));
+
+}
+
+internal sealed class NullArtifactFileDialogService : IArtifactFileDialogService
+{
+
+    public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
+
+    public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
+
+}
+
+internal sealed class NullTextInputDialogService : ITextInputDialogService
+{
+
+    public Task<string?> PromptAsync(string title, string label, string? defaultValue, CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
 
 }
 

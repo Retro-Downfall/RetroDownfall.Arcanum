@@ -1,0 +1,54 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:whispers="using:RetroDownfall.TheForge.Ux.Services.Whispers"
+             xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Whispers.WhispersHostView"
+             x:DataType="whispers:IWhispersService">
+  <UserControl.Resources>
+    <converters:WhisperSeverityToBorderBrushConverter x:Key="WhisperSeverityToBorderBrushConverter" />
+  </UserControl.Resources>
+
+  <ItemsControl ItemsSource="{Binding Notifications}"
+                MaxWidth="360"
+                IsHitTestVisible="True">
+    <ItemsControl.ItemsPanel>
+      <ItemsPanelTemplate>
+        <StackPanel Spacing="8" />
+      </ItemsPanelTemplate>
+    </ItemsControl.ItemsPanel>
+    <ItemsControl.ItemTemplate>
+      <DataTemplate x:DataType="whispers:WhisperNotification">
+        <Border Padding="10,8"
+                CornerRadius="6"
+                BorderThickness="1,1,1,3"
+                BorderBrush="{Binding Severity, Converter={StaticResource WhisperSeverityToBorderBrushConverter}}"
+                Background="{DynamicResource ForgeSurfaceBrush}"
+                BoxShadow="0 2 8 0 #40000000">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Grid.Column="0" Spacing="4" Margin="0,0,8,0">
+              <TextBlock Text="{Binding Title}"
+                         FontWeight="SemiBold"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         TextWrapping="Wrap"
+                         IsVisible="{Binding Title, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              <TextBlock Text="{Binding Message}"
+                         TextWrapping="Wrap"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Content="×"
+                    Padding="6,0"
+                    MinWidth="28"
+                    MinHeight="28"
+                    VerticalAlignment="Top"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ToolTip.Tip="Dismiss"
+                    Tag="{Binding Id}"
+                    Click="OnDismissClick" />
+          </Grid>
+        </Border>
+      </DataTemplate>
+    </ItemsControl.ItemTemplate>
+  </ItemsControl>
+</UserControl>

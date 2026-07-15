@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -685,6 +686,128 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped.Data);
 
         Assert.Equal("# Campaign", roundTripped.Data!.Content);
+
+    }
+
+    [Fact]
+    public void InquisitorArray_RoundTrips_EachKindViaTheForgeJsonContext()
+    {
+
+        List<Inquisitor> inquisitors =
+        [
+            new RegexInquisitor("hello", ShouldMatch: true, IgnoreCase: true) { Label = "greeting" },
+            new JsonSchemaInquisitor(JsonDocument.Parse("""{"type":"object","required":["name"]}""").RootElement),
+            new SemanticInquisitor("Is the output polite?", ExpectedAnswer: false) { Label = "polite" },
+        ];
+
+        string json = JsonSerializer.Serialize(inquisitors, TheForgeJsonContext.Default.ListInquisitor);
+
+        Assert.Contains("\"kind\":\"regex\"", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"kind\":\"jsonSchema\"", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"kind\":\"semantic\"", json, StringComparison.Ordinal);
+
+        List<Inquisitor>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ListInquisitor);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(3, roundTripped.Count);
+
+        RegexInquisitor regex = Assert.IsType<RegexInquisitor>(roundTripped[0]);
+
+        Assert.Equal("hello", regex.Pattern);
+
+        Assert.True(regex.IgnoreCase);
+
+        Assert.Equal("greeting", regex.Label);
+
+        Assert.IsType<JsonSchemaInquisitor>(roundTripped[1]);
+
+        SemanticInquisitor semantic = Assert.IsType<SemanticInquisitor>(roundTripped[2]);
+
+        Assert.Equal("Is the output polite?", semantic.Question);
+
+        Assert.False(semantic.ExpectedAnswer);
+
+        Assert.Equal("polite", semantic.Label);
+
+    }
+
+    [Fact]
+    public void Trial_RoundTrips_WithPolymorphicInquisitorsViaTheForgeJsonContext()
+    {
+
+        Trial trial = new(
+            TrialTargetKind.Spell,
+            "greater-heal",
+            [
+                new RegexInquisitor(@"healed", ShouldMatch: true),
+                new SemanticInquisitor("Did healing occur?", ExpectedAnswer: true),
+            ],
+            Variables: new Dictionary<string, string> { ["target"] = "ally" },
+            Model: "fast",
+            Workspace: "/ws/a",
+            Name: "heal-check");
+
+        string json = JsonSerializer.Serialize(trial, TheForgeJsonContext.Default.Trial);
+
+        Trial? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.Trial);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(TrialTargetKind.Spell, roundTripped.TargetKind);
+
+        Assert.Equal("greater-heal", roundTripped.Target);
+
+        Assert.Equal(2, roundTripped.Inquisitors.Count);
+
+        Assert.IsType<RegexInquisitor>(roundTripped.Inquisitors[0]);
+
+        Assert.IsType<SemanticInquisitor>(roundTripped.Inquisitors[1]);
+
+        Assert.Equal("ally", roundTripped.Variables!["target"]);
+
+    }
+
+    [Fact]
+    public void ApiResponse_TrialResult_RoundTripsViaTheForgeJsonContext()
+    {
+
+        TrialResult result = new(
+            TrialName: "heal-check",
+            TargetKind: TrialTargetKind.Prompt,
+            Target: Guid.NewGuid().ToString("D"),
+            Passed: true,
+            Output: "ok",
+            Verdicts:
+            [
+                new InquisitorVerdict("regex", "match", true, "matched"),
+                new InquisitorVerdict("semantic", null, true, "yes"),
+            ],
+            InquisitorsPassed: 2,
+            InquisitorsTotal: 2,
+            Usage: new ChatCompletionUsage(10, 5, 15));
+
+        ApiResponse<TrialResult> envelope = new(result, true, null, "trace-pg");
+
+        string json = JsonSerializer.Serialize(envelope, TheForgeJsonContext.Default.ApiResponseTrialResult);
+
+        ApiResponse<TrialResult>? roundTripped = JsonSerializer.Deserialize(
+            json,
+            TheForgeJsonContext.Default.ApiResponseTrialResult);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.True(roundTripped.IsSuccess);
+
+        Assert.NotNull(roundTripped.Data);
+
+        Assert.True(roundTripped.Data.Passed);
+
+        Assert.Equal(2, roundTripped.Data.Verdicts.Count);
+
+        Assert.Equal(15, roundTripped.Data.Usage!.TotalTokens);
 
     }
 

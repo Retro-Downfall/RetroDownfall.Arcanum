@@ -28,9 +28,9 @@ public class GlobalRootCreationTests
 
         NavigationService navigation = new();
 
-        (DocumentKind, string)? opened = null;
+        (DocumentKind, string, string?)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, workspace) => opened = (kind, id, workspace);
 
         GlobalSpellsRootNodeViewModel root = NewGlobalSpellsRoot(creation, dialog, navigation);
 
@@ -46,7 +46,7 @@ public class GlobalRootCreationTests
 
         Assert.Equal("/ws/picked", creation.LastSpellWorkspace);
 
-        Assert.Equal((DocumentKind.Spell, "light"), opened);
+        Assert.Equal((DocumentKind.Spell, "light", "/ws/picked"), opened);
 
     }
 
@@ -86,7 +86,7 @@ public class GlobalRootCreationTests
 
         (DocumentKind, string)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         GlobalPromptsRootNodeViewModel root = NewGlobalPromptsRoot(creation, dialog, navigation);
 
@@ -131,7 +131,7 @@ public class GlobalRootCreationTests
 
         (DocumentKind, string)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         SessionsRootNodeViewModel root = NewSessionsRoot(creation, dialog, navigation);
 

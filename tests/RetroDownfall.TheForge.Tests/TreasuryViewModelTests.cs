@@ -61,9 +61,27 @@ public class TreasuryViewModelTests
 
         Assert.False(viewModel.IsEnabled);
 
-        Assert.Equal("Budget enforcement is disabled.", viewModel.EmptyState);
+        Assert.Contains(DisabledSettingPaths.BudgetEnabled, viewModel.EmptyState);
 
-        Assert.Equal("Budget enforcement is disabled.", viewModel.StatusText);
+        Assert.Contains(DisabledSettingPaths.BudgetEnabled, viewModel.BudgetDisabledMessage);
+
+        Assert.Equal(viewModel.BudgetDisabledMessage, viewModel.StatusText);
+
+    }
+
+    [Fact]
+    public async Task CopyDisabledPaths_CopiesJoinedPaths()
+    {
+
+        FakeClipboardService clipboard = new();
+
+        TreasuryViewModel viewModel = NewViewModel(new FakeTreasuryDataSource(), clipboard);
+
+        await viewModel.CopyDisabledPathsCommand.ExecuteAsync(null);
+
+        Assert.Equal(
+            DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.Budget),
+            clipboard.LastText);
 
     }
 
@@ -97,8 +115,10 @@ public class TreasuryViewModelTests
 
     }
 
-    private static TreasuryViewModel NewViewModel(FakeTreasuryDataSource dataSource) =>
-        new(new FakeConnection(), dataSource, new FoundryFloorViewModel(new NullLogService()));
+    private static TreasuryViewModel NewViewModel(
+        FakeTreasuryDataSource dataSource,
+        FakeClipboardService? clipboard = null) =>
+        new(new FakeConnection(), dataSource, new FoundryFloorViewModel(new NullLogService()), clipboard ?? new FakeClipboardService());
 
     private sealed class FakeTreasuryDataSource : ITreasuryDataSource
     {

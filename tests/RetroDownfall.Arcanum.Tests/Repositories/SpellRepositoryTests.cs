@@ -125,6 +125,172 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task CreateAsync_with_structured_fields_writes_canonical_SPELL_json()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        CreateSpellRequest create = new(
+            "structured-create",
+            "Structured",
+            ["t"],
+            null,
+            null,
+            null,
+            null,
+            [],
+            [],
+            Version: "1.2.3",
+            DeclaredTools: ["get_local_system_time"],
+            Dependencies: []);
+
+        Assert.True((await repository.CreateAsync(_workspaceRoot, create, CancellationToken.None)).IsSuccess);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "structured-create");
+
+        Assert.True(File.Exists(Path.Combine(spellDir, "SPELL.json")));
+
+        Assert.False(File.Exists(Path.Combine(spellDir, "SKILL.json")));
+
+        SpellDetail? detail = await repository.GetAsync("structured-create", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(detail);
+
+        Assert.Equal("1.2.3", detail!.Version);
+
+        Assert.Contains("get_local_system_time", detail.DeclaredTools ?? []);
+
+    }
+
+    [SkippableFact]
+    public async Task UpdateAsync_after_legacy_SKILL_json_writes_canonical_SPELL_json()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "legacy-update");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: legacy-update
+            description: legacy sidecar
+            ---
+            body
+            """);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SKILL.json"),
+            """
+            {
+              "name": "legacy-update",
+              "version": "1.0.0",
+              "description": "legacy sidecar",
+              "tags": [],
+              "declaredTools": ["tool-a"],
+              "dependencies": []
+            }
+            """);
+
+        SpellRepository repository = CreateRepository();
+
+        UpdateSpellRequest update = new(
+            Description: "updated",
+            Tags: null,
+            SystemPrompt: null,
+            Template: null,
+            Model: null,
+            Provider: null,
+            Tools: null,
+            RequiredMcpServers: null,
+            Version: "1.1.0",
+            DeclaredTools: ["tool-a", "tool-b"]);
+
+        Assert.True((await repository.UpdateAsync("legacy-update", _workspaceRoot, update, CancellationToken.None)).IsSuccess);
+
+        Assert.True(File.Exists(Path.Combine(spellDir, "SPELL.json")));
+
+        string canonical = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.json"));
+
+        Assert.Contains("1.1.0", canonical, StringComparison.Ordinal);
+
+        Assert.Contains("tool-b", canonical, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task ActivateVersionAsync_after_legacy_SKILL_json_writes_canonical_SPELL_json()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "legacy-activate");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: legacy-activate
+            description: activate test
+            ---
+            active body
+            """);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.v1.0.md"),
+            """
+            ---
+            name: legacy-activate
+            description: activate test
+            ---
+            version body
+            """);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SKILL.json"),
+            """
+            {
+              "name": "legacy-activate",
+              "version": "1.0.0",
+              "description": "activate test",
+              "tags": ["keep-me"],
+              "declaredTools": ["tool-keep"],
+              "dependencies": ["dep-keep"]
+            }
+            """);
+
+        SpellRepository repository = CreateRepository();
+
+        Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
+            "legacy-activate",
+            "1.0",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(activated.IsSuccess);
+
+        Assert.True(File.Exists(Path.Combine(spellDir, "SPELL.json")));
+
+        string canonical = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.json"));
+
+        Assert.Contains("\"activeVersion\"", canonical, StringComparison.Ordinal);
+
+        Assert.Contains("tool-keep", canonical, StringComparison.Ordinal);
+
+        Assert.Contains("dep-keep", canonical, StringComparison.Ordinal);
+
+        Assert.Contains("keep-me", canonical, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
     public async Task CreateAsync_without_workspace_returns_NoWorkspace_error()
     {
 

@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
@@ -28,6 +29,10 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
     private readonly INavigationService _navigation;
 
     private readonly FoundryFloorViewModel _foundryFloor;
+
+    private readonly IClipboardService _clipboard;
+
+    private readonly IWhispersService _whispers;
 
     private bool _loaded;
 
@@ -84,7 +89,9 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         IConfirmationDialogService confirmation,
         IMarkdownDocumentContentStore markdownContentStore,
         INavigationService navigation,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        IClipboardService clipboard,
+        IWhispersService whispers)
     {
 
         _dataSource = dataSource;
@@ -96,6 +103,10 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         _navigation = navigation;
 
         _foundryFloor = foundryFloor;
+
+        _clipboard = clipboard;
+
+        _whispers = whispers;
 
         Title = "Workspace Explorer";
 
@@ -126,11 +137,25 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
     public string EmptyEntriesState => "No files in this directory.";
 
-    public string FeatureDisabledMessage =>
-        "Workspace indexing / Divination is disabled — enable Arcanum:Embeddings:Enabled and Arcanum:Embeddings:CodebaseRetrievalEnabled server-side.";
+    public string IndexFeatureDisabledMessage =>
+        DisabledSettingPaths.FormatEnableMessage(
+            "Workspace indexing / Divination",
+            DisabledSettingPaths.WorkspaceIndexing);
 
     public string WriteDisabledBanner =>
-        WriteDisabledMessage ?? "Workspace file write is disabled (Arcanum:Workspaces:EnableFileWrite).";
+        DisabledSettingPaths.FormatEnableMessage("Workspace file write", DisabledSettingPaths.WorkspaceFileWrite);
+
+    [RelayCommand]
+    private async Task CopyIndexDisabledPathsAsync(CancellationToken cancellationToken) =>
+        await _clipboard
+            .SetTextAsync(DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.WorkspaceIndexing), cancellationToken)
+            .ConfigureAwait(true);
+
+    [RelayCommand]
+    private async Task CopyWriteDisabledPathsAsync(CancellationToken cancellationToken) =>
+        await _clipboard
+            .SetTextAsync(DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.WorkspaceFileWrite), cancellationToken)
+            .ConfigureAwait(true);
 
     partial void OnFileContentsTextChanged(string value) =>
         OnPropertyChanged(nameof(CanOpenMarkdownPreview));
@@ -771,12 +796,16 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
                 StatusText = "File saved.";
 
+                _whispers.Show(WhisperSeverity.Success, "File saved.");
+
             }
 
             else if (result.ErrorCode == ErrorCodes.Workspace.FileWriteDisabled)
             {
 
                 ApplyWriteDisabled(result.ErrorMessage);
+
+                _whispers.Show(WhisperSeverity.Warning, "Writes disabled.");
 
             }
 
@@ -789,6 +818,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
                 _foundryFloor.AppendLine($"Workspace Explorer save failed: {LastError}");
 
+                _whispers.Show(WhisperSeverity.Error, "Save failed.");
+
             }
 
         }
@@ -797,6 +828,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         {
 
             LastError = ex.Message;
+
+            _whispers.Show(WhisperSeverity.Error, "Save failed.");
 
         }
 
@@ -863,6 +896,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
                 FileContentsText = string.Empty;
 
+                _whispers.Show(WhisperSeverity.Success, "Deleted.");
+
                 await RefreshDirectoryAsync(cancellationToken).ConfigureAwait(true);
 
             }
@@ -871,6 +906,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             {
 
                 ApplyWriteDisabled(result.ErrorMessage);
+
+                _whispers.Show(WhisperSeverity.Warning, "Writes disabled.");
 
             }
 
@@ -883,6 +920,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
                 _foundryFloor.AppendLine($"Workspace Explorer delete failed: {LastError}");
 
+                _whispers.Show(WhisperSeverity.Error, "Delete failed.");
+
             }
 
         }
@@ -891,6 +930,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         {
 
             LastError = ex.Message;
+
+            _whispers.Show(WhisperSeverity.Error, "Delete failed.");
 
         }
 
@@ -949,6 +990,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
                 NewDirectoryName = string.Empty;
 
+                _whispers.Show(WhisperSeverity.Success, "Directory created.");
+
                 await RefreshDirectoryAsync(cancellationToken).ConfigureAwait(true);
 
             }
@@ -957,6 +1000,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
             {
 
                 ApplyWriteDisabled(result.ErrorMessage);
+
+                _whispers.Show(WhisperSeverity.Warning, "Writes disabled.");
 
             }
 
@@ -969,6 +1014,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
                 _foundryFloor.AppendLine($"Workspace Explorer mkdir failed: {LastError}");
 
+                _whispers.Show(WhisperSeverity.Error, "Create directory failed.");
+
             }
 
         }
@@ -977,6 +1024,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         {
 
             LastError = ex.Message;
+
+            _whispers.Show(WhisperSeverity.Error, "Create directory failed.");
 
         }
 
@@ -994,7 +1043,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
         IsWriteDisabled = true;
 
-        WriteDisabledMessage = message ?? "Workspace file write is disabled. Set Arcanum:Workspaces:EnableFileWrite to true.";
+        WriteDisabledMessage = message
+            ?? DisabledSettingPaths.FormatEnableMessage("Workspace file write", DisabledSettingPaths.WorkspaceFileWrite);
 
         StatusText = "Writes disabled.";
 

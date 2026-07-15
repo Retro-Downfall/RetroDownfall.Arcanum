@@ -47,7 +47,7 @@
                       SelectedItem="{Binding ActiveDocument}">
             <TabControl.ItemTemplate>
               <DataTemplate>
-                <TextBlock Text="{Binding Title}" />
+                <TextBlock Text="{Binding Title}" ToolTip.Tip="{Binding DocumentTooltip}" />
               </DataTemplate>
             </TabControl.ItemTemplate>
           </TabControl>

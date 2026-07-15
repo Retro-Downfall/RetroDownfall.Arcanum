@@ -56,11 +56,31 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
 
     public virtual IAsyncRelayCommand? NewSessionCommand => null;
 
+    public virtual IAsyncRelayCommand? NewCampaignCommand => null;
+
+    public virtual IAsyncRelayCommand? EditCampaignCommand => null;
+
+    public virtual IAsyncRelayCommand? DeleteCampaignCommand => null;
+
+    public virtual IAsyncRelayCommand? ExportCampaignCommand => null;
+
+    public virtual IAsyncRelayCommand? ImportCampaignCommand => null;
+
     public bool HasNewSpell => NewSpellCommand is not null;
 
     public bool HasNewPrompt => NewPromptCommand is not null;
 
     public bool HasNewSession => NewSessionCommand is not null;
+
+    public bool HasNewCampaign => NewCampaignCommand is not null;
+
+    public bool HasEditCampaign => EditCampaignCommand is not null;
+
+    public bool HasDeleteCampaign => DeleteCampaignCommand is not null;
+
+    public bool HasExportCampaign => ExportCampaignCommand is not null;
+
+    public bool HasImportCampaign => ImportCampaignCommand is not null;
 
     /// <summary>Context-menu label for the New Spell command, or <c>null</c> when the node does not expose it.</summary>
     public virtual string? NewSpellLabel => null;
@@ -68,6 +88,8 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
     public virtual string? NewPromptLabel => null;
 
     public virtual string? NewSessionLabel => null;
+
+    public virtual string? NewCampaignLabel => null;
 
     /// <summary>
     /// Expands the node, loading its children on first expansion. Safe to call repeatedly — children

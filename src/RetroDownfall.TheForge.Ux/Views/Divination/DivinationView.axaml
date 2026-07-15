@@ -21,8 +21,9 @@
 
       <TabItem Header="Sessions">
         <Grid RowDefinitions="Auto,*">
-          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
-            <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SessionsFeatureDisabled}" />
+            <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding SessionsFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SessionsFeatureDisabled}" />
+            <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="SessionDivination" HorizontalAlignment="Left" IsVisible="{Binding SessionsFeatureDisabled}" />
             <DockPanel LastChildFill="False">
               <TextBox DockPanel.Dock="Left" Text="{Binding SessionQuery}" Watermark="Session Divination query…" MinWidth="200" />
               <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchSessionsCommand}" Margin="6,0,0,0" IsEnabled="{Binding !SessionsFeatureDisabled}" />
@@ -50,8 +51,9 @@
 
       <TabItem Header="Workspace Files">
         <Grid RowDefinitions="Auto,*">
-          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
-            <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding WorkspaceFeatureDisabled}" />
+            <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding WorkspaceFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding WorkspaceFeatureDisabled}" />
+            <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="WorkspaceDivination" HorizontalAlignment="Left" IsVisible="{Binding WorkspaceFeatureDisabled}" />
             <DockPanel LastChildFill="False">
               <TextBlock DockPanel.Dock="Left" Text="Workspace" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,6,0" />
               <ComboBox DockPanel.Dock="Left" ItemsSource="{Binding Workspaces}" SelectedItem="{Binding SelectedWorkspace}" MinWidth="150">
@@ -84,8 +86,9 @@
 
       <TabItem Header="Saga">
         <Grid RowDefinitions="Auto,*">
-          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
-            <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SagaFeatureDisabled}" />
+            <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding SagaFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SagaFeatureDisabled}" />
+            <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="SagaDivination" HorizontalAlignment="Left" IsVisible="{Binding SagaFeatureDisabled}" />
             <DockPanel LastChildFill="False">
               <TextBox DockPanel.Dock="Left" Text="{Binding SagaQuery}" Watermark="Saga Divination query…" MinWidth="200" />
               <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchSagaCommand}" Margin="6,0,0,0" IsEnabled="{Binding !SagaFeatureDisabled}" />

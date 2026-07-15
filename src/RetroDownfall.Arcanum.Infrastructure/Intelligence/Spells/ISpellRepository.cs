@@ -33,4 +33,6 @@ public interface ISpellRepository
 
     Task<Result<SpellVersionDto>> ActivateVersionAsync(string name, string version, string? workingDirectory, CancellationToken ct);
 
+    Task<Result<SpellVersionDetailDto>> GetVersionDetailAsync(string name, string version, string? workingDirectory, CancellationToken ct);
+
 }

@@ -468,13 +468,13 @@ internal static class CampaignEndpoints
                         continue;
                     }
 
-                    string? skillJson = exported.Metadata is null
+                    string? spellJson = exported.Metadata is null
                         ? null
                         : JsonSerializer.Serialize(exported.Metadata, TheForgeJsonContext.Default.SkillMetadata);
 
                     exportSpells.Add(new CampaignExportSpellDto(
                         summary.Name,
-                        skillJson,
+                        spellJson,
                         exported.FullContent,
                         exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList()));
                 }
@@ -580,9 +580,9 @@ internal static class CampaignEndpoints
                 {
                     SkillMetadata? metadata = null;
 
-                    if (!string.IsNullOrWhiteSpace(spell.SkillJson))
+                    if (!string.IsNullOrWhiteSpace(spell.ResolvedSpellJson))
                     {
-                        metadata = JsonSerializer.Deserialize(spell.SkillJson, TheForgeJsonContext.Default.SkillMetadata);
+                        metadata = JsonSerializer.Deserialize(spell.ResolvedSpellJson, TheForgeJsonContext.Default.SkillMetadata);
                     }
 
                     SpellImportRequest importReq = new(

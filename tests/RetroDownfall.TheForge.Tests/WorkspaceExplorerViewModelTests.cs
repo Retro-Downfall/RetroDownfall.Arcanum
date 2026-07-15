@@ -166,7 +166,27 @@ public class WorkspaceExplorerViewModelTests
 
         Assert.True(viewModel.IsWriteDisabled);
 
+        Assert.Contains(DisabledSettingPaths.EnableFileWrite, viewModel.WriteDisabledBanner);
+
         Assert.Equal("writes off", viewModel.WriteDisabledMessage);
+
+    }
+
+    [Fact]
+    public async Task CopyWriteDisabledPaths_CopiesJoinedPaths()
+    {
+
+        FakeClipboardService clipboard = new();
+
+        WorkspaceExplorerViewModel viewModel = NewViewModel(new FakeWorkspaceExplorerDataSource(), clipboard: clipboard);
+
+        viewModel.IsWriteDisabled = true;
+
+        await viewModel.CopyWriteDisabledPathsCommand.ExecuteAsync(null);
+
+        Assert.Equal(
+            DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.WorkspaceFileWrite),
+            clipboard.LastText);
 
     }
 
@@ -208,13 +228,16 @@ public class WorkspaceExplorerViewModelTests
 
     private static WorkspaceExplorerViewModel NewViewModel(
         FakeWorkspaceExplorerDataSource dataSource,
-        IConfirmationDialogService? confirmation = null) =>
+        IConfirmationDialogService? confirmation = null,
+        FakeClipboardService? clipboard = null) =>
         new(
             dataSource,
             confirmation ?? new FakeConfirmationDialogService(),
             new MarkdownDocumentContentStore(),
             new NavigationService(),
-            new FoundryFloorViewModel(new NullLogService()));
+            new FoundryFloorViewModel(new NullLogService()),
+            clipboard ?? new FakeClipboardService(),
+            new FakeWhispersService());
 
     private sealed class FakeWorkspaceExplorerDataSource : IWorkspaceExplorerDataSource
     {
@@ -313,7 +336,7 @@ public class WorkspaceExplorerViewModelTests
 
         public bool NextResult { get; set; }
 
-        public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken) =>
+        public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
             Task.FromResult(NextResult);
 
     }

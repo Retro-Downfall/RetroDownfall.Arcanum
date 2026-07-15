@@ -53,6 +53,10 @@ Grimoire DB tests use `[SkippableFact]` and skip when `e_sqlcipher` is unavailab
 
 `Fixtures/ArcanumWebApplicationFactory.cs` references `Api.DevHost`, seeds an encrypted Grimoire copy, swaps `ISecretStore` / `IArcanumIntelligenceProvider` fakes, and provides `CreateAuthenticatedClient()`.
 
+The factory sets `ASPNETCORE_ENVIRONMENT` / `DOTNET_ENVIRONMENT` to `Testing` and `ARCANUM_SKIP_KEY_BOOTSTRAP=1` **before** the entry point runs (not only via `UseEnvironment`), because top-level `Program` reads the environment at `CreateSlimBuilder` time.
+
+**Serilog / WAF hang:** `AddArcanumSerilog` must not call `GetRequiredService` for options or the ring-buffer sink inside the `AddSerilog` configure callback during host `Build()` — that re-enters logging DI and deadlocks, and HostFactoryResolver then times out waiting for `HostBuilt`. The ring-buffer sink is deferred until first emit; Testing skips the rolling file sink.
+
 ### CLI harness
 
 `Cli/Infrastructure/CliApplicationFactory` builds a `CommandApp` with a test `ServiceCollection`. Use `Spectre.Console.Testing.TestConsole` for command output assertions.

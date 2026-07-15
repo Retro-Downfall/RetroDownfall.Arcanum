@@ -11,12 +11,14 @@
       <TextBlock DockPanel.Dock="Left" Text="{Binding StatsText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" />
       <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
       <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
+      <Button DockPanel.Dock="Right" Content="Delete all…" Command="{Binding DeleteAllMemoriesCommand}" Margin="0,0,8,0" />
     </DockPanel>
 
     <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
     <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,8">
       <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IsFeatureDisabled}" />
+      <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding IsFeatureDisabled}" />
       <DockPanel LastChildFill="False">
         <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" Watermark="Divination query…" MinWidth="180" />
         <Button DockPanel.Dock="Left" Content="Search" Command="{Binding DivineCommand}" Margin="6,0,0,0" IsEnabled="{Binding !IsFeatureDisabled}" />

@@ -15,7 +15,11 @@ namespace RetroDownfall.TheForge.Ux.Services;
 public sealed class AvaloniaConfirmationDialogService : IConfirmationDialogService
 {
 
-    public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken)
+    public Task<bool> ConfirmAsync(
+        string title,
+        string message,
+        CancellationToken cancellationToken,
+        bool confirmIsDefault = true)
     {
 
         if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop
@@ -31,9 +35,9 @@ public sealed class AvaloniaConfirmationDialogService : IConfirmationDialogServi
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            Button ok = new() { Content = "Confirm", IsDefault = true };
+            Button ok = new() { Content = "Confirm", IsDefault = confirmIsDefault };
 
-            Button cancel = new() { Content = "Cancel", IsCancel = true };
+            Button cancel = new() { Content = "Cancel", IsCancel = true, IsDefault = !confirmIsDefault };
 
             TaskCompletionSource<bool> tcs = new();
 
@@ -43,7 +47,7 @@ public sealed class AvaloniaConfirmationDialogService : IConfirmationDialogServi
 
                 Width = 420,
 
-                Height = 200,
+                Height = 220,
 
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
 

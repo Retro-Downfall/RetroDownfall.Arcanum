@@ -158,7 +158,7 @@ suggest — recorded here so future changes don't silently drift from the real w
 | Prompt template designer | The Scriptorium | Mana/token visualization | Mana Visualization *(literal)* |
 | Multi-session tab management | The Council Chamber | Notifications/toasts | Whispers |
 | Global search | The Eye of the World | Context help/docs | The Codex |
-| Entry inspector | The Loupe | Export/import wizard | Export / Import Wizard *(literal)* |
+| Entry inspector | The Loupe | Artifact import/export | Export / Import *(Atelier + Spell/Scriptorium; §5.18)* |
 | Markdown preview | The Illumination | | |
 
 `Compendium` here refers to Forge's Settings panel concept, distinct from the existing
@@ -225,14 +225,17 @@ Phase 5 replaces spell Workbench placeholders with a real **Spell editor**:
 - `WorkbenchDocumentFactory` creates `SpellEditorViewModel` for `DocumentKind.Spell` navigation
   requests and keeps placeholder documents for later phases.
 - `SpellEditorViewModel` loads `SpellDetail` plus versions, exposes `MarkdownBody`, `Frontmatter`,
-  `SkillJson`, `Versions`, `CastPreview`, `ManaCount`, and collected `ExecutionEvents`, and implements
-  Save, Cast, Execute, Estimate Mana, and Activate Version commands.
-- `SpellEditorDataSource` adapts `SpellService` to the editor: `GET /api/spells/{name}`,
-  `PUT /api/spells/{name}`, `POST /api/spells/{name}/cast`, `POST /api/spells/{name}/execute-stream`
-  (NDJSON), `POST /api/intelligence/mana`, and spell version routes.
+  `SpellJson`, Spell Metadata Designer fields, `Versions`, `CastPreview`, `ManaCount`, and collected
+  `ExecutionEvents`, and implements Save, Cast, Execute, Estimate Mana, and Activate Version commands.
+- `SpellEditorDataSource` adapts `SpellService` (+ `McpService` for tool catalogs) to the editor:
+  `GET /api/spells/{name}`, `PUT /api/spells/{name}`, `POST /api/spells/{name}/cast`,
+  `POST /api/spells/{name}/execute-stream` (NDJSON), `POST /api/intelligence/mana`, spell version
+  routes, spell name catalog, and Arsenal/MCP tool name union.
 - `Views/Workbench/SpellEditorView.axaml` uses `Avalonia.AvaloniaEdit` `TextEditor` controls for
-  SPELL.md and SKILL.json, with code-behind limited to text synchronization because AvalonEdit's
-  `Text` property is not an Avalonia styled property.
+  SPELL.md and raw SPELL.json, with a nested **Spell Metadata Designer** under the SPELL.json tab
+  (version, read-only activeVersion, dependencies, declared tools, input/output schema). Code-behind
+  is limited to text synchronization because AvalonEdit's `Text` property is not an Avalonia styled
+  property.
 - Execute records streamed `IntelligenceEvent` frames and opens a Session Workbench tab on
   `sessionBound`; that tab is now The Tome (Phase 6).
 
@@ -357,29 +360,33 @@ changes):
 - **The Scriptorium.** `WorkbenchDocumentFactory` maps `DocumentKind.Prompt` (Guid id) to
   `ScriptoriumViewModel` (non-Guid ids fall back to the placeholder). `ScriptoriumView` edits the
   template in AvaloniaEdit (text sync in code-behind) plus the metadata supported by
-  `UpdatePromptRequest` (Description, Version, Tags, Model, Provider). **Load** pulls
-  `PromptDetailDto`; **Save** sends `UpdatePromptRequest` with null/clear semantics (a field is
-  preserved when `null`, cleared with `""`/`[]`; `ParameterSchema`/`DefaultParameters` send `null`
-  to preserve); **Render** parses `key=value` parameter lines into `PromptRenderRequest`;
-  **Test** assembles the system prompt with default parameters at no LLM cost; **Run** streams
-  `POST /api/prompts/{id}/execute-stream` (NDJSON `IntelligenceEvent`) into a results pane (requires
-  a non-empty user message) and opens the bound session in The Tome on `sessionBound`; **Stop**
-  cancels the run. Numeric sampling fields and advanced parameter-schema JSON editing are deferred
-  (shown read-only or omitted).
+  `UpdatePromptRequest` (Description, Version, Tags, Model, Provider, Temperature, TopP,
+  MaxOutputTokens, ParameterSchema, DefaultParameters). **Load** pulls `PromptDetailDto`; **Save**
+  sends `UpdatePromptRequest` with null/clear semantics (a field is preserved when `null`, cleared
+  with `""`/`[]`; blank sampling fields send `null` to preserve; empty/whitespace JSON editors
+  send `{}`; invalid JSON blocks Save with `LastError` and no API call); **Render** parses
+  `key=value` parameter lines into `PromptRenderRequest`; **Test** assembles the system prompt with
+  default parameters at no LLM cost; **Run** streams `POST /api/prompts/{id}/execute-stream` (NDJSON
+  `IntelligenceEvent`) into a results pane (requires a non-empty user message), accepts run-only
+  overrides (model, sampling, seed, stop, response format, penalties) that are not saved, and opens
+  the bound session in The Tome on `sessionBound`; **Stop** cancels the run.
 - **`TheForgeJsonContext`.** New source-gen registrations: `CreateSpellRequest`, `CreatePromptRequest`,
   `UpdatePromptRequest`, `PromptRenderRequest`, `ApiResponse<PromptRenderResultDto>`,
   `TestPromptRequest`, `ApiResponse<PromptTestResultDto>`, `PromptExecuteRequest`,
   `CreateSessionRequest` (plus bare `PromptRenderResultDto` / `PromptTestResultDto` for tests). No
   blanket `JsonStringEnumConverter` was added.
 
-**Known limitations (honest):** opening a created spell uses the spell name and relies on the server
-`SpellWorkspaceResolver` fallback (the same path existing Atelier spell open uses); spells in a
-non-default campaign workspace may not load by name alone and will appear in the refreshed campaign
-tree. Passing the workspace through navigation is a follow-up. Numeric sampling and advanced
-parameter-schema JSON editing in The Scriptorium, prompt clone/delete/import/export, spell
-clone/validate, The Mirror, visual SKILL.json designer, full campaign CRUD, Proving Grounds, Arsenal
-/Treasury dashboards, The Ledger, and a true PTY Hearth remain gaps (Arsenal/Treasury now ship in
-Milestone G — see §5.10).
+**Known limitations (honest):** The Scriptorium persists sampling and parameter-schema JSON with
+blank numeric fields preserving the server value and empty JSON saving as `{}`. Run-only overrides
+(seed, stop, penalties, optional model/sampling) are not saved. Spell/prompt lifecycle
+(validate/clone/export/import/delete for spells; clone/delete/import/export plus version list/open
+for prompts) and workspace-aware spell navigation are implemented. **The Mirror** (spell version
+list / fetch body / LCS compare / activate / create / update) ships in the Spell editor (§5.15).
+Still deferred: full prompt-version management beyond list/open, advanced import
+conflict handling (name-collision / duplicate-version surface clearly; conflict wizards deferred),
+The Ledger, and a true PTY Hearth (Arsenal/Treasury ship in
+Milestone G — see §5.10). Campaign CRUD and import/export ship in §5.18. The Proving Grounds UI
+ships in §5.17. The visual SPELL.json metadata designer ships in §5.16.
 
 ### 5.10 Phase 12 — Operate Inference (Milestone G)
 
@@ -432,9 +439,12 @@ reference to `RetroDownfall.Arcanum.Api`, no Grimoire access.
 
 **Known limitations (honest):** no arbitrary external-MCP direct invocation (only built-in
 `POST /api/tools/invoke`); no provider/config or budget/pricing editing; no advanced Llama cache
-pruning or model-metadata editing; no model/session token/cost breakdown (no such route). Proving
-Grounds UI, The Ledger Git UI, The Mirror, full import/export, a true PTY Hearth, and a Whispers
-toast framework remain gaps.
+pruning or model-metadata editing; no model/session token/cost breakdown (no such route). The Ledger
+Git UI and a true PTY Hearth remain gaps. **The Mirror** ships in the Spell editor (§5.15).
+**Spell Metadata Designer** ships in §5.16. **Proving Grounds UI** ships in §5.17. **Campaign CRUD
+and artifact import/export** ship in §5.18. Whispers toasts are wired for major ViewModel actions
+(Spell editor, Scriptorium, Archive, Reliquary, Workspace Explorer, Gatehouse); Foundry Floor still
+holds detailed error text.
 
 ### 5.11 Milestone H — Context and Memory
 
@@ -453,7 +463,8 @@ are **separate dock tools** (hidden by default so the default shell is unchanged
 - **`IConfirmationDialogService`.** Avalonia modal OK/Cancel for destructive workspace deletes
   (including recursive directory delete). Tests fake the interface.
 - **Lore Browser.** List / get / upsert / delete via `/api/lore/*`. Refreshes on first show.
-- **The Archive (Saga).** List memories, stats, delete-**single**, Saga Divination. No delete-all.
+- **The Archive (Saga).** List memories, stats, delete-**single**, guarded delete-**all**
+  (`DELETE /api/saga?confirm=true` behind confirmation; cancel is a no-op), Saga Divination.
   `Embeddings.FeatureDisabled` → honest disabled UI. Requires Arcanum embeddings + Saga enabled
   server-side for Divination.
 - **Divination.** Tabbed Sessions / Workspace Files / Saga search over verified Divination routes.
@@ -483,10 +494,10 @@ are **separate dock tools** (hidden by default so the default shell is unchanged
   `JsonStringEnumConverter`.
 
 **Known limitations (honest):** no client-side embeddings or vector search; workspace writes may be
-unavailable until the server enables `EnableFileWrite`; advanced file diff/merge deferred; Saga
-delete-all is not exposed; pre-selecting a workspace when opening Explorer from Atelier is a
-follow-up. Proving Grounds UI, The Ledger, The Mirror, full import/export, and a true PTY Hearth
-remain gaps.
+unavailable until the server enables `EnableFileWrite`; advanced file diff/merge deferred;
+pre-selecting a workspace when opening Explorer from Atelier is a follow-up. The Ledger,
+advanced import conflict handling, and a true PTY Hearth remain gaps. **The Mirror**
+ships in the Spell editor (§5.15). Proving Grounds UI ships in §5.17.
 
 ### 5.12 Milestone H1 — Markdown Rendering & Preview (The Illumination)
 
@@ -558,6 +569,121 @@ only. H1 remains complete; H2 is additive.
 exists; Mermaid graphs; perfect pixel scroll sync; Codex may lack full sync; SVG; intranet remote
 images; native math only if a future spike ships a used package.
 
+### 5.14 Phase 2.2 — Disabled-state guidance
+
+Phase 2.2 makes server-gated feature banners **actionable**: each disabled surface names the exact
+`Arcanum:*` configuration paths required to enable it, and offers a **Copy setting paths** button
+that copies newline-joined paths to the clipboard via `IClipboardService` / `AvaloniaClipboardService`.
+
+- **`DisabledSettingPaths`.** Static helper with canonical path constants and per-surface arrays
+  (Session Divination, Workspace Divination/indexing, Saga Divination, workspace file write, session
+  memory management, budget enforcement).
+- **Surfaces.** Divination (per-tab messages), The Archive, Workspace Explorer (index + write
+  banners), The Tome (memory management), The Treasury (budget disabled).
+- **Follow-ups (honest).** **Open Compendium** deep-link from a banner is deferred. A dedicated
+  **Guardrails** settings panel in The Forge is deferred — operators edit `arcanum.json` or use
+  RetroDownfall.Compendium.Ux today.
+
+### 5.15 Phase 4 — The Mirror (spell version panel)
+
+Phase 4 adds **The Mirror** inside the Spell editor (not a separate `DocumentKind`): version list,
+body fetch, local LCS line diff, activate / create / update, with Whispers short toasts and Foundry
+Floor detail.
+
+- **Backend (U5).** `GET /api/spells/{name}/versions/{version}` returns `SpellVersionDetailDto`
+  (`Version`, `IsActive`, `CreatedAt`, `Description`, `Body` — markdown body only, no filesystem
+  paths). Forge `SpellService` / `SpellEditorDataSource` expose GetVersionDetail plus Create/Update
+  version clients. Create/Update send markdown `Body` only (`CreateSpellVersionRequest` /
+  `UpdateSpellVersionRequest`).
+- **LCS diff.** Local no-NuGet helper `Services/Diff/LineDiff.cs` classifies lines as
+  add / remove / unchanged and builds unified or side-by-side row lists for binding.
+- **Compare policy.** Selected version body vs **persisted active** spell body (`SpellDetail.Body` /
+  last-loaded active) — **not** the dirty editor buffer. When the editor is dirty, a passive warning
+  reads “Unsaved editor changes are not included in this comparison” (no prompt on every selection).
+- **Commands.** Activate (workspace spells; shows `PreviousVersion` note when present), Create
+  version from editor markdown body, Update selected version body from editor markdown. Built-in
+  mutation (Create / Update / Activate / Save) stays disabled via the existing `CanSave` matrix;
+  read/compare remains allowed when GET detail succeeds.
+- **UI.** Spell editor **The Mirror** tab: version list, unified diff pane, dirty warning, action
+  buttons. Selection refreshes the diff via view code-behind.
+
+**Known limitations (honest):** advanced prompt-version management beyond Scriptorium list/open,
+import conflict wizards, The Ledger Git UI, a true PTY Hearth, and Phase 7 War Table orchestration
+remain deferred. Campaign CRUD and import/export ship in §5.18. Proving Grounds UI ships in §5.17.
+Visual SPELL.json metadata designer ships in §5.16.
+
+### 5.16 Phase 5 U2 — Visual Spell Metadata Designer
+
+The Spell editor SPELL.json surface is a nested tab pair:
+
+- **Spell Metadata Designer** — editable `version`, read-only `activeVersion` display, dependency
+  and declared-tool lists (add/remove), input/output schema text boxes, and advisory warnings when a
+  dependency is missing from the spell catalog or a declared tool is missing from the MCP/Arsenal
+  tool catalog. Built-in spells keep the designer and raw editor read-only (`CanEditMetadata` =
+  `CanSave`).
+- **Raw SPELL.json** — AvalonEdit buffer synced with the designer for known fields only
+  (`SpellJsonSync`). Save builds `UpdateSpellRequest` with `Version`, `InputSchema`, `OutputSchema`,
+  `DeclaredTools`, and `Dependencies` from the designer (plus existing description/tags/body/tools
+  fields). `ActiveVersion` is display-only and is never written via Save.
+
+**Honest round-trip limit:** raw SPELL.json edit/save preserves **known** metadata fields that map
+through `SpellDetail` / `UpdateSpellRequest`. Unknown JSON properties are **not** preserved through
+the update path. Empty schemas display as `{}`.
+
+### 5.17 Phase 6 — Proving Grounds UI
+
+Phase 6 adds **The Proving Grounds** as a **singleton** Workbench document (`DocumentKind.Trial`,
+fixed id `proving-grounds`) — one tab, focused on re-open; never one tab per shortcut.
+
+- **Ephemeral only.** Draft Trials are in-memory; there is no Grimoire persistence and no Trial
+  library. Persistent Trial libraries remain deferred.
+- **Targets.** `TrialTargetKind`: Spell (picker + name), Prompt (picker + GUID), ApprenticeGoal
+  (free-text). Optional workspace, model, trial name, and key/value variables (non-empty keys).
+- **Inquisitors.** Regex (`pattern`, `shouldMatch`, `ignoreCase`), JsonSchema (local JSON validate),
+  Semantic (`question`, `expectedAnswer` **bool**). Core DTOs from
+  `RetroDownfall.Arcanum.Core.ProvingGrounds` — no Forge mirrors.
+- **Run.** `ITrialDataSource` → `TrialService.RunAsync` (`POST /api/proving-grounds/trials/run`).
+  Cancel via linked CTS. Results: passed/failed summary, output, verdicts, usage, API errors.
+- **Whispers / Floor.** Success if passed, Warning if failed, Error if API failed; Floor logs start
+  + result summary. Prefill blocked when dirty → Warning
+  `"Proving Grounds has unsaved draft changes."` (Reset requires confirmation).
+- **Shortcuts.** Spell editor **Create Trial**; Scriptorium **Open in Proving Grounds**; menu
+  **Trial → Proving Grounds** opens a blank singleton tab. `INavigationService.OpenOrFocusProvingGrounds`.
+- **JSON.** `TheForgeJsonContext` registers the full Proving Grounds graph (Inquisitor polymorphism,
+  TrialResult / InquisitorVerdict, TrialTargetKind) matching ArcanumJsonContext.
+
+**Known limitations (honest):** persistent Trial libraries deferred; advanced import conflict
+wizards, The Ledger Git UI, and a true PTY Hearth remain gaps. Campaign CRUD and artifact
+import/export ship in §5.18.
+
+### 5.18 Phase 7 polish — Campaign management and import/export
+
+Phase 7 (Forge UI polish, distinct from War Table orchestration in §5.7) adds campaign registry CRUD
+and unified artifact import/export through existing Arcanum routes only (no Grimoire/disk bypass):
+
+- **Services (U5).** `CampaignService` already exposes List/Get/Create/Update/Delete;
+  `ExportImportService` exposes `ExportCampaignAsync` / `ImportCampaignAsync`
+  (`POST /api/campaigns/{id}/export|import`). `ICampaignManagementDataSource` /
+  `CampaignManagementDataSource` is a thin Atelier seam returning `DataSourceResult<T>`.
+  `TheForgeJsonContext` registers bare `CampaignExportDto` / `CampaignImportResultDto` for file I/O.
+- **Campaign CRUD UI (U6).** Campaigns root context menu: **New Campaign**, **Refresh**. Campaign
+  node: **Edit / Properties**, **Delete Campaign**, **Export Campaign**, **Import into Campaign**,
+  plus existing New Spell / Prompt / Session. `ICampaignDialogService` /
+  `AvaloniaCampaignDialogService` collects Name/Path/Type/Description on create and
+  Name/Type/Description on edit (Path immutable; full **Settings** editor deferred). Delete confirms
+  with copy that unregister leaves disk files; **Cancel is the default** button.
+  `Campaign.InvalidPath` / `Campaign.PathNotAllowed` surface on Floor (detailed) and Whispers (short).
+- **Import/export (U7).** Campaign export: save-file dialog → export API → write JSON via source-gen.
+  Campaign import: strategy **merge|replace** → open-file dialog → deserialize `CampaignExportDto` →
+  `POST /api/campaigns/{id}/import` into the **existing** campaign (two-step: register then import;
+  no create-from-import route). Spell/prompt editors gain **Import** toolbar actions alongside Export;
+  `Spell.NameCollision` / `Prompt.DuplicateVersion` surface clearly. `ArtifactImportExportHelper`
+  shares pick/read/write/cancel=no-op patterns. Campaign export spell payloads use wire `spellJson`
+  with legacy `skillJson` accepted on import (`CampaignExportSpellDto.ResolvedSpellJson`).
+
+**Known limitations (honest):** advanced import conflict wizards deferred; full campaign Settings
+editor deferred; War Table / Chronicle / Gatehouse orchestration remains §5.7.
+
 ## 6. Feature catalog (phased)
 
 Delivered in buildable milestones rather than one drop — each keeps `dotnet build`/`dotnet test`
@@ -575,16 +701,22 @@ green before the next begins.
 | H — Context and Memory | — | Lore Browser, The Archive (Saga), Divination, Workspace Explorer (read-first + optional server-gated writes), Tome session memory controls, The Codex; `DataSourceResult<T>`, `PatchAsync`, confirmation dialogs; dock tools hidden-by-default |
 | H1 — The Illumination | — | Native markdown preview (`IlluminationView` / Markdown.Avalonia.Tight); Source/Split/Preview in Spell editor + The Codex; standalone markdown Workbench tab; Workspace Explorer Open Preview; link/image/HTML safety policies |
 | H2 — The Illumination Completion | — | Markdig 1.2.0 AST → Avalonia; ColorCode theme brushes; SSRF-safe opt-in remote images + data URIs; approximate AvaloniaEdit scroll sync; footnotes; math/Mermaid source blocks; extended markdown payload context |
+| Phase 2.2 — Disabled-state guidance | — | Exact `Arcanum:*` paths in disabled banners; Copy setting paths via `IClipboardService`; Open Compendium deep-link deferred; Guardrails panel deferred |
+| Phase 4 — The Mirror | — | Spell editor version panel: list / GET body / local LCS compare / activate / create / update; dirty-buffer warning; builtin mutation gated |
+| Phase 5 — Spell Metadata Designer | — | Visual SPELL.json designer + raw editor; known-field round-trip only |
+| Phase 6 — Proving Grounds UI | — | Singleton Trial Workbench document; ephemeral run; Regex / JsonSchema / Semantic Inquisitors; shortcuts from Spell / Scriptorium |
+| Phase 7 polish — Campaign CRUD + import/export | — | Atelier campaign New/Edit/Delete(unregister)/Export/Import; spell+prompt Import; ArtifactImportExportHelper |
 
 As of this document's last update, **Milestones A–H are implemented**, plus **Milestone H1 (The
-Illumination)**, **Milestone H2 (The Illumination Completion)**, and **The Hearth** local terminal
-(§5.8): the solution scaffold through The Tome, War
-Table, Gatehouse, Anvil, VS 2026 Fluent-inspired theme polish, the dockable Hearth command runner,
-Atelier artifact creation, The Scriptorium (§5.9), the operational panels — The Arsenal, Models &
-Providers, The Reliquary, and The Treasury (§5.10), Context & Memory (§5.11), and markdown preview
-(§5.12–§5.13).
+Illumination)**, **Milestone H2 (The Illumination Completion)**, **The Hearth** local terminal
+(§5.8), **The Mirror** spell-version panel (§5.15), **Spell Metadata Designer** (§5.16),
+**Proving Grounds UI** (§5.17), and **Campaign CRUD + import/export** (§5.18): the solution scaffold
+through The Tome, War Table, Gatehouse, Anvil, VS 2026 Fluent-inspired theme polish, the dockable
+Hearth command runner, Atelier artifact creation, The Scriptorium (§5.9), the operational panels —
+The Arsenal, Models & Providers, The Reliquary, and The Treasury (§5.10), Context & Memory (§5.11),
+and markdown preview (§5.12–§5.13).
 
-**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table / Milestone H tool visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are enabled (Milestone F, §5.9), with top-level New Workspace Spell / New Prompt / New Session on the Global Spells / Global Prompts / Sessions roots. Treasury and Arsenal are real API-backed panels (Milestone G, §5.10) — no longer placeholders. Milestone H Context & Memory tools are API-backed and hidden by default until shown from the View menu. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass. No client-side embeddings; workspace file writes are server-gated (`Arcanum:Workspaces:EnableFileWrite`) and may be unavailable; Saga delete-all is not exposed; advanced file diff/merge is deferred.
+**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table / Milestone H tool visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are enabled (Milestone F, §5.9), with top-level New Workspace Spell / New Prompt / New Session on the Global Spells / Global Prompts / Sessions roots; **campaign New / Edit / Delete (unregister) / Export / Import** ship in §5.18. Treasury and Arsenal are real API-backed panels (Milestone G, §5.10) — no longer placeholders. Milestone H Context & Memory tools are API-backed and hidden by default until shown from the View menu. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **Whispers** short toasts are wired into major mutate actions (Spell editor, Scriptorium, Archive, Reliquary, Workspace Explorer, Gatehouse, campaigns, Proving Grounds); Floor and inline status still carry detail. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. **The Proving Grounds** (§5.17) is a singleton ephemeral Trial Workbench tab. **Spell Metadata Designer** (§5.16) edits known SPELL.json fields visually with a raw JSON fallback. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass. No client-side embeddings; workspace file writes are server-gated (`Arcanum:Workspaces:EnableFileWrite`) and may be unavailable; Saga delete-all is not exposed; advanced file diff/merge is deferred; advanced import conflict wizards and full campaign Settings editing remain deferred.
 
 ## 7. API integration notes
 

@@ -16,7 +16,8 @@
 
     <ScrollViewer Grid.Row="2">
       <StackPanel Spacing="10" Margin="8">
-        <TextBlock Text="{Binding EmptyState}" FontWeight="SemiBold" IsVisible="{Binding EmptyState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" Opacity="0.85" />
+        <TextBlock Text="{Binding EmptyState}" FontWeight="SemiBold" IsVisible="{Binding EmptyState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" Opacity="0.85" TextWrapping="Wrap" />
+        <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding !IsEnabled}" />
 
         <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
           <TextBlock Grid.Row="0" Grid.Column="0" Text="Enabled" Opacity="0.7" Margin="0,0,12,6" />

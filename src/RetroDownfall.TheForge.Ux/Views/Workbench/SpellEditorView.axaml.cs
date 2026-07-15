@@ -25,7 +25,7 @@ public partial class SpellEditorView : UserControl
 
         BodyEditor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
 
-        SkillJsonEditor.TextChanged += OnSkillJsonEditorTextChanged;
+        SpellJsonEditor.TextChanged += OnSpellJsonEditorTextChanged;
 
         Illumination.GoToSourceRequested += OnIlluminationGoToSource;
 
@@ -57,10 +57,19 @@ public partial class SpellEditorView : UserControl
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
 
-        if (e.PropertyName is nameof(SpellEditorViewModel.MarkdownBody) or nameof(SpellEditorViewModel.SkillJson))
+        if (e.PropertyName is nameof(SpellEditorViewModel.MarkdownBody)
+            or nameof(SpellEditorViewModel.SpellJson)
+            or nameof(SpellEditorViewModel.CanEditMetadata))
         {
 
             SynchronizeEditorsFromViewModel();
+
+        }
+
+        if (e.PropertyName is nameof(SpellEditorViewModel.SelectedVersion) && _viewModel is not null)
+        {
+
+            _ = _viewModel.RefreshMirrorDiffAsync(CancellationToken.None);
 
         }
 
@@ -80,7 +89,7 @@ public partial class SpellEditorView : UserControl
 
     }
 
-    private void OnSkillJsonEditorTextChanged(object? sender, EventArgs e)
+    private void OnSpellJsonEditorTextChanged(object? sender, EventArgs e)
     {
 
         if (_isSynchronizing || _viewModel is null)
@@ -90,7 +99,7 @@ public partial class SpellEditorView : UserControl
 
         }
 
-        _viewModel.SkillJson = SkillJsonEditor.Text;
+        _viewModel.SpellJson = SpellJsonEditor.Text;
 
     }
 
@@ -153,7 +162,9 @@ public partial class SpellEditorView : UserControl
 
             BodyEditor.Text = _viewModel?.MarkdownBody ?? string.Empty;
 
-            SkillJsonEditor.Text = _viewModel?.SkillJson ?? string.Empty;
+            SpellJsonEditor.Text = _viewModel?.SpellJson ?? string.Empty;
+
+            SpellJsonEditor.IsReadOnly = _viewModel is null || !_viewModel.CanEditMetadata;
 
         }
         finally

@@ -12,6 +12,7 @@ using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Docking;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
+using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -138,6 +139,86 @@ public class MainViewModelTests
         ViewModelBase second = Assert.Single(viewModel.OpenDocuments);
 
         Assert.Same(first, second);
+
+        Assert.Same(first, viewModel.ActiveDocument);
+
+    }
+
+    [Fact]
+    public void OpenOrFocusProvingGrounds_IsSingleton_AndPrefillBlockedWhenDirty()
+    {
+
+        FakeArcanumConnection connection = new();
+
+        NavigationService navigation = new();
+
+        MainViewModel viewModel = MainViewModelFactory.Create(connection, navigation);
+
+        Assert.True(navigation.OpenOrFocusProvingGrounds(new ProvingGroundsPrefill(
+            RetroDownfall.Arcanum.Core.ProvingGrounds.TrialTargetKind.Spell,
+            "heal")));
+
+        ProvingGroundsViewModel first = Assert.IsType<ProvingGroundsViewModel>(Assert.Single(viewModel.OpenDocuments));
+
+        Assert.Equal("heal", first.Target);
+
+        first.Target = "dirty";
+
+        Assert.False(navigation.OpenOrFocusProvingGrounds(new ProvingGroundsPrefill(
+            RetroDownfall.Arcanum.Core.ProvingGrounds.TrialTargetKind.Spell,
+            "other")));
+
+        Assert.Equal("dirty", first.Target);
+
+        Assert.Same(first, Assert.Single(viewModel.OpenDocuments));
+
+        Assert.Same(first, viewModel.ActiveDocument);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+    public void NavigationOpenDocument_SameSpellDifferentWorkspaces_OpensTwoTabsWithTooltips()
+    {
+
+        FakeArcanumConnection connection = new();
+
+        NavigationService navigation = new();
+
+        MainViewModel viewModel = MainViewModelFactory.Create(connection, navigation);
+
+        navigation.OpenDocument(DocumentKind.Spell, "heal", "/ws/a");
+
+        navigation.OpenDocument(DocumentKind.Spell, "heal", "/ws/b");
+
+        Assert.Equal(2, viewModel.OpenDocuments.Count);
+
+        Assert.Equal("/ws/a", viewModel.OpenDocuments[0].DocumentTooltip);
+
+        Assert.Equal("/ws/b", viewModel.OpenDocuments[1].DocumentTooltip);
+
+    }
+
+    [Fact]
+    public void NavigationOpenDocument_SameSpellSameWorkspace_TrailingSlash_FocusesExisting()
+    {
+
+        FakeArcanumConnection connection = new();
+
+        NavigationService navigation = new();
+
+        MainViewModel viewModel = MainViewModelFactory.Create(connection, navigation);
+
+        string slash = Path.DirectorySeparatorChar.ToString();
+
+        navigation.OpenDocument(DocumentKind.Spell, "heal", "/ws/a");
+
+        ViewModelBase first = Assert.Single(viewModel.OpenDocuments);
+
+        navigation.OpenDocument(DocumentKind.Spell, "heal", "/ws/a" + slash);
+
+        Assert.Single(viewModel.OpenDocuments);
 
         Assert.Same(first, viewModel.ActiveDocument);
 
@@ -358,7 +439,7 @@ internal static class MainViewModelFactory
 
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ModelsProvidersViewModel arsenalModelsProviders = new(modelsProvidersDataSource, foundryFloor);
 
-        RetroDownfall.TheForge.Ux.ViewModels.Reliquary.ReliquaryViewModel arsenalReliquary = new(reliquaryDataSource, foundryFloor);
+        RetroDownfall.TheForge.Ux.ViewModels.Reliquary.ReliquaryViewModel arsenalReliquary = new(reliquaryDataSource, foundryFloor, new FakeWhispersService());
 
         return new(
             connection,
@@ -368,10 +449,15 @@ internal static class MainViewModelFactory
                 navigation,
                 new NullArtifactCreationDataSource(),
                 new NullArtifactCreationDialogService(),
+                new NullCampaignManagementDataSource(),
+                new NullCampaignDialogService(),
+                new NullConfirmationDialogService(),
+                new NullArtifactFileDialogService(),
+                new FakeWhispersService(),
                 foundryFloor),
             new RetroDownfall.TheForge.Ux.ViewModels.WarTable.WarTableViewModel(new NullWarTableDataSource()),
-            new RetroDownfall.TheForge.Ux.ViewModels.Gatehouse.GatehouseViewModel(new NullGatehouseDataSource()),
-            new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(connection, new NullTreasuryDataSource(), foundryFloor),
+            new RetroDownfall.TheForge.Ux.ViewModels.Gatehouse.GatehouseViewModel(new NullGatehouseDataSource(), new FakeWhispersService()),
+            new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(connection, new NullTreasuryDataSource(), foundryFloor, new FakeClipboardService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ArsenalViewModel(
                 connection,
                 arsenalMcpServers,
@@ -387,26 +473,35 @@ internal static class MainViewModelFactory
                 new StaticTheForgeSettingsMonitor(),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel>.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor),
-            new RetroDownfall.TheForge.Ux.ViewModels.Archive.SagaArchiveViewModel(new NullSagaArchiveDataSource(), foundryFloor),
+            new RetroDownfall.TheForge.Ux.ViewModels.Archive.SagaArchiveViewModel(new NullSagaArchiveDataSource(), foundryFloor, new NullConfirmationDialogService(), new FakeClipboardService(), new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Divination.DivinationViewModel(
                 new NullDivinationDataSource(),
                 new NullWorkspaceExplorerDataSource(),
                 navigation,
-                foundryFloor),
+                foundryFloor,
+                new FakeClipboardService()),
             new RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer.WorkspaceExplorerViewModel(
                 new NullWorkspaceExplorerDataSource(),
                 new NullConfirmationDialogService(),
                 new RetroDownfall.TheForge.Ux.Markdown.MarkdownDocumentContentStore(),
                 navigation,
-                foundryFloor),
+                foundryFloor,
+                new FakeClipboardService(),
+                new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Workbench.WorkbenchDocumentFactory(
                 new NullSpellEditorDataSource(),
                 new NullPromptEditorDataSource(),
                 new NullTomeDataSource(),
                 new NullCodexDataSource(),
+                new NullTrialDataSource(),
                 new RetroDownfall.TheForge.Ux.Markdown.MarkdownDocumentContentStore(),
                 navigation,
-                foundryFloor),
+                foundryFloor,
+                new NullConfirmationDialogService(),
+                new NullArtifactFileDialogService(),
+                new NullTextInputDialogService(),
+                new FakeClipboardService(),
+                new FakeWhispersService()),
             settingsStore,
             new StaticTheForgeSettingsMonitor());
 
@@ -581,7 +676,30 @@ internal sealed class NullSpellEditorDataSource : RetroDownfall.TheForge.Ux.View
 
     public Task<IReadOnlyList<SpellVersionDto>> ListVersionsAsync(string name, string? workspace, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<SpellVersionDto>>([]);
 
-    public Task<bool> SaveAsync(string name, UpdateSpellRequest request, CancellationToken cancellationToken) => Task.FromResult(false);
+    public Task<SpellVersionDetailDto?> GetVersionDetailAsync(string name, string version, string? workspace, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellVersionDetailDto?>(null);
+
+    public Task<SpellVersionDto?> CreateVersionAsync(string name, CreateSpellVersionRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellVersionDto?>(null);
+
+    public Task<SpellVersionDto?> UpdateVersionAsync(string name, string version, UpdateSpellVersionRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellVersionDto?>(null);
+
+    public Task<bool> SaveAsync(string name, UpdateSpellRequest request, string? workspace, CancellationToken cancellationToken) => Task.FromResult(false);
+
+    public Task<SpellValidationResultDto?> ValidateAsync(string name, string? workspace, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellValidationResultDto?>(null);
+
+    public Task<SpellExportDto?> ExportAsync(string name, string? workspace, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellExportDto?>(null);
+
+    public Task<SpellSummary?> CloneAsync(string name, CloneSpellRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellSummary?>(null);
+
+    public Task<DataSourceResult<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<SpellSummary>(null, false, "test", "not used"));
+
+    public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) => Task.FromResult(false);
 
     public Task<SpellCastResult?> CastAsync(string name, SpellCastRequest request, CancellationToken cancellationToken) => Task.FromResult<SpellCastResult?>(null);
 
@@ -596,7 +714,14 @@ internal sealed class NullSpellEditorDataSource : RetroDownfall.TheForge.Ux.View
 
     }
 
-    public Task<bool> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken) => Task.FromResult(false);
+    public Task<SpellVersionDto?> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken) =>
+        Task.FromResult<SpellVersionDto?>(null);
+
+    public Task<IReadOnlyList<string>> ListSpellNamesAsync(string? workspace, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<string>>([]);
+
+    public Task<IReadOnlyList<string>> ListAvailableToolNamesAsync(string? workspace, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<string>>([]);
 
 }
 
@@ -636,6 +761,21 @@ internal sealed class NullPromptEditorDataSource : RetroDownfall.TheForge.Ux.Vie
 
     }
 
+    public Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<PromptVersionDto>>([]);
+
+    public Task<PromptDetailDto?> CloneAsync(Guid id, ClonePromptRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<PromptDetailDto?>(null);
+
+    public Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult<PromptExportDto?>(null);
+
+    public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<PromptSummaryDto>(null, false, "test", "not used"));
+
+    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult(false);
+
 }
 
 internal sealed class NullArtifactCreationDataSource : RetroDownfall.TheForge.Ux.ViewModels.Atelier.IArtifactCreationDataSource
@@ -672,6 +812,44 @@ internal sealed class NullArtifactCreationDialogService : IArtifactCreationDialo
 
     public Task<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewSessionInputs?> PromptNewSessionAsync(Guid? campaignId, string? campaignName, CancellationToken cancellationToken) =>
         Task.FromResult<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewSessionInputs?>(null);
+
+}
+
+internal sealed class NullCampaignManagementDataSource : RetroDownfall.TheForge.Ux.ViewModels.Atelier.ICampaignManagementDataSource
+{
+
+    public Task<DataSourceResult<CampaignDto>> CreateAsync(RegisterCampaignRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<CampaignDto>(null, false, "test", "not used"));
+
+    public Task<DataSourceResult<CampaignDto>> UpdateAsync(Guid id, UpdateCampaignRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<CampaignDto>(null, false, "test", "not used"));
+
+    public Task<DataSourceResult<bool>> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<bool>(false, false, "test", "not used"));
+
+    public Task<DataSourceResult<CampaignExportDto>> ExportAsync(Guid campaignId, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<CampaignExportDto>(null, false, "test", "not used"));
+
+    public Task<DataSourceResult<CampaignImportResultDto>> ImportAsync(
+        Guid campaignId,
+        string strategy,
+        CampaignExportDto payload,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<CampaignImportResultDto>(null, false, "test", "not used"));
+
+}
+
+internal sealed class NullCampaignDialogService : RetroDownfall.TheForge.Ux.ViewModels.Atelier.ICampaignDialogService
+{
+
+    public Task<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewCampaignInputs?>(null);
+
+    public Task<RetroDownfall.TheForge.Ux.ViewModels.Atelier.EditCampaignInputs?> PromptEditCampaignAsync(CampaignDto existing, CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.TheForge.Ux.ViewModels.Atelier.EditCampaignInputs?>(null);
+
+    public Task<string?> PromptImportStrategyAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
 
 }
 
@@ -783,6 +961,9 @@ internal sealed class NullSagaArchiveDataSource : RetroDownfall.TheForge.Ux.View
     public Task<DataSourceResult<bool>> DeleteAsync(string id, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
 
+    public Task<DataSourceResult<bool>> DeleteAllAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
+
     public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Weave.SagaStats>> GetStatsAsync(CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Weave.SagaStats>(null, true, null, null));
 
@@ -840,7 +1021,7 @@ internal sealed class NullWorkspaceExplorerDataSource : RetroDownfall.TheForge.U
 internal sealed class NullConfirmationDialogService : IConfirmationDialogService
 {
 
-    public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken) =>
+    public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
         Task.FromResult(false);
 
 }

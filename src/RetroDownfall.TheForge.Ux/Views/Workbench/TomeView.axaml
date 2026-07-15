@@ -25,10 +25,11 @@
 
     <StackPanel Grid.Row="1" Spacing="2" Margin="0,0,0,8">
       <TextBlock Text="{Binding MemoryStatusText}" Opacity="0.7" TextWrapping="Wrap" IsVisible="{Binding MemoryStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-      <TextBlock Text="Session memory management is disabled (Arcanum:Sessions:AllowMemoryManagement)."
+      <TextBlock Text="{Binding MemoryManagementDisabledMessage}"
                  Foreground="{DynamicResource ForgeErrorBrush}"
                  TextWrapping="Wrap"
                  IsVisible="{Binding MemoryManagementDisabled}" />
+      <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding MemoryManagementDisabled}" />
     </StackPanel>
 
     <controls:ManaBar Grid.Row="2"

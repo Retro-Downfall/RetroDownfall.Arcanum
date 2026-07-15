@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
@@ -9,7 +10,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 /// <summary>
 /// Root ViewModel for The Atelier (project explorer). Establishes the live tree roots
 /// (Campaigns, Workspaces, Global Spells, Global Prompts, Sessions) with lazy-loading nodes, and
-/// threads the creation seams into the campaign node and the creation-capable roots.
+/// threads the creation and campaign-management seams into the campaign node and creation-capable roots.
 /// </summary>
 public sealed partial class AtelierViewModel : ViewModelBase
 {
@@ -22,6 +23,16 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     private readonly IArtifactCreationDialogService _dialogService;
 
+    private readonly ICampaignManagementDataSource _campaignManagement;
+
+    private readonly ICampaignDialogService _campaignDialog;
+
+    private readonly IConfirmationDialogService _confirmation;
+
+    private readonly IArtifactFileDialogService _fileDialog;
+
+    private readonly IWhispersService _whispers;
+
     private readonly FoundryFloorViewModel _foundryFloor;
 
     [ObservableProperty]
@@ -32,6 +43,11 @@ public sealed partial class AtelierViewModel : ViewModelBase
         INavigationService navigation,
         IArtifactCreationDataSource creationDataSource,
         IArtifactCreationDialogService dialogService,
+        ICampaignManagementDataSource campaignManagement,
+        ICampaignDialogService campaignDialog,
+        IConfirmationDialogService confirmation,
+        IArtifactFileDialogService fileDialog,
+        IWhispersService whispers,
         FoundryFloorViewModel foundryFloor)
     {
 
@@ -42,6 +58,16 @@ public sealed partial class AtelierViewModel : ViewModelBase
         _creationDataSource = creationDataSource;
 
         _dialogService = dialogService;
+
+        _campaignManagement = campaignManagement;
+
+        _campaignDialog = campaignDialog;
+
+        _confirmation = confirmation;
+
+        _fileDialog = fileDialog;
+
+        _whispers = whispers;
 
         _foundryFloor = foundryFloor;
 
@@ -88,10 +114,25 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     }
 
-    private AtelierNodeViewModel CreateCampaignsRoot() =>
-        new AtelierRootNodeViewModel(
-            "Campaigns",
-            "IconCampaign",
+    private AtelierNodeViewModel CreateCampaignsRoot()
+    {
+
+        CampaignsRootNodeViewModel? root = null;
+
+        root = new CampaignsRootNodeViewModel(
+            _campaignManagement,
+            _campaignDialog,
+            _whispers,
+            _foundryFloor,
+            async ct =>
+            {
+                if (root is not null)
+                {
+
+                    await root.ReloadAsync(ct).ConfigureAwait(true);
+
+                }
+            },
             async ct => (await _dataSource.GetCampaignsAsync(ct).ConfigureAwait(true))
                 .OrderBy(static campaign => campaign.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(campaign => new CampaignNodeViewModel(
@@ -100,9 +141,27 @@ public sealed partial class AtelierViewModel : ViewModelBase
                     _navigation,
                     _creationDataSource,
                     _dialogService,
-                    _foundryFloor))
+                    _foundryFloor,
+                    _campaignManagement,
+                    _campaignDialog,
+                    _confirmation,
+                    _fileDialog,
+                    _whispers,
+                    async refreshCt =>
+                    {
+                        if (root is not null)
+                        {
+
+                            await root.ReloadAsync(refreshCt).ConfigureAwait(true);
+
+                        }
+                    }))
                 .Cast<AtelierNodeViewModel>()
                 .ToArray());
+
+        return root;
+
+    }
 
     private AtelierNodeViewModel CreateWorkspacesRoot() =>
         new AtelierRootNodeViewModel(

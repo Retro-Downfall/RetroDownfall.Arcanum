@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Wards;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 
@@ -13,6 +14,8 @@ public sealed partial class GatehouseViewModel : ViewModelBase, IDisposable
 {
 
     private readonly IGatehouseDataSource _dataSource;
+
+    private readonly IWhispersService _whispers;
 
     private CancellationTokenSource? _pollCts;
 
@@ -27,10 +30,12 @@ public sealed partial class GatehouseViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private string? _lastError;
 
-    public GatehouseViewModel(IGatehouseDataSource dataSource)
+    public GatehouseViewModel(IGatehouseDataSource dataSource, IWhispersService whispers)
     {
 
         _dataSource = dataSource;
+
+        _whispers = whispers;
 
         Title = "The Gatehouse";
 
@@ -236,6 +241,8 @@ public sealed partial class GatehouseViewModel : ViewModelBase, IDisposable
 
             LastError = allow ? $"Failed to approve ward {card.WardId}." : $"Failed to deny ward {card.WardId}.";
 
+            _whispers.Show(WhisperSeverity.Error, allow ? "Approve failed." : "Deny failed.");
+
             return;
 
         }
@@ -243,6 +250,8 @@ public sealed partial class GatehouseViewModel : ViewModelBase, IDisposable
         Wards.Remove(card);
 
         OnPropertyChanged(nameof(HasNoWards));
+
+        _whispers.Show(WhisperSeverity.Success, allow ? "Ward approved." : "Ward denied.");
 
     }
 

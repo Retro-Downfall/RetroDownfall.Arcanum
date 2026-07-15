@@ -102,4 +102,33 @@ public sealed class PromptService
             TheForgeJsonContext.Default.IntelligenceEvent,
             cancellationToken);
 
+    /// <summary><c>DELETE /api/prompts/{id}</c> — success is <c>204 No Content</c>.</summary>
+    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+        _apiClient.DeleteNoContentAsync($"/api/prompts/{id}", cancellationToken);
+
+    /// <summary><c>POST /api/prompts/{id}/clone</c> — copies the prompt under a new name/version.</summary>
+    public Task<ApiResponse<PromptDetailDto>?> CloneAsync(Guid id, ClonePromptRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/prompts/{id}/clone",
+            request,
+            TheForgeJsonContext.Default.ClonePromptRequest,
+            TheForgeJsonContext.Default.ApiResponsePromptDetailDto,
+            cancellationToken);
+
+    /// <summary><c>POST /api/prompts/{id}/export</c> — portable JSON export payload.</summary>
+    public Task<ApiResponse<PromptExportDto>?> ExportAsync(Guid id, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/prompts/{id}/export",
+            TheForgeJsonContext.Default.ApiResponsePromptExportDto,
+            cancellationToken);
+
+    /// <summary><c>POST /api/prompts/import</c> — imports a portable JSON export.</summary>
+    public Task<ApiResponse<PromptSummaryDto>?> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            "/api/prompts/import",
+            request,
+            TheForgeJsonContext.Default.PromptImportRequest,
+            TheForgeJsonContext.Default.ApiResponsePromptSummaryDto,
+            cancellationToken);
+
 }

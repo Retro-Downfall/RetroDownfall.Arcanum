@@ -354,6 +354,51 @@ internal static partial class SpellExecutionEndpoints
             })
         .WithName("Spell_ListVersions");
 
+        apiGroup.MapGet(
+            "/spells/{name}/versions/{version}",
+            async (
+                string name,
+                string version,
+                string? workspace,
+                Guid? campaignId,
+                ISpellRepository repo,
+                SpellWorkspaceResolver workspaceResolver,
+                ICampaignRepository campaignRepository,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Result<string?> workspaceResult = await ExecuteWorkspaceResolver
+                    .ResolveAsync(workspace, null, campaignId, workspaceResolver, campaignRepository, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                IResult? workspaceFailure = SpellApiResults.MapOptionalWorkspaceFailure<SpellVersionDetailDto>(
+                    workspaceResult,
+                    traceId,
+                    ArcanumJsonContext.Default.ApiResponseSpellVersionDetailDto,
+                    out string? resolvedWorkspace);
+
+                if (workspaceFailure is not null)
+                {
+                    return workspaceFailure;
+                }
+
+                Result<SpellVersionDetailDto> result = await repo
+                    .GetVersionDetailAsync(name, Uri.UnescapeDataString(version), resolvedWorkspace, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SpellVersionDetailDto>.FromResult(result, traceId),
+                        ArcanumJsonContext.Default.ApiResponseSpellVersionDetailDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+                }
+
+                return Results.Ok(ApiResponse<SpellVersionDetailDto>.FromResult(result, traceId));
+            })
+        .WithName("Spell_GetVersionDetail");
+
         apiGroup.MapPost(
             "/spells/{name}/versions",
             async (

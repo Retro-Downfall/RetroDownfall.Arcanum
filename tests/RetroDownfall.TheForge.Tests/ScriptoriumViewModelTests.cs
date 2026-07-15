@@ -2,8 +2,11 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
+using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
+using System.Text.Json;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -35,6 +38,187 @@ public class ScriptoriumViewModelTests
         Assert.Equal("gpt-4o", viewModel.Model);
 
         Assert.Equal("openai", viewModel.Provider);
+
+        Assert.Equal("0.7", viewModel.TemperatureText);
+
+        Assert.Equal("0.9", viewModel.TopPText);
+
+        Assert.Equal("512", viewModel.MaxOutputTokensText);
+
+        Assert.Equal("{\"type\":\"object\"}", viewModel.ParameterSchemaJson);
+
+        Assert.Equal("{\"name\":\"world\"}", viewModel.DefaultParametersJson);
+
+    }
+
+    [Fact]
+    public async Task Save_SendsSamplingAndEmptyObjectJson()
+    {
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+        };
+
+        FakeWhispersService whispers = new();
+
+        ScriptoriumViewModel viewModel = NewScriptorium(dataSource, whispers: whispers);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.TemperatureText = "0.5";
+
+        viewModel.TopPText = string.Empty;
+
+        viewModel.MaxOutputTokensText = "1024";
+
+        viewModel.ParameterSchemaJson = "   ";
+
+        viewModel.DefaultParametersJson = "{\"name\":\"forge\"}";
+
+        await viewModel.SaveAsync(CancellationToken.None);
+
+        Assert.Null(viewModel.LastError);
+
+        Assert.NotNull(dataSource.LastSaveRequest);
+
+        Assert.Equal(0.5, dataSource.LastSaveRequest!.Temperature);
+
+        Assert.Null(dataSource.LastSaveRequest.TopP);
+
+        Assert.Equal(1024, dataSource.LastSaveRequest.MaxOutputTokens);
+
+        Assert.Equal("{}", dataSource.LastSaveRequest.ParameterSchema!.RootElement.GetRawText());
+
+        Assert.Equal("{\"name\":\"forge\"}", dataSource.LastSaveRequest.DefaultParameters!.RootElement.GetRawText());
+
+        Assert.Equal(1, dataSource.SaveCallCount);
+
+        (WhisperSeverity Severity, string Message, string? Title) whisper = Assert.Single(whispers.Calls);
+
+        Assert.Equal(WhisperSeverity.Success, whisper.Severity);
+
+        Assert.Equal("Prompt saved.", whisper.Message);
+
+    }
+
+    [Fact]
+    public async Task SaveAsync_WhenRejected_ShowsShortErrorWhisper()
+    {
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+            SaveSucceeds = false,
+        };
+
+        FakeWhispersService whispers = new();
+
+        ScriptoriumViewModel viewModel = NewScriptorium(dataSource, whispers: whispers);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        await viewModel.SaveAsync(CancellationToken.None);
+
+        Assert.Equal("Save failed — the server rejected the request.", viewModel.LastError);
+
+        (WhisperSeverity Severity, string Message, string? Title) whisper = Assert.Single(whispers.Calls);
+
+        Assert.Equal(WhisperSeverity.Error, whisper.Severity);
+
+        Assert.Equal("Prompt save failed.", whisper.Message);
+
+        Assert.DoesNotContain("rejected", whisper.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task Save_InvalidJson_BlocksWithoutApi()
+    {
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+        };
+
+        ScriptoriumViewModel viewModel = NewScriptorium(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.ParameterSchemaJson = "{not json";
+
+        await viewModel.SaveAsync(CancellationToken.None);
+
+        Assert.False(string.IsNullOrEmpty(viewModel.LastError));
+
+        Assert.Null(dataSource.LastSaveRequest);
+
+        Assert.Equal(0, dataSource.SaveCallCount);
+
+    }
+
+    [Fact]
+    public async Task Execute_IncludesRunOverrides()
+    {
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+            ExecutionEvents =
+            [
+                new IntelligenceEvent(IntelligenceEventType.Result, "done"),
+            ],
+        };
+
+        ScriptoriumViewModel viewModel = NewScriptorium(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.RunUserMessage = "hello";
+
+        viewModel.RunModel = "gpt-4o-mini";
+
+        viewModel.RunTemperatureText = "0.8";
+
+        viewModel.RunTopPText = "0.95";
+
+        viewModel.RunMaxOutputTokensText = "256";
+
+        viewModel.RunSeedText = "42";
+
+        viewModel.RunStopText = "END, STOP ";
+
+        viewModel.RunResponseFormat = "json_object";
+
+        viewModel.RunPresencePenaltyText = "0.1";
+
+        viewModel.RunFrequencyPenaltyText = "0.2";
+
+        await viewModel.ExecuteAsync(CancellationToken.None);
+
+        Assert.Null(viewModel.LastError);
+
+        Assert.NotNull(dataSource.LastExecuteRequest);
+
+        Assert.Equal("hello", dataSource.LastExecuteRequest!.UserMessage);
+
+        Assert.Equal("gpt-4o-mini", dataSource.LastExecuteRequest.Model);
+
+        Assert.Equal(0.8f, dataSource.LastExecuteRequest.Temperature);
+
+        Assert.Equal(0.95f, dataSource.LastExecuteRequest.TopP);
+
+        Assert.Equal(256, dataSource.LastExecuteRequest.MaxOutputTokens);
+
+        Assert.Equal(42L, dataSource.LastExecuteRequest.Seed);
+
+        Assert.Equal(["END", "STOP"], dataSource.LastExecuteRequest.Stop);
+
+        Assert.Equal("json_object", dataSource.LastExecuteRequest.ResponseFormat);
+
+        Assert.Equal(0.1f, dataSource.LastExecuteRequest.PresencePenalty);
+
+        Assert.Equal(0.2f, dataSource.LastExecuteRequest.FrequencyPenalty);
 
     }
 
@@ -211,7 +395,7 @@ public class ScriptoriumViewModelTests
 
         (DocumentKind Kind, string Id)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         FakePromptEditorDataSource dataSource = new()
         {
@@ -271,8 +455,46 @@ public class ScriptoriumViewModelTests
 
     }
 
-    private static ScriptoriumViewModel NewScriptorium(FakePromptEditorDataSource dataSource, NavigationService? navigation = null) =>
-        new(dataSource.Prompt!.Id, dataSource, navigation ?? new NavigationService(), new FoundryFloorViewModel(new NullLogService()));
+    private static ScriptoriumViewModel NewScriptorium(
+        FakePromptEditorDataSource dataSource,
+        NavigationService? navigation = null,
+        IWhispersService? whispers = null) =>
+        new(
+            dataSource.Prompt!.Id,
+            dataSource,
+            navigation ?? new NavigationService(),
+            new FoundryFloorViewModel(new NullLogService()),
+            new NullConfirmationDialogService(),
+            new NullArtifactFileDialogService(),
+            new NullTextInputDialogService(),
+            whispers ?? new FakeWhispersService());
+
+    private sealed class NullConfirmationDialogService : IConfirmationDialogService
+    {
+
+        public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
+            Task.FromResult(false);
+
+    }
+
+    private sealed class NullArtifactFileDialogService : IArtifactFileDialogService
+    {
+
+        public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+    }
+
+    private sealed class NullTextInputDialogService : ITextInputDialogService
+    {
+
+        public Task<string?> PromptAsync(string title, string label, string? defaultValue, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+    }
 
     private static PromptDetailDto NewPromptDetail() =>
         new(
@@ -283,13 +505,13 @@ public class ScriptoriumViewModelTests
             Description: "Say hello",
             Tags: ["social", "intro"],
             Template: "Hello {{name}}",
-            ParameterSchema: null,
-            DefaultParameters: null,
+            ParameterSchema: JsonDocument.Parse("{\"type\":\"object\"}"),
+            DefaultParameters: JsonDocument.Parse("{\"name\":\"world\"}"),
             Model: "gpt-4o",
             Provider: "openai",
-            Temperature: null,
-            TopP: null,
-            MaxOutputTokens: null,
+            Temperature: 0.7,
+            TopP: 0.9,
+            MaxOutputTokens: 512,
             CreatedAt: DateTimeOffset.UtcNow,
             UpdatedAt: DateTimeOffset.UtcNow);
 
@@ -297,6 +519,8 @@ public class ScriptoriumViewModelTests
     {
 
         public PromptDetailDto? Prompt { get; init; }
+
+        public bool SaveSucceeds { get; init; } = true;
 
         public PromptRenderResultDto? RenderResult { get; init; }
 
@@ -309,6 +533,8 @@ public class ScriptoriumViewModelTests
         public TaskCompletionSource SignalYielded { get; } = new();
 
         public UpdatePromptRequest? LastSaveRequest { get; private set; }
+
+        public int SaveCallCount { get; private set; }
 
         public PromptRenderRequest? LastRenderRequest { get; private set; }
 
@@ -326,7 +552,9 @@ public class ScriptoriumViewModelTests
 
             LastSaveRequest = request;
 
-            return Task.FromResult(Prompt);
+            SaveCallCount++;
+
+            return Task.FromResult(SaveSucceeds ? Prompt : null);
 
         }
 
@@ -374,6 +602,21 @@ public class ScriptoriumViewModelTests
             }
 
         }
+
+        public Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<PromptVersionDto>>([]);
+
+        public Task<PromptDetailDto?> CloneAsync(Guid id, ClonePromptRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult<PromptDetailDto?>(null);
+
+        public Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult<PromptExportDto?>(null);
+
+        public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<PromptSummaryDto>(null, false, "test", "not used"));
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
 
     }
 

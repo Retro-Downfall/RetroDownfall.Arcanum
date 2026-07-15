@@ -15,8 +15,10 @@
 
     <StackPanel Grid.Row="1" Spacing="4" Margin="0,0,0,8">
       <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-      <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IndexFeatureDisabled}" />
+      <TextBlock Text="{Binding IndexFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IndexFeatureDisabled}" />
+      <Button Content="Copy setting paths" Command="{Binding CopyIndexDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding IndexFeatureDisabled}" />
       <TextBlock Text="{Binding WriteDisabledBanner}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IsWriteDisabled}" />
+      <Button Content="Copy setting paths" Command="{Binding CopyWriteDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding IsWriteDisabled}" />
     </StackPanel>
 
     <DockPanel Grid.Row="2" LastChildFill="False" Margin="0,0,0,8">

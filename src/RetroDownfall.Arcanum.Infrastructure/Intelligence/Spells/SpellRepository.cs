@@ -470,23 +470,24 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         SkillMetadata? metadata = null;
 
-        string skillPath = Path.Combine(dir, "SKILL.json");
+        string? sidecarPath = SkillJsonIO.ResolveSidecarPath(dir);
 
-        if (File.Exists(skillPath))
+        if (sidecarPath is not null)
         {
-            if (TryGetFileLength(skillPath, out long skillLength) && skillLength > perFileCap)
+            if (TryGetFileLength(sidecarPath, out long sidecarLength) && sidecarLength > perFileCap)
             {
                 _logger.LogWarning(
-                    "Skipping oversized SKILL.json for spell {SpellName} export: {Size} bytes exceeds {Cap} bytes.",
+                    "Skipping oversized {SidecarFile} for spell {SpellName} export: {Size} bytes exceeds {Cap} bytes.",
+                    Path.GetFileName(sidecarPath),
                     name,
-                    skillLength,
+                    sidecarLength,
                     perFileCap);
             }
             else
             {
                 try
                 {
-                    string json = await File.ReadAllTextAsync(skillPath, ct).ConfigureAwait(false);
+                    string json = await File.ReadAllTextAsync(sidecarPath, ct).ConfigureAwait(false);
 
                     metadata = JsonSerializer.Deserialize(json, Core.Serialization.TheForgeJsonContext.Default.SkillMetadata);
                 }
@@ -831,6 +832,104 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", ex.Message));
         }
+    }
+
+    public async Task<Result<SpellVersionDetailDto>> GetVersionDetailAsync(string name, string version, string? workingDirectory, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return Result<SpellVersionDetailDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
+        }
+
+        string label = version.Trim();
+
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+        string trimmedName = name.Trim();
+
+        ParsedSpell? spell = FindByName(allSpells, trimmedName);
+
+        if (spell is null)
+        {
+            return Result<SpellVersionDetailDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "Spell was not found."));
+        }
+
+        string? spellDir = string.IsNullOrWhiteSpace(spell.FilePath)
+            ? null
+            : Path.GetDirectoryName(spell.FilePath);
+
+        if (string.IsNullOrWhiteSpace(spellDir) || !Directory.Exists(spellDir))
+        {
+            return Result<SpellVersionDetailDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "The spell directory does not exist."));
+        }
+
+        string? activeVersionLabel = spell.SkillMetadata?.ActiveVersion;
+
+        string filePath;
+
+        bool isActive;
+
+        string responseVersion;
+
+        if (string.Equals(label, "(active)", StringComparison.Ordinal))
+        {
+            filePath = Path.Combine(spellDir, "SPELL.md");
+
+            isActive = true;
+
+            responseVersion = activeVersionLabel ?? "(active)";
+        }
+        else if (!SpellVersionPathPolicy.IsValidLabel(label))
+        {
+            return Result<SpellVersionDetailDto>.Failure(
+                new Error(ErrorCodes.Spell.InvalidVersion, $"Invalid version label \"{label}\" \u2014 alphanumeric and dots only."));
+        }
+        else
+        {
+            filePath = Path.Combine(spellDir, SpellVersionPathPolicy.BuildVersionFileName(label));
+
+            if (!File.Exists(filePath))
+            {
+                return Result<SpellVersionDetailDto>.Failure(
+                    new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" does not exist for spell \"{trimmedName}\"."));
+            }
+
+            isActive = false;
+
+            responseVersion = label;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            return Result<SpellVersionDetailDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "The active spell file does not exist."));
+        }
+
+        ParsedSpell? parsed = await SpellScanner.LoadFullAsync(filePath, ct, GetMaxSpellFileSizeBytes()).ConfigureAwait(false);
+
+        if (parsed is null)
+        {
+            return Result<SpellVersionDetailDto>.Failure(new Error(ErrorCodes.Spell.NotFound, "The spell version file could not be read."));
+        }
+
+        DateTimeOffset createdAt;
+
+        try
+        {
+            createdAt = File.GetLastWriteTimeUtc(filePath);
+        }
+        catch (IOException)
+        {
+            createdAt = DateTimeOffset.UtcNow;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            createdAt = DateTimeOffset.UtcNow;
+        }
+
+        string? description = string.IsNullOrWhiteSpace(parsed.Description) ? null : parsed.Description;
+
+        return Result<SpellVersionDetailDto>.Success(
+            new SpellVersionDetailDto(responseVersion, isActive, createdAt, description, parsed.Body));
     }
 
     public async Task<Result<SpellVersionDto>> ActivateVersionAsync(string name, string version, string? workingDirectory, CancellationToken ct)

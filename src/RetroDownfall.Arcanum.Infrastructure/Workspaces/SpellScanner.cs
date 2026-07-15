@@ -845,19 +845,19 @@ internal static class SpellScanner
 
         if (spellDirectoryPath.Length > 0)
         {
-            string skillJsonPath = Path.Combine(spellDirectoryPath, "SKILL.json");
+            string? sidecarPath = SkillJsonIO.ResolveSidecarPath(spellDirectoryPath);
 
-            if (File.Exists(skillJsonPath)
+            if (sidecarPath is not null
                 && (workspaceRootForRevalidation is null
-                    || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, skillJsonPath))
-                && TryGetFileLength(skillJsonPath, out long skillJsonLength)
-                && !ExceedsMaxFileSize(skillJsonLength, maxFileSizeBytes))
+                    || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, sidecarPath))
+                && TryGetFileLength(sidecarPath, out long sidecarLength)
+                && !ExceedsMaxFileSize(sidecarLength, maxFileSizeBytes))
             {
                 try
                 {
-                    string skillJsonText = await File.ReadAllTextAsync(skillJsonPath, cancellationToken).ConfigureAwait(false);
+                    string sidecarText = await File.ReadAllTextAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
 
-                    skillMetadata = JsonSerializer.Deserialize(skillJsonText, TheForgeJsonContext.Default.SkillMetadata);
+                    skillMetadata = JsonSerializer.Deserialize(sidecarText, TheForgeJsonContext.Default.SkillMetadata);
 
                     if (skillMetadata is not null
                         && SkillJsonBoundsValidator.Validate(

@@ -26,6 +26,11 @@
           <Border.ContextMenu>
             <ContextMenu>
               <MenuItem Header="Open" Command="{Binding PrimaryCommand}" />
+              <MenuItem Header="{Binding NewCampaignLabel}" Command="{Binding NewCampaignCommand}" IsVisible="{Binding HasNewCampaign}" />
+              <MenuItem Header="Edit / Properties" Command="{Binding EditCampaignCommand}" IsVisible="{Binding HasEditCampaign}" />
+              <MenuItem Header="Delete Campaign" Command="{Binding DeleteCampaignCommand}" IsVisible="{Binding HasDeleteCampaign}" />
+              <MenuItem Header="Export Campaign" Command="{Binding ExportCampaignCommand}" IsVisible="{Binding HasExportCampaign}" />
+              <MenuItem Header="Import into Campaign" Command="{Binding ImportCampaignCommand}" IsVisible="{Binding HasImportCampaign}" />
               <MenuItem Header="{Binding NewSpellLabel}" Command="{Binding NewSpellCommand}" IsVisible="{Binding HasNewSpell}" />
               <MenuItem Header="{Binding NewPromptLabel}" Command="{Binding NewPromptCommand}" IsVisible="{Binding HasNewPrompt}" />
               <MenuItem Header="{Binding NewSessionLabel}" Command="{Binding NewSessionCommand}" IsVisible="{Binding HasNewSession}" />

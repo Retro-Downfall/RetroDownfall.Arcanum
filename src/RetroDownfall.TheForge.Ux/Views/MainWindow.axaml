@@ -5,6 +5,7 @@
         xmlns:workbenchViews="using:RetroDownfall.TheForge.Ux.Views.Workbench"
         xmlns:dockViews="using:RetroDownfall.TheForge.Ux.Views.Docking"
         xmlns:anvil="using:RetroDownfall.TheForge.Ux.Views.Anvil"
+        xmlns:whispers="using:RetroDownfall.TheForge.Ux.Views.Whispers"
         x:Class="RetroDownfall.TheForge.Ux.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="The Forge — Inference IDE"
@@ -25,6 +26,9 @@
     </DataTemplate>
     <DataTemplate DataType="workbench:MarkdownDocumentViewModel">
       <workbenchViews:MarkdownDocumentView />
+    </DataTemplate>
+    <DataTemplate DataType="workbench:ProvingGroundsViewModel">
+      <workbenchViews:ProvingGroundsView />
     </DataTemplate>
     <DataTemplate DataType="workbench:WorkbenchDocumentPlaceholderViewModel">
       <Border Padding="24">
@@ -65,7 +69,9 @@
         <MenuItem Header="_Campaign" />
         <MenuItem Header="_Spell" />
         <MenuItem Header="_Apprentice" />
-        <MenuItem Header="_Trial" />
+        <MenuItem Header="_Trial">
+          <MenuItem Header="Proving Grounds" Command="{Binding OpenProvingGroundsCommand}" />
+        </MenuItem>
         <MenuItem Header="_Tools" />
         <MenuItem Header="_Help" />
       </Menu>
@@ -81,7 +87,14 @@
       </StackPanel>
     </DockPanel>
 
-    <dockViews:DockHostView Grid.Row="1" />
+    <Grid Grid.Row="1">
+      <dockViews:DockHostView />
+      <whispers:WhispersHostView x:Name="WhispersHost"
+                                 HorizontalAlignment="Right"
+                                 VerticalAlignment="Top"
+                                 Margin="12"
+                                 IsHitTestVisible="True" />
+    </Grid>
 
     <anvil:AnvilView Grid.Row="2" DataContext="{Binding Anvil}" />
 

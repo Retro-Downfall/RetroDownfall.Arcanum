@@ -6,7 +6,7 @@
              xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.SpellEditorView"
              x:DataType="vm:SpellEditorViewModel">
-  <Grid RowDefinitions="Auto,*">
+  <Grid RowDefinitions="Auto,Auto,*">
     <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Spacing="2">
         <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
@@ -22,14 +22,26 @@
         <CheckBox Content="Remote images" IsChecked="{Binding LoadRemoteImages}" VerticalAlignment="Center" />
         <CheckBox Content="Sync scroll" IsChecked="{Binding SyncScrollEnabled}" VerticalAlignment="Center" />
         <Button Content="Load" Command="{Binding LoadCommand}" />
-        <Button Content="Save" Command="{Binding SaveCommand}" />
+        <Button Content="Save" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" />
+        <Button Content="Validate" Command="{Binding ValidateCommand}" />
+        <Button Content="Clone" Command="{Binding CloneCommand}" />
+        <Button Content="Export" Command="{Binding ExportCommand}" />
+        <Button Content="Import" Command="{Binding ImportCommand}" />
+        <Button Content="Delete" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDelete}" />
         <Button Content="Cast" Command="{Binding CastCommand}" />
         <Button Content="Estimate Mana" Command="{Binding EstimateManaCommand}" />
         <Button Content="Execute" Command="{Binding ExecuteCommand}" />
+        <Button Content="Create Trial" Command="{Binding CreateTrialCommand}" />
       </StackPanel>
     </DockPanel>
 
-    <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+    <StackPanel Grid.Row="1" Spacing="2" Margin="0,0,0,8">
+      <TextBlock Text="{Binding StatusText}" Opacity="0.68" IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <TextBlock Text="{Binding ValidationSummary}" Opacity="0.72" TextWrapping="Wrap" IsVisible="{Binding ValidationSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    </StackPanel>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,5,*">
       <Grid Grid.Column="0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="{Binding IsSourceVisible, Converter={StaticResource BoolToGridLengthConverter}, ConverterParameter=*}" />
@@ -70,29 +82,132 @@
         <TabItem Header="Frontmatter">
           <TextBox Text="{Binding Frontmatter}" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
         </TabItem>
-        <TabItem Header="SKILL.json">
-          <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4">
-            <avaloniaEdit:TextEditor x:Name="SkillJsonEditor"
-                                     ShowLineNumbers="True"
-                                     WordWrap="True" />
-          </Border>
+        <TabItem Header="SPELL.json">
+          <TabControl>
+            <TabItem Header="Spell Metadata Designer">
+              <ScrollViewer>
+                <StackPanel Spacing="8" Margin="8">
+                  <TextBlock Text="Version" FontWeight="SemiBold" />
+                  <TextBox Text="{Binding MetadataVersion}" IsEnabled="{Binding CanEditMetadata}" />
+                  <TextBlock Text="Active version (read-only)" FontWeight="SemiBold" />
+                  <TextBlock Text="{Binding MetadataActiveVersion}" Opacity="0.72" />
+                  <TextBlock Text="Dependencies" FontWeight="SemiBold" />
+                  <ListBox ItemsSource="{Binding Dependencies}"
+                           SelectedItem="{Binding SelectedDependency}"
+                           MinHeight="80"
+                           IsEnabled="{Binding CanEditMetadata}" />
+                  <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" Margin="8,0,0,0">
+                      <Button Content="Add" Command="{Binding AddDependencyCommand}" IsEnabled="{Binding CanEditMetadata}" />
+                      <Button Content="Remove" Command="{Binding RemoveDependencyCommand}" IsEnabled="{Binding CanEditMetadata}" />
+                    </StackPanel>
+                    <TextBox Text="{Binding NewDependencyText}" Watermark="Spell name" IsEnabled="{Binding CanEditMetadata}" />
+                  </DockPanel>
+                  <TextBlock Text="{Binding DependencyWarnings}"
+                             Foreground="{DynamicResource ForgeWarningBrush}"
+                             TextWrapping="Wrap"
+                             IsVisible="{Binding DependencyWarnings, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <TextBlock Text="Declared tools" FontWeight="SemiBold" />
+                  <ListBox ItemsSource="{Binding DeclaredTools}"
+                           SelectedItem="{Binding SelectedDeclaredTool}"
+                           MinHeight="80"
+                           IsEnabled="{Binding CanEditMetadata}" />
+                  <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6" Margin="8,0,0,0">
+                      <Button Content="Add" Command="{Binding AddDeclaredToolCommand}" IsEnabled="{Binding CanEditMetadata}" />
+                      <Button Content="Remove" Command="{Binding RemoveDeclaredToolCommand}" IsEnabled="{Binding CanEditMetadata}" />
+                    </StackPanel>
+                    <TextBox Text="{Binding NewDeclaredToolText}" Watermark="Tool name" IsEnabled="{Binding CanEditMetadata}" />
+                  </DockPanel>
+                  <TextBlock Text="{Binding ToolWarnings}"
+                             Foreground="{DynamicResource ForgeWarningBrush}"
+                             TextWrapping="Wrap"
+                             IsVisible="{Binding ToolWarnings, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <TextBlock Text="Input schema" FontWeight="SemiBold" />
+                  <TextBox Text="{Binding InputSchemaJson}"
+                           AcceptsReturn="True"
+                           TextWrapping="Wrap"
+                           FontFamily="Cascadia Mono, Consolas, monospace"
+                           MinHeight="100"
+                           IsReadOnly="{Binding !CanEditMetadata}" />
+                  <TextBlock Text="Output schema" FontWeight="SemiBold" />
+                  <TextBox Text="{Binding OutputSchemaJson}"
+                           AcceptsReturn="True"
+                           TextWrapping="Wrap"
+                           FontFamily="Cascadia Mono, Consolas, monospace"
+                           MinHeight="100"
+                           IsReadOnly="{Binding !CanEditMetadata}" />
+                  <TextBlock Text="{Binding MetadataValidationError}"
+                             Foreground="{DynamicResource ForgeErrorBrush}"
+                             TextWrapping="Wrap"
+                             IsVisible="{Binding MetadataValidationError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+              </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Raw SPELL.json">
+              <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4">
+                <avaloniaEdit:TextEditor x:Name="SpellJsonEditor"
+                                         ShowLineNumbers="True"
+                                         WordWrap="True" />
+              </Border>
+            </TabItem>
+          </TabControl>
         </TabItem>
         <TabItem Header="Scripts">
           <TextBox Text="{Binding ScriptsSummary}" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
         </TabItem>
-        <TabItem Header="Versions">
-          <Grid RowDefinitions="*,Auto">
-            <ListBox Grid.Row="0" ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}">
-              <ListBox.ItemTemplate>
-                <DataTemplate>
-                  <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock Text="{Binding Version}" FontWeight="SemiBold" />
-                    <TextBlock Text="{Binding Description}" Opacity="0.72" />
-                  </StackPanel>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
-            <Button Grid.Row="1" Content="Activate Version" Command="{Binding ActivateVersionCommand}" CommandParameter="{Binding SelectedVersion}" HorizontalAlignment="Right" Margin="0,8,0,0" />
+        <TabItem Header="The Mirror">
+          <Grid RowDefinitions="Auto,*,Auto,Auto,Auto">
+            <TextBlock Grid.Row="0"
+                       Text="Unsaved editor changes are not included in this comparison"
+                       Foreground="{DynamicResource ForgeWarningBrush}"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,8"
+                       IsVisible="{Binding ShowDirtyComparisonWarning}" />
+            <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+              <ListBox Grid.Column="0" ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="{Binding Version}" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Description}" Opacity="0.72" />
+                      <TextBlock Text="(active)" Opacity="0.55" IsVisible="{Binding IsActive}" />
+                    </StackPanel>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+              <ListBox Grid.Column="2" ItemsSource="{Binding DiffLines}" FontFamily="Cascadia Mono, Consolas, monospace">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding UnifiedDisplay}" />
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+            <TextBlock Grid.Row="2"
+                       Text="{Binding ActivatePreviousVersionNote}"
+                       Opacity="0.72"
+                       TextWrapping="Wrap"
+                       Margin="0,8,0,0"
+                       IsVisible="{Binding ActivatePreviousVersionNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right" Margin="0,8,0,0">
+              <Button Content="Create Version"
+                      Command="{Binding CreateVersionCommand}"
+                      IsEnabled="{Binding CanCreateVersion}" />
+              <Button Content="Update Version"
+                      Command="{Binding UpdateSelectedVersionCommand}"
+                      IsEnabled="{Binding CanUpdateVersion}" />
+              <Button Content="Activate Version"
+                      Command="{Binding ActivateVersionCommand}"
+                      CommandParameter="{Binding SelectedVersion}"
+                      IsEnabled="{Binding CanActivateVersion}" />
+            </StackPanel>
+            <TextBlock Grid.Row="4"
+                       Text="Compare: selected version vs persisted active SPELL.md (not the dirty editor buffer)."
+                       Opacity="0.55"
+                       TextWrapping="Wrap"
+                       Margin="0,8,0,0" />
           </Grid>
         </TabItem>
         <TabItem Header="Cast Preview">

@@ -6,8 +6,43 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
+/// <summary>
+/// Reads and writes the structured spell sidecar next to <c>SPELL.md</c>.
+/// Canonical filename is <see cref="CanonicalFileName"/> (<c>SPELL.json</c>);
+/// legacy <see cref="LegacyFileName"/> (<c>SKILL.json</c>) is read as fallback only.
+/// </summary>
 internal static class SkillJsonIO
 {
+
+    public const string CanonicalFileName = "SPELL.json";
+
+    public const string LegacyFileName = "SKILL.json";
+
+    /// <summary>
+    /// Resolves which sidecar file to read: prefers <see cref="CanonicalFileName"/> when present;
+    /// otherwise falls back to <see cref="LegacyFileName"/>. Returns <c>null</c> when neither exists.
+    /// When both exist, the canonical file wins.
+    /// </summary>
+    public static string? ResolveSidecarPath(string spellDirectory)
+    {
+
+        if (string.IsNullOrWhiteSpace(spellDirectory))
+        {
+            return null;
+        }
+
+        string canonical = Path.Combine(spellDirectory, CanonicalFileName);
+
+        if (File.Exists(canonical))
+        {
+            return canonical;
+        }
+
+        string legacy = Path.Combine(spellDirectory, LegacyFileName);
+
+        return File.Exists(legacy) ? legacy : null;
+
+    }
 
     public static bool HasStructuredFields(CreateSpellRequest request) =>
         !string.IsNullOrWhiteSpace(request.Version)
@@ -56,14 +91,16 @@ internal static class SkillJsonIO
             request.Model ?? current?.Model ?? existing.Model,
             request.Provider ?? current?.Provider ?? existing.Provider,
             request.DefaultParameters ?? current?.DefaultParameters,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            current?.ActiveVersion);
     }
 
     /// <summary>
     /// Builds the merged <see cref="SkillMetadata"/> for activating a spell version: preserves every
-    /// existing structured field (falling back to the parsed spell's frontmatter when no SKILL.json
+    /// existing structured field (falling back to the parsed spell's frontmatter when no sidecar
     /// exists yet) and sets <see cref="SkillMetadata.ActiveVersion"/> to the newly activated label.
     /// Only <c>ActivateSpellVersionAsync</c> calls this — create/update version do not touch the field.
+    /// The subsequent <see cref="WriteAsync"/> always writes canonical <c>SPELL.json</c>.
     /// </summary>
     public static SkillMetadata SetActiveVersion(ParsedSpell existing, string activeVersionLabel)
     {
@@ -85,9 +122,10 @@ internal static class SkillJsonIO
             activeVersionLabel);
     }
 
+    /// <summary>Writes canonical <see cref="CanonicalFileName"/> only. Never creates a new legacy sidecar.</summary>
     public static async Task WriteAsync(string spellDirectory, SkillMetadata metadata, CancellationToken ct)
     {
-        string path = Path.Combine(spellDirectory, "SKILL.json");
+        string path = Path.Combine(spellDirectory, CanonicalFileName);
 
         string json = JsonSerializer.Serialize(metadata, TheForgeJsonContext.Default.SkillMetadata);
 

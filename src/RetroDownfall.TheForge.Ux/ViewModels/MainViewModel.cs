@@ -171,6 +171,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         _navigation.PanelFocusRequested += OnPanelFocusRequested;
 
+        _navigation.ProvingGroundsOpenRequested += OnProvingGroundsOpenRequested;
+
     }
 
     [RelayCommand]
@@ -214,6 +216,9 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void OpenGlobalCodex() => _navigation.OpenDocument(DocumentKind.Codex, "global");
+
+    [RelayCommand]
+    private void OpenProvingGrounds() => _navigation.OpenOrFocusProvingGrounds();
 
     [RelayCommand]
     private void Connect()
@@ -264,6 +269,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         _navigation.DocumentCloseRequested -= OnDocumentCloseRequested;
 
         _navigation.PanelFocusRequested -= OnPanelFocusRequested;
+
+        _navigation.ProvingGroundsOpenRequested -= OnProvingGroundsOpenRequested;
 
         foreach (ViewModelBase document in OpenDocuments.ToArray())
         {
@@ -431,15 +438,15 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     }
 
-    private void OnDocumentOpenRequested(DocumentKind kind, string id)
+    private void OnDocumentOpenRequested(DocumentKind kind, string id, string? workspace)
     {
 
-        DocumentKey key = new(kind, id);
+        DocumentKey key = new(kind, id, WorkspacePathHelper.ForIdentity(workspace));
 
         if (!_documentsByKey.TryGetValue(key, out ViewModelBase? document))
         {
 
-            document = _documentFactory.Create(kind, id);
+            document = _documentFactory.Create(kind, id, workspace);
 
             _documentsByKey.Add(key, document);
 
@@ -451,10 +458,38 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     }
 
-    private void OnDocumentCloseRequested(DocumentKind kind, string id)
+    private bool OnProvingGroundsOpenRequested(ProvingGroundsPrefill? prefill)
     {
 
-        DocumentKey key = new(kind, id);
+        OnDocumentOpenRequested(DocumentKind.Trial, ProvingGroundsViewModel.SingletonDocumentId, null);
+
+        if (ActiveDocument is not ProvingGroundsViewModel provingGrounds)
+        {
+
+            return false;
+
+        }
+
+        if (prefill is null)
+        {
+
+            return true;
+
+        }
+
+        return provingGrounds.ApplyPrefill(
+            prefill.Kind,
+            prefill.Target,
+            prefill.Workspace,
+            prefill.Model,
+            prefill.Variables);
+
+    }
+
+    private void OnDocumentCloseRequested(DocumentKind kind, string id, string? workspace)
+    {
+
+        DocumentKey key = new(kind, id, WorkspacePathHelper.ForIdentity(workspace));
 
         if (!_documentsByKey.Remove(key, out ViewModelBase? document))
         {

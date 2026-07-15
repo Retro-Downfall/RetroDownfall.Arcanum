@@ -543,4 +543,142 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task LoadFullAsync_reads_canonical_SPELL_json()
+    {
+
+        _workspace.WriteFile(
+            "spells/canonical-meta/SPELL.md",
+            """
+            ---
+            name: canonical-meta
+            description: uses SPELL.json
+            ---
+            body
+            """);
+
+        _workspace.WriteFile(
+            "spells/canonical-meta/SPELL.json",
+            """
+            {
+              "name": "canonical-meta",
+              "version": "2.0.0",
+              "description": "canonical",
+              "tags": ["from-spell-json"],
+              "declaredTools": [],
+              "dependencies": []
+            }
+            """);
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "canonical-meta", "SPELL.md");
+
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(loaded);
+
+        Assert.NotNull(loaded!.SkillMetadata);
+
+        Assert.Equal("2.0.0", loaded.SkillMetadata!.Version);
+
+        Assert.Contains("from-spell-json", loaded.Tags);
+
+    }
+
+    [Fact]
+    public async Task LoadFullAsync_falls_back_to_legacy_SKILL_json()
+    {
+
+        _workspace.WriteFile(
+            "spells/legacy-meta/SPELL.md",
+            """
+            ---
+            name: legacy-meta
+            description: uses SKILL.json
+            ---
+            body
+            """);
+
+        _workspace.WriteFile(
+            "spells/legacy-meta/SKILL.json",
+            """
+            {
+              "name": "legacy-meta",
+              "version": "1.5.0",
+              "description": "legacy",
+              "tags": ["from-skill-json"],
+              "declaredTools": [],
+              "dependencies": []
+            }
+            """);
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "legacy-meta", "SPELL.md");
+
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(loaded);
+
+        Assert.NotNull(loaded!.SkillMetadata);
+
+        Assert.Equal("1.5.0", loaded.SkillMetadata!.Version);
+
+        Assert.Contains("from-skill-json", loaded.Tags);
+
+    }
+
+    [Fact]
+    public async Task LoadFullAsync_prefers_SPELL_json_when_both_sidecars_exist()
+    {
+
+        _workspace.WriteFile(
+            "spells/both-meta/SPELL.md",
+            """
+            ---
+            name: both-meta
+            description: both sidecars
+            ---
+            body
+            """);
+
+        _workspace.WriteFile(
+            "spells/both-meta/SKILL.json",
+            """
+            {
+              "name": "both-meta",
+              "version": "1.0.0",
+              "description": "legacy-loses",
+              "tags": ["legacy-tag"],
+              "declaredTools": [],
+              "dependencies": []
+            }
+            """);
+
+        _workspace.WriteFile(
+            "spells/both-meta/SPELL.json",
+            """
+            {
+              "name": "both-meta",
+              "version": "9.0.0",
+              "description": "canonical-wins",
+              "tags": ["canonical-tag"],
+              "declaredTools": [],
+              "dependencies": []
+            }
+            """);
+
+        string spellPath = Path.Combine(_workspace.Root, "spells", "both-meta", "SPELL.md");
+
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+
+        Assert.NotNull(loaded);
+
+        Assert.NotNull(loaded!.SkillMetadata);
+
+        Assert.Equal("9.0.0", loaded.SkillMetadata!.Version);
+
+        Assert.Contains("canonical-tag", loaded.Tags);
+
+        Assert.DoesNotContain("legacy-tag", loaded.Tags);
+
+    }
+
 }

@@ -1,6 +1,11 @@
 using RetroDownfall.TheForge.Ux.Markdown;
+
 using RetroDownfall.TheForge.Ux.Models;
+
 using RetroDownfall.TheForge.Ux.Services;
+
+using RetroDownfall.TheForge.Ux.Services.Whispers;
+
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -9,14 +14,15 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 public interface IWorkbenchDocumentFactory
 {
 
-    ViewModelBase Create(DocumentKind kind, string id);
+    ViewModelBase Create(DocumentKind kind, string id, string? workspace = null);
 
 }
 
 /// <summary>
 /// Production Workbench document factory. Spell navigation opens the Spell editor; Session
 /// navigation opens The Tome; Codex opens the CODEX.md editor; Markdown opens The Illumination
-/// tab when content was registered in <see cref="IMarkdownDocumentContentStore"/>.
+/// tab when content was registered in <see cref="IMarkdownDocumentContentStore"/>; Trial opens
+/// the singleton Proving Grounds designer.
 /// </summary>
 public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 {
@@ -29,20 +35,38 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
     private readonly ICodexDataSource _codexDataSource;
 
+    private readonly ITrialDataSource _trialDataSource;
+
     private readonly IMarkdownDocumentContentStore _markdownContentStore;
 
     private readonly INavigationService _navigation;
 
     private readonly FoundryFloorViewModel _foundryFloor;
 
+    private readonly IConfirmationDialogService _confirmationDialog;
+
+    private readonly IArtifactFileDialogService _fileDialog;
+
+    private readonly ITextInputDialogService _textInputDialog;
+
+    private readonly IClipboardService _clipboard;
+
+    private readonly IWhispersService _whispers;
+
     public WorkbenchDocumentFactory(
         ISpellEditorDataSource spellEditorDataSource,
         IPromptEditorDataSource promptEditorDataSource,
         ITomeDataSource tomeDataSource,
         ICodexDataSource codexDataSource,
+        ITrialDataSource trialDataSource,
         IMarkdownDocumentContentStore markdownContentStore,
         INavigationService navigation,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        IConfirmationDialogService confirmationDialog,
+        IArtifactFileDialogService fileDialog,
+        ITextInputDialogService textInputDialog,
+        IClipboardService clipboard,
+        IWhispersService whispers)
     {
 
         _spellEditorDataSource = spellEditorDataSource;
@@ -53,21 +77,42 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
         _codexDataSource = codexDataSource;
 
+        _trialDataSource = trialDataSource;
+
         _markdownContentStore = markdownContentStore;
 
         _navigation = navigation;
 
         _foundryFloor = foundryFloor;
 
+        _confirmationDialog = confirmationDialog;
+
+        _fileDialog = fileDialog;
+
+        _textInputDialog = textInputDialog;
+
+        _clipboard = clipboard;
+
+        _whispers = whispers;
+
     }
 
-    public ViewModelBase Create(DocumentKind kind, string id)
+    public ViewModelBase Create(DocumentKind kind, string id, string? workspace = null)
     {
 
         if (kind == DocumentKind.Spell)
         {
 
-            SpellEditorViewModel editor = new(id, _spellEditorDataSource, _navigation);
+            SpellEditorViewModel editor = new(
+                id,
+                _spellEditorDataSource,
+                _navigation,
+                _foundryFloor,
+                _confirmationDialog,
+                _fileDialog,
+                _textInputDialog,
+                _whispers,
+                workspace);
 
             _ = editor.LoadCommand.ExecuteAsync(null);
 
@@ -78,7 +123,15 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         if (kind == DocumentKind.Prompt && Guid.TryParse(id, out Guid promptId))
         {
 
-            ScriptoriumViewModel scriptorium = new(promptId, _promptEditorDataSource, _navigation, _foundryFloor);
+            ScriptoriumViewModel scriptorium = new(
+                promptId,
+                _promptEditorDataSource,
+                _navigation,
+                _foundryFloor,
+                _confirmationDialog,
+                _fileDialog,
+                _textInputDialog,
+                _whispers);
 
             _ = scriptorium.LoadCommand.ExecuteAsync(null);
 
@@ -89,7 +142,7 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         if (kind == DocumentKind.Session && Guid.TryParse(id, out Guid sessionId))
         {
 
-            TomeViewModel tome = new(sessionId, _tomeDataSource, _navigation, _foundryFloor);
+            TomeViewModel tome = new(sessionId, _tomeDataSource, _navigation, _foundryFloor, _clipboard);
 
             _ = tome.LoadCommand.ExecuteAsync(null);
 
@@ -142,6 +195,21 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 kind,
                 id,
                 "Markdown preview content is no longer available. Reopen the file from Workspace Explorer.");
+
+        }
+
+        if (kind == DocumentKind.Trial)
+        {
+
+            ProvingGroundsViewModel provingGrounds = new(
+                _trialDataSource,
+                _foundryFloor,
+                _whispers,
+                _confirmationDialog);
+
+            _ = provingGrounds.LoadPickersCommand.ExecuteAsync(null);
+
+            return provingGrounds;
 
         }
 

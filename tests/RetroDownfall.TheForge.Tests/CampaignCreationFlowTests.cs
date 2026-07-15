@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using Xunit;
@@ -27,9 +28,9 @@ public class CampaignCreationFlowTests
 
         NavigationService navigation = new();
 
-        (DocumentKind, string)? opened = null;
+        (DocumentKind, string, string?)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, workspace) => opened = (kind, id, workspace);
 
         CampaignNodeViewModel node = NewCampaignNode(campaign, creation, dialog, navigation);
 
@@ -43,7 +44,7 @@ public class CampaignCreationFlowTests
 
         Assert.Equal("light", creation.LastSpellRequest!.Name);
 
-        Assert.Equal((DocumentKind.Spell, "light"), opened);
+        Assert.Equal((DocumentKind.Spell, "light", campaign.Path), opened);
 
     }
 
@@ -85,7 +86,7 @@ public class CampaignCreationFlowTests
 
         (DocumentKind, string)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         CampaignNodeViewModel node = NewCampaignNode(campaign, creation, dialog, navigation);
 
@@ -134,7 +135,7 @@ public class CampaignCreationFlowTests
 
         (DocumentKind, string)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         CampaignNodeViewModel node = NewCampaignNode(campaign, creation, dialog, navigation);
 
@@ -164,7 +165,7 @@ public class CampaignCreationFlowTests
 
         (DocumentKind, string)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         CampaignNodeViewModel node = NewCampaignNode(campaign, creation, dialog, navigation);
 
@@ -193,7 +194,7 @@ public class CampaignCreationFlowTests
 
         (DocumentKind, string)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         CampaignNodeViewModel node = NewCampaignNode(campaign, creation, dialog, navigation);
 
@@ -227,7 +228,80 @@ public class CampaignCreationFlowTests
 
         FoundryFloorViewModel foundryFloor = new(new NullLogService());
 
-        return new CampaignNodeViewModel(campaign, new NullAtelierDataSource(), navigation, creation, dialog, foundryFloor);
+        return new CampaignNodeViewModel(
+            campaign,
+            new NullAtelierDataSource(),
+            navigation,
+            creation,
+            dialog,
+            foundryFloor,
+            new NullCampaignManagementDataSource(),
+            new NullCampaignDialogService(),
+            new NullConfirmationForCampaignCreation(),
+            new NullFileDialogForCampaignCreation(),
+            new FakeWhispersService(),
+            static _ => Task.CompletedTask);
+
+    }
+
+    private sealed class NullCampaignManagementDataSource : ICampaignManagementDataSource
+    {
+
+        public Task<DataSourceResult<CampaignDto>> CreateAsync(RegisterCampaignRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<CampaignDto>(null, false, "test", "not used"));
+
+        public Task<DataSourceResult<CampaignDto>> UpdateAsync(Guid id, UpdateCampaignRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<CampaignDto>(null, false, "test", "not used"));
+
+        public Task<DataSourceResult<bool>> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<bool>(false, false, "test", "not used"));
+
+        public Task<DataSourceResult<CampaignExportDto>> ExportAsync(Guid campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<CampaignExportDto>(null, false, "test", "not used"));
+
+        public Task<DataSourceResult<CampaignImportResultDto>> ImportAsync(
+            Guid campaignId,
+            string strategy,
+            CampaignExportDto payload,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new DataSourceResult<CampaignImportResultDto>(null, false, "test", "not used"));
+
+    }
+
+    private sealed class NullCampaignDialogService : ICampaignDialogService
+    {
+
+        public Task<NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<NewCampaignInputs?>(null);
+
+        public Task<EditCampaignInputs?> PromptEditCampaignAsync(CampaignDto existing, CancellationToken cancellationToken) =>
+            Task.FromResult<EditCampaignInputs?>(null);
+
+        public Task<string?> PromptImportStrategyAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+    }
+
+    private sealed class NullConfirmationForCampaignCreation : IConfirmationDialogService
+    {
+
+        public Task<bool> ConfirmAsync(
+            string title,
+            string message,
+            CancellationToken cancellationToken,
+            bool confirmIsDefault = true) =>
+            Task.FromResult(false);
+
+    }
+
+    private sealed class NullFileDialogForCampaignCreation : IArtifactFileDialogService
+    {
+
+        public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
 
     }
 

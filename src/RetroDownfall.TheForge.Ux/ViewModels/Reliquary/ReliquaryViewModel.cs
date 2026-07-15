@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.LlamaCpp;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Reliquary;
@@ -16,6 +17,8 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
     private readonly IReliquaryDataSource _dataSource;
 
     private readonly FoundryFloorViewModel _foundryFloor;
+
+    private readonly IWhispersService _whispers;
 
     private readonly CancellationTokenSource _lifetimeCts = new();
 
@@ -47,12 +50,14 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
 
     public ObservableCollection<string> PullLines { get; } = [];
 
-    public ReliquaryViewModel(IReliquaryDataSource dataSource, FoundryFloorViewModel foundryFloor)
+    public ReliquaryViewModel(IReliquaryDataSource dataSource, FoundryFloorViewModel foundryFloor, IWhispersService whispers)
     {
 
         _dataSource = dataSource;
 
         _foundryFloor = foundryFloor;
+
+        _whispers = whispers;
 
         Title = "The Reliquary";
 
@@ -165,12 +170,27 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
 
             StatusText = pullToken.IsCancellationRequested ? "Pull cancelled." : "Pull complete.";
 
+            if (pullToken.IsCancellationRequested)
+            {
+
+                _whispers.Show(WhisperSeverity.Info, "Pull cancelled.");
+
+            }
+            else
+            {
+
+                _whispers.Show(WhisperSeverity.Success, "Pull complete.");
+
+            }
+
         }
 
         catch (OperationCanceledException) when (pullToken.IsCancellationRequested)
         {
 
             StatusText = "Pull cancelled.";
+
+            _whispers.Show(WhisperSeverity.Info, "Pull cancelled.");
 
         }
 
@@ -180,6 +200,8 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Reliquary pull error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Pull failed.");
 
         }
 
@@ -231,6 +253,14 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
 
                 _foundryFloor.AppendLine($"Reliquary start failed: {model.CacheKey}");
 
+                _whispers.Show(WhisperSeverity.Error, "Server start failed.");
+
+            }
+            else
+            {
+
+                _whispers.Show(WhisperSeverity.Success, "Server start sent.");
+
             }
 
             await RefreshAsync(cancellationToken).ConfigureAwait(true);
@@ -243,6 +273,8 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Reliquary start error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Server start failed.");
 
         }
 
@@ -286,6 +318,14 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
 
                 _foundryFloor.AppendLine($"Reliquary stop failed: {model.CacheKey}");
 
+                _whispers.Show(WhisperSeverity.Error, "Server stop failed.");
+
+            }
+            else
+            {
+
+                _whispers.Show(WhisperSeverity.Success, "Server stop sent.");
+
             }
 
             await RefreshAsync(cancellationToken).ConfigureAwait(true);
@@ -298,6 +338,8 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Reliquary stop error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Server stop failed.");
 
         }
 
@@ -343,6 +385,14 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
 
                 _foundryFloor.AppendLine($"Reliquary warmup failed: {model.CacheKey}");
 
+                _whispers.Show(WhisperSeverity.Error, "Warmup failed.");
+
+            }
+            else
+            {
+
+                _whispers.Show(WhisperSeverity.Success, "Warmup complete.");
+
             }
 
         }
@@ -353,6 +403,8 @@ public sealed partial class ReliquaryViewModel : ViewModelBase, IDisposable
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Reliquary warmup error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Warmup failed.");
 
         }
 

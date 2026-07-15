@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Infrastructure.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 /// <summary>
-/// Durable, atomic text-file writes for spell artifacts (<c>SPELL.md</c>, <c>SKILL.json</c>).
+/// Durable, atomic text-file writes for spell artifacts (<c>SPELL.md</c>, <c>SPELL.json</c>).
 /// Delegates to <see cref="AtomicFile.ReplaceAsync"/>, which writes to a same-directory temporary
 /// file (flushed to disk) then atomically replaces the destination via
 /// <see cref="File.Move(string, string, bool)"/>, so a crash mid-write never leaves a partially

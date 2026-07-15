@@ -210,8 +210,6 @@ public static class ServiceCollectionExtensions
 
         services.AddArcanumEyeOfTheWorld();
 
-        services.AddArcanumSerilog();
-
         services.AddSingleton<InMemoryLogRingBuffer>();
 
         services.AddSingleton<ILogRingBuffer>(static sp => sp.GetRequiredService<InMemoryLogRingBuffer>());
@@ -221,6 +219,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDaemonLogAttacher, DaemonLogAttacher>();
 
         services.AddSingleton<SerilogLogRingBufferSink>();
+
+        // Register the ring-buffer sink before AddArcanumSerilog so deferred first-emit resolution succeeds.
+        services.AddArcanumSerilog();
 
         services.AddSingleton<IInferenceAuditLogger, InferenceAuditLogger>();
 

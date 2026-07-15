@@ -17,4 +17,14 @@ public interface IPromptEditorDataSource
 
     IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(Guid id, PromptExecuteRequest request, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken);
+
+    Task<PromptDetailDto?> CloneAsync(Guid id, ClonePromptRequest request, CancellationToken cancellationToken);
+
+    Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken);
+
+    Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken);
+
+    Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken);
+
 }

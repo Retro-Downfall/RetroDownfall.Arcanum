@@ -57,4 +57,45 @@ public sealed class PromptEditorDataSource : IPromptEditorDataSource
     public IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(Guid id, PromptExecuteRequest request, CancellationToken cancellationToken) =>
         _promptService.ExecuteStreamAsync(id, request, cancellationToken);
 
+    public async Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<PromptVersionDto[]>? response = await _promptService
+            .ListVersionsAsync(name, campaignId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return response is { IsSuccess: true, Data: not null } ? response.Data : [];
+
+    }
+
+    public async Task<PromptDetailDto?> CloneAsync(Guid id, ClonePromptRequest request, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<PromptDetailDto>? response = await _promptService.CloneAsync(id, request, cancellationToken).ConfigureAwait(false);
+
+        return response is { IsSuccess: true } ? response.Data : null;
+
+    }
+
+    public async Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<PromptExportDto>? response = await _promptService.ExportAsync(id, cancellationToken).ConfigureAwait(false);
+
+        return response is { IsSuccess: true } ? response.Data : null;
+
+    }
+
+    public async Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<PromptSummaryDto>? response = await _promptService.ImportAsync(request, cancellationToken).ConfigureAwait(false);
+
+        return DataSourceResult<PromptSummaryDto>.FromResponse(response);
+
+    }
+
+    public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
+        _promptService.DeleteAsync(id, cancellationToken);
+
 }

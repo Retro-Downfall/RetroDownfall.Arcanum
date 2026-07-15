@@ -32,6 +32,8 @@ public sealed partial class DivinationViewModel : ViewModelBase
 
     private readonly FoundryFloorViewModel _foundryFloor;
 
+    private readonly IClipboardService _clipboard;
+
     private bool _loaded;
 
     [ObservableProperty]
@@ -83,7 +85,8 @@ public sealed partial class DivinationViewModel : ViewModelBase
         IDivinationDataSource dataSource,
         IWorkspaceExplorerDataSource workspaceDataSource,
         INavigationService navigation,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        IClipboardService clipboard)
     {
 
         _dataSource = dataSource;
@@ -93,6 +96,8 @@ public sealed partial class DivinationViewModel : ViewModelBase
         _navigation = navigation;
 
         _foundryFloor = foundryFloor;
+
+        _clipboard = clipboard;
 
         Title = "Divination";
 
@@ -106,8 +111,42 @@ public sealed partial class DivinationViewModel : ViewModelBase
 
     public ObservableCollection<SagaMemoryDto> SagaResults { get; } = [];
 
-    public string FeatureDisabledMessage =>
-        "Divination is disabled — enable Arcanum:Embeddings:Enabled (and the relevant sub-flag) server-side.";
+    public string SessionsFeatureDisabledMessage =>
+        DisabledSettingPaths.FormatEnableMessage("Session Divination", DisabledSettingPaths.SessionDivination);
+
+    public string WorkspaceFeatureDisabledMessage =>
+        DisabledSettingPaths.FormatEnableMessage("Workspace Divination", DisabledSettingPaths.WorkspaceDivination);
+
+    public string SagaFeatureDisabledMessage =>
+        DisabledSettingPaths.FormatEnableMessage("Saga Divination", DisabledSettingPaths.SagaDivination);
+
+    [RelayCommand]
+    private async Task CopyDisabledPathsAsync(string? surface, CancellationToken cancellationToken)
+    {
+
+        string[] paths = surface switch
+        {
+
+            "SessionDivination" => DisabledSettingPaths.SessionDivination,
+
+            "WorkspaceDivination" => DisabledSettingPaths.WorkspaceDivination,
+
+            "SagaDivination" => DisabledSettingPaths.SagaDivination,
+
+            _ => [],
+
+        };
+
+        if (paths.Length == 0)
+        {
+
+            return;
+
+        }
+
+        await _clipboard.SetTextAsync(DisabledSettingPaths.JoinForClipboard(paths), cancellationToken).ConfigureAwait(true);
+
+    }
 
     partial void OnIsVisibleChanged(bool value)
     {

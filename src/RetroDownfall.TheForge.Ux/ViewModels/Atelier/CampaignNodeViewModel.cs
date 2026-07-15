@@ -1,16 +1,17 @@
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
 /// <summary>
 /// Campaign branch. Lazy-loads campaign-scoped spells, prompts, sessions, CODEX.md, and Sanctum on
-/// first expansion, and exposes New Spell / New Prompt / New Session commands that create artifacts
-/// scoped to the campaign and open them in the Workbench.
+/// first expansion; exposes New Spell / New Prompt / New Session plus Edit / Delete / Export / Import.
 /// </summary>
 public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 {
@@ -25,16 +26,36 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
     private readonly FoundryFloorViewModel _foundryFloor;
 
+    private readonly ICampaignManagementDataSource _management;
+
+    private readonly ICampaignDialogService _campaignDialog;
+
+    private readonly IConfirmationDialogService _confirmation;
+
+    private readonly IArtifactFileDialogService _fileDialog;
+
+    private readonly IWhispersService _whispers;
+
+    private readonly Func<CancellationToken, Task> _refreshCampaigns;
+
+    private CampaignDto _campaign;
+
     public CampaignNodeViewModel(
         CampaignDto campaign,
         IAtelierDataSource dataSource,
         INavigationService navigation,
         IArtifactCreationDataSource creationDataSource,
         IArtifactCreationDialogService dialogService,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        ICampaignManagementDataSource management,
+        ICampaignDialogService campaignDialog,
+        IConfirmationDialogService confirmation,
+        IArtifactFileDialogService fileDialog,
+        IWhispersService whispers,
+        Func<CancellationToken, Task> refreshCampaigns)
     {
 
-        Campaign = campaign;
+        _campaign = campaign;
 
         _dataSource = dataSource;
 
@@ -46,26 +67,53 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
         _foundryFloor = foundryFloor;
 
+        _management = management;
+
+        _campaignDialog = campaignDialog;
+
+        _confirmation = confirmation;
+
+        _fileDialog = fileDialog;
+
+        _whispers = whispers;
+
+        _refreshCampaigns = refreshCampaigns;
+
         Label = campaign.Name;
 
         Icon = "IconCampaign";
 
-        // Manual override (not [RelayCommand]) so the base HasNew* properties see the real commands.
         NewSpellCommand = new AsyncRelayCommand(NewSpellAsync);
 
         NewPromptCommand = new AsyncRelayCommand(NewPromptAsync);
 
         NewSessionCommand = new AsyncRelayCommand(NewSessionAsync);
 
+        EditCampaignCommand = new AsyncRelayCommand(EditCampaignAsync);
+
+        DeleteCampaignCommand = new AsyncRelayCommand(DeleteCampaignAsync);
+
+        ExportCampaignCommand = new AsyncRelayCommand(ExportCampaignAsync);
+
+        ImportCampaignCommand = new AsyncRelayCommand(ImportCampaignAsync);
+
     }
 
-    public CampaignDto Campaign { get; }
+    public CampaignDto Campaign => _campaign;
 
     public override IAsyncRelayCommand? NewSpellCommand { get; }
 
     public override IAsyncRelayCommand? NewPromptCommand { get; }
 
     public override IAsyncRelayCommand? NewSessionCommand { get; }
+
+    public override IAsyncRelayCommand? EditCampaignCommand { get; }
+
+    public override IAsyncRelayCommand? DeleteCampaignCommand { get; }
+
+    public override IAsyncRelayCommand? ExportCampaignCommand { get; }
+
+    public override IAsyncRelayCommand? ImportCampaignCommand { get; }
 
     public override string? NewSpellLabel => "New Spell";
 
@@ -75,6 +123,267 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
     [RelayCommand]
     private Task RefreshAsync(CancellationToken cancellationToken) => ReloadAsync(cancellationToken);
+
+    private async Task EditCampaignAsync(CancellationToken cancellationToken)
+    {
+
+        LastError = null;
+
+        EditCampaignInputs? inputs = await _campaignDialog
+            .PromptEditCampaignAsync(_campaign, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (inputs is null)
+        {
+
+            return;
+
+        }
+
+        UpdateCampaignRequest request = new(
+            Name: inputs.Name,
+            Type: inputs.Type,
+            Description: inputs.Description,
+            Settings: null);
+
+        DataSourceResult<CampaignDto> result = await _management
+            .UpdateAsync(_campaign.Id, request, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!result.Success || result.Data is null)
+        {
+
+            string detail = CampaignsRootNodeViewModel.FormatCampaignError(
+                result.ErrorCode,
+                result.ErrorMessage,
+                "Failed to update campaign.");
+
+            LastError = detail;
+
+            _foundryFloor.AppendLine($"Campaign update failed: {detail}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign update failed.");
+
+            return;
+
+        }
+
+        _campaign = result.Data;
+
+        Label = result.Data.Name;
+
+        StatusText = "Campaign updated.";
+
+        _foundryFloor.AppendLine($"Campaign updated: {result.Data.Name} ({result.Data.Id:D}).");
+
+        _whispers.Show(WhisperSeverity.Success, "Campaign updated.");
+
+    }
+
+    private async Task DeleteCampaignAsync(CancellationToken cancellationToken)
+    {
+
+        LastError = null;
+
+        bool confirmed = await _confirmation
+            .ConfirmAsync(
+                "Delete Campaign",
+                $"Unregister campaign \"{_campaign.Name}\"? This removes it from the registry only — disk files remain.",
+                cancellationToken,
+                confirmIsDefault: false)
+            .ConfigureAwait(true);
+
+        if (!confirmed)
+        {
+
+            return;
+
+        }
+
+        DataSourceResult<bool> result = await _management
+            .DeleteAsync(_campaign.Id, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!result.Success)
+        {
+
+            string detail = CampaignsRootNodeViewModel.FormatCampaignError(
+                result.ErrorCode,
+                result.ErrorMessage,
+                "Failed to unregister campaign.");
+
+            LastError = detail;
+
+            _foundryFloor.AppendLine($"Campaign delete failed: {detail}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign delete failed.");
+
+            return;
+
+        }
+
+        StatusText = "Campaign unregistered.";
+
+        _foundryFloor.AppendLine($"Campaign unregistered: {_campaign.Name} ({_campaign.Id:D}). Disk files were not deleted.");
+
+        _whispers.Show(WhisperSeverity.Success, "Campaign unregistered.");
+
+        await _refreshCampaigns(cancellationToken).ConfigureAwait(true);
+
+    }
+
+    private async Task ExportCampaignAsync(CancellationToken cancellationToken)
+    {
+
+        LastError = null;
+
+        string? path = await ArtifactImportExportHelper
+            .PickSavePathOrNullAsync(_fileDialog, $"{_campaign.Name}.json", cancellationToken)
+            .ConfigureAwait(true);
+
+        if (path is null)
+        {
+
+            return;
+
+        }
+
+        DataSourceResult<CampaignExportDto> result = await _management
+            .ExportAsync(_campaign.Id, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!result.Success || result.Data is null)
+        {
+
+            string detail = CampaignsRootNodeViewModel.FormatCampaignError(
+                result.ErrorCode,
+                result.ErrorMessage,
+                "Failed to export campaign.");
+
+            LastError = detail;
+
+            _foundryFloor.AppendLine($"Campaign export failed: {detail}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign export failed.");
+
+            return;
+
+        }
+
+        try
+        {
+
+            await ArtifactImportExportHelper
+                .WriteJsonAsync(path, result.Data, TheForgeJsonContext.Default.CampaignExportDto, cancellationToken)
+                .ConfigureAwait(true);
+
+            StatusText = "Campaign exported.";
+
+            _foundryFloor.AppendLine($"Campaign exported: {_campaign.Name} → {path}.");
+
+            _whispers.Show(WhisperSeverity.Success, "Campaign exported.");
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            _foundryFloor.AppendLine($"Campaign export write error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign export failed.");
+
+        }
+
+    }
+
+    private async Task ImportCampaignAsync(CancellationToken cancellationToken)
+    {
+
+        LastError = null;
+
+        string? strategy = await _campaignDialog
+            .PromptImportStrategyAsync(cancellationToken)
+            .ConfigureAwait(true);
+
+        if (strategy is null)
+        {
+
+            return;
+
+        }
+
+        string? path = await ArtifactImportExportHelper
+            .PickOpenPathOrNullAsync(_fileDialog, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (path is null)
+        {
+
+            return;
+
+        }
+
+        (CampaignExportDto? payload, string? readError) = await ArtifactImportExportHelper
+            .ReadJsonAsync(path, TheForgeJsonContext.Default.CampaignExportDto, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (payload is null)
+        {
+
+            LastError = readError ?? "Failed to read campaign export JSON.";
+
+            _foundryFloor.AppendLine($"Campaign import read failed: {LastError}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign import failed.");
+
+            return;
+
+        }
+
+        DataSourceResult<CampaignImportResultDto> result = await _management
+            .ImportAsync(_campaign.Id, strategy, payload, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!result.Success || result.Data is null)
+        {
+
+            string detail = CampaignsRootNodeViewModel.FormatCampaignError(
+                result.ErrorCode,
+                result.ErrorMessage,
+                "Failed to import into campaign.");
+
+            LastError = detail;
+
+            _foundryFloor.AppendLine($"Campaign import failed: {detail}");
+
+            _whispers.Show(WhisperSeverity.Error, "Campaign import failed.");
+
+            return;
+
+        }
+
+        CampaignImportResultDto imported = result.Data;
+
+        StatusText = "Campaign imported.";
+
+        _foundryFloor.AppendLine(
+            $"Campaign import ({strategy}): spells={imported.SpellsImported}, prompts={imported.PromptsImported}, warnings={imported.Warnings.Count}.");
+
+        foreach (string warning in imported.Warnings)
+        {
+
+            _foundryFloor.AppendLine($"Campaign import warning: {warning}");
+
+        }
+
+        _whispers.Show(
+            WhisperSeverity.Success,
+            $"Imported {imported.SpellsImported} spells, {imported.PromptsImported} prompts.");
+
+        await ReloadAsync(cancellationToken).ConfigureAwait(true);
+
+    }
 
     private async Task NewSpellAsync(CancellationToken cancellationToken)
     {
@@ -129,7 +438,7 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
         await ReloadAsync(cancellationToken).ConfigureAwait(true);
 
-        _navigation.OpenDocument(DocumentKind.Spell, inputs.Name);
+        _navigation.OpenDocument(DocumentKind.Spell, inputs.Name, inputs.WorkspacePath);
 
     }
 
@@ -235,7 +544,7 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
                 .GetCampaignSpellsAsync(Campaign.Id, cancellationToken)
                 .ConfigureAwait(true))
             .OrderBy(static spell => spell.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(spell => new SpellNodeViewModel(spell, _navigation))
+            .Select(spell => new SpellNodeViewModel(spell, _navigation, Campaign.Path))
             .Cast<AtelierNodeViewModel>()
             .ToArray();
 

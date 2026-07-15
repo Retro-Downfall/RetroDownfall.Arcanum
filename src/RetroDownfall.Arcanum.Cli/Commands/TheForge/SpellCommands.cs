@@ -165,8 +165,8 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="description">Spell description.</param>
     /// <param name="body">Spell body: inline text, or @filename to read from a file.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
-    /// <param name="declaredTool">Restrict the spell's MCP toolset to these tools (writes SKILL.json); pass multiple times for several tools.</param>
-    /// <param name="dependency">Resonant spell dependency name (writes SKILL.json); pass multiple times for several dependencies.</param>
+    /// <param name="declaredTool">Restrict the spell's MCP toolset to these tools (writes SPELL.json); pass multiple times for several tools.</param>
+    /// <param name="dependency">Resonant spell dependency name (writes SPELL.json); pass multiple times for several dependencies.</param>
     [Command("create")]
     public async Task<int> Create(
         string? name = null,

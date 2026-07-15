@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             xmlns:forge="using:RetroDownfall.Arcanum.Core.TheForge"
              xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.ScriptoriumView"
              x:DataType="vm:ScriptoriumViewModel">
@@ -15,10 +16,15 @@
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
         <Button Content="Load" Command="{Binding LoadCommand}" />
         <Button Content="Save" Command="{Binding SaveCommand}" />
+        <Button Content="Clone" Command="{Binding CloneCommand}" />
+        <Button Content="Delete" Command="{Binding DeleteCommand}" />
+        <Button Content="Export" Command="{Binding ExportCommand}" />
+        <Button Content="Import" Command="{Binding ImportCommand}" />
         <Button Content="Render" Command="{Binding RenderCommand}" />
         <Button Content="Test" Command="{Binding TestCommand}" />
         <Button Content="Run" Command="{Binding ExecuteCommand}" />
         <Button Content="Stop" Command="{Binding StopExecutionCommand}" />
+        <Button Content="Open in Proving Grounds" Command="{Binding OpenInProvingGroundsCommand}" />
       </StackPanel>
     </DockPanel>
 
@@ -55,9 +61,59 @@
                 <TextBlock Text="Provider" Opacity="0.72" />
                 <TextBox Text="{Binding Provider}" />
               </StackPanel>
-              <TextBlock Text="Numeric sampling (Temperature/TopP/MaxOutputTokens) and parameter-schema JSON editing are deferred." Opacity="0.6" TextWrapping="Wrap" FontSize="11" />
+              <StackPanel Spacing="2">
+                <TextBlock Text="Temperature" Opacity="0.72" />
+                <TextBox Text="{Binding TemperatureText}" />
+                <TextBlock Text="Blank preserves the server value." Opacity="0.6" FontSize="11" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="TopP" Opacity="0.72" />
+                <TextBox Text="{Binding TopPText}" />
+                <TextBlock Text="Blank preserves the server value." Opacity="0.6" FontSize="11" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="MaxOutputTokens" Opacity="0.72" />
+                <TextBox Text="{Binding MaxOutputTokensText}" />
+                <TextBlock Text="Blank preserves the server value." Opacity="0.6" FontSize="11" />
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="Parameter schema (JSON)" Opacity="0.72" />
+                <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" MinHeight="80">
+                  <avaloniaEdit:TextEditor x:Name="ParameterSchemaEditor"
+                                           ShowLineNumbers="True"
+                                           WordWrap="True" />
+                </Border>
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="Default parameters (JSON)" Opacity="0.72" />
+                <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" MinHeight="80">
+                  <avaloniaEdit:TextEditor x:Name="DefaultParametersEditor"
+                                           ShowLineNumbers="True"
+                                           WordWrap="True" />
+                </Border>
+              </StackPanel>
             </StackPanel>
           </ScrollViewer>
+        </TabItem>
+        <TabItem Header="Versions">
+          <Grid RowDefinitions="Auto,*,Auto" Margin="4">
+            <Button Grid.Row="0" Content="Refresh versions" Command="{Binding LoadVersionsCommand}" HorizontalAlignment="Left" />
+            <ListBox Grid.Row="1"
+                     ItemsSource="{Binding Versions}"
+                     SelectedItem="{Binding SelectedVersion}"
+                     Margin="0,4">
+              <ListBox.ItemTemplate>
+                <DataTemplate DataType="forge:PromptVersionDto">
+                  <TextBlock Text="{Binding Version}" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <Button Grid.Row="2"
+                    Content="Open version"
+                    Command="{Binding OpenVersionCommand}"
+                    CommandParameter="{Binding SelectedVersion}"
+                    HorizontalAlignment="Left" />
+          </Grid>
         </TabItem>
         <TabItem Header="Parameters">
           <StackPanel Spacing="4" Margin="4">
@@ -84,15 +140,57 @@
           </ScrollViewer>
         </TabItem>
         <TabItem Header="Run">
-          <Grid RowDefinitions="Auto,*,Auto" Margin="4">
-            <TextBox Grid.Row="0" Text="{Binding RunUserMessage}" Watermark="User message (required to run)" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" />
-            <Border Grid.Row="1" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4" Margin="0,4">
-              <ScrollViewer>
-                <TextBlock Text="{Binding RunResultText}" TextWrapping="Wrap" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
-              </ScrollViewer>
-            </Border>
-            <TextBlock Grid.Row="2" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" />
-          </Grid>
+          <ScrollViewer Padding="4">
+            <StackPanel Spacing="8" Margin="4">
+              <TextBlock Text="Run overrides (not saved)" FontWeight="SemiBold" />
+              <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+                <StackPanel Grid.Row="0" Grid.Column="0" Spacing="2">
+                  <TextBlock Text="Model" Opacity="0.72" />
+                  <TextBox Text="{Binding RunModel}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
+                  <TextBlock Text="Seed" Opacity="0.72" />
+                  <TextBox Text="{Binding RunSeedText}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="0" Spacing="2">
+                  <TextBlock Text="Temperature" Opacity="0.72" />
+                  <TextBox Text="{Binding RunTemperatureText}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
+                  <TextBlock Text="TopP" Opacity="0.72" />
+                  <TextBox Text="{Binding RunTopPText}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="0" Spacing="2">
+                  <TextBlock Text="MaxOutputTokens" Opacity="0.72" />
+                  <TextBox Text="{Binding RunMaxOutputTokensText}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="1" Spacing="2">
+                  <TextBlock Text="ResponseFormat" Opacity="0.72" />
+                  <TextBox Text="{Binding RunResponseFormat}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Spacing="2">
+                  <TextBlock Text="Stop (comma-separated)" Opacity="0.72" />
+                  <TextBox Text="{Binding RunStopText}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="4" Grid.Column="0" Spacing="2">
+                  <TextBlock Text="PresencePenalty" Opacity="0.72" />
+                  <TextBox Text="{Binding RunPresencePenaltyText}" Watermark="Optional" />
+                </StackPanel>
+                <StackPanel Grid.Row="4" Grid.Column="1" Spacing="2">
+                  <TextBlock Text="FrequencyPenalty" Opacity="0.72" />
+                  <TextBox Text="{Binding RunFrequencyPenaltyText}" Watermark="Optional" />
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="Blank run overrides preserve the server value." Opacity="0.6" FontSize="11" />
+              <TextBox Text="{Binding RunUserMessage}" Watermark="User message (required to run)" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" />
+              <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4" MinHeight="120">
+                <ScrollViewer>
+                  <TextBlock Text="{Binding RunResultText}" TextWrapping="Wrap" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
+                </ScrollViewer>
+              </Border>
+              <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" />
+            </StackPanel>
+          </ScrollViewer>
         </TabItem>
       </TabControl>
     </Grid>

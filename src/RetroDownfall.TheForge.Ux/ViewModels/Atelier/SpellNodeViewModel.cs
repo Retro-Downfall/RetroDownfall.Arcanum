@@ -6,18 +6,20 @@ using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
-/// <summary>Leaf node for a spell. Double-click / Open routes to a Spell Workbench document.</summary>
+/// <summary>Leaf node for a spell. Double-click / Open routes to a Spell Workbench document with workspace context when known.</summary>
 public sealed partial class SpellNodeViewModel : AtelierNodeViewModel
 {
 
     private readonly INavigationService _navigation;
 
-    public SpellNodeViewModel(SpellSummary spell, INavigationService navigation)
+    public SpellNodeViewModel(SpellSummary spell, INavigationService navigation, string? workspace = null)
     {
 
         _navigation = navigation;
 
         Spell = spell;
+
+        Workspace = WorkspacePathHelper.ForApi(workspace);
 
         Label = spell.Name;
 
@@ -27,6 +29,9 @@ public sealed partial class SpellNodeViewModel : AtelierNodeViewModel
 
     public SpellSummary Spell { get; }
 
+    /// <summary>API workspace path for this node (campaign path, or null for built-ins / unknown global).</summary>
+    public string? Workspace { get; }
+
     public override bool HasChildren => false;
 
     public override ICommand? PrimaryCommand => OpenCommand;
@@ -35,7 +40,7 @@ public sealed partial class SpellNodeViewModel : AtelierNodeViewModel
     private void Open()
     {
 
-        _navigation.OpenDocument(DocumentKind.Spell, Spell.Name);
+        _navigation.OpenDocument(DocumentKind.Spell, Spell.Name, Workspace);
 
     }
 

@@ -76,7 +76,29 @@ public class DivinationViewModelTests
 
         Assert.True(viewModel.SessionsFeatureDisabled);
 
+        Assert.Contains(DisabledSettingPaths.EmbeddingsEnabled, viewModel.SessionsFeatureDisabledMessage);
+
+        Assert.Contains(DisabledSettingPaths.SessionSearchEnabled, viewModel.SessionsFeatureDisabledMessage);
+
         Assert.Equal("Session Divination disabled.", viewModel.StatusText);
+
+    }
+
+    [Fact]
+    public async Task CopyDisabledPaths_Sessions_CopiesJoinedPaths()
+    {
+
+        FakeClipboardService clipboard = new();
+
+        DivinationViewModel viewModel = NewViewModel(new FakeDivinationDataSource(), clipboard: clipboard);
+
+        viewModel.SessionsFeatureDisabled = true;
+
+        await viewModel.CopyDisabledPathsCommand.ExecuteAsync("SessionDivination");
+
+        Assert.Equal(
+            DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.SessionDivination),
+            clipboard.LastText);
 
     }
 
@@ -97,7 +119,7 @@ public class DivinationViewModelTests
 
         (DocumentKind Kind, string Id)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         DivinationViewModel viewModel = NewViewModel(new FakeDivinationDataSource(), navigation);
 
@@ -130,18 +152,24 @@ public class DivinationViewModelTests
 
         Assert.True(viewModel.SagaFeatureDisabled);
 
+        Assert.Contains(DisabledSettingPaths.EmbeddingsEnabled, viewModel.SagaFeatureDisabledMessage);
+
+        Assert.Contains(DisabledSettingPaths.SagaEnabled, viewModel.SagaFeatureDisabledMessage);
+
         Assert.Equal("Saga Divination disabled.", viewModel.StatusText);
 
     }
 
     private static DivinationViewModel NewViewModel(
         FakeDivinationDataSource dataSource,
-        NavigationService? navigation = null) =>
+        NavigationService? navigation = null,
+        FakeClipboardService? clipboard = null) =>
         new(
             dataSource,
             new FakeWorkspaceExplorerDataSource(),
             navigation ?? new NavigationService(),
-            new FoundryFloorViewModel(new NullLogService()));
+            new FoundryFloorViewModel(new NullLogService()),
+            clipboard ?? new FakeClipboardService());
 
     private sealed class FakeDivinationDataSource : IDivinationDataSource
     {

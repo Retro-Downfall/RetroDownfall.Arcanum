@@ -3,15 +3,18 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Archive;
 
 /// <summary>
 /// The Archive — Saga long-term associative memory over <c>/api/saga/*</c>. A dock tool that lists
-/// memories, shows stats, runs Saga Divination (semantic search), and deletes a single memory. List,
-/// stats, and delete are always available; Divination is server-gated on Embeddings+SagaEnabled and
-/// surfaces <c>Embeddings.FeatureDisabled</c> as an honest disabled state. Nothing throws on API failure.
+/// memories, shows stats, runs Saga Divination (semantic search), deletes a single memory, and
+/// offers a guarded delete-all. List, stats, and delete are always available; Divination is
+/// server-gated on Embeddings+SagaEnabled and surfaces <c>Embeddings.FeatureDisabled</c> as an honest
+/// disabled state. Nothing throws on API failure.
 /// </summary>
 public sealed partial class SagaArchiveViewModel : ViewModelBase
 {
@@ -19,6 +22,12 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
     private readonly ISagaArchiveDataSource _dataSource;
 
     private readonly FoundryFloorViewModel _foundryFloor;
+
+    private readonly IConfirmationDialogService _confirmationDialog;
+
+    private readonly IClipboardService _clipboard;
+
+    private readonly IWhispersService _whispers;
 
     private bool _loaded;
 
@@ -52,12 +61,23 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isSearchActive;
 
-    public SagaArchiveViewModel(ISagaArchiveDataSource dataSource, FoundryFloorViewModel foundryFloor)
+    public SagaArchiveViewModel(
+        ISagaArchiveDataSource dataSource,
+        FoundryFloorViewModel foundryFloor,
+        IConfirmationDialogService confirmationDialog,
+        IClipboardService clipboard,
+        IWhispersService whispers)
     {
 
         _dataSource = dataSource;
 
         _foundryFloor = foundryFloor;
+
+        _confirmationDialog = confirmationDialog;
+
+        _clipboard = clipboard;
+
+        _whispers = whispers;
 
         Title = "The Archive";
 
@@ -70,7 +90,13 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
     public string EmptyState => "No Saga memories yet.";
 
     public string FeatureDisabledMessage =>
-        "Saga Divination is disabled — enable Arcanum:Embeddings:Enabled and Arcanum:Embeddings:SagaEnabled server-side.";
+        DisabledSettingPaths.FormatEnableMessage("Saga Divination", DisabledSettingPaths.SagaDivination);
+
+    [RelayCommand]
+    private async Task CopyDisabledPathsAsync(CancellationToken cancellationToken) =>
+        await _clipboard
+            .SetTextAsync(DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.SagaDivination), cancellationToken)
+            .ConfigureAwait(true);
 
     public string StatsText => Stats is { } s ? $"{s.TotalCount} memories across {s.SessionCount} sessions" : string.Empty;
 
@@ -299,6 +325,8 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
 
                 SelectedMemory = null;
 
+                _whispers.Show(WhisperSeverity.Success, "Memory deleted.");
+
                 await RefreshAsync(cancellationToken).ConfigureAwait(true);
 
             }
@@ -312,6 +340,8 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
 
                 _foundryFloor.AppendLine($"Archive delete failed: {LastError}");
 
+                _whispers.Show(WhisperSeverity.Error, "Delete failed.");
+
             }
 
         }
@@ -320,6 +350,87 @@ public sealed partial class SagaArchiveViewModel : ViewModelBase
         {
 
             LastError = ex.Message;
+
+            _whispers.Show(WhisperSeverity.Error, "Delete failed.");
+
+        }
+
+        finally
+        {
+
+            IsBusy = false;
+
+        }
+
+    }
+
+    [RelayCommand]
+    public async Task DeleteAllMemoriesAsync(CancellationToken cancellationToken)
+    {
+
+        bool confirmed = await _confirmationDialog
+            .ConfirmAsync(
+                "Delete all Saga memories",
+                "This permanently deletes every Saga memory. This cannot be undone. Continue?",
+                cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!confirmed)
+        {
+
+            return;
+
+        }
+
+        IsBusy = true;
+
+        LastError = null;
+
+        try
+        {
+
+            DataSourceResult<bool> result = await _dataSource
+                .DeleteAllAsync(cancellationToken)
+                .ConfigureAwait(true);
+
+            if (result.Success)
+            {
+
+                StatusText = "All Saga memories deleted.";
+
+                SelectedMemory = null;
+
+                _foundryFloor.AppendLine("Archive: deleted all Saga memories.");
+
+                _whispers.Show(WhisperSeverity.Success, "All memories deleted.");
+
+                await RefreshAsync(cancellationToken).ConfigureAwait(true);
+
+            }
+
+            else
+            {
+
+                LastError = result.ErrorMessage ?? "Failed to delete all Saga memories.";
+
+                StatusText = "Delete all failed.";
+
+                _foundryFloor.AppendLine($"Archive delete-all failed: {LastError}");
+
+                _whispers.Show(WhisperSeverity.Error, "Delete all failed.");
+
+            }
+
+        }
+
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            _foundryFloor.AppendLine($"Archive delete-all error: {ex.Message}");
+
+            _whispers.Show(WhisperSeverity.Error, "Delete all failed.");
 
         }
 

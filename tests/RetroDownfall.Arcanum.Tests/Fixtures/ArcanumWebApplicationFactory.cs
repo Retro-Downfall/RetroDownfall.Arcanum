@@ -40,6 +40,12 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         CaptureEnvironment();
 
+        // Program.cs reads environment before WebApplicationFactory's UseEnvironment can apply.
+        // Set early so CreateSlimBuilder and master-key skip see Testing.
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
         ApplyIsolatedUserProfile();
 
         if (GrimoireFixture.SqlCipherAvailable)
@@ -59,6 +65,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         _originalEnvironment["USERPROFILE"] = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
         _originalEnvironment["XDG_DATA_HOME"] = global::System.Environment.GetEnvironmentVariable("XDG_DATA_HOME");
         _originalEnvironment["ARCANUM_SKIP_KEY_BOOTSTRAP"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP");
+        _originalEnvironment["ASPNETCORE_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+        _originalEnvironment["DOTNET_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 
     }
 

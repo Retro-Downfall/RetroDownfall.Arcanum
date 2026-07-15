@@ -170,7 +170,7 @@ public class ReliquaryViewModelTests
     }
 
     private static ReliquaryViewModel NewViewModel(FakeReliquaryDataSource dataSource) =>
-        new(dataSource, new FoundryFloorViewModel(new NullLogService()));
+        new(dataSource, new FoundryFloorViewModel(new NullLogService()), new FakeWhispersService());
 
     private sealed class FakeReliquaryDataSource : IReliquaryDataSource
     {

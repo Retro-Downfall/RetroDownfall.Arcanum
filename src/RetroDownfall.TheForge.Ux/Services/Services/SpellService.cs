@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Serialization;
 
 namespace RetroDownfall.TheForge.Ux.Services.Services;
@@ -76,12 +77,66 @@ public sealed class SpellService
 
     }
 
-    public Task<ApiResponse<bool>?> UpdateAsync(string name, UpdateSpellRequest request, CancellationToken cancellationToken) =>
-        _apiClient.PutAsync(
-            $"/api/spells/{Uri.EscapeDataString(name)}",
+    public Task<ApiResponse<bool>?> UpdateAsync(
+        string name,
+        UpdateSpellRequest request,
+        string? workspace,
+        CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));
+
+        return _apiClient.PutAsync(
+            path,
             request,
             TheForgeJsonContext.Default.UpdateSpellRequest,
             TheForgeJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    }
+
+    /// <summary><c>DELETE /api/spells/{name}?workspace=</c> — success is <c>204 No Content</c>.</summary>
+    public Task<bool> DeleteAsync(string name, string workspace, CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}", ("workspace", workspace));
+
+        return _apiClient.DeleteNoContentAsync(path, cancellationToken);
+
+    }
+
+    public Task<ApiResponse<SpellValidationResultDto>?> ValidateAsync(string name, string? workspace, CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}/validate", ("workspace", workspace));
+
+        return _apiClient.PostAsync(path, TheForgeJsonContext.Default.ApiResponseSpellValidationResultDto, cancellationToken);
+
+    }
+
+    public Task<ApiResponse<SpellExportDto>?> ExportAsync(string name, string? workspace, CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}/export", ("workspace", workspace));
+
+        return _apiClient.PostAsync(path, TheForgeJsonContext.Default.ApiResponseSpellExportDto, cancellationToken);
+
+    }
+
+    public Task<ApiResponse<SpellSummary>?> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            "/api/spells/import",
+            request,
+            TheForgeJsonContext.Default.SpellImportRequest,
+            TheForgeJsonContext.Default.ApiResponseSpellSummary,
+            cancellationToken);
+
+    public Task<ApiResponse<SpellSummary>?> CloneAsync(string name, CloneSpellRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/spells/{Uri.EscapeDataString(name)}/clone",
+            request,
+            TheForgeJsonContext.Default.CloneSpellRequest,
+            TheForgeJsonContext.Default.ApiResponseSpellSummary,
             cancellationToken);
 
     /// <summary>Dry-run preview — consumes no tokens.</summary>
@@ -113,6 +168,44 @@ public sealed class SpellService
         return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSpellVersionDtoArray, cancellationToken);
 
     }
+
+    public Task<ApiResponse<SpellVersionDetailDto>?> GetVersionDetailAsync(
+        string name,
+        string version,
+        string? workspace,
+        CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build(
+            $"/api/spells/{Uri.EscapeDataString(name)}/versions/{Uri.EscapeDataString(version)}",
+            ("workspace", workspace));
+
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSpellVersionDetailDto, cancellationToken);
+
+    }
+
+    public Task<ApiResponse<SpellVersionDto>?> CreateVersionAsync(
+        string name,
+        CreateSpellVersionRequest request,
+        CancellationToken cancellationToken) =>
+        _apiClient.PostAsync(
+            $"/api/spells/{Uri.EscapeDataString(name)}/versions",
+            request,
+            TheForgeJsonContext.Default.CreateSpellVersionRequest,
+            TheForgeJsonContext.Default.ApiResponseSpellVersionDto,
+            cancellationToken);
+
+    public Task<ApiResponse<SpellVersionDto>?> UpdateVersionAsync(
+        string name,
+        string version,
+        UpdateSpellVersionRequest request,
+        CancellationToken cancellationToken) =>
+        _apiClient.PutAsync(
+            $"/api/spells/{Uri.EscapeDataString(name)}/versions/{Uri.EscapeDataString(version)}",
+            request,
+            TheForgeJsonContext.Default.UpdateSpellVersionRequest,
+            TheForgeJsonContext.Default.ApiResponseSpellVersionDto,
+            cancellationToken);
 
     public Task<ApiResponse<SpellVersionDto>?> ActivateVersionAsync(
         string name,

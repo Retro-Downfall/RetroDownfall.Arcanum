@@ -6,6 +6,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.Views;
 
@@ -44,10 +45,14 @@ public partial class App : Application
 
             MainViewModel mainViewModel = services.GetRequiredService<MainViewModel>();
 
-            desktop.MainWindow = new MainWindow
+            MainWindow mainWindow = new()
             {
                 DataContext = mainViewModel,
             };
+
+            mainWindow.Initialize(services.GetRequiredService<IWhispersService>());
+
+            desktop.MainWindow = mainWindow;
 
             // Start AutoConnect only after MainWindow exists so the API-key paste prompt can show.
             services.GetRequiredService<ArcanumConnectionService>().StartAutoConnectIfConfigured();

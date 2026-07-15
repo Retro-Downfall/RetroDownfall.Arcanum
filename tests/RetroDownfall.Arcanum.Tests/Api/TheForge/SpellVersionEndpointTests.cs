@@ -78,6 +78,99 @@ public sealed class SpellVersionEndpointTests
 
     }
 
+    private async Task<HttpResponseMessage> GetVersionDetailAsync(HttpClient client, string name, string version, string? workspace = null)
+    {
+
+        string query = workspace is null ? string.Empty : $"?workspace={Uri.EscapeDataString(workspace)}";
+
+        return await client.GetAsync($"/api/spells/{name}/versions/{Uri.EscapeDataString(version)}{query}");
+
+    }
+
+    [SkippableFact]
+    public async Task GetVersionDetail_returns_body_without_frontmatter()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = CreateWorkspace("getdetail");
+
+        await WriteSpellAsync(workspace, "versioned", "Original active body.");
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage created = await CreateVersionAsync(client, "versioned", new CreateSpellVersionRequest("1.5", "Draft body for detail.", workspace));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        HttpResponseMessage response = await GetVersionDetailAsync(client, "versioned", "1.5", workspace);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<SpellVersionDetailDto>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSpellVersionDetailDto);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.Equal("1.5", body.Data!.Version);
+
+        Assert.False(body.Data.IsActive);
+
+        Assert.Equal("Draft body for detail.", body.Data.Body.Trim());
+
+        Assert.DoesNotContain("name:", body.Data.Body, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task GetVersionDetail_404_when_version_not_found()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = CreateWorkspace("getdetailmissing");
+
+        await WriteSpellAsync(workspace, "versioned", "Original body.");
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await GetVersionDetailAsync(client, "versioned", "9.9", workspace);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+    }
+
+    [SkippableFact]
+    public async Task GetVersionDetail_active_returns_spell_md_body()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = CreateWorkspace("getdetailactive");
+
+        await WriteSpellAsync(workspace, "versioned", "Active markdown body.");
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await GetVersionDetailAsync(client, "versioned", "(active)", workspace);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<SpellVersionDetailDto>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSpellVersionDetailDto);
+
+        Assert.NotNull(body?.Data);
+
+        Assert.True(body.Data!.IsActive);
+
+        Assert.Equal("(active)", body.Data.Version);
+
+        Assert.Equal("Active markdown body.", body.Data.Body.Trim());
+
+    }
+
     [SkippableFact]
     public async Task CreateVersion_creates_versioned_file()
     {

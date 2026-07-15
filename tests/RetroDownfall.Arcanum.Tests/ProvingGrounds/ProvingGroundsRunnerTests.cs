@@ -233,6 +233,9 @@ public sealed class ProvingGroundsRunnerTests
         public Task<Result<SpellVersionDto>> ActivateVersionAsync(string name, string version, string? workingDirectory, CancellationToken ct) =>
             Task.FromResult(Result<SpellVersionDto>.Failure(new Error("Spell.NotFound", "missing")));
 
+        public Task<Result<SpellVersionDetailDto>> GetVersionDetailAsync(string name, string version, string? workingDirectory, CancellationToken ct) =>
+            Task.FromResult(Result<SpellVersionDetailDto>.Failure(new Error("Spell.NotFound", "missing")));
+
     }
 
     private sealed class FakePromptRepository : IPromptRepository

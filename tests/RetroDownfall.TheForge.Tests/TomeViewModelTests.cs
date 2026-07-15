@@ -262,7 +262,7 @@ public class TomeViewModelTests
 
         (DocumentKind Kind, string Id)? opened = null;
 
-        navigation.DocumentOpenRequested += (kind, id) => opened = (kind, id);
+        navigation.DocumentOpenRequested += (kind, id, _) => opened = (kind, id);
 
         FakeTomeDataSource dataSource = new()
         {
@@ -270,7 +270,7 @@ public class TomeViewModelTests
             ForkedSession = NewSession("Fork", forkedId),
         };
 
-        TomeViewModel viewModel = new(SessionId, dataSource, navigation, new FoundryFloorViewModel(new NullLogService()));
+        TomeViewModel viewModel = new(SessionId, dataSource, navigation, new FoundryFloorViewModel(new NullLogService()), new FakeClipboardService());
 
         await viewModel.LoadAsync(CancellationToken.None);
 
@@ -433,6 +433,26 @@ public class TomeViewModelTests
 
         Assert.True(viewModel.MemoryManagementDisabled);
 
+        Assert.Contains(DisabledSettingPaths.AllowMemoryManagement, viewModel.MemoryManagementDisabledMessage);
+
+    }
+
+    [Fact]
+    public async Task CopyDisabledPaths_CopiesJoinedPaths()
+    {
+
+        FakeClipboardService clipboard = new();
+
+        TomeViewModel viewModel = CreateViewModel(new FakeTomeDataSource(), clipboard: clipboard);
+
+        viewModel.MemoryManagementDisabled = true;
+
+        await viewModel.CopyDisabledPathsCommand.ExecuteAsync(null);
+
+        Assert.Equal(
+            DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.SessionMemoryManagement),
+            clipboard.LastText);
+
     }
 
     [Fact]
@@ -498,8 +518,16 @@ public class TomeViewModelTests
     // AppendEntryIfNew backfill during SSE observation is not unit-tested here — the path is private
     // and only reachable mid-stream; RefreshEntries is the identity source of truth (see above).
 
-    private static TomeViewModel CreateViewModel(FakeTomeDataSource dataSource, FoundryFloorViewModel? foundryFloor = null) =>
-        new(SessionId, dataSource, new NavigationService(), foundryFloor ?? new FoundryFloorViewModel(new NullLogService()));
+    private static TomeViewModel CreateViewModel(
+        FakeTomeDataSource dataSource,
+        FoundryFloorViewModel? foundryFloor = null,
+        FakeClipboardService? clipboard = null) =>
+        new(
+            SessionId,
+            dataSource,
+            new NavigationService(),
+            foundryFloor ?? new FoundryFloorViewModel(new NullLogService()),
+            clipboard ?? new FakeClipboardService());
 
     private static SessionDetailDto NewSession(string title = "Session", Guid? id = null) =>
         new(
