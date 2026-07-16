@@ -45,61 +45,6 @@ public sealed class ProviderResolverTests
     }
 
     [Fact]
-    public void EnumerateAdvertisedModels_IncludesLlamaCppModelMapKeys()
-    {
-
-        ProviderSettings provider = new()
-        {
-            Name = "local",
-            Type = AiProviderKind.LlamaCppServer,
-            Models = ["mapped-model"],
-            LlamaCpp = new ProviderLlamaCppSettings
-            {
-                ModelMap = new Dictionary<string, string>
-                {
-                    ["mapped-model"] = "https://example.com/mapped.gguf",
-                    ["extra-model"] = "https://example.com/extra.gguf",
-                },
-            },
-        };
-
-        string[] models = ProviderResolver.EnumerateAdvertisedModels(provider).ToArray();
-
-        Assert.Equal(2, models.Length);
-
-        Assert.Contains("mapped-model", models);
-
-        Assert.Contains("extra-model", models);
-
-    }
-
-    [Fact]
-    public void EnumerateAdvertisedModels_NonLlamaProvider_IgnoresModelMap()
-    {
-
-        ProviderSettings provider = new()
-        {
-            Name = "openai",
-            Type = AiProviderKind.OpenAICompatible,
-            Models = ["gpt-4"],
-            LlamaCpp = new ProviderLlamaCppSettings
-            {
-                ModelMap = new Dictionary<string, string>
-                {
-                    ["ignored"] = "https://example.com/ignored.gguf",
-                },
-            },
-        };
-
-        string[] models = ProviderResolver.EnumerateAdvertisedModels(provider).ToArray();
-
-        Assert.Single(models);
-
-        Assert.Equal("gpt-4", models[0]);
-
-    }
-
-    [Fact]
     public void TryResolveProviderForModel_ExplicitTarget_FindsMatchingProvider()
     {
 
@@ -123,6 +68,38 @@ public sealed class ProviderResolverTests
         Assert.Same(provider, found);
 
         Assert.Equal("llama3:latest", resolvedModel);
+
+    }
+
+    [Fact]
+    public void TryResolveProviderForModel_OpenAICompatibleOllamaEndpoint_ExactModelOnly()
+    {
+
+        ProviderSettings provider = new()
+        {
+            Name = "Local Ollama",
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "http://localhost:11434/v1",
+            Models = ["mistral:latest"],
+        };
+
+        ArcanumSettings settings = new() { Providers = [provider] };
+
+        Assert.True(ProviderResolver.TryResolveProviderForModel(
+            settings,
+            "mistral:latest",
+            out ProviderSettings? found,
+            out string resolvedExact));
+
+        Assert.Same(provider, found);
+
+        Assert.Equal("mistral:latest", resolvedExact);
+
+        Assert.False(ProviderResolver.TryResolveProviderForModel(
+            settings,
+            "mistral",
+            out _,
+            out _));
 
     }
 

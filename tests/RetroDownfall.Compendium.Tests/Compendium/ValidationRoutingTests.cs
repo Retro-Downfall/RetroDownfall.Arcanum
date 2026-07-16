@@ -79,8 +79,6 @@ public sealed class ValidationRoutingTests : IDisposable
 
             "mcp.maxJsonRpcLineBytes",
 
-            "llamaCpp.portRange",
-
             "defaultModel",
 
             "fastModel",

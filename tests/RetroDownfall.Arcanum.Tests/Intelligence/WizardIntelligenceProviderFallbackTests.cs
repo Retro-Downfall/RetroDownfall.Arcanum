@@ -181,7 +181,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         RecordingChatClientFactory factory = new();
 
-        factory.CandidateExceptions[providerA.Name] = new InvalidOperationException("Llama.Overloaded");
+        factory.CandidateExceptions[providerA.Name] = new InvalidOperationException("Provider overloaded");
 
         ScriptingChatClient chatB = new();
 

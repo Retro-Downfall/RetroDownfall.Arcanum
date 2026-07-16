@@ -3,14 +3,12 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.TheForge;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 
 namespace RetroDownfall.Arcanum.Api.Health;
 
 public sealed class ArcanumHealthChecker(
     IGrimoireDbReadiness grimoireReadiness,
     IMcpConnectionManager mcpConnectionManager,
-    ILlamaServerManager llamaServerManager,
     IOptionsMonitor<ArcanumSettings> settings)
 {
 
@@ -53,28 +51,14 @@ public sealed class ArcanumHealthChecker(
 
         components.Add(new HealthComponentDto("MCP", mcpStatus, mcpDetail));
 
-        bool llamaAvailable = llamaServerManager.IsLlamaServerAvailable();
-
-        bool llamaConfigured = (settings.CurrentValue.Providers ?? []).Any(static p => p.Type == AiProviderKind.LlamaCppServer);
-
-        HealthStatus llamaStatus = llamaConfigured && !llamaAvailable
-            ? HealthStatus.Degraded
-            : HealthStatus.Healthy;
-
-        string llamaDetail = llamaAvailable
-            ? "llama-server binary available."
-            : llamaConfigured
-                ? "LlamaCppServer provider configured but llama-server is unavailable."
-                : "llama-server not required (no LlamaCppServer provider).";
-
-        components.Add(new HealthComponentDto("Llama", llamaStatus, llamaDetail));
-
         int providerCount = (settings.CurrentValue.Providers ?? []).Length;
 
         components.Add(new HealthComponentDto(
             "Providers",
             providerCount > 0 ? HealthStatus.Healthy : HealthStatus.Degraded,
-            providerCount > 0 ? $"{providerCount} configured." : "No providers configured."));
+            providerCount > 0
+                ? $"{providerCount} providers configured; reachability is tracked by resilience probes."
+                : "No providers configured."));
 
         HealthStatus overall = components.Any(static c => c.Status == HealthStatus.Unhealthy)
             ? HealthStatus.Unhealthy

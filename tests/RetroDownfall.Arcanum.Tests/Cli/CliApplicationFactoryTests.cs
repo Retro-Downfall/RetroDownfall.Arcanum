@@ -55,7 +55,7 @@ public sealed class CliApplicationFactoryTests
 
         Assert.Contains("lore", result.Output, StringComparison.OrdinalIgnoreCase);
 
-        Assert.Contains("llama", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("campaign", result.Output, StringComparison.OrdinalIgnoreCase);
 
     }
 

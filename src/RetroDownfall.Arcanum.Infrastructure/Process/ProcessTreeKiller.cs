@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 /// <summary>
 /// Shared guarded <see cref="Process.Kill(bool)"/> helper for every place Arcanum tears down a spawned
-/// child process tree (llama-server via <c>LlamaServerManager</c>, <c>execute_command</c> /
+/// child process tree (<c>execute_command</c> /
 /// <c>run_spell_script</c> via <c>CappedChildProcessRunner</c>, MCP subprocess servers via
 /// <c>McpProcessTransport</c>). <see cref="InvalidOperationException"/> and <see cref="Win32Exception"/>
 /// are swallowed unconditionally — both are expected races where the process already exited (or the OS

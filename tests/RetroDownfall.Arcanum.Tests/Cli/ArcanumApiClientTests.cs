@@ -6,7 +6,6 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 
@@ -267,37 +266,6 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(IntelligenceEventType.Error, events[1].Type);
 
         Assert.Contains("lost before the stream completed", events[1].Message, StringComparison.OrdinalIgnoreCase);
-
-    }
-
-    [Fact]
-    public async Task PullModelStreamAsync_yields_error_when_stream_disconnects_mid_read()
-    {
-
-        LlamaPullProgress progress = new() { CacheKey = "model", BytesDownloaded = 1024, Percent = 10 };
-
-        byte[] firstLine = JsonSerializer.SerializeToUtf8Bytes(progress, ArcanumJsonContext.Default.LlamaPullProgress);
-
-        DisconnectingStreamHandler handler = new(firstLine);
-
-        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
-
-        PullModelRequestDto body = new() { SourceUrl = "https://example.com/model.gguf" };
-
-        List<LlamaPullProgress> frames = [];
-
-        await foreach (LlamaPullProgress frame in client.PullModelStreamAsync(body, CancellationToken.None))
-        {
-            frames.Add(frame);
-        }
-
-        Assert.Equal(2, frames.Count);
-
-        Assert.Equal("model", frames[0].CacheKey);
-
-        Assert.True(frames[1].Completed);
-
-        Assert.Contains("lost before the stream completed", frames[1].Error, StringComparison.OrdinalIgnoreCase);
 
     }
 

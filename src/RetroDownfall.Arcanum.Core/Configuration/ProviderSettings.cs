@@ -19,20 +19,15 @@ public sealed record ProviderSettings
 
     /// <summary>
     /// When <see langword="true"/>, Arcanum records <c>arcanum_prompt_cache_tokens</c> metrics for
-    /// this provider when the response usage reports cached prompt tokens. Defaults to <see langword="true"/>
-    /// for OpenAI-compatible providers (which cache automatically) and <see langword="false"/> for
-    /// LlamaCppServer (caching is opt-in via <c>Arcanum:Cache:Enabled</c>). Operators can force this off
-    /// for providers that do not support caching to avoid misleading metrics.
+    /// this provider when the response usage reports cached prompt tokens. Defaults to
+    /// <see langword="true"/> for OpenAI-compatible providers (which cache automatically).
+    /// Operators can force this off for providers that do not support caching to avoid misleading metrics.
     /// </summary>
     public bool? SupportsPromptCaching { get; init; }
 
-    public ProviderLlamaCppSettings? LlamaCpp { get; init; }
-
     public override string ToString()
     {
-        int mapCount = LlamaCpp?.ModelMap?.Count ?? 0;
-
-        return $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(ApiKey)} = {(ApiKey is null ? "null" : "***")}, {nameof(Models)} = [{string.Join(", ", Models.Select(static m => m.SupportsVision ? $"{m.Name}(vision)" : m.Name))}], {nameof(ContextWindowLimit)} = {ContextWindowLimit}, LlamaCppModelMapCount = {mapCount} }}";
+        return $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(ApiKey)} = {(ApiKey is null ? "null" : "***")}, {nameof(Models)} = [{string.Join(", ", Models.Select(static m => m.SupportsVision ? $"{m.Name}(vision)" : m.Name))}], {nameof(ContextWindowLimit)} = {ContextWindowLimit} }}";
     }
 
 }

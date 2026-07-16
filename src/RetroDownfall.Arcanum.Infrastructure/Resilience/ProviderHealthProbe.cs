@@ -1,21 +1,17 @@
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Resilience;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 /// <summary>
 /// Connectivity probe used by <see cref="ProviderHealthProbeService"/>. OpenAI-compatible
-/// providers are probed via a short-lived, non-pooled HTTP call; <see cref="AiProviderKind.LlamaCppServer"/>
-/// providers are checked against the in-process <see cref="ILlamaServerManager"/> state — no HTTP call.
+/// providers are probed via a short-lived, non-pooled HTTP call to <c>{endpoint}/models</c>.
 /// </summary>
 internal sealed class ProviderHealthProbe(
     IHttpClientFactory httpFactory,
-    ILlamaServerManager llamaManager,
     ConfigurationSecretProtector secretProtector,
     IOptionsMonitor<ArcanumSettings> options) : IProviderHealthProbe
 {
@@ -25,9 +21,13 @@ internal sealed class ProviderHealthProbe(
     public async Task<bool> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken)
     {
 
-        if (provider.Type == AiProviderKind.LlamaCppServer)
+        // Defensive only — config validation owns invalid-endpoint messaging. Empty endpoints must
+        // not construct a relative "/models" URL or throw from the background probe.
+        if (string.IsNullOrWhiteSpace(provider.Endpoint))
         {
-            return ProbeLlamaCppServer(provider);
+
+            return false;
+
         }
 
         string baseUrl = provider.Endpoint.Trim().TrimEnd('/');
@@ -74,55 +74,6 @@ internal sealed class ProviderHealthProbe(
             return false;
 
         }
-
-    }
-
-    private bool ProbeLlamaCppServer(ProviderSettings provider)
-    {
-
-        string? cacheKey = ResolvePrimaryModelCacheKey(provider);
-
-        if (cacheKey is null)
-        {
-
-            // A LlamaCppServer provider with no Models and no llamaCpp.ModelMap entries has nothing
-            // to probe or ever actually serve — ConfigurationValidator rejects this shape at
-            // startup, but hot-reloaded settings are not re-validated, so this can still be reached
-            // at runtime. Reporting it healthy (the previous behavior) hid a real misconfiguration
-            // from operators and from ProviderResolver's health-based fallback selection.
-            return false;
-
-        }
-
-        LlamaServerInfo? info = llamaManager.TryGetRunningServer(cacheKey);
-
-        return info is not null && info.State is LlamaServerState.Running or LlamaServerState.Starting;
-
-    }
-
-    private static string? ResolvePrimaryModelCacheKey(ProviderSettings provider)
-    {
-
-        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
-
-        if (models.Count > 0 && !string.IsNullOrWhiteSpace(models[0].Name))
-        {
-            return LlamaCacheKey.NormalizeModelKey(models[0].Name);
-        }
-
-        Dictionary<string, string>? map = provider.LlamaCpp?.ModelMap;
-
-        if (map is { Count: > 0 })
-        {
-
-            foreach (string key in map.Keys)
-            {
-                return key;
-            }
-
-        }
-
-        return null;
 
     }
 

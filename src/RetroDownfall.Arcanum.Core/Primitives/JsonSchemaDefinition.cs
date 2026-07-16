@@ -3,9 +3,8 @@ using System.Text.Json;
 namespace RetroDownfall.Arcanum.Core.Primitives;
 
 /// <summary>
-/// A strongly-typed, AOT-safe representation of a JSON Schema used for structured-output validation
-/// and GBNF grammar generation. Built by <see cref="JsonSchemaHelper.Parse"/> from a
-/// <see cref="JsonDocument"/> without reflection.
+/// A strongly-typed, AOT-safe representation of a JSON Schema used for structured-output validation.
+/// Built by <see cref="JsonSchemaHelper.Parse"/> from a <see cref="JsonDocument"/> without reflection.
 /// </summary>
 public sealed record JsonSchemaDefinition
 {

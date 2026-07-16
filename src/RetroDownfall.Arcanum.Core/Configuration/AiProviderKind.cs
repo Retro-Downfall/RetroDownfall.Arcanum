@@ -9,6 +9,4 @@ public enum AiProviderKind
 
     OpenAICompatible,
 
-    LlamaCppServer,
-
 }

@@ -17,7 +17,7 @@ public class ModelsProvidersViewModelTests
 
             Models = [new ModelInfoDto("gpt-4o", "openai", "OpenAICompatible", "***", 128000, false)],
 
-            Providers = [new ProviderInfoDto("openai", "OpenAICompatible", "***", "***", ["gpt-4o"], 128000, false)],
+            Providers = [new ProviderInfoDto("openai", "OpenAICompatible", "***", "***", ["gpt-4o"], 128000)],
 
         };
 

@@ -38,14 +38,4 @@ public sealed class ArcanumPathsTests
 
     }
 
-    [Fact]
-    public void ModelCacheDirectory_IsUnderGrimoireDirectory()
-    {
-
-        string expected = Path.Combine(ArcanumPaths.GrimoireDirectory, "models");
-
-        Assert.Equal(expected, ArcanumPaths.ModelCacheDirectory);
-
-    }
-
 }

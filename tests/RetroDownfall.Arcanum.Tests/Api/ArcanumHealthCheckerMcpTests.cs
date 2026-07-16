@@ -3,11 +3,9 @@ using RetroDownfall.Arcanum.Api.Health;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -22,7 +20,6 @@ public sealed class ArcanumHealthCheckerMcpTests
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new AllDownMcpManager(),
-            new AvailableLlama(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
@@ -95,36 +92,6 @@ public sealed class ArcanumHealthCheckerMcpTests
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
-
-    }
-
-    private sealed class AvailableLlama : ILlamaServerManager
-    {
-
-        public bool IsLlamaServerAvailable() => true;
-
-        public Task<Result<LlamaServerInfo>> EnsureServerAsync(
-            string cacheKey,
-            string? sourceUrl,
-            int? gpuLayersOverride,
-            int? portOverride,
-            CancellationToken cancellationToken) =>
-            throw new NotImplementedException();
-
-        public Task<IDisposable> AcquireSlotAsync(string cacheKey, CancellationToken cancellationToken) =>
-            throw new NotImplementedException();
-
-        public bool IsModelInUse(string cacheKey) => false;
-
-        public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
-
-        public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            throw new NotImplementedException();
-
-        public Task StopAllAsync(CancellationToken cancellationToken) =>
-            Task.CompletedTask;
-
-        public IReadOnlyList<LlamaServerInfo> ListServers() => [];
 
     }
 

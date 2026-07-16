@@ -53,6 +53,8 @@ public sealed class ArcanumHealthCheckerScopeTests
 
             Assert.Contains($"{configuredProviders}", providers.Detail, StringComparison.Ordinal);
 
+            Assert.Contains("reachability is tracked by resilience probes", providers.Detail, StringComparison.Ordinal);
+
         }
 
     }

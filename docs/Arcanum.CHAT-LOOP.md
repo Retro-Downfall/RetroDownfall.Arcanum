@@ -198,12 +198,9 @@ After the gates, a linked `CancellationTokenSource` is built for the inference w
 
 ## 4. Provider resolution and fallback loop
 
-`ChatClientFactory.ResolveClientAsync` (`Intelligence/ChatClientFactory.cs`) resolves `Arcanum:Providers` → `ProviderSettings` and dispatches on `provider.Type`:
+`ChatClientFactory.ResolveClientAsync` (`Intelligence/ChatClientFactory.cs`) resolves `Arcanum:Providers` → `ProviderSettings` and builds an `OpenAI.ChatClient` for `OpenAICompatible` providers (including Ollama via `/v1`) over a named `HttpClient` whose pipeline is `OpenAiRequestAugmentingHandler` (injects `strict: true` for JSON-schema requests, retries once without `strict` on a provider 400).
 
-- `OpenAICompatible` → builds an `OpenAI.ChatClient` over a named `HttpClient` whose pipeline is `OpenAiRequestAugmentingHandler` (injects `strict: true` for JSON-schema requests, retries once without `strict` on a provider 400).
-- `LlamaCppServer` → ensures the `llama-server` process is running (`ILlamaServerManager.EnsureServerAsync`), acquires a concurrency slot, and builds a per-endpoint `HttpClient` whose pipeline is `LlamaCppRequestAugmentingHandler` (JSON Schema → GBNF grammar; injects `cache_prompt: true` when the prompt meets `Cache.MinCacheableTokens`).
-
-The `ChatClientLease` owns the `IChatClient`, the concurrency slot, and the endpoint `HttpClient`; `Dispose()` releases all three.
+The `ChatClientLease` owns the turn's `IChatClient`; `Dispose()` releases it. Prompt caching is provider-managed; Arcanum does not inject provider-specific cache request fields.
 
 When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop):
 
@@ -744,4 +741,3 @@ All of these live under `Arcanum:` in `arcanum.json` and have runtime clamps in 
 | `Budget:Enabled` | false | Gates the daily-USD budget gate (HTTP 429) |
 | `Embeddings:SemanticSpellRoutingEnabled` | false | Gates the Phase 5 embedding-based Spell routing pre-filter |
 | `Ward:AutoDenyInUnattendedMode` | — | Unattended auto-deny for Forbidden Arts in the Ward gate |
-| `Cache:MinCacheableTokens` | 256 | Gates `cache_prompt: true` injection for `LlamaCppServer` |

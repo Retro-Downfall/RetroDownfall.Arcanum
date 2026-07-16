@@ -378,48 +378,6 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
-    public async Task GetModels_LlamaCppServerProvider_ReportsSnakeCaseProviderType()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        await using ArcanumWebApplicationFactory factory = new()
-        {
-            SettingsOverride = settings => settings with
-            {
-                DefaultModel = "local-model",
-                Providers =
-                [
-                    new ProviderSettings
-                    {
-                        Name = "local-llama",
-                        Type = AiProviderKind.LlamaCppServer,
-                        Endpoint = "http://localhost:9000",
-                        Models = ["local-model"],
-                    },
-                ],
-            },
-        };
-
-        HttpClient client = factory.CreateAuthenticatedClient();
-
-        HttpResponseMessage response = await client.GetAsync("/v1/models");
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        string json = await response.Content.ReadAsStringAsync();
-
-        OpenAiModelListResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiModelListResponse);
-
-        Assert.NotNull(body?.Data);
-
-        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "local-model");
-
-        Assert.Equal("llama_cpp_server", model.ProviderType);
-
-    }
-
-    [SkippableFact]
     public async Task GetModels_WithoutApiKey_Returns401()
     {
 

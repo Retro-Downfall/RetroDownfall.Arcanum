@@ -64,7 +64,7 @@
                                      Increment="1" />
 
             <controls:LabeledStepper Label="API request timeout (s)"
-                                     Description="Timeout for non-streaming CLI API calls (lore, daemon jobs, llama status, etc.). Streaming verbs stay unbounded."
+                                     Description="Timeout for non-streaming CLI API calls (lore, daemon jobs, etc.). Streaming verbs stay unbounded."
                                      Key="cli.apiRequestTimeoutSeconds"
                                      ValidationErrors="{Binding ValidationErrorsByPointer}"
                                      Value="{Binding Cli.ApiRequestTimeoutSeconds, Mode=TwoWay}"

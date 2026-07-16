@@ -57,8 +57,6 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Mcp.AmbiguousServer, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Mcp.MissingWorkspace, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Mcp.ServerNotFound, StatusCodes.Status404NotFound)]
-    [InlineData(ErrorCodes.Llama.ModelNotCached, StatusCodes.Status400BadRequest)]
-    [InlineData(ErrorCodes.Llama.ServerNotRunning, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.ForkDepthExceeded, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Session.EntryNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Daemon.NotFound, StatusCodes.Status404NotFound)]

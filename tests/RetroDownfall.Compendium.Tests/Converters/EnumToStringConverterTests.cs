@@ -14,8 +14,6 @@ public sealed class EnumToStringConverterTests
 
     [InlineData("SystemDefault", "System Default")]
 
-    [InlineData("LlamaCppServer", "Llama Cpp Server")]
-
     [InlineData("Light", "Light")]
 
     [InlineData("Dark", "Dark")]
@@ -41,8 +39,6 @@ public sealed class EnumToStringConverterTests
         EnumToStringConverter converter = new();
 
         Assert.Equal("OpenAI Compatible", (string?)converter.Convert(AiProviderKind.OpenAICompatible, typeof(string), null, CultureInfo.InvariantCulture));
-
-        Assert.Equal("Llama Cpp Server", (string?)converter.Convert(AiProviderKind.LlamaCppServer, typeof(string), null, CultureInfo.InvariantCulture));
 
     }
 

@@ -39,11 +39,6 @@ public static class ArcanumPaths
     public static string GlobalSpellsDirectory => Path.Combine(GrimoireDirectory, "spells");
 
     /// <summary>
-    /// Local GGUF model cache root: <c>~/.config/arcanum/models/</c>.
-    /// </summary>
-    public static string ModelCacheDirectory => Path.Combine(GrimoireDirectory, "models");
-
-    /// <summary>
     /// <c>POST /v1/files</c> upload storage root: <c>~/.config/arcanum/files/</c>. Each uploaded
     /// file is stored under its own GUID-named path (see <c>UploadedFileRepository.ResolvePath</c>) —
     /// never the client-supplied filename — so path traversal and filename collisions are structurally

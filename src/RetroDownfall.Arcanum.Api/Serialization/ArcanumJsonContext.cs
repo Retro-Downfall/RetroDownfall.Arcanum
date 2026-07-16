@@ -13,7 +13,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -375,28 +374,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(Dictionary<string, int>))]
 [JsonSerializable(typeof(ApiResponse<ArcanumSettings>))]
 [JsonSerializable(typeof(Result<ArcanumSettings>))]
-[JsonSerializable(typeof(LlamaCppSettings))]
-[JsonSerializable(typeof(ProviderLlamaCppSettings))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
-[JsonSerializable(typeof(CachedModelInfo))]
-[JsonSerializable(typeof(CachedModelInfo[]))]
-[JsonSerializable(typeof(LlamaServerInfo))]
-[JsonSerializable(typeof(LlamaServerInfo[]))]
-[JsonSerializable(typeof(LlamaServerState))]
-[JsonSerializable(typeof(LlamaServerEvent))]
-[JsonSerializable(typeof(LlamaPullProgress))]
-[JsonSerializable(typeof(PullModelRequestDto))]
-[JsonSerializable(typeof(StartLlamaServerRequestDto))]
-[JsonSerializable(typeof(WarmupRequestDto))]
-[JsonSerializable(typeof(WarmupResultDto))]
-[JsonSerializable(typeof(ApiResponse<WarmupResultDto>))]
-[JsonSerializable(typeof(Result<WarmupResultDto>))]
-[JsonSerializable(typeof(ApiResponse<CachedModelInfo[]>))]
-[JsonSerializable(typeof(ApiResponse<LlamaServerInfo>))]
-[JsonSerializable(typeof(ApiResponse<LlamaServerInfo[]>))]
-[JsonSerializable(typeof(Result<CachedModelInfo[]>))]
-[JsonSerializable(typeof(Result<LlamaServerInfo>))]
-[JsonSerializable(typeof(Result<LlamaServerInfo[]>))]
 [JsonSerializable(typeof(CampaignsSettings))]
 [JsonSerializable(typeof(CampaignDto))]
 [JsonSerializable(typeof(CampaignDto[]))]
@@ -521,7 +499,6 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(BudgetSummaryDto))]
 [JsonSerializable(typeof(ApiResponse<BudgetSummaryDto>))]
 [JsonSerializable(typeof(Result<BudgetSummaryDto>))]
-[JsonSerializable(typeof(CacheSettings))]
 [JsonSerializable(typeof(WebBrowsingSettings))]
 [JsonSerializable(typeof(ClientToolForwardingSettings))]
 [JsonSerializable(typeof(GuardrailsSettings))]

@@ -8,9 +8,6 @@ using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Embeddings;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
-using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -19,13 +16,11 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 // ChatClientFactory (see ChatClientFactory.cs) pattern: a singleton factory that reads
 // IOptionsMonitor<ArcanumSettings>.CurrentValue only inside ResolveGeneratorAsync (hot-reload safe),
 // resolves the Arcanum:Embeddings:Provider by name via ProviderResolver, and builds an
-// IEmbeddingGenerator<string, Embedding<float>> per AiProviderKind.
+// IEmbeddingGenerator<string, Embedding<float>> for OpenAI-compatible providers.
 //
 // AiProviderKind.OpenAICompatible providers go through the OpenAI-compatible EmbeddingClient against
 // the provider's configured Endpoint — this covers any OpenAI-shaped embeddings API, including Ollama
-// via its own OpenAI-compatible /v1 endpoint. AiProviderKind.LlamaCppServer keeps its dedicated
-// lifecycle: EnsureServerAsync + AcquireSlotAsync against the locally spawned llama-server, then the
-// same OpenAI-compatible client shape against the resolved dynamic endpoint.
+// via its own OpenAI-compatible /v1 endpoint.
 public interface IEmbeddingGeneratorFactory
 {
 
@@ -42,7 +37,6 @@ public interface IEmbeddingGeneratorFactory
 public sealed class EmbeddingGeneratorFactory(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    ILlamaServerManager llamaServerManager,
     ConfigurationSecretProtector secretProtector) : IEmbeddingGeneratorFactory
 {
 
@@ -50,17 +44,16 @@ public sealed class EmbeddingGeneratorFactory(
 
     private const string KeylessOpenAiPlaceholder = "no-key";
 
-    // OpenAICompatible generators are process-lifetime cached, keyed by "providerName::model" — the
-    // same shape ChatClientFactory's endpoint HttpClient cache uses, applied here to the thin
-    // IEmbeddingGenerator wrapper itself since constructing it has no per-call cost worth avoiding
-    // beyond object churn. LlamaCppServer generators are NOT cached here (see CreateLlamaCppLeaseAsync)
-    // because the server's dynamic endpoint can change across restarts, mirroring ChatClientFactory's
-    // LlamaCpp lease, which likewise builds a fresh client per call.
+    // OpenAICompatible generators are process-lifetime cached, keyed by provider/model/endpoint/credential
+    // fingerprint — constructing the thin IEmbeddingGenerator wrapper has no per-call cost worth avoiding
+    // beyond object churn.
     private readonly ConcurrentDictionary<string, IEmbeddingGenerator<string, Embedding<float>>> _generators =
         new(StringComparer.Ordinal);
 
-    public async Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
+    public Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
     {
+
+        _ = cancellationToken;
 
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
@@ -88,15 +81,18 @@ public sealed class EmbeddingGeneratorFactory(
 
         }
 
-        string model = embeddings.Model;
+        if (provider.Type != AiProviderKind.OpenAICompatible)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported provider type '{provider.Type}' for embeddings provider '{provider.Name}'. Only {nameof(AiProviderKind.OpenAICompatible)} is supported.");
 
-        return provider.Type == AiProviderKind.LlamaCppServer
-            ? await CreateLlamaCppLeaseAsync(provider, model, cancellationToken).ConfigureAwait(false)
-            : CreateOpenAiStyleLease(provider, model);
+        }
+
+        return Task.FromResult(CreateOpenAiCompatibleLease(provider, embeddings.Model));
 
     }
 
-    private EmbeddingGeneratorLease CreateOpenAiStyleLease(ProviderSettings provider, string model)
+    private EmbeddingGeneratorLease CreateOpenAiCompatibleLease(ProviderSettings provider, string model)
     {
 
         string resolvedApiKey = ResolveApiKeyValue(provider);
@@ -110,13 +106,13 @@ public sealed class EmbeddingGeneratorFactory(
 
         IEmbeddingGenerator<string, Embedding<float>> generator = _generators.GetOrAdd(
             cacheKey,
-            _ => BuildOpenAiStyleGenerator(provider, model, resolvedApiKey));
+            _ => BuildOpenAiCompatibleGenerator(provider, model, resolvedApiKey));
 
         return new EmbeddingGeneratorLease(generator, ownsGenerator: false);
 
     }
 
-    private IEmbeddingGenerator<string, Embedding<float>> BuildOpenAiStyleGenerator(
+    private IEmbeddingGenerator<string, Embedding<float>> BuildOpenAiCompatibleGenerator(
         ProviderSettings provider,
         string model,
         string resolvedApiKey)
@@ -141,69 +137,6 @@ public sealed class EmbeddingGeneratorFactory(
 
     }
 
-    private async Task<EmbeddingGeneratorLease> CreateLlamaCppLeaseAsync(
-        ProviderSettings provider,
-        string model,
-        CancellationToken cancellationToken)
-    {
-
-        string cacheKey = LlamaCacheKey.NormalizeModelKey(model);
-
-        string? sourceUrl = TryResolveModelMapUrl(provider, model);
-
-        Result<LlamaServerInfo> ensure = await llamaServerManager.EnsureServerAsync(
-            cacheKey,
-            sourceUrl,
-            gpuLayersOverride: null,
-            portOverride: null,
-            cancellationToken).ConfigureAwait(false);
-
-        if (ensure.IsFailure)
-        {
-            throw new InvalidOperationException(ensure.Error.Message);
-
-        }
-
-        IDisposable? slot = null;
-
-        try
-        {
-
-            slot = await llamaServerManager.AcquireSlotAsync(cacheKey, cancellationToken).ConfigureAwait(false);
-
-            string endpoint = ensure.Value.Endpoint;
-
-            ApiKeyCredential credential = new(KeylessOpenAiPlaceholder);
-
-            HttpClient http = httpClientFactory.CreateClient(OpenAiCompatibleHttpClientName);
-
-            var options = new OpenAIClientOptions
-            {
-
-                Endpoint = new Uri(endpoint),
-
-                Transport = new HttpClientPipelineTransport(http),
-
-            };
-
-            var embeddingClient = new EmbeddingClient(model, credential, options);
-
-            IEmbeddingGenerator<string, Embedding<float>> generator = embeddingClient.AsIEmbeddingGenerator();
-
-            return new EmbeddingGeneratorLease(generator, ownsGenerator: true, slot: slot);
-
-        }
-        catch
-        {
-
-            slot?.Dispose();
-
-            throw;
-
-        }
-
-    }
-
     private string ResolveApiKeyValue(ProviderSettings provider) =>
         string.IsNullOrEmpty(provider.ApiKey)
             ? KeylessOpenAiPlaceholder
@@ -221,60 +154,28 @@ public sealed class EmbeddingGeneratorFactory(
     private static string ComputeCredentialFingerprint(string resolvedApiKey) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(resolvedApiKey)));
 
-    private static string? TryResolveModelMapUrl(ProviderSettings provider, string resolvedModel)
-    {
-
-        Dictionary<string, string>? map = provider.LlamaCpp?.ModelMap;
-
-        if (map is null || map.Count == 0)
-        {
-            return null;
-
-        }
-
-        foreach (KeyValuePair<string, string> pair in map)
-        {
-            if (string.Equals(pair.Key, resolvedModel, StringComparison.OrdinalIgnoreCase))
-            {
-                return pair.Value;
-
-            }
-
-        }
-
-        return null;
-
-    }
-
 }
 
 /// <summary>
 /// Owns a resolved <see cref="IEmbeddingGenerator{String, Embedding}"/> for one embedding call (or
-/// batch of calls within one turn). Disposal order mirrors <c>ChatClientLease</c>: dispose the
-/// generator only if this lease owns it (LlamaCppServer — freshly built per lease, never cached), then
-/// release the concurrency slot last. OpenAICompatible generators are process-lifetime cached and
-/// neither owned nor disposed by the lease.
+/// batch of calls within one turn). OpenAICompatible generators are process-lifetime cached and
+/// neither owned nor disposed by the lease (<c>ownsGenerator: false</c>).
 /// </summary>
 public sealed class EmbeddingGeneratorLease : IDisposable
 {
 
     private readonly bool _ownsGenerator;
 
-    private readonly IDisposable? _slot;
-
     private bool _disposed;
 
     internal EmbeddingGeneratorLease(
         IEmbeddingGenerator<string, Embedding<float>> generator,
-        bool ownsGenerator,
-        IDisposable? slot = null)
+        bool ownsGenerator)
     {
 
         Generator = generator;
 
         _ownsGenerator = ownsGenerator;
-
-        _slot = slot;
 
     }
 
@@ -296,8 +197,6 @@ public sealed class EmbeddingGeneratorLease : IDisposable
             Generator.Dispose();
 
         }
-
-        _slot?.Dispose();
 
     }
 

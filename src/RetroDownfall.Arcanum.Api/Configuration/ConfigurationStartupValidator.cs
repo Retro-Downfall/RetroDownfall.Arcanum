@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -18,17 +19,22 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 
     private readonly IOptions<ArcanumSettings> _options;
 
+    private readonly IConfiguration _configuration;
+
     private readonly ConfigurationValidator _validator;
 
     private readonly ILogger<ConfigurationStartupValidator> _logger;
 
     public ConfigurationStartupValidator(
         IOptions<ArcanumSettings> options,
+        IConfiguration configuration,
         ConfigurationValidator validator,
         ILogger<ConfigurationStartupValidator> logger)
     {
 
         _options = options;
+
+        _configuration = configuration;
 
         _validator = validator;
 
@@ -38,6 +44,17 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
     {
+
+        Result obsolete = _validator.RejectObsoleteKeys(_configuration);
+
+        if (obsolete.IsFailure)
+        {
+
+            LogValidationFailure(obsolete.Error);
+
+            throw new ConfigurationValidationException(obsolete.Error);
+
+        }
 
         Result result = _validator.Validate(_options.Value);
 

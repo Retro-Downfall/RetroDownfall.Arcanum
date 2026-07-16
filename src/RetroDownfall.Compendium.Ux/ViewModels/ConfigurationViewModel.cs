@@ -47,8 +47,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public McpSectionViewModel Mcp { get; } = new();
 
-    public LlamaCppSectionViewModel LlamaCpp { get; } = new();
-
     public OrchestrationSectionViewModel Orchestration { get; } = new();
 
     public SecuritySectionViewModel Security { get; } = new();
@@ -217,8 +215,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         Intelligence.LoadFrom(settings.Intelligence);
 
         Mcp.LoadFrom(settings.Mcp);
-
-        LlamaCpp.LoadFrom(settings.LlamaCpp);
 
         Orchestration.LoadFrom(settings.Daemon, settings.Apprentices, settings.Conclave);
 
@@ -445,8 +441,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
             Intelligence = Intelligence.Build(),
 
             Mcp = Mcp.Build(),
-
-            LlamaCpp = LlamaCpp.Build(),
 
             Daemon = Orchestration.BuildDaemon(),
 
@@ -770,8 +764,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         yield return Intelligence;
 
         yield return Mcp;
-
-        yield return LlamaCpp;
 
         yield return Orchestration;
 

@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
 /// Settings governing structured-output enforcement: JSON schema validation, retry behavior, and
-/// provider-side constrained decoding (GBNF grammars for llama.cpp, strict mode for OpenAI-compatible).
+/// provider-side constrained decoding (OpenAI-compatible <c>strict: true</c>).
 /// </summary>
 public sealed record StructuredOutputSettings
 {
@@ -22,8 +22,8 @@ public sealed record StructuredOutputSettings
 
     /// <summary>
     /// When <see langword="true"/> (default), Arcanum asks the provider to constrain decoding
-    /// (llama.cpp GBNF grammar, OpenAI <c>strict: true</c>) when available. When
-    /// <see langword="false"/>, only post-response validation is used.
+    /// (OpenAI <c>strict: true</c>) when available. When <see langword="false"/>, only
+    /// post-response validation is used.
     /// </summary>
     public bool UseProviderConstrainedDecoding { get; init; } = true;
 

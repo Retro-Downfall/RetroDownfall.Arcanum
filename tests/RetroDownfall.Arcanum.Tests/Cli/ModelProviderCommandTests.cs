@@ -43,7 +43,7 @@ public sealed class ModelProviderCommandTests
     public void Provider_list_prints_themed_table()
     {
 
-        ProviderInfoDto provider = new("test", "OpenAICompatible", "***", null, ["mistral:latest"], 8192, false);
+        ProviderInfoDto provider = new("test", "OpenAICompatible", "***", null, ["mistral:latest"], 8192);
 
         RecordingHandler handler = new(_ => CreateResponse(
             new ApiResponse<ProviderInfoDto[]>([provider], true, null),

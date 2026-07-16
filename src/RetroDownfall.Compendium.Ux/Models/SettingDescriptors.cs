@@ -79,11 +79,11 @@ public static class SettingDescriptors
 
         new("providers.name", ConfigSection.Providers, "Provider name", "Human-readable name for this provider entry.", SettingKind.String, Placeholder: "Local Ollama"),
 
-        new("providers.type", ConfigSection.Providers, "Provider type", "Backend kind: OpenAICompatible (any OpenAI-shaped HTTP API, including Ollama via its /v1 endpoint) or LlamaCppServer (spawned local llama-server).", SettingKind.Enum, EnumType: typeof(AiProviderKind)),
+        new("providers.type", ConfigSection.Providers, "Provider type", "Backend kind: OpenAICompatible (any OpenAI-shaped HTTP API). Ollama works via its OpenAI-compatible /v1 endpoint (for example http://localhost:11434/v1) — not as a native Ollama provider.", SettingKind.Enum, EnumType: typeof(AiProviderKind)),
 
-        new("providers.endpoint", ConfigSection.Providers, "Endpoint", "Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1). Ignored for LlamaCppServer.", SettingKind.String, Placeholder: "https://api.openai.com/v1"),
+        new("providers.endpoint", ConfigSection.Providers, "Endpoint", "Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1).", SettingKind.String, Placeholder: "https://api.openai.com/v1"),
 
-        new("providers.apiKey", ConfigSection.Providers, "API key", "Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local Ollama.", SettingKind.Secret, Placeholder: "sk-..."),
+        new("providers.apiKey", ConfigSection.Providers, "API key", "Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local OpenAI-compatible endpoints (for example Ollama).", SettingKind.Secret, Placeholder: "sk-..."),
 
         new("providers.models.name", ConfigSection.Providers, "Model name", "Model ID advertised by this provider. Must include the DefaultModel and FastModel if those reference this provider.", SettingKind.String, Placeholder: "gpt-4o"),
 
@@ -92,8 +92,6 @@ public static class SettingDescriptors
         new("providers.contextWindowLimit", ConfigSection.Providers, "Context window limit", "Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152.", SettingKind.Int, 256, 2_097_152, 128, ClampName: nameof(ArcanumSettingClamps.ContextWindowLimit)),
 
         new("providers.supportsPromptCaching", ConfigSection.Providers, "Supports prompt caching", "When true (default for OpenAI-compatible providers), Arcanum records arcanum_prompt_cache_tokens metrics when the response usage reports cached prompt tokens. Set false for providers that do not support caching.", SettingKind.Bool),
-
-        new("providers.llamaCpp.modelMap", ConfigSection.Providers, "LlamaCpp model map", "Maps model keys to remote http/https URLs for on-demand GGUF download when the model is not yet cached. Only used when type is LlamaCppServer.", SettingKind.Dictionary, Placeholder: "phi3=https://example.com/phi3.gguf"),
 
         // ===== Intelligence =====
 
@@ -161,7 +159,7 @@ public static class SettingDescriptors
 
         new("structuredOutput.maxValidationRetries", ConfigSection.StructuredOutput, "Max validation retries", "Maximum retry attempts after a structured-output validation failure. Default 2; clamped 0-5.", SettingKind.Int, 0, 5, 1, ClampName: nameof(ArcanumSettingClamps.StructuredOutputMaxValidationRetries)),
 
-        new("structuredOutput.useProviderConstrainedDecoding", ConfigSection.StructuredOutput, "Use provider constrained decoding", "When true (default), Arcanum asks the provider to constrain decoding (GBNF for llama.cpp, strict: true for OpenAI-compatible).", SettingKind.Bool),
+        new("structuredOutput.useProviderConstrainedDecoding", ConfigSection.StructuredOutput, "Use provider constrained decoding", "When true (default), Arcanum asks the provider to constrain decoding (strict: true for OpenAI-compatible).", SettingKind.Bool),
 
         new("structuredOutput.strictMode", ConfigSection.StructuredOutput, "Strict mode", "When true, a response that fails schema validation after all retries is rejected with 400. When false (default), the response is returned with a warning header.", SettingKind.Bool),
 
@@ -190,38 +188,6 @@ public static class SettingDescriptors
         new("mcp.httpRequestTimeoutSeconds", ConfigSection.Mcp, "HTTP request timeout (s)", "Timeout for the named HttpClient(McpHttp) used by the Streamable HTTP transport (headers phase).", SettingKind.Int, 10, 600, 1, ClampName: nameof(ArcanumSettingClamps.McpHttpRequestTimeoutSeconds)),
 
         new("mcp.allowedHttpHosts", ConfigSection.Mcp, "Allowed HTTP hosts", "Hosts permitted over plaintext http for Streamable HTTP MCP servers (e.g. localhost for a trusted dev gateway). Remote HTTP servers must use https.", SettingKind.StringArray),
-
-        // ===== LlamaCpp =====
-
-        new("llamaCpp.serverExecutablePath", ConfigSection.LlamaCpp, "Server executable path", "Absolute or relative path to the llama-server executable. When null, search PATH (and llama-server.exe on Windows).", SettingKind.Path, Placeholder: "/usr/local/bin/llama-server"),
-
-        new("llamaCpp.gpuLayers", ConfigSection.LlamaCpp, "GPU layers", "GPU layers to offload. 0 = CPU only. -1 = sentinel for offload all (mapped to 999 on the command line).", SettingKind.Int, -1, 1024, 1, ClampName: nameof(ArcanumSettingClamps.LlamaGpuLayers)),
-
-        new("llamaCpp.contextSize", ConfigSection.LlamaCpp, "Context size", "Context size passed as --ctx-size.", SettingKind.Int, 256, 1_048_576, 256, ClampName: nameof(ArcanumSettingClamps.LlamaContextSize)),
-
-        new("llamaCpp.portStart", ConfigSection.LlamaCpp, "Port start", "First port to try when auto-selecting a listen port for a spawned llama-server.", SettingKind.Int, 1, 65_535, 1, ClampName: nameof(ArcanumSettingClamps.LlamaPortStart)),
-
-        new("llamaCpp.portRange", ConfigSection.LlamaCpp, "Port range", "Number of consecutive ports to try from PortStart. PortStart + PortRange - 1 must not exceed 65535.", SettingKind.Int, 1, 65_535, 1, ClampName: nameof(ArcanumSettingClamps.LlamaPortRange)),
-
-        new("llamaCpp.maxConcurrentRequests", ConfigSection.LlamaCpp, "Max concurrent requests", "Maximum concurrent inference requests per running llama-server.", SettingKind.Int, 1, 256, 1, ClampName: nameof(ArcanumSettingClamps.LlamaMaxConcurrentRequests)),
-
-        new("llamaCpp.healthProbeTimeoutSeconds", ConfigSection.LlamaCpp, "Health probe timeout (s)", "Timeout for GET /health probes during server startup.", SettingKind.Int, 1, 600, 1, ClampName: nameof(ArcanumSettingClamps.LlamaHealthProbeTimeoutSeconds)),
-
-        new("llamaCpp.startTimeoutSeconds", ConfigSection.LlamaCpp, "Start timeout (s)", "Maximum wait for a spawned server to become healthy.", SettingKind.Int, 1, 600, 1, ClampName: nameof(ArcanumSettingClamps.LlamaStartTimeoutSeconds)),
-
-        new("llamaCpp.shutdownTimeoutSeconds", ConfigSection.LlamaCpp, "Shutdown timeout (s)", "Grace period before Kill(entireProcessTree: true) on shutdown.", SettingKind.Int, 1, 600, 1, ClampName: nameof(ArcanumSettingClamps.LlamaShutdownTimeoutSeconds)),
-
-        new("llamaCpp.additionalArguments", ConfigSection.LlamaCpp, "Additional arguments", "Extra arguments appended to the llama-server command line (one per line/item).", SettingKind.StringArray),
-
-        new("llamaCpp.maxCachedModels", ConfigSection.LlamaCpp, "Max cached models", "Maximum cached GGUF entries before LRU eviction.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.LlamaMaxCachedModels)),
-
-        new("llamaCpp.modelDownloadTimeoutSeconds", ConfigSection.LlamaCpp, "Model download timeout (s)", "Timeout for the named HttpClient(LlamaModelDownload) used to fetch GGUF files.", SettingKind.Int, 60, 86_400, 60, ClampName: nameof(ArcanumSettingClamps.LlamaModelDownloadTimeoutSeconds)),
-
-        new("llamaCpp.modelDownloadMaxBytes", ConfigSection.LlamaCpp, "Model download max (bytes)", "Maximum bytes accepted for a single GGUF download. Default 50 GiB.", SettingKind.Long, 1_048_576, 214_748_364_800, 1_073_741_824, ClampName: nameof(ArcanumSettingClamps.LlamaModelDownloadMaxBytes)),
-
-        new("llamaCpp.modelSha256Map", ConfigSection.LlamaCpp, "Model SHA-256 map", "Optional lowercase SHA-256 hex digests keyed by model cache key for download verification.", SettingKind.Dictionary, Placeholder: "phi3=abcdef..."),
-
-        new("llamaCpp.requireModelHash", ConfigSection.LlamaCpp, "Require model hash", "When true (default), GGUF downloads without a matching SHA-256 are rejected. Set false to allow unverified pulls.", SettingKind.Bool),
 
         // ===== Orchestration — Daemon =====
 
@@ -457,7 +423,7 @@ public static class SettingDescriptors
 
         new("cli.doctorHealthTimeoutSeconds", ConfigSection.Cli, "Doctor health timeout (s)", "Timeout for the arcanum doctor API health probe. Increase for slow startups.", SettingKind.Int, 1, 60, 1, ClampName: nameof(ArcanumSettingClamps.DoctorHealthTimeoutSeconds)),
 
-        new("cli.apiRequestTimeoutSeconds", ConfigSection.Cli, "API request timeout (s)", "Timeout for non-streaming CLI API calls (lore, daemon jobs, llama status, etc.). Streaming verbs stay unbounded.", SettingKind.Int, 1, 600, 1, ClampName: nameof(ArcanumSettingClamps.ApiRequestTimeoutSeconds)),
+        new("cli.apiRequestTimeoutSeconds", ConfigSection.Cli, "API request timeout (s)", "Timeout for non-streaming CLI API calls (lore, daemon jobs, etc.). Streaming verbs stay unbounded.", SettingKind.Int, 1, 600, 1, ClampName: nameof(ArcanumSettingClamps.ApiRequestTimeoutSeconds)),
 
         // ===== Cli — theme colors (Light) =====
 
@@ -591,12 +557,6 @@ public static class SettingDescriptors
         new("budget.dailyLimitUsd", ConfigSection.Budget, "Daily limit (USD)", "Maximum USD spend allowed per UTC day before inference is rejected with Budget.Exceeded (HTTP 429).", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.BudgetDailyLimitUsd)),
 
         new("budget.alertThresholdPercent", ConfigSection.Budget, "Alert threshold (%)", "Percentage of the daily limit at which a Comm Link warning is dispatched. Default 80; clamped 1-100.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.BudgetAlertThresholdPercent)),
-
-        // ===== Prompt Caching =====
-
-        new("cache.enabled", ConfigSection.Cache, "Prompt caching enabled", "When true, Arcanum injects cache_prompt: true on eligible llama.cpp requests (estimated prompt tokens >= MinCacheableTokens) to reduce latency and cost for multi-turn conversations with large system prompts.", SettingKind.Bool),
-
-        new("cache.minCacheableTokens", ConfigSection.Cache, "Min cacheable tokens", "Minimum estimated prompt token count before cache_prompt: true is injected. Avoids cache lookup/insert overhead for short prompts. Default 256; clamped 1-131072.", SettingKind.Int, 1, 131_072, 1, ClampName: nameof(ArcanumSettingClamps.CacheMinCacheableTokens)),
 
         // ===== Web Browsing =====
 

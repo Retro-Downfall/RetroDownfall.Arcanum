@@ -97,8 +97,6 @@ public sealed class ProviderCommands(ArcanumApiClient apiClient, IThemePalette t
 
         table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Context Window")));
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Has Model Map")));
-
         foreach (ProviderInfoDto provider in result.Value)
         {
 
@@ -107,10 +105,7 @@ public sealed class ProviderCommands(ArcanumApiClient apiClient, IThemePalette t
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.Type))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.Endpoint))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(provider.Models.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(provider.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
-                new Markup(provider.HasLlamaCppModelMap
-                    ? themePalette.HighlightMarkup(Markup.Escape("yes"))
-                    : themePalette.MutedMarkup(Markup.Escape("-"))));
+                new Markup(themePalette.MutedMarkup(Markup.Escape(provider.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)))));
 
         }
 

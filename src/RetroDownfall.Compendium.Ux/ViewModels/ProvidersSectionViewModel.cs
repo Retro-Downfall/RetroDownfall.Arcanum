@@ -87,8 +87,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private int _contextWindowLimit;
 
-        [ObservableProperty] private string _llamaCppModelMap = string.Empty;
-
         /// <summary>
         /// Per-model rows (name + Scrying <c>supportsVision</c> flag). A real editable collection —
         /// not a collapsed comma-separated string — so vision capability declared in
@@ -131,10 +129,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             ContextWindowLimit = snapshot.ContextWindowLimit;
 
-            LlamaCppModelMap = snapshot.LlamaCpp?.ModelMap is not null
-                ? string.Join(", ", snapshot.LlamaCpp.ModelMap.Select(static kvp => $"{kvp.Key}={kvp.Value}"))
-                : string.Empty;
-
         }
 
         public ProviderSettings Build() => _snapshot with
@@ -151,8 +145,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
             Models = [.. Models.Select(static m => m.Build())],
 
             ContextWindowLimit = ContextWindowLimit,
-
-            LlamaCpp = ParseLlamaCppModelMap(),
 
         };
 
@@ -174,33 +166,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 Models.Remove(model);
 
             }
-
-        }
-
-        private ProviderLlamaCppSettings? ParseLlamaCppModelMap()
-        {
-
-            Dictionary<string, string>? map = null;
-
-            foreach (string entry in LlamaCppModelMap.SplitCsv())
-            {
-
-                int equals = entry.IndexOf('=', StringComparison.Ordinal);
-
-                if (equals <= 0)
-                {
-
-                    continue;
-
-                }
-
-                map ??= [];
-
-                map[entry[..equals].Trim()] = entry[(equals + 1)..].Trim();
-
-            }
-
-            return map is null ? null : new ProviderLlamaCppSettings { ModelMap = map };
 
         }
 

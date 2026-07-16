@@ -1,10 +1,6 @@
 using Microsoft.AspNetCore.DataProtection;
-using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
-using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -198,69 +194,15 @@ public sealed class EmbeddingGeneratorFactoryTests
 
     }
 
-    [Fact]
-    public async Task ResolveGeneratorAsync_LlamaCppFailure_Throws()
+    private static EmbeddingGeneratorFactory CreateFactory(ArcanumSettings settings)
     {
 
-        ArcanumSettings settings = new()
-        {
-            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "llama", Model = "local.gguf" },
-            Providers =
-            [
-                new ProviderSettings { Name = "llama", Type = AiProviderKind.LlamaCppServer, Endpoint = "http://127.0.0.1:8080", Models = ["local.gguf"] },
-            ],
-        };
-
-        EmbeddingGeneratorFactory factory = CreateFactory(settings, new FailingLlamaServerManager());
-
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => factory.ResolveGeneratorAsync(CancellationToken.None));
-
-        Assert.Equal("server unavailable", ex.Message);
-
-    }
-
-    [Fact]
-    public async Task ResolveGeneratorAsync_LlamaCppSuccess_OwnsGenerator_AndDisposeReleasesSlot()
-    {
-
-        TrackingLlamaServerManager llama = new();
-
-        ArcanumSettings settings = new()
-        {
-            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "llama", Model = "local.gguf" },
-            Providers =
-            [
-                new ProviderSettings { Name = "llama", Type = AiProviderKind.LlamaCppServer, Endpoint = "http://127.0.0.1:8080", Models = ["local.gguf"] },
-            ],
-        };
-
-        EmbeddingGeneratorFactory factory = CreateFactory(settings, llama);
-
-        EmbeddingGeneratorLease lease = await factory.ResolveGeneratorAsync(CancellationToken.None);
-
-        Assert.NotNull(lease.Generator);
-
-        Assert.False(llama.SlotDisposed);
-
-        lease.Dispose();
-
-        Assert.True(llama.SlotDisposed);
-
-    }
-
-    private static EmbeddingGeneratorFactory CreateFactory(
-        ArcanumSettings settings,
-        ILlamaServerManager? llama = null)
-    {
-
-        return CreateFactoryWithMonitor(new TestOptionsMonitor<ArcanumSettings>(settings), llama);
+        return CreateFactoryWithMonitor(new TestOptionsMonitor<ArcanumSettings>(settings));
 
     }
 
     private static EmbeddingGeneratorFactory CreateFactoryWithMonitor(
-        Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> monitor,
-        ILlamaServerManager? llama = null)
+        Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> monitor)
     {
 
         IDataProtectionProvider protection = DataProtectionProvider.Create("Arcanum.Tests");
@@ -270,7 +212,6 @@ public sealed class EmbeddingGeneratorFactoryTests
         return new EmbeddingGeneratorFactory(
             new FakeHttpClientFactory(),
             monitor,
-            llama ?? new TrackingLlamaServerManager(),
             secretProtector);
 
     }
@@ -296,83 +237,10 @@ public sealed class EmbeddingGeneratorFactoryTests
 
     }
 
-    private sealed class TrackingDisposable : IDisposable
+    private sealed class FakeHttpClientFactory : IHttpClientFactory
     {
 
-        public bool Disposed { get; private set; }
-
-        public void Dispose()
-        {
-
-            Disposed = true;
-
-        }
-
-    }
-
-    private sealed class TrackingLlamaServerManager : ILlamaServerManager
-    {
-
-        private readonly TrackingDisposable _slot = new();
-
-        public bool SlotDisposed => _slot.Disposed;
-
-        public Task<Result<LlamaServerInfo>> EnsureServerAsync(
-            string modelKey,
-            string? sourceUrl,
-            int? gpuLayersOverride,
-            int? portOverride,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<LlamaServerInfo>.Success(new LlamaServerInfo
-            {
-                Endpoint = "http://127.0.0.1:8081",
-                Port = 8081,
-            }));
-
-        public Task<IDisposable> AcquireSlotAsync(string modelKey, CancellationToken cancellationToken) =>
-            Task.FromResult<IDisposable>(_slot);
-
-        public bool IsModelInUse(string cacheKey) => false;
-
-        public bool IsLlamaServerAvailable() => true;
-
-        public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
-
-        public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public IReadOnlyList<LlamaServerInfo> ListServers() => [];
-
-    }
-
-    private sealed class FailingLlamaServerManager : ILlamaServerManager
-    {
-
-        public Task<Result<LlamaServerInfo>> EnsureServerAsync(
-            string modelKey,
-            string? sourceUrl,
-            int? gpuLayersOverride,
-            int? portOverride,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<LlamaServerInfo>.Failure(new Error("Llama.Down", "server unavailable")));
-
-        public Task<IDisposable> AcquireSlotAsync(string modelKey, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("Should not be called when EnsureServerAsync fails.");
-
-        public bool IsModelInUse(string cacheKey) => false;
-
-        public bool IsLlamaServerAvailable() => false;
-
-        public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
-
-        public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public IReadOnlyList<LlamaServerInfo> ListServers() => [];
+        public HttpClient CreateClient(string name) => new();
 
     }
 

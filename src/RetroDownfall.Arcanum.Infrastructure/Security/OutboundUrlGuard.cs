@@ -25,7 +25,7 @@ public static class OutboundUrlGuard
     public static IDnsResolver DnsResolver { get; set; } = new SystemDnsResolver();
 
     /// <summary>
-    /// Validates an untrusted outbound URL (model pulls, webhooks, model-map downloads).
+    /// Validates an untrusted outbound URL (webhooks and similar operator-supplied egress targets).
     /// </summary>
     public static Task<Result> ValidateUntrustedUrlAsync(string? url, CancellationToken cancellationToken = default) =>
         ValidateUrlAsync(url, allowPrivateAndLoopback: false, cancellationToken);
@@ -63,45 +63,18 @@ public static class OutboundUrlGuard
         foreach (ProviderSettings provider in providers)
         {
 
-            if (provider.Type != AiProviderKind.LlamaCppServer
-                && !string.IsNullOrWhiteSpace(provider.Endpoint))
-            {
-
-                Result endpoint = await ValidateProviderEndpointAsync(provider.Endpoint, cancellationToken).ConfigureAwait(false);
-
-                if (endpoint.IsFailure)
-                {
-                    return Result.Failure(new Error(
-                        BlockedErrorCode,
-                        $"Provider '{provider.Name}' endpoint: {endpoint.Error.Message}"));
-                }
-
-            }
-
-            Dictionary<string, string>? modelMap = provider.LlamaCpp?.ModelMap;
-
-            if (modelMap is null || modelMap.Count == 0)
+            if (string.IsNullOrWhiteSpace(provider.Endpoint))
             {
                 continue;
             }
 
-            foreach (KeyValuePair<string, string> entry in modelMap)
+            Result endpoint = await ValidateProviderEndpointAsync(provider.Endpoint, cancellationToken).ConfigureAwait(false);
+
+            if (endpoint.IsFailure)
             {
-
-                if (string.IsNullOrWhiteSpace(entry.Value))
-                {
-                    continue;
-                }
-
-                Result modelUrl = await ValidateUntrustedUrlAsync(entry.Value, cancellationToken).ConfigureAwait(false);
-
-                if (modelUrl.IsFailure)
-                {
-                    return Result.Failure(new Error(
-                        BlockedErrorCode,
-                        $"Provider '{provider.Name}' llamaCpp.modelMap['{entry.Key}']: {modelUrl.Error.Message}"));
-                }
-
+                return Result.Failure(new Error(
+                    BlockedErrorCode,
+                    $"Provider '{provider.Name}' endpoint: {endpoint.Error.Message}"));
             }
 
         }

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Builder;
@@ -13,7 +12,6 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 
 namespace RetroDownfall.Arcanum.Api.Health;
 
@@ -61,7 +59,7 @@ internal static class HealthEndpoints
         })
         .WithName("GetGrimoireStats");
 
-        apiGroup.MapGet("/meta", (IOptionsSnapshot<ArcanumSettings> settings, ILlamaServerManager llamaServerManager, HttpContext httpContext) =>
+        apiGroup.MapGet("/meta", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
         {
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
@@ -117,7 +115,6 @@ internal static class HealthEndpoints
                 ArchiveSearchEnabled: settings.Value.Intelligence.EnableArchiveSearch,
                 ContextCompressionEnabled: settings.Value.Intelligence.EnableContextCompression,
                 TokenTrackingEnabled: settings.Value.Intelligence.EnableTokenTracking,
-                LlamaCppEnabled: llamaServerManager.IsLlamaServerAvailable(),
                 HttpsEnabled: httpsEnabled,
                 HttpsPort: httpsPort,
                 HttpsUrl: httpsUrl);

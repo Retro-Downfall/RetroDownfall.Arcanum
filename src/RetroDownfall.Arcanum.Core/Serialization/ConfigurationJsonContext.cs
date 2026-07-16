@@ -41,8 +41,6 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(LogLevel))]
 [JsonSerializable(typeof(WorkspaceSettings))]
 [JsonSerializable(typeof(SessionSettings))]
-[JsonSerializable(typeof(LlamaCppSettings))]
-[JsonSerializable(typeof(ProviderLlamaCppSettings))]
 [JsonSerializable(typeof(WardSettings))]
 [JsonSerializable(typeof(ApprenticeSettings))]
 [JsonSerializable(typeof(CodexSettings))]
@@ -65,7 +63,6 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(List<ModelPricingEntry>))]
 [JsonSerializable(typeof(Dictionary<string, ModelPricingEntry>))]
 [JsonSerializable(typeof(BudgetSettings))]
-[JsonSerializable(typeof(CacheSettings))]
 [JsonSerializable(typeof(WebBrowsingSettings))]
 
 [JsonSerializable(typeof(ClientToolForwardingSettings))]

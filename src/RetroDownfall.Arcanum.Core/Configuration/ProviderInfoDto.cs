@@ -6,5 +6,4 @@ public sealed record ProviderInfoDto(
     string Endpoint,
     string? ApiKey,
     string[] Models,
-    int ContextWindowLimit,
-    bool HasLlamaCppModelMap);
+    int ContextWindowLimit);

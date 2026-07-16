@@ -1,12 +1,6 @@
 using Microsoft.AspNetCore.DataProtection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
-using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -79,35 +73,7 @@ public sealed class ChatClientFactoryTests
         Assert.Equal("gpt-test", lease.ResolvedModel);
     }
 
-    [Fact]
-    public async Task ResolveClientAsync_LlamaCppFailure_Throws()
-    {
-        ArcanumSettings settings = new()
-        {
-            DefaultModel = "local.gguf",
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "llama",
-                    Type = AiProviderKind.LlamaCppServer,
-                    Endpoint = "http://127.0.0.1:8080",
-                    Models = ["local.gguf"],
-                },
-            ],
-        };
-
-        ChatClientFactory factory = CreateFactory(settings, new FailingLlamaServerManager());
-
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            factory.ResolveClientAsync("local.gguf", CancellationToken.None));
-
-        Assert.Equal("server unavailable", ex.Message);
-    }
-
-    private static ChatClientFactory CreateFactory(
-        ArcanumSettings settings,
-        ILlamaServerManager? llama = null)
+    private static ChatClientFactory CreateFactory(ArcanumSettings settings)
     {
         IDataProtectionProvider protection = DataProtectionProvider.Create("Arcanum.Tests");
 
@@ -116,88 +82,13 @@ public sealed class ChatClientFactoryTests
         return new ChatClientFactory(
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            llama ?? new FakeLlamaServerManager(),
-            secretProtector,
-            NullLogger<ChatClientFactory>.Instance,
-            NullLogger<LlamaCppRequestAugmentingHandler>.Instance,
-            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
+            secretProtector);
     }
 
     private sealed class FakeHttpClientFactory : IHttpClientFactory
     {
 
         public HttpClient CreateClient(string name) => new();
-
-    }
-
-    private sealed class NoopDisposable : IDisposable
-    {
-
-        public void Dispose()
-        {
-        }
-
-    }
-
-    private sealed class FakeLlamaServerManager : ILlamaServerManager
-    {
-
-        public Task<Result<LlamaServerInfo>> EnsureServerAsync(
-            string modelKey,
-            string? sourceUrl,
-            int? gpuLayersOverride,
-            int? portOverride,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<LlamaServerInfo>.Success(new LlamaServerInfo
-            {
-                Endpoint = "http://127.0.0.1:8081",
-                Port = 8081,
-            }));
-
-        public Task<IDisposable> AcquireSlotAsync(string modelKey, CancellationToken cancellationToken) =>
-            Task.FromResult<IDisposable>(new NoopDisposable());
-
-        public bool IsModelInUse(string cacheKey) => false;
-
-        public bool IsLlamaServerAvailable() => true;
-
-        public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
-
-        public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public IReadOnlyList<LlamaServerInfo> ListServers() => [];
-
-    }
-
-    private sealed class FailingLlamaServerManager : ILlamaServerManager
-    {
-
-        public Task<Result<LlamaServerInfo>> EnsureServerAsync(
-            string modelKey,
-            string? sourceUrl,
-            int? gpuLayersOverride,
-            int? portOverride,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<LlamaServerInfo>.Failure(new Error("Llama.Down", "server unavailable")));
-
-        public Task<IDisposable> AcquireSlotAsync(string modelKey, CancellationToken cancellationToken) =>
-            Task.FromResult<IDisposable>(new NoopDisposable());
-
-        public bool IsModelInUse(string cacheKey) => false;
-
-        public bool IsLlamaServerAvailable() => false;
-
-        public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
-
-        public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public IReadOnlyList<LlamaServerInfo> ListServers() => [];
 
     }
 

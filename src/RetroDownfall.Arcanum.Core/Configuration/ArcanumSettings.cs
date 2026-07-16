@@ -41,8 +41,6 @@ public sealed record ArcanumSettings
 
     public SessionSettings Sessions { get; init; } = new();
 
-    public LlamaCppSettings LlamaCpp { get; init; } = new();
-
     public WardSettings Ward { get; init; } = new();
 
     public ApprenticeSettings Apprentices { get; init; } = new();
@@ -74,8 +72,6 @@ public sealed record ArcanumSettings
     public PricingSettings Pricing { get; init; } = new();
 
     public BudgetSettings Budget { get; init; } = new();
-
-    public CacheSettings Cache { get; init; } = new();
 
     public WebBrowsingSettings WebBrowsing { get; init; } = new();
 

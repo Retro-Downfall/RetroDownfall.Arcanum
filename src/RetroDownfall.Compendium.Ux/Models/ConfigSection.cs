@@ -13,8 +13,6 @@ public enum ConfigSection
 
     Mcp,
 
-    LlamaCpp,
-
     Orchestration,
 
     Security,
@@ -47,8 +45,6 @@ public enum ConfigSection
 
     Batches,
 
-    Cache,
-
     StructuredOutput,
 
     WebBrowsing,
@@ -75,13 +71,11 @@ public static class SectionDescriptors
 
         new(ConfigSection.Server, "Server", "\ue7a1", "PID file and runtime paths"),
 
-        new(ConfigSection.Providers, "AI Providers", "\ue7c5", "OpenAI-compatible (incl. Ollama), LlamaCpp"),
+        new(ConfigSection.Providers, "AI Providers", "\ue7c5", "OpenAI-compatible; Ollama via /v1 OK"),
 
         new(ConfigSection.Intelligence, "Intelligence & Context", "\ue7c8", "Inference, tokens, compression"),
 
         new(ConfigSection.Mcp, "MCP", "\ue7a5", "MCP client limits"),
-
-        new(ConfigSection.LlamaCpp, "LlamaCpp", "\ue7c2", "Local GGUF server settings"),
 
         new(ConfigSection.Orchestration, "Orchestration", "\ue7c3", "Daemon, apprentices, conclave"),
 
@@ -106,8 +100,6 @@ public static class SectionDescriptors
         new(ConfigSection.Pricing, "Pricing", "\ue7cc", "Per-model cost tracking"),
 
         new(ConfigSection.Budget, "Budget", "\ue7cd", "Daily spend limits and alerts"),
-
-        new(ConfigSection.Cache, "Cache", "\ue7ce", "Prompt caching for llama.cpp"),
 
         new(ConfigSection.StructuredOutput, "Structured Output", "\ue7cf", "JSON schema validation"),
 
@@ -134,7 +126,6 @@ public static class SectionDescriptors
             or ConfigSection.Providers
             or ConfigSection.Intelligence
             or ConfigSection.Mcp
-            or ConfigSection.LlamaCpp
             or ConfigSection.Orchestration
             or ConfigSection.Security
             or ConfigSection.CommLink
@@ -152,7 +143,6 @@ public static class SectionDescriptors
         ConfigSection.Moderations => "moderations.",
         ConfigSection.Pricing => "pricing.",
         ConfigSection.Budget => "budget.",
-        ConfigSection.Cache => "cache.",
         ConfigSection.StructuredOutput => "structuredOutput.",
         ConfigSection.WebBrowsing => "webBrowsing.",
         ConfigSection.ClientToolForwarding => "clientToolForwarding.",

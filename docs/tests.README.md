@@ -73,7 +73,7 @@ The following test classes gained cases directly from the bug-squash plan. Each 
 |------------|----------------|
 | `BudgetMonitorTests` | Singleton captive-dependency fix (`IOptionsMonitor` + `IServiceScopeFactory`); alert-record-before-dispatch ordering; duplicate-alert suppression via `RecordAlertAsync` returning `false`. |
 | `GuardrailsPipelineTests` / `GuardrailAuditLoggerTests` | Async audit-log observation (no fire-and-forget); multiple-violation auditing; phone regex balanced-parens enforcement; topic-regex cache bound. |
-| `JsonSchemaHelperTests` / `StructuredOutputValidatorTests` | Nullable type-array validation; GBNF rule-name collision; enum short-circuit now requires `type: "string"` or absent; numeric enum equality via `decimal`. |
+| `JsonSchemaHelperTests` / `StructuredOutputValidatorTests` | Nullable type-array validation; enum short-circuit now requires `type: "string"` or absent; numeric enum equality via `decimal`. |
 | `ArcanumErrorMapperTests` | New codes (`Prompt.InvalidRequest`, `Session.InvalidStatus`, `Validation.InvalidQuery`, `Embeddings.ConfirmationRequired`, `StructuredOutput.*`); `ResolveStatusCodeDefaultBadRequest` preserves all explicit 500 mappings. |
 | `GrimoireRepositoryTests` | `GetTodaySpendAsync` sargable half-open range + decimal sum in C#; `DeleteEntryAsync` decrements `UnsummarizedEntryCount`; `IncrementSessionTokensAndCostAsync` clamps negatives. |
 | `EmbeddingsResetScopeTests` / `EmbeddingsResetServiceTests` | `ParseScope` rejects typos (no silent `All` escalation); `?confirm=true` gates with `Embeddings.ConfirmationRequired`. |

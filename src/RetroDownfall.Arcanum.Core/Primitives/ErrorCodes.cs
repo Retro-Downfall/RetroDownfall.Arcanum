@@ -237,20 +237,6 @@ public static class ErrorCodes
 
     }
 
-    /// <summary>Llama — local GGUF model cache and server lifecycle.</summary>
-    public static class Llama
-    {
-
-        public const string ModelNotCached = "Llama.ModelNotCached";
-
-        /// <summary>No running <c>llama-server</c> process for the requested cache key — distinct
-        /// from <see cref="ModelNotCached"/> (the GGUF isn't downloaded at all). Returned by
-        /// <c>POST /api/llama/servers/{cacheKey}/warmup</c> when the server must already be running
-        /// (warmup does not start one).</summary>
-        public const string ServerNotRunning = "Llama.ServerNotRunning";
-
-    }
-
     /// <summary>Daemon — background job orchestration.</summary>
     public static class Daemon
     {

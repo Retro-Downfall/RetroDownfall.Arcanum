@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -41,16 +42,9 @@ internal static class ConfigurationEndpoints
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ArcanumSettings? request;
-
-            IResult? jsonError;
-
-            (request, jsonError) = await ApiRequestJson.ReadAsync(
+            (ArcanumSettings? request, IResult? jsonError) = await ReadSettingsRejectingObsoleteKeysAsync(
                 httpContext,
-                ArcanumJsonContext.Default.ArcanumSettings,
-                static ctx => ApiRequestJson.InvalidBodyResult(
-                    ctx,
-                    "Request body must be a valid ArcanumSettings JSON object."),
+                validator,
                 cancellationToken).ConfigureAwait(false);
 
             if (jsonError is not null)
@@ -68,8 +62,8 @@ internal static class ConfigurationEndpoints
 
             ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, currentSettings.Value);
 
-            // W3.5: a residual "***" after merge means a new provider / model-map key whose masked
-            // value could not be restored — reject it instead of persisting the literal mask.
+            // W3.5: a residual "***" after merge means a new provider whose masked value could not be
+            // restored — reject it instead of persisting the literal mask.
             Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
 
             if (residualMask.IsFailure)
@@ -119,16 +113,9 @@ internal static class ConfigurationEndpoints
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ArcanumSettings? request;
-
-            IResult? jsonError;
-
-            (request, jsonError) = await ApiRequestJson.ReadAsync(
+            (ArcanumSettings? request, IResult? jsonError) = await ReadSettingsRejectingObsoleteKeysAsync(
                 httpContext,
-                ArcanumJsonContext.Default.ArcanumSettings,
-                static ctx => ApiRequestJson.InvalidBodyResult(
-                    ctx,
-                    "Request body must be a valid ArcanumSettings JSON object."),
+                validator,
                 cancellationToken).ConfigureAwait(false);
 
             if (jsonError is not null)
@@ -189,8 +176,7 @@ internal static class ConfigurationEndpoints
                     RedactRequired(p.Endpoint),
                     RedactOptional(p.ApiKey),
                     p.Models.Select(static m => m.Name).ToArray(),
-                    p.ContextWindowLimit,
-                    p.LlamaCpp?.ModelMap is { Count: > 0 }))
+                    p.ContextWindowLimit))
                 .ToArray();
 
             ApiResponse<ProviderInfoDto[]> response = ApiResponse<ProviderInfoDto[]>.FromResult(
@@ -202,6 +188,69 @@ internal static class ConfigurationEndpoints
         .WithName("GetProviders");
 
         return apiGroup;
+    }
+
+    private static async Task<(ArcanumSettings? Request, IResult? Error)> ReadSettingsRejectingObsoleteKeysAsync(
+        HttpContext httpContext,
+        ConfigurationValidator validator,
+        CancellationToken cancellationToken)
+    {
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        JsonDocument document;
+
+        try
+        {
+
+            document = await JsonDocument.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (JsonException)
+        {
+
+            return (null, ApiRequestJson.InvalidBodyResult(
+                httpContext,
+                "Request body must be a valid ArcanumSettings JSON object."));
+
+        }
+
+        using (document)
+        {
+
+            Result obsolete = validator.RejectObsoleteJsonKeys(document.RootElement);
+
+            if (obsolete.IsFailure)
+            {
+
+                return (null, Results.BadRequest(ApiResponse<bool>.FromResult(
+                    Result<bool>.Failure(obsolete.Error),
+                    traceId)));
+
+            }
+
+            ArcanumSettings? request;
+
+            try
+            {
+
+                request = document.RootElement.Deserialize(ArcanumJsonContext.Default.ArcanumSettings);
+
+            }
+            catch (JsonException)
+            {
+
+                return (null, ApiRequestJson.InvalidBodyResult(
+                    httpContext,
+                    "Request body must be a valid ArcanumSettings JSON object."));
+
+            }
+
+            return (request, null);
+
+        }
+
     }
 
     private static string RedactRequired(string value) =>

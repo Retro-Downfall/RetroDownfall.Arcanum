@@ -8,7 +8,6 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Configuration;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
-using RetroDownfall.Arcanum.Cli.Commands.Llama;
 using RetroDownfall.Arcanum.Cli.Commands.Lore;
 using RetroDownfall.Arcanum.Cli.Commands.ProvingGrounds;
 using RetroDownfall.Arcanum.Cli.Commands.TheForge;
@@ -124,8 +123,6 @@ internal static class CliApplicationFactory
 
         services.AddTransient<DaemonCommands>();
 
-        services.AddTransient<LlamaCommands>();
-
         services.AddTransient<CampaignCommands>();
 
         services.AddTransient<CampaignCodexCommands>();
@@ -196,8 +193,6 @@ internal static class CliApplicationFactory
         app.Add<LoreCommands>("lore");
 
         app.Add<DaemonCommands>("daemon");
-
-        app.Add<LlamaCommands>("llama");
 
         app.Add<CampaignCommands>("campaign");
 

@@ -312,60 +312,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
     }
 
     [Fact]
-    public async Task ValidateArcanumSettingsAsync_LlamaCppServerEndpoint_SkipsProviderEndpointValidation()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "llama",
-                    Type = AiProviderKind.LlamaCppServer,
-                    Endpoint = "http://127.0.0.1:8080",
-                },
-            ],
-        };
-
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public async Task ValidateArcanumSettingsAsync_BlockedModelMapUrl_FailsWithModelKey()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "llama",
-                    Type = AiProviderKind.LlamaCppServer,
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>(StringComparer.Ordinal)
-                        {
-                            ["tiny"] = "http://127.0.0.1/models/tiny.gguf",
-                        },
-                    },
-                },
-            ],
-        };
-
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Contains("llamaCpp.modelMap['tiny']", result.Error.Message, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
     public async Task ValidateUntrustedUrlAsync_HostnameResolvingToPrivateIp_Fails()
     {
 
@@ -422,62 +368,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
         ArcanumSettings settings = new()
         {
             Providers = [],
-        };
-
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public async Task ValidateArcanumSettingsAsync_EmptyModelMapValue_SkipsEntry()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "llama",
-                    Type = AiProviderKind.LlamaCppServer,
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>(StringComparer.Ordinal)
-                        {
-                            ["skip"] = "   ",
-                            ["valid"] = "https://93.184.216.34/models/tiny.gguf",
-                        },
-                    },
-                },
-            ],
-        };
-
-        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public async Task ValidateArcanumSettingsAsync_EmptyModelMap_Succeeds()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "llama",
-                    Type = AiProviderKind.LlamaCppServer,
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>(StringComparer.Ordinal),
-                    },
-                },
-            ],
         };
 
         Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);

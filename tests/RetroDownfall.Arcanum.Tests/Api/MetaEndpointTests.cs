@@ -54,6 +54,10 @@ public sealed class MetaEndpointTests
 
         Assert.Equal(5443, body.Data.HttpsPort);
 
+        Assert.DoesNotContain("llamaCppEnabled", json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("LlamaCppEnabled", json, StringComparison.Ordinal);
+
     }
 
 }

@@ -17,7 +17,6 @@ using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
-using RetroDownfall.TheForge.Ux.ViewModels.Reliquary;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -117,8 +116,6 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IModelsProvidersDataSource, ModelsProvidersDataSource>();
 
-        services.AddSingleton<IReliquaryDataSource, ReliquaryDataSource>();
-
         services.AddSingleton<ITreasuryDataSource, TreasuryDataSource>();
 
         services.AddSingleton<ILoreDataSource, LoreDataSource>();
@@ -180,8 +177,6 @@ internal static class ServiceCollectionConfigurator
 
         services.AddTransient<ModelsProvidersViewModel>();
 
-        services.AddTransient<ReliquaryViewModel>();
-
         // Singleton so Workbench documents (The Tome) and the shell share one log surface.
         services.AddSingleton<FoundryFloorViewModel>();
 
@@ -223,8 +218,6 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<McpService>();
 
         services.AddSingleton<ToolInvokeService>();
-
-        services.AddSingleton<LlamaService>();
 
         services.AddSingleton<LoreService>();
 

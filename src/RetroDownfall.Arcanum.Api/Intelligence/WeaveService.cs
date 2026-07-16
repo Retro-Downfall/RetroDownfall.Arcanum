@@ -108,7 +108,7 @@ public sealed class WeaveService(
         try
         {
 
-            // Sequential, not parallel — avoids overwhelming local providers (Ollama/LlamaCppServer).
+            // Sequential, not parallel — avoids overwhelming local providers (e.g. Ollama).
             for (int offset = 0; offset < texts.Count; offset += batchSize)
             {
 
@@ -206,7 +206,7 @@ public sealed class WeaveService(
 
     /// <summary>
     /// <c>413 Payload Too Large</c> and <c>400 Bad Request</c> are the two statuses upstream OpenAI-
-    /// compatible providers (OpenAI, DeepSeek, llama.cpp) use to reject an oversized embedding batch or
+    /// compatible providers (OpenAI, DeepSeek, Ollama) use to reject an oversized embedding batch or
     /// a single input exceeding the provider's context/dimension limit.
     /// </summary>
     private static bool IsPayloadOrRequestSizeError(int statusCode) =>

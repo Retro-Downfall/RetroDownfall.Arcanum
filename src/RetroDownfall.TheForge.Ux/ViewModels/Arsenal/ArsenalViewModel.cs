@@ -2,14 +2,12 @@ using System.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
-using RetroDownfall.TheForge.Ux.ViewModels.Reliquary;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
 
 /// <summary>
 /// The Arsenal — operational panel for MCP servers, built-in tool invocation (The Scrying Pool),
-/// models &amp; providers, and local LlamaCpp management (The Reliquary). A tab container that
-/// refreshes its children when Arcanum connects.
+/// and models &amp; providers. A tab container that refreshes its children when Arcanum connects.
 /// </summary>
 public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
 {
@@ -22,16 +20,13 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
 
     private readonly ModelsProvidersViewModel _modelsProviders;
 
-    private readonly ReliquaryViewModel _reliquary;
-
     private bool _disposed;
 
     public ArsenalViewModel(
         IArcanumConnection connection,
         McpServersViewModel mcpServers,
         ScryingPoolViewModel scryingPool,
-        ModelsProvidersViewModel modelsProviders,
-        ReliquaryViewModel reliquary)
+        ModelsProvidersViewModel modelsProviders)
     {
 
         _connection = connection;
@@ -41,8 +36,6 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
         _scryingPool = scryingPool;
 
         _modelsProviders = modelsProviders;
-
-        _reliquary = reliquary;
 
         Title = "The Arsenal";
 
@@ -63,8 +56,6 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
 
     public ModelsProvidersViewModel ModelsProviders => _modelsProviders;
 
-    public ReliquaryViewModel Reliquary => _reliquary;
-
     [RelayCommand]
     public async Task RefreshAsync(CancellationToken cancellationToken)
     {
@@ -72,8 +63,7 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
         await Task.WhenAll(
             _mcpServers.RefreshAsync(cancellationToken),
             _scryingPool.RefreshAsync(cancellationToken),
-            _modelsProviders.RefreshAsync(cancellationToken),
-            _reliquary.RefreshAsync(cancellationToken)).ConfigureAwait(true);
+            _modelsProviders.RefreshAsync(cancellationToken)).ConfigureAwait(true);
 
     }
 
@@ -90,8 +80,6 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
         _disposed = true;
 
         _connection.PropertyChanged -= OnConnectionPropertyChanged;
-
-        _reliquary.Dispose();
 
         GC.SuppressFinalize(this);
 

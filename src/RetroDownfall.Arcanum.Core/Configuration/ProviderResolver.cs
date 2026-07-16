@@ -17,7 +17,7 @@ public static class ProviderResolver
         string.Equals(configuredModel, needle, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Returns the union of <see cref="ProviderSettings.Models"/> and, for <see cref="AiProviderKind.LlamaCppServer"/> providers, <c>LlamaCpp.ModelMap</c> keys.
+    /// Returns the configured <see cref="ProviderSettings.Models"/> names for the provider.
     /// </summary>
     public static IEnumerable<string> EnumerateAdvertisedModels(ProviderSettings provider)
     {
@@ -36,33 +36,12 @@ public static class ProviderResolver
             }
         }
 
-        if (provider.Type != AiProviderKind.LlamaCppServer)
-        {
-            yield break;
-        }
-
-        Dictionary<string, string>? map = provider.LlamaCpp?.ModelMap;
-
-        if (map is null)
-        {
-            yield break;
-        }
-
-        foreach (string key in map.Keys)
-        {
-            if (!string.IsNullOrWhiteSpace(key) && seen.Add(key))
-            {
-                yield return key;
-            }
-        }
-
     }
 
     /// <summary>
     /// Resolves whether <paramref name="modelName"/> declares Scrying (vision) support on any
-    /// configured provider's <see cref="ModelEntry.SupportsVision"/>. Models advertised only via
-    /// <c>LlamaCpp.ModelMap</c> (no matching <see cref="ProviderSettings.Models"/> entry) are
-    /// never vision-capable — capability is declared exclusively through <see cref="ModelEntry"/>.
+    /// configured provider's <see cref="ModelEntry.SupportsVision"/>. Capability is declared
+    /// exclusively through <see cref="ModelEntry"/>.
     /// </summary>
     public static bool SupportsVision(ArcanumSettings settings, string? modelName)
     {

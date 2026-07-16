@@ -120,7 +120,6 @@ public partial class MainWindow : Window
             ConfigSection.Providers => new ProvidersPage(),
             ConfigSection.Intelligence => new IntelligencePage(),
             ConfigSection.Mcp => new McpPage(),
-            ConfigSection.LlamaCpp => new LlamaCppPage(),
             ConfigSection.Orchestration => new OrchestrationPage(),
             ConfigSection.Security => new SecurityPage(),
             ConfigSection.CommLink => new CommLinkPage(),

@@ -180,28 +180,6 @@ public static class ArcanumSettingClamps
 
     public static int SessionStreamReplayLimit(int value) => Math.Clamp(value, 1, 10_000);
 
-    public static int LlamaGpuLayers(int value) => Math.Clamp(value, -1, 1024);
-
-    public static int LlamaContextSize(int value) => Math.Clamp(value, 256, 1_048_576);
-
-    public static int LlamaPortStart(int value) => Math.Clamp(value, 1, 65_535);
-
-    public static int LlamaPortRange(int value) => Math.Clamp(value, 1, 65_535);
-
-    public static int LlamaMaxConcurrentRequests(int value) => Math.Clamp(value, 1, 256);
-
-    public static int LlamaHealthProbeTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
-
-    public static int LlamaStartTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
-
-    public static int LlamaShutdownTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
-
-    public static int LlamaMaxCachedModels(int value) => Math.Clamp(value, 1, 100);
-
-    public static int LlamaModelDownloadTimeoutSeconds(int value) => Math.Clamp(value, 60, 86_400);
-
-    public static long LlamaModelDownloadMaxBytes(long value) => Math.Clamp(value, 1024L * 1024L, 200L * 1024L * 1024L * 1024L);
-
     public static int MaxCampaigns(int value) => Math.Clamp(value, 10, 10_000);
 
     public static int WardTimeoutSeconds(int value) => Math.Clamp(value, 10, 600);
@@ -373,8 +351,6 @@ public static class ArcanumSettingClamps
     public static decimal BudgetDailyLimitUsd(decimal value) => Math.Clamp(value, 0.00m, 1_000_000.00m);
 
     public static int BudgetAlertThresholdPercent(int value) => Math.Clamp(value, 1, 100);
-
-    public static int CacheMinCacheableTokens(int value) => Math.Clamp(value, 1, 131_072);
 
     public static int WebBrowsingMaxContentBytes(int value) => Math.Clamp(value, 1_000, 1_000_000);
 

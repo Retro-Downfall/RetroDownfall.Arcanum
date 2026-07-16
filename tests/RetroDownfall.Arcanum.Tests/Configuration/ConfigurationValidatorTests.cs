@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -139,32 +141,6 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_LlamaCppProviderWithEmptyEndpoint_ReturnsSuccess()
-    {
-
-        // The configured Endpoint field is not used for LlamaCppServer providers (they are dialed
-        // via their dynamically-assigned local endpoint instead), so it is never validated.
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "local",
-                    Type = AiProviderKind.LlamaCppServer,
-                    Endpoint = "not a valid uri",
-                    Models = ["local.gguf"],
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
     public void Validate_DuplicateProviderNames_ReturnsFailure()
     {
 
@@ -216,66 +192,6 @@ public sealed class ConfigurationValidatorTests
             [
                 new ProviderSettings { Name = "one", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://one.example.test/v1", Models = ["m1"] },
                 new ProviderSettings { Name = "two", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://two.example.test/v1", Models = ["m2"] },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public void Validate_LlamaCppWithoutModelsOrMap_ReturnsFailure()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "local",
-                    Type = AiProviderKind.LlamaCppServer,
-                    Models = [],
-                    LlamaCpp = new ProviderLlamaCppSettings { ModelMap = new Dictionary<string, string>() },
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-
-        Assert.NotNull(result.Error.Details);
-
-        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("local", StringComparison.OrdinalIgnoreCase));
-
-        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("modelMap", StringComparison.OrdinalIgnoreCase));
-
-    }
-
-    [Fact]
-    public void Validate_LlamaCppWithModelMapOnly_ReturnsSuccess()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "local",
-                    Type = AiProviderKind.LlamaCppServer,
-                    Models = [],
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>
-                        {
-                            ["tiny"] = "https://example.com/tiny.gguf",
-                        },
-                    },
-                },
             ],
         };
 
@@ -544,37 +460,6 @@ public sealed class ConfigurationValidatorTests
         {
 
             Providers = null!,
-
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public void Validate_LlamaCppWithModelsOnly_ReturnsSuccess()
-    {
-
-        ArcanumSettings settings = new()
-        {
-
-            Providers =
-            [
-
-                new ProviderSettings
-                {
-
-                    Name = "local",
-
-                    Type = AiProviderKind.LlamaCppServer,
-
-                    Models = ["tiny"],
-
-                },
-
-            ],
 
         };
 
@@ -883,56 +768,6 @@ public sealed class ConfigurationValidatorTests
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
 
             ],
-
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public void Validate_LlamaPortSumExceeds65535_ReturnsFailure()
-    {
-
-        ArcanumSettings settings = new()
-        {
-
-            Providers =
-            [
-
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
-            ],
-
-            LlamaCpp = new LlamaCppSettings { PortStart = 40_000, PortRange = 30_000 },
-
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "llamaCpp.portRange");
-
-    }
-
-    [Fact]
-    public void Validate_LlamaPortSumWithinRange_ReturnsSuccess()
-    {
-
-        ArcanumSettings settings = new()
-        {
-
-            Providers =
-            [
-
-                new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
-            ],
-
-            LlamaCpp = new LlamaCppSettings { PortStart = 50_000, PortRange = 1_000 },
 
         };
 
@@ -1423,6 +1258,226 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
 
         Assert.DoesNotContain(result.Error.Details!, static e => e.Detail.Contains("top-secret-password", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public void Validate_MissingProviderType_DefaultsToOpenAICompatible_Succeeds()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Endpoint = "http://localhost:11434/v1",
+                    Models = ["mistral:latest"],
+                },
+            ],
+        };
+
+        Assert.Equal(AiProviderKind.OpenAICompatible, settings.Providers![0].Type);
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_UndefinedProviderType_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "broken",
+                    Type = (AiProviderKind)99,
+                    Endpoint = "http://localhost:11434/v1",
+                    Models = ["mistral:latest"],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0].type");
+
+    }
+
+    [Fact]
+    public void Validate_EmbeddingsEnabled_RequiresOpenAICompatibleProvider()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "http://localhost:11434/v1",
+                    Models = ["nomic-embed-text"],
+                },
+            ],
+            Embeddings = new EmbeddingSettings
+            {
+                Enabled = true,
+                Provider = "ollama",
+                Model = "nomic-embed-text",
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void RejectObsoleteKeys_RootLlamaCpp_ReturnsMigrationError()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:LlamaCpp:ServerExecutablePath"] = "/tmp/llama",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Configuration.ValidationFailed", result.Error.Code);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "llamaCpp");
+
+        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("OpenAICompatible", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public void RejectObsoleteKeys_RootCache_ReturnsMigrationError()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Cache:Enabled"] = "true",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "cache");
+
+    }
+
+    [Fact]
+    public void RejectObsoleteKeys_ProviderLlamaCppAndModelMap_ReturnsMigrationErrors()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Providers:0:Name"] = "local",
+                ["Arcanum:Providers:0:LlamaCpp:ModelMap:mistral"] = "https://example.test/m.gguf",
+                ["Arcanum:Providers:1:Name"] = "mapped",
+                ["Arcanum:Providers:1:ModelMap:mistral"] = "https://example.test/m.gguf",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0].llamaCpp");
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[1].modelMap");
+
+    }
+
+    [Fact]
+    public void RejectObsoleteKeys_ProviderTypeLlamaCppServer_ReturnsMigrationError()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Providers:0:Name"] = "local",
+                ["Arcanum:Providers:0:Type"] = "LlamaCppServer",
+                ["Arcanum:Providers:0:Models:0"] = "mistral",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "providers[0].type");
+
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Detail.Contains(ConfigurationValidator.ObsoleteLlamaCppServerTypeMessage, StringComparison.Ordinal));
+
+    }
+
+    [Theory]
+    [InlineData("""{"llamaCpp":{"serverExecutablePath":"/tmp/x"}}""")]
+    [InlineData("""{"Cache":{"Enabled":true}}""")]
+    [InlineData("""{"Providers":[{"name":"local","llamaCpp":{"modelMap":{"m":"https://x"}}}]}""")]
+    [InlineData("""{"providers":[{"name":"local","ModelMap":{"m":"https://x"}}]}""")]
+    [InlineData("""{"providers":[{"name":"local","type":"LlamaCppServer","models":["m"]}]}""")]
+    [InlineData("""{"Providers":[{"Name":"local","Type":"llamacppserver","Models":["m"]}]}""")]
+    public void RejectObsoleteJsonKeys_ObsoleteShapes_ReturnMigrationError(string json)
+    {
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Configuration.ValidationFailed", result.Error.Code);
+
+        Assert.NotEmpty(result.Error.Details!);
+
+    }
+
+    [Fact]
+    public void RejectObsoleteJsonKeys_OpenAICompatibleOllamaShape_Succeeds()
+    {
+
+        const string json =
+            """
+            {
+              "providers": [
+                {
+                  "name": "Local Ollama",
+                  "type": "OpenAICompatible",
+                  "endpoint": "http://localhost:11434/v1",
+                  "models": ["mistral:latest"]
+                }
+              ]
+            }
+            """;
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
+
+        Assert.True(result.IsSuccess);
 
     }
 

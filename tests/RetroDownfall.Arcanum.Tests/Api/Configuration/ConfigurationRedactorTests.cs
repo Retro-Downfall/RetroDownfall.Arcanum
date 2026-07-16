@@ -19,13 +19,6 @@ public sealed class ConfigurationRedactorTests
                     Name = "openai",
                     Endpoint = "https://api.openai.com/v1",
                     ApiKey = "sk-live",
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            ["model-a"] = "https://models.test/a.gguf",
-                        },
-                    },
                 },
             ],
             CommLink = new CommLinkSettings { WebhookUrl = "https://hooks.test/secret" },
@@ -36,8 +29,6 @@ public sealed class ConfigurationRedactorTests
         Assert.Equal("***", redacted.Providers![0].ApiKey);
 
         Assert.Equal("***", redacted.Providers[0].Endpoint);
-
-        Assert.Equal("***", redacted.Providers[0].LlamaCpp!.ModelMap!["model-a"]);
 
         Assert.Equal("***", redacted.CommLink.WebhookUrl);
     }
@@ -105,13 +96,6 @@ public sealed class ConfigurationRedactorTests
                     Name = "openai",
                     Endpoint = "https://api.openai.com/v1",
                     ApiKey = "sk-live",
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            ["model-a"] = "https://models.test/a.gguf",
-                        },
-                    },
                 },
             ],
             CommLink = new CommLinkSettings { WebhookUrl = "https://hooks.test/secret" },
@@ -124,8 +108,6 @@ public sealed class ConfigurationRedactorTests
         Assert.Equal("sk-live", merged.Providers![0].ApiKey);
 
         Assert.Equal("https://api.openai.com/v1", merged.Providers[0].Endpoint);
-
-        Assert.Equal("https://models.test/a.gguf", merged.Providers[0].LlamaCpp!.ModelMap!["model-a"]);
 
         Assert.Equal("https://hooks.test/secret", merged.CommLink.WebhookUrl);
     }
@@ -218,33 +200,6 @@ public sealed class ConfigurationRedactorTests
         ArcanumSettings merged = new()
         {
             Providers = [new ProviderSettings { Name = "brand-new", ApiKey = "***", Endpoint = "https://api.example.com" }],
-        };
-
-        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
-    }
-
-    [Fact]
-    public void ValidateNoResidualMask_NewModelMapUrlMasked_Fails()
-    {
-        ArcanumSettings merged = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "p",
-                    ApiKey = "real",
-                    Endpoint = "https://x",
-                    LlamaCpp = new ProviderLlamaCppSettings
-                    {
-                        ModelMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["m"] = "***" },
-                    },
-                },
-            ],
         };
 
         Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);

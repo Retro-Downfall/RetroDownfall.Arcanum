@@ -431,15 +431,11 @@ internal static class MainViewModelFactory
 
         NullModelsProvidersDataSource modelsProvidersDataSource = new();
 
-        NullReliquaryDataSource reliquaryDataSource = new();
-
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.McpServersViewModel arsenalMcpServers = new(arsenalDataSource, foundryFloor);
 
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ScryingPoolViewModel arsenalScryingPool = new(arsenalDataSource, foundryFloor);
 
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ModelsProvidersViewModel arsenalModelsProviders = new(modelsProvidersDataSource, foundryFloor);
-
-        RetroDownfall.TheForge.Ux.ViewModels.Reliquary.ReliquaryViewModel arsenalReliquary = new(reliquaryDataSource, foundryFloor, new FakeWhispersService());
 
         return new(
             connection,
@@ -462,8 +458,7 @@ internal static class MainViewModelFactory
                 connection,
                 arsenalMcpServers,
                 arsenalScryingPool,
-                arsenalModelsProviders,
-                arsenalReliquary),
+                arsenalModelsProviders),
             foundryFloor,
             new RetroDownfall.TheForge.Ux.ViewModels.Hearth.HearthViewModel(new NullTerminalCommandRunner()),
             new RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel(
@@ -890,37 +885,6 @@ internal sealed class NullModelsProvidersDataSource : RetroDownfall.TheForge.Ux.
 
     public Task<RetroDownfall.Arcanum.Core.Configuration.ProviderTestResult?> TestProviderAsync(RetroDownfall.Arcanum.Core.Configuration.ProviderTestRequest request, CancellationToken cancellationToken) =>
         Task.FromResult<RetroDownfall.Arcanum.Core.Configuration.ProviderTestResult?>(null);
-
-}
-
-internal sealed class NullReliquaryDataSource : RetroDownfall.TheForge.Ux.ViewModels.Reliquary.IReliquaryDataSource
-{
-
-    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.LlamaCpp.CachedModelInfo>> ListCachedModelsAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.LlamaCpp.CachedModelInfo>>([]);
-
-    public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.LlamaCpp.LlamaServerInfo>> ListServersAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.LlamaCpp.LlamaServerInfo>>([]);
-
-    public Task<RetroDownfall.Arcanum.Core.LlamaCpp.LlamaServerInfo?> StartServerAsync(string cacheKey, CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.Arcanum.Core.LlamaCpp.LlamaServerInfo?>(null);
-
-    public Task<bool> StopServerAsync(string cacheKey, CancellationToken cancellationToken) =>
-        Task.FromResult(false);
-
-    public Task<RetroDownfall.Arcanum.Core.LlamaCpp.WarmupResultDto?> WarmupServerAsync(string cacheKey, CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.Arcanum.Core.LlamaCpp.WarmupResultDto?>(null);
-
-    public async IAsyncEnumerable<RetroDownfall.Arcanum.Core.LlamaCpp.LlamaPullProgress> PullModelAsync(
-        RetroDownfall.Arcanum.Core.LlamaCpp.PullModelRequestDto request,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-
-        await Task.CompletedTask;
-
-        yield break;
-
-    }
 
 }
 

@@ -16,7 +16,7 @@ authenticated, no in-process coupling.
 
 The Forge gives an operator a GUI over everything Arcanum's CLI/HTTP surface can do: browsing
 campaigns and spells, editing and casting/executing spells, chatting in sessions, orchestrating
-apprentices, approving wards, tracking budget, managing MCP servers and local LlamaCpp models,
+apprentices, approving wards, tracking budget, managing MCP servers and browsing configured models/providers,
 running trials, and more. It does not run inference itself, does not open the Grimoire database
 directly, and does not duplicate any server-side business logic — every capability is a thin
 wrapper over an Arcanum API route.
@@ -61,8 +61,8 @@ flowchart LR
   service (`SpellService`, `SessionService`, ...) is a thin wrapper over it. Nothing above the
   service layer touches `HttpClient`.
 - **Streaming**: two distinct shapes, both wrapped by `ArcanumApiClient`:
-  - **NDJSON** (`PostNdjsonStreamAsync`) for `POST /api/intelligence/ping-stream`,
-    `POST /api/spells/{name}/execute-stream`, and `POST /api/llama/models/pull` — one JSON object per
+  - **NDJSON** (`PostNdjsonStreamAsync`) for `POST /api/intelligence/ping-stream` and
+    `POST /api/spells/{name}/execute-stream` — one JSON object per
     `\n`-terminated line, no terminator frame.
   - **SSE** (`GetSseAsync`, parsed by the standalone `SseFrameParser`) for the session stream, the
     apprentice Chronicle, and `/api/events/{logs,mcp,daemon}` — `data: <json>\n\n` frames, a
@@ -90,7 +90,7 @@ suggest — recorded here so future changes don't silently drift from the real w
   — body/result of `POST /api/tools/invoke`; `Arguments`/`Result` are untyped `JsonElement`).
   `HealthStatus` serializes as an **integer** (0/1/2) — it carries no `JsonStringEnumConverter`, and
   the re-declared mirror must not add one either. Every other DTO The Forge touches (campaigns,
-  spells, sessions, apprentices, wards, trials, MCP, llama, lore, saga, config, models, workspaces,
+  spells, sessions, apprentices, wards, trials, MCP, lore, saga, config, models, workspaces,
   divination, comm link, sanctum config, logs, audit, daemon, arsenal aggregation) lives in
   `RetroDownfall.Arcanum.Core` and comes for free via the project reference. **`POST
   /api/providers/test`** accepts only `AiProviderKind.OpenAICompatible`; **`POST
@@ -150,7 +150,7 @@ suggest — recorded here so future changes don't silently drift from the real w
 | Status bar | The Anvil | Semantic search | Divination |
 | Output/logs panel | The Foundry Floor | Lore browser | Lore Browser *(literal)* |
 | Ward approval UI | The Gatehouse | Saga memory browser | The Archive |
-| Budget/cost tracking | The Treasury | LlamaCpp model management | The Reliquary |
+| Budget/cost tracking | The Treasury | Models & Providers (read-only) | The Arsenal |
 | Agent orchestration view | The War Table | Unseen Servant scheduler | The Servants' Quarters |
 | Settings | Compendium | Comm Link alerts | Comm Link Alert Dashboard *(literal)* |
 | Spell version diff viewer | The Mirror | Sanctum breach monitor | Sanctum Breach Monitor *(literal)* |
@@ -411,20 +411,14 @@ reference to `RetroDownfall.Arcanum.Api`, no Grimoire access.
   and offers a provider connectivity test via `POST /api/providers/test`
   (`ProviderTestRequest`/`ProviderTestResult`; only `AiProviderKind.OpenAICompatible` is accepted;
   credentials are not stored). No provider/config editing.
-- **The Reliquary — local LlamaCpp.** `ReliquaryViewModel` lists cached GGUF models
-  (`GET /api/llama/models`) and llama-server status (`GET /api/llama/servers`), runs
-  `POST /api/llama/servers/{cacheKey}/start|stop|warmup`, and pulls models via
-  `POST /api/llama/models/pull` (NDJSON `LlamaPullProgress`) — progress lines append here and to the
-  Foundry Floor; **Stop** cancels an in-flight pull via a linked `CancellationTokenSource`. No cache
-  pruning or model-metadata editing.
 - **The Treasury — budget dashboard.** `TreasuryViewModel` is a read-only dashboard over
   `GET /api/budget` (`BudgetSummaryDto` mirror): enabled, daily limit, today's spend, remaining,
   spent percent (reusing `ManaBar`), alert threshold, and a disabled empty state. No budget/pricing
   editing.
 - **Seams.** New per-area data sources (`IArsenalDataSource`, `IModelsProvidersDataSource`,
-  `IReliquaryDataSource`, `ITreasuryDataSource`) wrap the route services and map `ApiResponse<T>`
+  `ITreasuryDataSource`) wrap the route services and map `ApiResponse<T>`
   failures to null/false without throwing. `ArsenalViewModel` is an `IDisposable` tab container that
-  refreshes its four children when Arcanum connects; `MainViewModel` disposes Arsenal and Treasury.
+  refreshes its children (MCP, Scrying Pool, Models & Providers) when Arcanum connects; `MainViewModel` disposes Arsenal and Treasury.
   New route service `ToolInvokeService`; `McpService` gained start/stop/restart/reload/
   `GetArsenalAsync`; `ModelService` gained `TestProviderAsync`.
 - **`TheForgeJsonContext`.** New source-gen registrations: `OptionalWorkspaceRequest`,
@@ -437,12 +431,11 @@ reference to `RetroDownfall.Arcanum.Api`, no Grimoire access.
   key strings were kept.
 
 **Known limitations (honest):** no arbitrary external-MCP direct invocation (only built-in
-`POST /api/tools/invoke`); no provider/config or budget/pricing editing; no advanced Llama cache
-pruning or model-metadata editing; no model/session token/cost breakdown (no such route). The Ledger
+`POST /api/tools/invoke`); no provider/config or budget/pricing editing; no model/session token/cost breakdown (no such route). The Ledger
 Git UI and a true PTY Hearth remain gaps. **The Mirror** ships in the Spell editor (§5.15).
 **Spell Metadata Designer** ships in §5.16. **Proving Grounds UI** ships in §5.17. **Campaign CRUD
 and artifact import/export** ship in §5.18. Whispers toasts are wired for major ViewModel actions
-(Spell editor, Scriptorium, Archive, Reliquary, Workspace Explorer, Gatehouse); Foundry Floor still
+(Spell editor, Scriptorium, Archive, Workspace Explorer, Gatehouse); Foundry Floor still
 holds detailed error text.
 
 ### 5.11 Milestone H — Context and Memory
@@ -696,7 +689,7 @@ green before the next begins.
 | D — Orchestrate & govern | 7–9 | The War Table + Chronicle SSE + lineage walk, The Gatehouse (ward poll/approve/deny), The Anvil status aggregation |
 | E — Polish | 10 | VS 2026 Fluent-inspired Dark/Light themes, Cascadia/Segoe typography, `Icons.axaml`, `ManaBar`, theme swap via `TheForgeSettings.Theme` |
 | F — Author & test | 11 | Atelier artifact creation (campaign + global: New Spell / New Prompt / New Session), The Scriptorium (Prompt editor: load/edit/save/render/test/execute-stream), session create → The Tome |
-| G — Operate Inference | 12 | The Arsenal (MCP servers, Scrying Pool built-in tool invoke, Models & Providers, Reliquary LlamaCpp), The Treasury budget dashboard; `ToolInvokeService` + `McpService`/`ModelService` extensions + mirror DTOs + `TheForgeJsonContext` registrations; `Forge*` → `TheForge*` type rename |
+| G — Operate Inference | 12 | The Arsenal (MCP servers, Scrying Pool built-in tool invoke, Models & Providers), The Treasury budget dashboard; `ToolInvokeService` + `McpService`/`ModelService` extensions + mirror DTOs + `TheForgeJsonContext` registrations; `Forge*` → `TheForge*` type rename |
 | H — Context and Memory | — | Lore Browser, The Archive (Saga), Divination, Workspace Explorer (read-first + optional server-gated writes), Tome session memory controls, The Codex; `DataSourceResult<T>`, `PatchAsync`, confirmation dialogs; dock tools hidden-by-default |
 | H1 — The Illumination | — | Native markdown preview (`IlluminationView` / Markdown.Avalonia.Tight); Source/Split/Preview in Spell editor + The Codex; standalone markdown Workbench tab; Workspace Explorer Open Preview; link/image/HTML safety policies |
 | H2 — The Illumination Completion | — | Markdig 1.2.0 AST → Avalonia; ColorCode theme brushes; SSRF-safe opt-in remote images + data URIs; approximate AvaloniaEdit scroll sync; footnotes; math/Mermaid source blocks; extended markdown payload context |
@@ -712,10 +705,10 @@ Illumination)**, **Milestone H2 (The Illumination Completion)**, **The Hearth** 
 **Proving Grounds UI** (§5.17), and **Campaign CRUD + import/export** (§5.18): the solution scaffold
 through The Tome, War Table, Gatehouse, Anvil, VS 2026 Fluent-inspired theme polish, the dockable
 Hearth command runner, Atelier artifact creation, The Scriptorium (§5.9), the operational panels —
-The Arsenal, Models & Providers, The Reliquary, and The Treasury (§5.10), Context & Memory (§5.11),
+The Arsenal, Models & Providers, and The Treasury (§5.10), Context & Memory (§5.11),
 and markdown preview (§5.12–§5.13).
 
-**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table / Milestone H tool visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are enabled (Milestone F, §5.9), with top-level New Workspace Spell / New Prompt / New Session on the Global Spells / Global Prompts / Sessions roots; **campaign New / Edit / Delete (unregister) / Export / Import** ship in §5.18. Treasury and Arsenal are real API-backed panels (Milestone G, §5.10) — no longer placeholders. Milestone H Context & Memory tools are API-backed and hidden by default until shown from the View menu. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **Whispers** short toasts are wired into major mutate actions (Spell editor, Scriptorium, Archive, Reliquary, Workspace Explorer, Gatehouse, campaigns, Proving Grounds); Floor and inline status still carry detail. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. **The Proving Grounds** (§5.17) is a singleton ephemeral Trial Workbench tab. **Spell Metadata Designer** (§5.16) edits known SPELL.json fields visually with a raw JSON fallback. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass. No client-side embeddings; workspace file writes are server-gated (`Arcanum:Workspaces:EnableFileWrite`) and may be unavailable; Saga delete-all is not exposed; advanced file diff/merge is deferred; advanced import conflict wizards and full campaign Settings editing remain deferred.
+**Post-milestone hardening (shell honesty):** Atelier category nodes load children on expand; theme dictionaries are applied solely by `ThemeApplicationService` (no static DarkTheme merge); ManaBar fill width is percent of track bounds. Dock layout drives Gatehouse / War Table / Milestone H tool visibility wherever those tools are docked. Campaign context-menu New Spell / New Prompt / New Session are enabled (Milestone F, §5.9), with top-level New Workspace Spell / New Prompt / New Session on the Global Spells / Global Prompts / Sessions roots; **campaign New / Edit / Delete (unregister) / Export / Import** ship in §5.18. Treasury and Arsenal are real API-backed panels (Milestone G, §5.10) — no longer placeholders. Milestone H Context & Memory tools are API-backed and hidden by default until shown from the View menu. View → Connect/Disconnect and the Anvil connection chip call `ArcanumConnectionService`. Foundry Floor streams logs via `ILogService` when Output/Logs are visible. **Whispers** short toasts are wired into major mutate actions (Spell editor, Scriptorium, Archive, Workspace Explorer, Gatehouse, campaigns, Proving Grounds); Floor and inline status still carry detail. **The Hearth** runs local shell commands (initial Git surface); The Ledger Git UI is not built yet. **The Proving Grounds** (§5.17) is a singleton ephemeral Trial Workbench tab. **Spell Metadata Designer** (§5.16) edits known SPELL.json fields visually with a raw JSON fallback. `MainViewModel` disposes owned children on window close (not the FoundryFloor singleton). **Dockable internal window management** is implemented: move tools via header context menu / View menu; layout persists in `forge.json` `layoutState`; Reset Window Layout restores defaults. OS-level floating windows and full VS drag adorners are not in this pass. No client-side embeddings; workspace file writes are server-gated (`Arcanum:Workspaces:EnableFileWrite`) and may be unavailable; Saga delete-all is not exposed; advanced file diff/merge is deferred; advanced import conflict wizards and full campaign Settings editing remain deferred.
 
 ## 7. API integration notes
 

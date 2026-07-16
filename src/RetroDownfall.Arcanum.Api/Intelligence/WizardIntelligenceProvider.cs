@@ -208,10 +208,10 @@ public sealed class WizardIntelligenceProvider(
             {
                 // Only mark the provider unhealthy for a genuine connectivity failure — matching
                 // the inference-failure handling below (attempt.IsConnectivityFailure). A lease
-                // construction error can also be a local misconfiguration or transient overload
-                // (e.g. "Llama.Overloaded" from the concurrency slot queue), neither of which means
-                // the provider itself is down; marking it failed regardless would incorrectly drain
-                // its health status and could take it out of rotation for unrelated reasons.
+                // construction error can also be a local misconfiguration or transient overload,
+                // neither of which means the provider itself is down; marking it failed regardless
+                // would incorrectly drain its health status and could take it out of rotation for
+                // unrelated reasons.
                 bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
 
                 if (isConnectivityFailure)

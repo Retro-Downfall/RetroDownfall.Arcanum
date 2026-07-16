@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -5,6 +7,198 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logger = null)
 {
+
+    internal const string ObsoleteLlamaCppMigrationMessage =
+        "Arcanum:LlamaCpp is no longer supported. Configure an OpenAI-compatible HTTP provider (type OpenAICompatible) instead; Ollama may use endpoint http://localhost:11434/v1.";
+
+    internal const string ObsoleteLlamaCppServerTypeMessage =
+        "Provider type LlamaCppServer is no longer supported. Configure an OpenAI-compatible HTTP provider (type OpenAICompatible) instead; Ollama may use endpoint http://localhost:11434/v1.";
+
+    internal const string ObsoleteCacheMigrationMessage =
+        "Arcanum:Cache is no longer supported. Prompt caching is provider-managed; use ProviderSettings.SupportsPromptCaching to gate cached-token metrics.";
+
+    internal const string ObsoleteProviderLlamaCppMessage =
+        "Provider-level llamaCpp (including modelMap) is no longer supported. List models explicitly under Providers[].Models.";
+
+    internal const string ObsoleteProviderModelMapMessage =
+        "Provider-level modelMap is no longer supported. List models explicitly under Providers[].Models.";
+
+    /// <summary>
+    /// Rejects obsolete configuration keys that binding would otherwise silently ignore after the
+    /// corresponding options properties were removed (managed local-inference options / global Cache).
+    /// Also rejects obsolete provider <c>Type</c> values such as <c>LlamaCppServer</c> before options
+    /// binding can fail with a generic enum-conversion error.
+    /// </summary>
+    public Result RejectObsoleteKeys(IConfiguration configuration)
+    {
+
+        List<ConfigurationValidationError> errors = [];
+
+        IConfigurationSection arcanum = configuration.GetSection("Arcanum");
+
+        if (arcanum.GetSection("LlamaCpp").Exists())
+        {
+            errors.Add(new ConfigurationValidationError(
+                "llamaCpp",
+                ObsoleteLlamaCppMigrationMessage));
+        }
+
+        if (arcanum.GetSection("Cache").Exists())
+        {
+            errors.Add(new ConfigurationValidationError(
+                "cache",
+                ObsoleteCacheMigrationMessage));
+        }
+
+        IConfigurationSection providers = arcanum.GetSection("Providers");
+
+        foreach (IConfigurationSection provider in providers.GetChildren())
+        {
+            string pointer = string.IsNullOrEmpty(provider.Key)
+                ? "providers"
+                : $"providers[{provider.Key}]";
+
+            if (provider.GetSection("LlamaCpp").Exists() || provider.GetSection("llamaCpp").Exists())
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.llamaCpp",
+                    ObsoleteProviderLlamaCppMessage));
+            }
+
+            if (provider.GetSection("ModelMap").Exists() || provider.GetSection("modelMap").Exists())
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.modelMap",
+                    ObsoleteProviderModelMapMessage));
+            }
+
+            string? typeValue = provider["Type"] ?? provider["type"];
+
+            if (IsObsoleteLlamaCppServerType(typeValue))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.type",
+                    ObsoleteLlamaCppServerTypeMessage));
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            return Result.Failure(new Error(
+                "Configuration.ValidationFailed",
+                $"{errors.Count} obsolete configuration key(s).",
+                errors));
+        }
+
+        return Result.Success();
+
+    }
+
+    /// <summary>
+    /// Rejects obsolete keys and obsolete provider types in an ArcanumSettings-shaped JSON object
+    /// (API PUT/validate bodies). Must run on raw <see cref="JsonDocument"/> / <see cref="JsonElement"/>
+    /// before source-generated deserialization so <c>type: LlamaCppServer</c> yields a migration
+    /// error instead of a generic invalid-body enum failure.
+    /// </summary>
+    public Result RejectObsoleteJsonKeys(JsonElement root)
+    {
+
+        List<ConfigurationValidationError> errors = [];
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return Result.Success();
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "llamaCpp", out _))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "llamaCpp",
+                ObsoleteLlamaCppMigrationMessage));
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "cache", out _))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "cache",
+                ObsoleteCacheMigrationMessage));
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "providers", out JsonElement providers)
+            && providers.ValueKind == JsonValueKind.Array)
+        {
+            int index = 0;
+
+            foreach (JsonElement provider in providers.EnumerateArray())
+            {
+                if (provider.ValueKind != JsonValueKind.Object)
+                {
+                    index++;
+
+                    continue;
+                }
+
+                if (TryGetPropertyIgnoreCase(provider, "llamaCpp", out _))
+                {
+                    errors.Add(new ConfigurationValidationError(
+                        $"providers[{index}].llamaCpp",
+                        ObsoleteProviderLlamaCppMessage));
+                }
+
+                if (TryGetPropertyIgnoreCase(provider, "modelMap", out _))
+                {
+                    errors.Add(new ConfigurationValidationError(
+                        $"providers[{index}].modelMap",
+                        ObsoleteProviderModelMapMessage));
+                }
+
+                if (TryGetPropertyIgnoreCase(provider, "type", out JsonElement typeElement)
+                    && typeElement.ValueKind == JsonValueKind.String
+                    && IsObsoleteLlamaCppServerType(typeElement.GetString()))
+                {
+                    errors.Add(new ConfigurationValidationError(
+                        $"providers[{index}].type",
+                        ObsoleteLlamaCppServerTypeMessage));
+                }
+
+                index++;
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            return Result.Failure(new Error(
+                "Configuration.ValidationFailed",
+                $"{errors.Count} obsolete configuration key(s).",
+                errors));
+        }
+
+        return Result.Success();
+
+    }
+
+    private static bool IsObsoleteLlamaCppServerType(string? typeValue) =>
+        !string.IsNullOrWhiteSpace(typeValue)
+        && string.Equals(typeValue.Trim(), "LlamaCppServer", StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
+    {
+
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+
+                return true;
+            }
+        }
+
+        value = default;
+
+        return false;
+
+    }
 
     public Result Validate(ArcanumSettings settings)
     {
@@ -22,26 +216,20 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
             string providerPointer = $"providers[{providerIndex}]";
 
-            IReadOnlyList<ModelEntry> models = provider.Models ?? [];
-
-            if (provider.Type == AiProviderKind.LlamaCppServer)
+            // Missing Type defaults to OpenAICompatible (enum zero). Reject undefined numeric leftovers
+            // and any defined non-OpenAICompatible value; do not require Type to be present.
+            if (!Enum.IsDefined(provider.Type) || provider.Type != AiProviderKind.OpenAICompatible)
             {
 
-                bool hasModels = models.Count > 0;
-
-                bool hasMap = provider.LlamaCpp?.ModelMap is { Count: > 0 };
-
-                if (!hasModels && !hasMap)
-                {
-
-                    errors.Add(new ConfigurationValidationError(
-                        providerPointer,
-                        $"Provider '{provider.Name}' has no configured models or llamaCpp.modelMap entries."));
-
-                }
+                errors.Add(new ConfigurationValidationError(
+                    $"{providerPointer}.type",
+                    $"Provider '{provider.Name}' type must be OpenAICompatible (Ollama via http://localhost:11434/v1)."));
 
             }
-            else if (models.Count == 0)
+
+            IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+
+            if (models.Count == 0)
             {
 
                 errors.Add(new ConfigurationValidationError(
@@ -57,9 +245,7 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             // test suite) — but when a value IS configured, it must be a well-formed absolute
             // http/https URI, catching a typo as a clear startup error instead of a runtime
             // UriFormatException on the first request, or the health probe silently reporting the
-            // provider unhealthy with no indication why. LlamaCppServer providers are dialed via
-            // their dynamically-assigned local endpoint instead — the configured Endpoint field is
-            // not used for them, so it is not validated here.
+            // provider unhealthy with no indication why.
             if (provider.Type == AiProviderKind.OpenAICompatible
                 && !string.IsNullOrWhiteSpace(provider.Endpoint)
                 && (!Uri.TryCreate(provider.Endpoint.Trim(), UriKind.Absolute, out Uri? endpointUri)
@@ -151,22 +337,8 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         }
 
-        LlamaCppSettings llamaCpp = settings.LlamaCpp ?? new LlamaCppSettings();
-
-        int llamaPortStart = ArcanumSettingClamps.LlamaPortStart(llamaCpp.PortStart);
-
-        int llamaPortRange = ArcanumSettingClamps.LlamaPortRange(llamaCpp.PortRange);
-
-        if (llamaPortStart + llamaPortRange - 1 > 65_535)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "llamaCpp.portRange",
-                $"LlamaCpp.PortStart ({llamaPortStart}) + PortRange ({llamaPortRange}) - 1 exceeds 65535; the computed llama-server port can be out of range."));
-
-        }
-
         ValidatePathAllowlist((settings.Campaigns ?? new CampaignsSettings()).AllowedRoots, "campaigns.allowedRoots", errors);
+
 
         ValidatePathAllowlist((settings.Spells ?? new SpellSettings()).AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
 
@@ -312,12 +484,21 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
                     "Arcanum:Embeddings:Provider is required when Arcanum:Embeddings:Enabled is true."));
 
             }
-            else if (!ProviderResolver.TryResolveProviderByName(settings, embeddings.Provider, out _))
+            else if (!ProviderResolver.TryResolveProviderByName(settings, embeddings.Provider, out ProviderSettings? embeddingProvider)
+                || embeddingProvider is null)
             {
 
                 errors.Add(new ConfigurationValidationError(
                     "embeddings.provider",
                     $"Arcanum:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider."));
+
+            }
+            else if (embeddingProvider.Type != AiProviderKind.OpenAICompatible)
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    "embeddings.provider",
+                    $"Arcanum:Embeddings:Provider '{embeddings.Provider}' must be type OpenAICompatible (Ollama embeddings via /v1 with exact model names)."));
 
             }
 

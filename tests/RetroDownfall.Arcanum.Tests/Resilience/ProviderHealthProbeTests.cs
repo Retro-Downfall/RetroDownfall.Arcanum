@@ -1,9 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
-using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -102,22 +99,19 @@ public sealed class ProviderHealthProbeTests
     }
 
     [Fact]
-    public async Task ProbeAsync_LlamaCppServerWithNoModelsOrModelMap_ReturnsUnhealthy()
+    public async Task ProbeAsync_EmptyEndpoint_ReturnsFalseWithoutHttpCall()
     {
 
-        // ConfigurationValidator rejects this shape at startup, but hot-reloaded settings are not
-        // re-validated, so a LlamaCppServer provider with nothing to ever serve can still reach the
-        // probe at runtime — it must be reported unhealthy, not silently healthy.
-        RecordingHttpHandler handler = new(_ => throw new InvalidOperationException("HTTP must not be used for LlamaCppServer probes."));
+        RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
         ProviderHealthProbe probe = CreateProbe(handler);
 
         ProviderSettings provider = new()
         {
-            Name = "misconfigured-llama",
-            Type = AiProviderKind.LlamaCppServer,
-            Endpoint = "http://127.0.0.1:8080",
-            Models = [],
+            Name = "incomplete",
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "   ",
+            Models = ["m"],
         };
 
         bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
@@ -137,7 +131,6 @@ public sealed class ProviderHealthProbeTests
 
         return new ProviderHealthProbe(
             new FakeHttpClientFactory(handler),
-            new NoopLlamaServerManager(),
             secretProtector,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
@@ -165,35 +158,6 @@ public sealed class ProviderHealthProbeTests
             return responder(request);
 
         }
-
-    }
-
-    private sealed class NoopLlamaServerManager : ILlamaServerManager
-    {
-
-        public Task<Result<LlamaServerInfo>> EnsureServerAsync(
-            string modelKey,
-            string? sourceUrl,
-            int? gpuLayersOverride,
-            int? portOverride,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("Not used by OpenAI-compatible provider probes.");
-
-        public Task<IDisposable> AcquireSlotAsync(string modelKey, CancellationToken cancellationToken) =>
-            throw new NotSupportedException("Not used by OpenAI-compatible provider probes.");
-
-        public bool IsModelInUse(string cacheKey) => false;
-
-        public bool IsLlamaServerAvailable() => true;
-
-        public LlamaServerInfo? TryGetRunningServer(string cacheKey) => null;
-
-        public Task<Result> StopAsync(string cacheKey, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
-
-        public Task StopAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public IReadOnlyList<LlamaServerInfo> ListServers() => [];
 
     }
 

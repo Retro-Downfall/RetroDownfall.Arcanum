@@ -52,18 +52,18 @@
                                                        Placeholder="Local Ollama" />
 
                                 <controls:LabeledPicker Label="Type"
-                                                        Description="Backend kind: OpenAI Compatible (any OpenAI-shaped HTTP API, including Ollama via its /v1 endpoint), or Llama Cpp Server (spawned local llama-server)."
+                                                        Description="Backend kind: OpenAI Compatible (any OpenAI-shaped HTTP API). Ollama works via its OpenAI-compatible /v1 endpoint — not as a native Ollama provider."
                                                         PickerTitle="Select type"
                                                         ItemsSource="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).ProviderKinds}"
                                                         SelectedItem="{Binding Type, Mode=TwoWay}" />
 
                                 <controls:LabeledEntry Label="Endpoint"
-                                                       Description="Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1). Ignored for LlamaCppServer."
+                                                       Description="Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1)."
                                                        Text="{Binding Endpoint, Mode=TwoWay}"
                                                        Placeholder="https://api.openai.com/v1" />
 
                                 <controls:LabeledEntry Label="API key"
-                                                       Description="Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local Ollama."
+                                                       Description="Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local OpenAI-compatible endpoints (for example Ollama)."
                                                        Text="{Binding ApiKey, Mode=TwoWay}"
                                                        IsPassword="True"
                                                        Placeholder="sk-..." />
@@ -125,11 +125,6 @@
                                                          Minimum="256"
                                                          Maximum="2097152"
                                                          Increment="128" />
-
-                                <controls:LabeledEntry Label="LlamaCpp model map"
-                                                       Description="Maps model keys to remote http/https URLs for on-demand GGUF download when the model is not yet cached. Only used when type is LlamaCppServer."
-                                                       Text="{Binding LlamaCppModelMap, Mode=TwoWay}"
-                                                       Placeholder="phi3=https://example.com/phi3.gguf" />
 
                                 <Button Content="Remove"
                                         Command="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).Providers.RemoveProviderCommand}"

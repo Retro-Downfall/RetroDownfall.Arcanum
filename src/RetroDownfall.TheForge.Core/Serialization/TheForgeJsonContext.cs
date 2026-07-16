@@ -6,7 +6,6 @@ using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Core.LlamaCpp;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -24,7 +23,7 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 /// <summary>
 /// Source-generated JSON context for every wire type the Arcanum API client touches: closed
 /// <see cref="ApiResponse{T}"/> envelopes for request/response bodies, bare streaming frame types
-/// for NDJSON (<see cref="IntelligenceEvent"/>, <see cref="LlamaPullProgress"/>) and SSE
+/// for NDJSON (<see cref="IntelligenceEvent"/>) and SSE
 /// (<see cref="EntryDto"/>, <see cref="McpServerEvent"/>, <see cref="LogEntry"/>,
 /// <see cref="DaemonEvent"/>, <see cref="ChronicleFrame"/>) payloads.
 ///
@@ -168,16 +167,6 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ApiResponse<ToolInvokeResponse>))]
 [JsonSerializable(typeof(ToolInvokeResponse))]
-
-// LlamaCpp (The Reliquary)
-[JsonSerializable(typeof(PullModelRequestDto))]
-[JsonSerializable(typeof(LlamaPullProgress))]
-[JsonSerializable(typeof(ApiResponse<CachedModelInfo[]>))]
-[JsonSerializable(typeof(ApiResponse<LlamaServerInfo[]>))]
-[JsonSerializable(typeof(ApiResponse<LlamaServerInfo>))]
-[JsonSerializable(typeof(StartLlamaServerRequestDto))]
-[JsonSerializable(typeof(WarmupRequestDto))]
-[JsonSerializable(typeof(ApiResponse<WarmupResultDto>))]
 
 // Lore Browser
 [JsonSerializable(typeof(ApiResponse<ListPageResult<LoreDto>>), TypeInfoPropertyName = "ApiResponseListPageResultLoreDto")]

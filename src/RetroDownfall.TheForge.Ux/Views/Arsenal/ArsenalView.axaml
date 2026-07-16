@@ -2,7 +2,6 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
              xmlns:arsenalViews="using:RetroDownfall.TheForge.Ux.Views.Arsenal"
-             xmlns:reliquaryViews="using:RetroDownfall.TheForge.Ux.Views.Reliquary"
              x:Class="RetroDownfall.TheForge.Ux.Views.Arsenal.ArsenalView"
              x:DataType="vm:ArsenalViewModel">
   <TabControl>
@@ -14,9 +13,6 @@
     </TabItem>
     <TabItem Header="Models &amp; Providers">
       <arsenalViews:ModelsProvidersView DataContext="{Binding ModelsProviders}" />
-    </TabItem>
-    <TabItem Header="Reliquary">
-      <reliquaryViews:ReliquaryView DataContext="{Binding Reliquary}" />
     </TabItem>
   </TabControl>
 </UserControl>

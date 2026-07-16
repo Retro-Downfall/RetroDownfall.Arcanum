@@ -138,8 +138,8 @@ public sealed class ArcanumApiClient
         SendAsync(HttpMethod.Patch, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
 
     /// <summary>
-    /// NDJSON streaming (<c>POST /api/intelligence/ping-stream</c>, <c>POST /api/spells/{name}/execute-stream</c>,
-    /// <c>POST /api/llama/models/pull</c>): one JSON frame per <c>\n</c>-terminated line, no <c>[DONE]</c> terminator.
+    /// NDJSON streaming (<c>POST /api/intelligence/ping-stream</c>, <c>POST /api/spells/{name}/execute-stream</c>):
+    /// one JSON frame per <c>\n</c>-terminated line, no <c>[DONE]</c> terminator.
     /// </summary>
     public async IAsyncEnumerable<TFrame> PostNdjsonStreamAsync<TRequest, TFrame>(
         string path,

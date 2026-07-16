@@ -44,7 +44,6 @@ using RetroDownfall.Arcanum.Infrastructure.Theme;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
-using RetroDownfall.Arcanum.Infrastructure.LlamaCpp;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -396,27 +395,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISpellRepository, SpellRepository>();
 
         services.AddSingleton<ISpellCastPreviewService, SpellCastPreviewService>();
-
-        services.AddHttpClient(
-            TheReliquary.HttpClientName,
-            (sp, client) =>
-            {
-                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-                int timeoutSeconds = ArcanumSettingClamps.LlamaModelDownloadTimeoutSeconds(
-                    opts.CurrentValue.LlamaCpp?.ModelDownloadTimeoutSeconds ?? new LlamaCppSettings().ModelDownloadTimeoutSeconds);
-
-                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
-            })
-            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
-
-        services.AddSingleton<IReliquary, TheReliquary>();
-
-        services.AddSingleton<LlamaServerManager>();
-
-        services.AddSingleton<ILlamaServerManager>(static sp => sp.GetRequiredService<LlamaServerManager>());
-
-        services.AddHostedService<LlamaServerLifecycleHostedService>();
 
         services.AddArcanumResilience();
 

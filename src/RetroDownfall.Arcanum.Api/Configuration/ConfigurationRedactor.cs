@@ -19,7 +19,6 @@ internal static class ConfigurationRedactor
             {
                 ApiKey = Mask(p.ApiKey),
                 Endpoint = MaskRequired(p.Endpoint),
-                LlamaCpp = MaskLlamaCpp(p.LlamaCpp),
             })
             .ToArray();
 
@@ -54,7 +53,6 @@ internal static class ConfigurationRedactor
                 {
                     ApiKey = RestoreMask(p.ApiKey, currentProvider.ApiKey),
                     Endpoint = RestoreMaskRequired(p.Endpoint, currentProvider.Endpoint),
-                    LlamaCpp = MergeLlamaCpp(p.LlamaCpp, currentProvider.LlamaCpp),
                 }
                 : p)
             .ToArray();
@@ -78,9 +76,9 @@ internal static class ConfigurationRedactor
     }
 
     // W3.5: after MergeRedactedSecrets, any field still equal to the mask sentinel "***" is a residual the
-    // merge could not restore — it can only come from a NEW provider (absent from current) or a NEW
-    // model-map key, where the round-tripped redacted GET value would otherwise be persisted as the
-    // literal "***" (a silent auth/config footgun). Reject those so the operator supplies real values.
+    // merge could not restore — it can only come from a NEW provider (absent from current), where the
+    // round-tripped redacted GET value would otherwise be persisted as the literal "***" (a silent
+    // auth/config footgun). Reject those so the operator supplies real values.
     public static Result ValidateNoResidualMask(ArcanumSettings merged)
     {
 
@@ -116,29 +114,6 @@ internal static class ConfigurationRedactor
 
             }
 
-            Dictionary<string, string>? modelMap = provider.LlamaCpp?.ModelMap;
-
-            if (modelMap is null)
-            {
-
-                continue;
-
-            }
-
-            foreach (KeyValuePair<string, string> entry in modelMap)
-            {
-
-                if (entry.Value == MaskSentinel)
-                {
-
-                    return Result.Failure(new Error(
-                        "Config.UnresolvedMask",
-                        $"Provider '{provider.Name}' model-map entry '{entry.Key}' has a masked url ('{MaskSentinel}'); supply the real url."));
-
-                }
-
-            }
-
         }
 
         return Result.Success();
@@ -169,40 +144,4 @@ internal static class ConfigurationRedactor
 
     private static string RestoreMaskRequired(string incoming, string current) =>
         incoming == "***" ? current : incoming;
-
-    private static ProviderLlamaCppSettings? MaskLlamaCpp(ProviderLlamaCppSettings? llamaCpp)
-    {
-        if (llamaCpp?.ModelMap is not { Count: > 0 } modelMap)
-        {
-            return llamaCpp;
-        }
-
-        Dictionary<string, string> redactedMap = modelMap
-            .ToDictionary(static pair => pair.Key, static _ => "***", StringComparer.OrdinalIgnoreCase);
-
-        return llamaCpp with { ModelMap = redactedMap };
-    }
-
-    private static ProviderLlamaCppSettings? MergeLlamaCpp(
-        ProviderLlamaCppSettings? incoming,
-        ProviderLlamaCppSettings? current)
-    {
-        if (incoming?.ModelMap is not { Count: > 0 } requestMap)
-        {
-            return incoming;
-        }
-
-        Dictionary<string, string> currentMap = current?.ModelMap
-            ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        Dictionary<string, string> mergedMap = requestMap
-            .ToDictionary(
-                static pair => pair.Key,
-                pair => pair.Value == "***" && currentMap.TryGetValue(pair.Key, out string? url)
-                    ? url
-                    : pair.Value,
-                StringComparer.OrdinalIgnoreCase);
-
-        return incoming with { ModelMap = mergedMap };
-    }
 }

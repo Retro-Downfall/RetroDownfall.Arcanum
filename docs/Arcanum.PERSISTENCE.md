@@ -141,7 +141,7 @@ The `BudgetAlerts` table follows the same raw-SQL-via-`ArcanumDbContext`-connect
 
 ## 11. Prompt caching
 
-Prompt caching mechanics — `Arcanum:Cache:Enabled` opt-in, llama.cpp `cache_prompt: true` injection via `LlamaCppRequestAugmentingHandler`, OpenAI-compatible automatic caching with `UsageDetails.CachedInputTokenCount` metric recording, and the shared `LlamaCppRequestAugmentingHandler` that also owns structured-output `grammar` injection (DESIGN.md §22.1) — are documented authoritatively in [Arcanum.DESIGN.md §22.3](Arcanum.DESIGN.md#223-prompt-caching-arcanumcache). Both augmentations happen in a single JSON-body pass.
+Prompt caching is provider-managed for OpenAI-compatible endpoints. Arcanum reads `UsageDetails.CachedInputTokenCount` and records low-cardinality Prometheus metrics; `ProviderSettings.SupportsPromptCaching` gates recording. The former `Arcanum:Cache` options block is rejected as obsolete. See [Arcanum.DESIGN.md §22.3](Arcanum.DESIGN.md#223-prompt-caching-provider-managed). Structured-output constrained decoding uses `OpenAiRequestAugmentingHandler` (`strict: true`) — see [§22.1](Arcanum.DESIGN.md#221-structured-output-enforcement-arcanumstructuredoutput).
 
 ## 12. EF migration snapshot drift
 

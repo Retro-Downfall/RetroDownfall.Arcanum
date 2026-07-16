@@ -97,7 +97,7 @@ supported path.
 of the main window, above the dock. `IWhispersService` is registered as a singleton; the shell hosts
 `WhispersHostView` as an overlay on `MainWindow`. Info/Success/Warning auto-dismiss after five seconds;
 Error stays until dismissed manually. At most five active whispers are shown (oldest non-error dropped
-first when at cap). Major actions in the Spell editor, Scriptorium, Archive, Reliquary, Workspace
+first when at cap). Major actions in the Spell editor, Scriptorium, Archive, Workspace
 Explorer, and Gatehouse call `Show` with short success/error messages; detailed server error text
 stays on the Foundry Floor (and inline `LastError` / `StatusText` where those panels already use them).
 
@@ -215,7 +215,7 @@ Stop / Restart** on the selected server plus **Reload** (`POST /api/mcp/{name}/s
 `POST /api/mcp/reload`). The **Scrying Pool** tab lists built-in tools from
 `POST /api/intelligence/arsenal` and invokes the selected one with JSON arguments via
 `POST /api/tools/invoke` — external MCP direct invocation is not exposed by Arcanum yet, and the
-panel says so. The **Models & Providers** and **Reliquary** tabs are described below. Every action
+panel says so. The **Models & Providers** tab is described below. Every action
 requires a running `arcanum serve` and surfaces busy/status/error inline (failures also go to the
 Foundry Floor). Short Whispers toasts cover major success/failure outcomes; they do not replace
 Floor detail.
@@ -227,14 +227,6 @@ The **Models & Providers** tab (inside The Arsenal) shows read-only lists of con
 the API), plus a provider connectivity test (`POST /api/providers/test`; only OpenAI-compatible
 endpoints; credentials you enter are not stored). Provider configuration editing is not part of this
 milestone.
-
-## The Reliquary
-
-The **Reliquary** tab (inside The Arsenal) manages local LlamaCpp: cached GGUF models and
-llama-server status (`GET /api/llama/models`, `GET /api/llama/servers`), **Start / Stop / Warmup**
-on the selected model, and **Pull** of a GGUF from a URL — download progress streams (NDJSON) into
-the panel and the Foundry Floor, and **Cancel** stops an in-flight pull. Advanced cache pruning and
-model-metadata editing are not exposed.
 
 ## The Treasury
 
@@ -319,8 +311,8 @@ CRUD + import/export): Avalonia shell, Atelier, Spell editor, Tome, War Table,
 Gatehouse, Anvil, Visual Studio 2026 Fluent-inspired theming (Cascadia Mono / Segoe UI Variable,
 Dark/Light resource dictionaries, ManaBar, Icons, `forge.json` `Theme` swap), Atelier artifact
 creation and **campaign New / Edit / Delete (unregister) / Export / Import**, The Scriptorium prompt
-editor, Milestone G operational panels — The Arsenal (MCP servers, Scrying Pool, Models & Providers,
-Reliquary) and The Treasury — **The Hearth** local terminal, **Milestone H Context and Memory** (Lore
+editor, Milestone G operational panels — The Arsenal (MCP servers, Scrying Pool, Models & Providers)
+and The Treasury — **The Hearth** local terminal, **Milestone H Context and Memory** (Lore
 Browser, The Archive, Divination, Workspace Explorer, Tome session memory controls, The Codex),
 **The Illumination** Markdig-backed markdown preview (Spell editor / The Codex Source·Split·Preview,
 Workspace Explorer Open Preview, standalone markdown tabs), **The Mirror** and **Spell Metadata
@@ -350,5 +342,5 @@ Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Work
   **Open Preview** to open a Workbench tab (preview-first).
 - The Scriptorium’s **Render** button remains server-side template render — not markdown preview.
 
-**Known gaps (honest UI):** The Arsenal exposes only built-in tool invocation (`POST /api/tools/invoke`); external MCP direct invocation is not exposed by Arcanum yet. No provider/config editing, budget/pricing editing, advanced Llama cache pruning, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for ephemeral Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; no persistent Trial libraries yet. Full prompt-version management beyond list/open, advanced import conflict wizards, full campaign Settings editing, and dedicated Git UI (The Ledger) are not built yet — use The Hearth for `git` commands. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** (Open Compendium deep-link deferred; Guardrails panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet.
+**Known gaps (honest UI):** The Arsenal exposes only built-in tool invocation (`POST /api/tools/invoke`); external MCP direct invocation is not exposed by Arcanum yet. No provider/config editing, budget/pricing editing, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for ephemeral Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; no persistent Trial libraries yet. Full prompt-version management beyond list/open, advanced import conflict wizards, full campaign Settings editing, and dedicated Git UI (The Ledger) are not built yet — use The Hearth for `git` commands. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** (Open Compendium deep-link deferred; Guardrails panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet.
 

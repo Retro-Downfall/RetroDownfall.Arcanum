@@ -115,16 +115,4 @@ public sealed class ArcanumSettingClampsTests
 
     }
 
-    [Fact]
-    public void CacheMinCacheableTokens_clamps_to_valid_range()
-    {
-
-        Assert.Equal(1, ArcanumSettingClamps.CacheMinCacheableTokens(0));
-
-        Assert.Equal(256, ArcanumSettingClamps.CacheMinCacheableTokens(256));
-
-        Assert.Equal(131_072, ArcanumSettingClamps.CacheMinCacheableTokens(500_000));
-
-    }
-
 }

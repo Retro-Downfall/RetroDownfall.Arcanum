@@ -26,7 +26,6 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Spells;
 using RetroDownfall.Arcanum.Api.Telemetry;
 using RetroDownfall.Arcanum.Api.Workspaces;
-using RetroDownfall.Arcanum.Api.LlamaCpp;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
@@ -299,8 +298,6 @@ public static class ApiBootstrapper
 
         services.AddTransient<OpenAiRequestAugmentingHandler>();
 
-        services.AddTransient<LlamaCppRequestAugmentingHandler>();
-
         services.AddHttpClient(
             "OpenAiCompatibleProvider",
             static (sp, client) =>
@@ -523,8 +520,6 @@ public static class ApiBootstrapper
         apiGroup.MapHealthEndpoints();
 
         apiGroup.MapBudgetEndpoints();
-
-        apiGroup.MapLlamaEndpoints();
 
         apiGroup.MapConfigurationEndpoints();
 
