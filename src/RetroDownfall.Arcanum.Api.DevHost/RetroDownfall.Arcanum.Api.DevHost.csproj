@@ -1,51 +1,32 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-
     <OutputType>Exe</OutputType>
-
     <PublishAot>true</PublishAot>
-
     <IsAotCompatible>true</IsAotCompatible>
-
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
-
     <EFOptimizeContext>false</EFOptimizeContext>
-
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">
-
     <StripSymbols>false</StripSymbols>
-
   </PropertyGroup>
 
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-
     <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
-
     <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
-
     <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
-
     <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
-
   </ItemGroup>
 
   <ItemGroup>
-
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-
   </ItemGroup>
 
   <ItemGroup>
-
     <ProjectReference Include="..\RetroDownfall.Arcanum.Api\RetroDownfall.Arcanum.Api.csproj" />
-
     <ProjectReference Include="..\RetroDownfall.Arcanum.Core\RetroDownfall.Arcanum.Core.csproj" />
-
     <ProjectReference Include="..\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
-
   </ItemGroup>
 
 </Project>
