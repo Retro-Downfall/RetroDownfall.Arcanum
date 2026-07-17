@@ -191,16 +191,41 @@ public sealed partial class McpConnectionManager
             ? Guid.NewGuid().ToString("N")
             : request.ElicitationId;
 
-        string value = await humanPromptRegistry.WaitForResponseAsync(promptId, cancellationToken).ConfigureAwait(false);
-
-        return new ModelContextProtocol.Protocol.ElicitResult
+        try
         {
-            Action = "accept",
-            Content = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            string value = await humanPromptRegistry.WaitForResponseAsync(promptId, cancellationToken).ConfigureAwait(false);
+
+            return new ModelContextProtocol.Protocol.ElicitResult
             {
-                ["value"] = JsonSerializer.SerializeToElement(value, McpJsonSerializerContext.Default.String),
-            },
-        };
+                Action = "accept",
+                Content = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["value"] = JsonSerializer.SerializeToElement(value, McpJsonSerializerContext.Default.String),
+                },
+            };
+        }
+        catch (HumanPromptTimeoutException ex)
+        {
+            return new ModelContextProtocol.Protocol.ElicitResult
+            {
+                Action = "decline",
+                Content = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["reason"] = JsonSerializer.SerializeToElement(ex.Message, McpJsonSerializerContext.Default.String),
+                },
+            };
+        }
+        catch (HumanPromptCapExceededException ex)
+        {
+            return new ModelContextProtocol.Protocol.ElicitResult
+            {
+                Action = "cancel",
+                Content = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["reason"] = JsonSerializer.SerializeToElement(ex.Message, McpJsonSerializerContext.Default.String),
+                },
+            };
+        }
     }
 
     private SdkMcpClientWrapper CreateSdkMcpClientWrapper(IClientTransport clientTransport)

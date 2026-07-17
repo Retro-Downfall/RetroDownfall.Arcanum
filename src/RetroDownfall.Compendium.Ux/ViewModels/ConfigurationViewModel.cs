@@ -108,7 +108,15 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         WireDirtyTracking();
 
-        _ = LoadAsync();
+        // Observe the startup load so parse/IO failures surface as alerts instead of unobserved tasks.
+        _ = ObserveLoadAsync();
+
+    }
+
+    private async Task ObserveLoadAsync()
+    {
+
+        await LoadAsync().ConfigureAwait(false);
 
     }
 
@@ -194,9 +202,31 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     private async Task LoadAsync()
     {
 
-        ArcanumSettings settings = await _store.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
 
-        await _uiDispatcher.InvokeAsync(() => ApplyLoadedSettings(settings)).ConfigureAwait(false);
+            ArcanumSettings settings = await _store.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+
+            await _uiDispatcher.InvokeAsync(() => ApplyLoadedSettings(settings)).ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            string path = _store.ConfigurationFilePath;
+
+            string message = $"Could not load {path}:{Environment.NewLine}{Environment.NewLine}{ex.Message}";
+
+            await _uiDispatcher.InvokeAsync(() =>
+            {
+
+                StatusMessage = $"Failed to load {path}";
+
+            }).ConfigureAwait(false);
+
+            await _dialogService.ShowAlertAsync("Corrupt arcanum.json", message).ConfigureAwait(false);
+
+        }
 
     }
 

@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
-using System.Threading;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -32,18 +31,47 @@ namespace RetroDownfall.Arcanum.Infrastructure.Platform;
 /// budget is exceeded — only <c>RLIMIT_CPU</c> delivers that kill semantics (SIGXCPU) on both platforms.
 /// </para>
 /// <para>
+/// On Windows, <see cref="Apply"/> creates and configures a Job Object (process/job memory, per-process
+/// CPU time, and <c>ACTIVE_PROCESS</c> for <see cref="ResourceLimits.MaxProcessCount"/>) with
+/// <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>, then returns
+/// <see cref="ProcessResourceLimiterResult.AssignAfterStart"/> so the caller can
+/// <c>AssignProcessToJobObject</c> immediately after <see cref="Process.Start()"/> — .NET has no
+/// suspended-create hook, so there is an unavoidable post-start race window before assignment
+/// (documented in DESIGN §11.15). Open file descriptors have no Job Object equivalent and are not
+/// enforced on Windows.
+/// </para>
+/// <para>
 /// Known gap: cgroups v2 cgroup membership covers the entire process subtree (grandchildren included),
 /// but the <c>ulimit</c>/setrlimit path only bounds the direct child — a grandchild process spawned by
 /// the tool script is not rlimit-bound by this mechanism. This is an accepted limitation of setrlimit,
 /// not a bug.
 /// </para>
 /// </remarks>
-public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logger = null) : IProcessResourceLimiter
+public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 {
 
     private const string CgroupRoot = "/sys/fs/cgroup";
 
-    private static int _windowsWarningLogged;
+    private readonly ILogger<ProcessResourceLimiter>? _logger;
+
+    private readonly IWindowsJobObjectApi? _windowsJobApi;
+
+    public ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logger = null)
+    {
+
+        _logger = logger;
+
+    }
+
+    /// <summary>Test seam for injecting a fake <see cref="IWindowsJobObjectApi"/>.</summary>
+    internal ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logger, IWindowsJobObjectApi windowsJobApi)
+    {
+
+        _logger = logger;
+
+        _windowsJobApi = windowsJobApi;
+
+    }
 
     public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits)
     {
@@ -52,7 +80,14 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
 
         ArgumentNullException.ThrowIfNull(limits);
 
-        if (!HasAnyLimit(limits))
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ApplyOnWindows(startInfo, limits);
+
+        }
+
+        if (!HasUnixLimit(limits))
         {
 
             return new ProcessResourceLimiterResult(null, null);
@@ -65,15 +100,6 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
             return new ProcessResourceLimiterResult(
                 new ResourceLimitError("execute_command: no target executable was specified for resource-limited execution."),
                 null);
-
-        }
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            LogWindowsWarningOnce();
-
-            return new ProcessResourceLimiterResult(null, null);
 
         }
 
@@ -91,28 +117,65 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
 
         }
 
-        // Unsupported/unknown OS: fail open with no enforcement, same as Windows, rather than
-        // blocking every tool invocation on a platform we have not validated setrlimit/cgroups on.
+        // Unsupported/unknown OS: fail open with no enforcement rather than blocking every tool
+        // invocation on a platform we have not validated setrlimit/cgroups on.
         return new ProcessResourceLimiterResult(null, null);
 
     }
 
-    private static bool HasAnyLimit(ResourceLimits limits) =>
+    private static bool HasUnixLimit(ResourceLimits limits) =>
         limits.MaxCpuSeconds > 0 || limits.MaxMemoryMb > 0 || limits.MaxFileDescriptors > 0;
 
-    private void LogWindowsWarningOnce()
+    private ProcessResourceLimiterResult ApplyOnWindows(ProcessStartInfo startInfo, ResourceLimits limits)
     {
 
-        if (Interlocked.Exchange(ref _windowsWarningLogged, 1) != 0)
+        if (!WindowsJobObjectSession.HasJobEnforceableLimits(limits))
         {
 
-            return;
+            // MaxFileDescriptors-only (or all-zero Job-relevant fields): nothing Job Objects can enforce.
+            return new ProcessResourceLimiterResult(null, null);
 
         }
 
-        logger?.LogWarning(
-            "Sanctum resource limits (CPU time, memory, file descriptors) are not enforced on Windows; "
-            + "only path, network, and tool restrictions apply to execute_command/run_spell_script.");
+        if (string.IsNullOrEmpty(startInfo.FileName))
+        {
+
+            return new ProcessResourceLimiterResult(
+                new ResourceLimitError("execute_command: no target executable was specified for resource-limited execution."),
+                null);
+
+        }
+
+        IWindowsJobObjectApi api = _windowsJobApi ?? WindowsJobObjectInterop.CreateDefaultApi();
+
+        WindowsJobObjectSession? session = WindowsJobObjectSession.TryCreate(limits, api, out ResourceLimitError? error);
+
+        if (error is not null)
+        {
+
+            return new ProcessResourceLimiterResult(error, null);
+
+        }
+
+        if (session is null)
+        {
+
+            return new ProcessResourceLimiterResult(null, null);
+
+        }
+
+        Func<Process, ResourceLimitError?> assignAfterStart = process => session.Assign(process);
+
+        Func<int, Task> cleanup = _ =>
+        {
+
+            session.Dispose();
+
+            return Task.CompletedTask;
+
+        };
+
+        return new ProcessResourceLimiterResult(null, cleanup, WasOomKilledAsync: null, AssignAfterStart: assignAfterStart);
 
     }
 
@@ -205,7 +268,7 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
 
-            logger?.LogDebug(ex, "Could not read cgroups v2 memory.events to confirm an OOM kill.");
+            _logger?.LogDebug(ex, "Could not read cgroups v2 memory.events to confirm an OOM kill.");
 
             return false;
 
@@ -239,7 +302,7 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
 
             // /sys/fs/cgroup not mounted, or cgroup delegation not available to this user: fall back
             // to setrlimit (via the ulimit prelude) for memory too.
-            logger?.LogDebug(ex, "Sanctum could not create a cgroups v2 scope; falling back to setrlimit.");
+            _logger?.LogDebug(ex, "Sanctum could not create a cgroups v2 scope; falling back to setrlimit.");
 
             return null;
 
@@ -256,7 +319,7 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
 
-            logger?.LogDebug(ex, "Sanctum could not configure a cgroups v2 scope; falling back to setrlimit.");
+            _logger?.LogDebug(ex, "Sanctum could not configure a cgroups v2 scope; falling back to setrlimit.");
 
             TryDeleteCgroupDirectory(path);
 
@@ -315,7 +378,7 @@ public sealed class ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logg
 
             // Best-effort cleanup: a leaked, empty, process-less cgroup directory is cosmetic, not a
             // security concern. Nothing further to do here.
-            logger?.LogDebug(ex, "Failed to delete a transient Sanctum cgroups v2 scope directory.");
+            _logger?.LogDebug(ex, "Failed to delete a transient Sanctum cgroups v2 scope directory.");
 
         }
 

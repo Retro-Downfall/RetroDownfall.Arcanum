@@ -192,6 +192,45 @@ public sealed class CappedChildProcessRunnerTests
     }
 
     [Fact]
+    public void ApplyProfile_SpellScript_strips_arcanum_and_hijack_vars_like_ToolExec()
+    {
+
+        ProcessStartInfo psi = new()
+        {
+
+            FileName = "noop",
+
+        };
+
+        psi.Environment["ARCANUM_Arcanum__Providers__0__ApiKey"] = "sk-secret";
+
+        psi.Environment["LD_PRELOAD"] = "/tmp/evil.so";
+
+        psi.Environment["DOTNET_STARTUP_HOOKS"] = "/tmp/hook.dll";
+
+        psi.Environment["NODE_OPTIONS"] = "--require /tmp/evil.js";
+
+        psi.Environment["PATH"] = "/usr/bin";
+
+        psi.Environment["HOME"] = "/home/user";
+
+        ChildProcessEnvironmentScrubber.ApplyProfile(psi, ChildProcessEnvironmentProfile.SpellScript);
+
+        Assert.False(psi.Environment.ContainsKey("ARCANUM_Arcanum__Providers__0__ApiKey"));
+
+        Assert.False(psi.Environment.ContainsKey("LD_PRELOAD"));
+
+        Assert.False(psi.Environment.ContainsKey("DOTNET_STARTUP_HOOKS"));
+
+        Assert.False(psi.Environment.ContainsKey("NODE_OPTIONS"));
+
+        Assert.Equal("/usr/bin", psi.Environment["PATH"]);
+
+        Assert.Equal("/home/user", psi.Environment["HOME"]);
+
+    }
+
+    [Fact]
     public async Task RunAsync_SigKillExit_NotClassifiedAsMemory_WhenNoOomEvidence()
     {
 

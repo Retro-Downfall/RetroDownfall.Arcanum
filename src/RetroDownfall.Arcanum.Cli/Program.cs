@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Cli;
 
@@ -12,6 +13,13 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+
+        if (SandboxExecHelper.TryHandle(args))
+        {
+
+            return 0;
+
+        }
 
         AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupportEnabled", false);
 

@@ -147,7 +147,9 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
 
             ToolInvokeRequest request = new(SelectedTool, doc.RootElement.Clone());
 
-            ToolInvokeResponse? response = await _dataSource.InvokeToolAsync(request, cancellationToken).ConfigureAwait(true);
+            (ToolInvokeResponse? response, string? error) = await _dataSource
+                .InvokeToolAsync(request, cancellationToken)
+                .ConfigureAwait(true);
 
             if (response is not null && response.Result.ValueKind != JsonValueKind.Undefined)
             {
@@ -161,13 +163,15 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
             else
             {
 
-                ResultText = "No result.";
+                string detail = error ?? "Tool invocation failed.";
+
+                ResultText = detail;
 
                 StatusText = "Invocation failed.";
 
-                LastError = "Tool invocation failed.";
+                LastError = detail;
 
-                _foundryFloor.AppendLine($"Scrying Pool invoke failed: {SelectedTool}");
+                _foundryFloor.AppendLine($"Scrying Pool invoke failed: {SelectedTool} — {detail}");
 
             }
 

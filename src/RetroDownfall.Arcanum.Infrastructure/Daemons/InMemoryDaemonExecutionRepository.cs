@@ -106,9 +106,29 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         string executionId = Guid.NewGuid().ToString("N");
 
-        CreateRecord(daemonId, daemonName, executionId, ct);
+        // Single-flight: refuse to overwrite an existing in-flight slot for this daemon.
+        if (!_inFlightByDaemon.TryAdd(daemonId, executionId))
+        {
 
-        _inFlightByDaemon[daemonId] = executionId;
+            throw new InvalidOperationException(
+                $"Daemon job '{daemonId}' already has a running execution.");
+
+        }
+
+        try
+        {
+
+            CreateRecord(daemonId, daemonName, executionId, ct);
+
+        }
+        catch
+        {
+
+            _ = _inFlightByDaemon.TryRemove(daemonId, out _);
+
+            throw;
+
+        }
 
         return Task.FromResult(executionId);
     }
@@ -297,9 +317,34 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         while (list.Count > limit)
         {
-            DaemonExecutionRecord removed = list[0];
+            // Never evict a live Running execution — doing so leaves the in-flight slot
+            // pointing at a missing record and can permanently block future starts.
+            int removeAt = -1;
 
-            list.RemoveAt(0);
+            for (int i = 0; i < list.Count; i++)
+            {
+
+                if (list[i].Status != DaemonJobStatus.Running)
+                {
+
+                    removeAt = i;
+
+                    break;
+
+                }
+
+            }
+
+            if (removeAt < 0)
+            {
+
+                break;
+
+            }
+
+            DaemonExecutionRecord removed = list[removeAt];
+
+            list.RemoveAt(removeAt);
 
             _ = _byId.TryRemove(removed.Id, out _);
         }

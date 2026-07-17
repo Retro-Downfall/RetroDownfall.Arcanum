@@ -23,7 +23,7 @@ public static class SettingDescriptors
 
         new("host.systemFingerprint", ConfigSection.Host, "System fingerprint", "Optional stable identifier surfaced as system_fingerprint on OpenAI-shaped /v1/chat/completions responses. When null, the API derives one from the assembly version.", SettingKind.String, Placeholder: "arcanum-0.1.0-beta"),
 
-        new("host.listenAny", ConfigSection.Host, "Listen on all interfaces", "When true, Kestrel binds to all network interfaces instead of loopback. The ARCANUM_HOST_ANY env var is still honored as an override.", SettingKind.Bool),
+        new("host.listenAny", ConfigSection.Host, "Listen on all interfaces", "When true (or ARCANUM_HOST_ANY), Kestrel binds HTTPS-only on the HTTPS port to all interfaces. Requires Host:Https:Enabled and a loadable certificate; plaintext any-IP HTTP is refused.", SettingKind.Bool),
 
         new("host.maxRequestBodyBytes", ConfigSection.Host, "Max request body bytes", "Kestrel MaxRequestBodySize in bytes. Default 10 MiB; clamped 256 KiB - 1 GiB.", SettingKind.Long, 262144, 1073741824, 1048576, ClampName: nameof(ArcanumSettingClamps.MaxRequestBodyBytes)),
 
@@ -51,7 +51,7 @@ public static class SettingDescriptors
 
         // ===== Host — HTTPS (TLS) =====
 
-        new("host.https.enabled", ConfigSection.Host, "Enable HTTPS", "When true, Kestrel adds a TLS listener on the HTTPS port alongside the existing plaintext HTTP listener. Default false.", SettingKind.Bool),
+        new("host.https.enabled", ConfigSection.Host, "Enable HTTPS", "On loopback: when true, Kestrel adds a TLS listener alongside plaintext HTTP. Required true when ListenAny / ARCANUM_HOST_ANY is enabled (HTTPS-only any-IP). Default false.", SettingKind.Bool),
 
         new("host.https.port", ConfigSection.Host, "HTTPS port", "TLS listen port. Default 5443; clamped 1-65535. Must differ from the HTTP port.", SettingKind.Int, 1, 65535, 1, ClampName: nameof(ArcanumSettingClamps.HostHttpsPort)),
 
@@ -65,7 +65,7 @@ public static class SettingDescriptors
 
         new("metrics.enabled", ConfigSection.Metrics, "Enable metrics endpoint", "When true (default), GET /metrics renders Prometheus text format; when false, the endpoint returns 404.", SettingKind.Bool),
 
-        new("metrics.requireApiKey", ConfigSection.Metrics, "Require API key for metrics", "When true, /metrics is mapped behind ApiKeyEndpointFilter instead of as a standalone unauthenticated route. Forced to effectively true whenever the host binds to all interfaces.", SettingKind.Bool),
+        new("metrics.requireApiKey", ConfigSection.Metrics, "Require API key for metrics", "When true (default), GET /metrics requires X-Arcanum-Key or Authorization: Bearer via ApiKeyEndpointFilter. Set false only for unauthenticated scrapes on a loopback-only bind; forced to effectively true whenever the host binds to all interfaces.", SettingKind.Bool),
 
         // ===== Server =====
 
@@ -288,6 +288,8 @@ public static class SettingDescriptors
         new("security.idempotencyTtlHours", ConfigSection.Security, "Idempotency-Key TTL (hours)", "How long a cached Idempotency-Key response is replayed before it is treated as expired.", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.SecurityIdempotencyTtlHours)),
 
         new("security.idempotencyMaxResponseBytes", ConfigSection.Security, "Idempotency-Key max cached response (bytes)", "Maximum buffered response size cached for an Idempotency-Key request; larger responses still stream fully to the client but are never cached.", SettingKind.Int, 1024 * 1024, 100 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes)),
+
+        new("security.allowUnsandboxedToolChildren", ConfigSection.Security, "Allow unsandboxed tool children", "When false (default), execute_command and run_spell_script require an OS filesystem sandbox (Landlock / sandbox-exec). Setup failure refuses the tool rather than running unbounded. When true, logs a warning and runs without the FS jail (resource limits still apply where available). Filesystem-only — does not isolate network. Windows with Sanctum path-boundary enforcement still denies these tools.", SettingKind.Bool),
 
         // ===== CommLink =====
 

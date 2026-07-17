@@ -698,6 +698,47 @@ internal sealed class FakeRemoteMarkdownImageLoader : IRemoteMarkdownImageLoader
 
 }
 
+public class IlluminationRenderGenerationTests
+{
+
+    [Fact]
+    public void Begin_SupersedesPriorGeneration_StaleCannotPublish()
+    {
+
+        IlluminationRenderGeneration gate = new();
+
+        int generationA = gate.Begin();
+
+        int generationB = gate.Begin();
+
+        // Render A started, B superseded it — A completing last must not publish.
+        Assert.False(gate.IsCurrent(generationA));
+
+        Assert.True(gate.IsCurrent(generationB));
+
+    }
+
+    [Fact]
+    public void Prepare_SanitizesAndParsesOffUiThreadSurface()
+    {
+
+        IlluminationPreparedMarkdown prepared = IlluminationMarkdownPrepare.Prepare(
+            "# Title\n\nHello <script>x</script>\n");
+
+        Assert.False(prepared.Truncated);
+
+        Assert.DoesNotContain("<script>", prepared.SanitizedMarkdown, StringComparison.OrdinalIgnoreCase);
+
+        Assert.NotEmpty(prepared.Anchors);
+
+        Assert.True(prepared.Anchors[0].SourceLine >= 0);
+
+        Assert.Equal("b0", prepared.Anchors[0].BlockId);
+
+    }
+
+}
+
 internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 {
 

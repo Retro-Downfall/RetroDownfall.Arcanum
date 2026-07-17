@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -1021,6 +1022,15 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         services.AddSingleton<RetroDownfall.Arcanum.Core.Platform.IProcessResourceLimiter, ProcessResourceLimiter>();
 
+        // Existing MCP tool tests exercise command plumbing, not the OS FS jail. Opt into the escape
+        // hatch so nested CI/agent sandboxes (where sandbox-exec cannot apply) do not fail-closed.
+        services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Security = new SecuritySettings { AllowUnsandboxedToolChildren = true },
+                }));
+
         services.AddSingleton<ILexiconService, FakeLexiconService>();
 
         if (a2aClientService is not null)
@@ -1346,7 +1356,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        public Task RecordResourceLimitBreachAsync(
+        
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
+
+public Task RecordResourceLimitBreachAsync(
             string? workspaceRoot,
             string toolName,
             Core.Platform.ResourceLimitKind resource,

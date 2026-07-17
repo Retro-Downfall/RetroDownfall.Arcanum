@@ -69,6 +69,14 @@ public sealed partial class McpConnectionManager(
 
     private bool _globalRegistryLoaded;
 
+    /// <summary>
+    /// Shared global bootstrap / surface-build operation so concurrent
+    /// <see cref="InitializeAsync"/> / <see cref="EnsureGlobalLoadedAsync"/> callers observe one
+    /// initialization and do not both call <c>StartAsync</c> for the same AlwaysOn server outside
+    /// the per-entry gate race window.
+    /// </summary>
+    private Task? _globalInitOperation;
+
     private Dictionary<string, LoadedMcpToolRow> _globalFirstByToolName = new(StringComparer.Ordinal);
 
     private IReadOnlyList<AITool> _globalSurfaceTools = [];
@@ -76,50 +84,14 @@ public sealed partial class McpConnectionManager(
     private volatile bool _disposed;
 
     /// <inheritdoc />
-    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
-
-        ManagedMcpServerEntry[] globalAlwaysOn = _registry.Values
-            .Where(entry => entry.ScopeWorkingDirectory is null && entry.AlwaysOn)
-            .ToArray();
-
-        if (globalAlwaysOn.Length == 0)
-        {
-            return;
-        }
-
-        Task<Result>[] startTasks = globalAlwaysOn
-            .Select(entry => StartAsync(entry.Name, null, cancellationToken))
-            .ToArray();
-
-        Result[] startResults = await Task.WhenAll(startTasks).ConfigureAwait(false);
-
-        List<string> bootstrapFailures = [];
-
-        for (int i = 0; i < globalAlwaysOn.Length; i++)
-        {
-
-            if (startResults[i].IsFailure)
-            {
-
-                bootstrapFailures.Add($"{globalAlwaysOn[i].Name}: {startResults[i].Error.Message}");
-
-            }
-
-        }
-
-        if (bootstrapFailures.Count > 0)
-        {
-
-            logger.LogWarning(
-                "MCP bootstrap: {FailureCount} always-on server(s) failed to start: {Failures}",
-                bootstrapFailures.Count,
-                string.Join("; ", bootstrapFailures));
-
-        }
+        // BootstrapBlocksStartup awaits this before Kestrel accepts requests. Completing global
+        // load (AlwaysOn starts + surface attach) preserves that contract while sharing one
+        // in-flight operation across concurrent callers.
+        return EnsureGlobalLoadedAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -621,6 +593,10 @@ public sealed partial class McpConnectionManager(
 
             _mergedToolsByWorkspace.Clear();
 
+            _globalInitialized = false;
+
+            _globalInitOperation = null;
+
             foreach (Lazy<SemaphoreSlim> workspaceLockLazy in _workspaceInitLocks.Values)
             {
                 if (!workspaceLockLazy.IsValueCreated)
@@ -640,8 +616,6 @@ public sealed partial class McpConnectionManager(
 
             _workspaceInitLocks.Clear();
 
-            _globalInitialized = false;
-
             _globalFirstByToolName = new(StringComparer.Ordinal);
 
             _globalSurfaceTools = [];
@@ -652,18 +626,6 @@ public sealed partial class McpConnectionManager(
         }
 
         await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
-
-        await EnsureGlobalRegistryLoadedAsync(cancellationToken).ConfigureAwait(false);
-
-        foreach (ManagedMcpServerEntry entry in _registry.Values)
-        {
-            if (entry.ScopeWorkingDirectory is not null || !entry.AlwaysOn)
-            {
-                continue;
-            }
-
-            await StartAsync(entry.Name, null, cancellationToken).ConfigureAwait(false);
-        }
 
         logger.LogInformation(
             "MCP connection manager reloaded (workspace hint: {WorkingDirectory}); global re-bootstrapped, all partitions cleared.",

@@ -191,6 +191,74 @@ public sealed class KeyedLockTests
 
     [Fact]
 
+    public async Task CancelStorm_WithSuccessfulAcquires_PreservesMutualExclusionAndClearsMap()
+    {
+
+        KeyedLock<string> keyedLock = new();
+
+        const int concurrency = 64;
+
+        int counter = 0;
+
+        int maxConcurrent = 0;
+
+        int currentConcurrent = 0;
+
+        int cancelCount = 0;
+
+        Task[] tasks = Enumerable.Range(0, concurrency)
+            .Select(i => Task.Run(async () =>
+            {
+
+                using CancellationTokenSource cts = new();
+
+                if (i % 3 == 0)
+                {
+
+                    cts.CancelAfter(TimeSpan.FromMilliseconds(1));
+
+                }
+
+                try
+                {
+
+                    using IDisposable releaser = await keyedLock.AcquireAsync("shared", cts.Token).ConfigureAwait(false);
+
+                    int observed = Interlocked.Increment(ref currentConcurrent);
+
+                    InterlockedMax(ref maxConcurrent, observed);
+
+                    Interlocked.Increment(ref counter);
+
+                    await Task.Delay(5).ConfigureAwait(false);
+
+                    Interlocked.Decrement(ref currentConcurrent);
+
+                }
+                catch (OperationCanceledException)
+                {
+
+                    Interlocked.Increment(ref cancelCount);
+
+                }
+
+            }))
+            .ToArray();
+
+        await Task.WhenAll(tasks);
+
+        Assert.True(counter > 0);
+
+        Assert.True(cancelCount > 0);
+
+        Assert.Equal(1, maxConcurrent);
+
+        Assert.Equal(0, keyedLock.CountForTesting);
+
+    }
+
+    [Fact]
+
     public void Constructor_NullComparer_UsesDefaultComparer()
     {
 

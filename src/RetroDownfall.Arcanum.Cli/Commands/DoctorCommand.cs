@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -610,12 +612,14 @@ public sealed class DoctorCommand(
     private async Task<(bool Healthy, Table Table)> BuildApiReachabilityPanelCoreAsync(CancellationToken cancellationToken)
     {
 
-        int port = ArcanumSettingClamps.HostPort(options.Value.Host.Port);
+        HostSettings host = options.Value.Host;
+
+        bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
 
         int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
             options.Value.Cli.DoctorHealthTimeoutSeconds);
 
-        string targetUrl = $"http://localhost:{port}/api/health";
+        string targetUrl = ArcanumLocalApiAddress.ResolveHealthProbeUrl(host);
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
@@ -646,6 +650,18 @@ public sealed class DoctorCommand(
             themePalette.MutedMarkup(Markup.Escape(" ")),
             themePalette.MutedMarkup(Markup.Escape("Target:")),
             themePalette.MutedMarkup(Markup.Escape(targetUrl)));
+
+        if (listenAny)
+        {
+
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape(" ")),
+                themePalette.MutedMarkup(Markup.Escape("Bind:")),
+                themePalette.MutedMarkup(
+                    Markup.Escape(
+                        "ListenAny is HTTPS-only. Trust the TLS certificate in the OS store; Compendium self-signed certs are loopback-SAN only.")));
+
+        }
 
         switch (probe.Kind)
         {
@@ -693,7 +709,11 @@ public sealed class DoctorCommand(
                 table.AddRow(
                     themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
                     themePalette.MutedMarkup(Markup.Escape("Status:")),
-                    themePalette.MutedMarkup(Markup.Escape("Not reachable. Is 'arcanum serve' running?")));
+                    themePalette.MutedMarkup(
+                        Markup.Escape(
+                            listenAny
+                                ? $"Not reachable at {targetUrl}. Is 'arcanum serve' running with Host:Https enabled? Trust the cert or supply a SAN that matches localhost."
+                                : "Not reachable. Is 'arcanum serve' running?")));
                 break;
 
             case DoctorProbeKind.Cancelled:
@@ -711,12 +731,14 @@ public sealed class DoctorCommand(
     private async Task<(bool Healthy, DoctorCheck Check)> BuildApiReachabilityCheckAsync(CancellationToken cancellationToken)
     {
 
-        int port = ArcanumSettingClamps.HostPort(options.Value.Host.Port);
+        HostSettings host = options.Value.Host;
+
+        bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
 
         int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
             options.Value.Cli.DoctorHealthTimeoutSeconds);
 
-        string targetUrl = $"http://localhost:{port}/api/health";
+        string targetUrl = ArcanumLocalApiAddress.ResolveHealthProbeUrl(host);
 
         HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
@@ -735,7 +757,12 @@ public sealed class DoctorCommand(
             DoctorProbeKind.Unauthorized => (false, new DoctorCheck("API Health", "fail", $"Reached {targetUrl} but auth failed (HTTP {probe.HttpStatus})")),
             DoctorProbeKind.UnexpectedStatus => (false, new DoctorCheck("API Health", "fail", $"{targetUrl} returned HTTP {probe.HttpStatus}")),
             DoctorProbeKind.Timeout => (true, new DoctorCheck("API Health", "warn", $"Timed out after {timeoutSeconds}s: {targetUrl}")),
-            DoctorProbeKind.Unreachable => (true, new DoctorCheck("API Health", "warn", $"Not reachable: {targetUrl}")),
+            DoctorProbeKind.Unreachable => (true, new DoctorCheck(
+                "API Health",
+                "warn",
+                listenAny
+                    ? $"Not reachable: {targetUrl} (ListenAny is HTTPS-only; trust the TLS certificate or use a SAN that matches localhost)"
+                    : $"Not reachable: {targetUrl}")),
             DoctorProbeKind.Cancelled => (true, new DoctorCheck("API Health", "warn", "Cancelled by operator")),
             _ => (false, new DoctorCheck("API Health", "fail", "Unknown probe result")),
         };

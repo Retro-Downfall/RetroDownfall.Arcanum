@@ -13,15 +13,17 @@ public sealed class DaemonRunner(
 {
 
     public Task<Result<DaemonExecutionSummary>> RunAsync(string daemonId, bool force, CancellationToken ct) =>
-        RunCoreAsync(daemonId, force, enforceSingleRunning: true, ct);
+        RunCoreAsync(daemonId, force, skipOnDemandGate: false, ct);
 
     public Task<Result<DaemonExecutionSummary>> RunScheduledAsync(string daemonId, CancellationToken ct) =>
-        RunCoreAsync(daemonId, force: false, enforceSingleRunning: false, ct);
+        // Scheduled runs intentionally skip CanRunOnDemand but still enforce per-daemon
+        // single-flight (TryStart) so they cannot overwrite an in-flight slot.
+        RunCoreAsync(daemonId, force: false, skipOnDemandGate: true, ct);
 
     private async Task<Result<DaemonExecutionSummary>> RunCoreAsync(
         string daemonId,
         bool force,
-        bool enforceSingleRunning,
+        bool skipOnDemandGate,
         CancellationToken ct)
     {
         IDaemonJob? job = registry.TryGetJob(daemonId);
@@ -32,44 +34,26 @@ public sealed class DaemonRunner(
                 new Error(ErrorCodes.Daemon.NotFound, $"Daemon job '{daemonId}' was not found."));
         }
 
-        if (!force && !job.CanRunOnDemand)
+        if (!skipOnDemandGate && !force && !job.CanRunOnDemand)
         {
             return Result<DaemonExecutionSummary>.Failure(
                 new Error("Daemon.Disabled", $"Daemon job '{daemonId}' is not enabled for on-demand execution."));
         }
 
-        // W3.3 Fix 4: atomic single-running enforcement for the on-demand path.
-        // The previous HasRunningExecution + StartAsync pair was a TOCTOU — two
-        // concurrent on-demand starts could both pass the check and both start.
-        // TryStartAsync reserves the in-flight slot via ConcurrentDictionary.TryAdd
-        // so the check and the reservation are one atomic step. The scheduled path
-        // (enforceSingleRunning: false) keeps the existing StartAsync behavior.
-        string executionId;
+        // Per-daemon single-flight: TryStartAsync reserves the in-flight slot via
+        // ConcurrentDictionary.TryAdd so scheduled and on-demand paths cannot overwrite
+        // each other. Distinct daemon ids remain concurrent subject to MaxConcurrentJobs.
+        string executionId = Guid.NewGuid().ToString("N");
 
-        if (enforceSingleRunning)
+        bool started = await repository
+            .TryStartAsync(daemonId, job.Name, executionId, ct)
+            .ConfigureAwait(false);
+
+        if (!started)
         {
 
-            executionId = Guid.NewGuid().ToString("N");
-
-            bool started = await repository
-                .TryStartAsync(daemonId, job.Name, executionId, ct)
-                .ConfigureAwait(false);
-
-            if (!started)
-            {
-
-                return Result<DaemonExecutionSummary>.Failure(
-                    new Error("Daemon.AlreadyRunning", $"Daemon job '{daemonId}' already has a running execution."));
-
-            }
-
-        }
-        else
-        {
-
-            executionId = await repository
-                .StartAsync(daemonId, job.Name, ct)
-                .ConfigureAwait(false);
+            return Result<DaemonExecutionSummary>.Failure(
+                new Error("Daemon.AlreadyRunning", $"Daemon job '{daemonId}' already has a running execution."));
 
         }
 
@@ -94,8 +78,10 @@ public sealed class DaemonRunner(
                 await job.RunAsync(executionCts.Token).ConfigureAwait(false);
             }
 
+            // Terminal status writes must not honor the caller/job cancel token — otherwise
+            // a cancel during Complete leaves the execution stuck in Running.
             DaemonExecutionSummary summary = await repository
-                .CompleteAsync(executionId, ct)
+                .CompleteAsync(executionId, CancellationToken.None)
                 .ConfigureAwait(false);
 
             PublishEvent(
@@ -142,7 +128,7 @@ public sealed class DaemonRunner(
         catch (Exception ex)
         {
             DaemonExecutionSummary summary = await repository
-                .FailAsync(executionId, ex.Message, ct)
+                .FailAsync(executionId, ex.Message, CancellationToken.None)
                 .ConfigureAwait(false);
 
             PublishEvent(

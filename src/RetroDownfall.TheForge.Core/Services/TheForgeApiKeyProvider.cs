@@ -16,7 +16,7 @@ public delegate Task<string?> ApiKeyPastePrompt(CancellationToken cancellationTo
 /// Default <see cref="ITheForgeApiKeyProvider"/>: resolves via <see cref="ApiKeyResolver"/> once and
 /// caches a successful key in memory for the process lifetime. Optionally prompts for a paste when empty.
 /// A missing key does not permanently suppress future resolution — only an explicit user decline skips
-/// re-prompting until <see cref="PersistPastedKeyAsync"/> succeeds.
+/// re-prompting until <see cref="ClearPasteDecline"/> or <see cref="PersistPastedKeyAsync"/>.
 /// </summary>
 public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 {
@@ -172,6 +172,13 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
             _gate.Release();
 
         }
+
+    }
+
+    public void ClearPasteDecline()
+    {
+
+        _pasteDeclined = false;
 
     }
 

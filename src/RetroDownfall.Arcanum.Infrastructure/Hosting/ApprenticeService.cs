@@ -27,7 +27,9 @@ internal sealed class ApprenticeService(
 
     private const string UnattendedDenySnippet = "Forbidden art denied";
 
-    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _executionTokens = new();
+    private readonly ConcurrentDictionary<Guid, ExecutionLease> _executionTokens = new();
+
+    private readonly ConcurrentDictionary<Guid, long> _executionGenerations = new();
 
     private readonly ConcurrentDictionary<Guid, Task> _activeTasks = new();
 
@@ -58,11 +60,11 @@ internal sealed class ApprenticeService(
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        foreach (KeyValuePair<Guid, CancellationTokenSource> pair in _executionTokens)
+        foreach (KeyValuePair<Guid, ExecutionLease> pair in _executionTokens)
         {
             try
             {
-                await pair.Value.CancelAsync().ConfigureAwait(false);
+                await pair.Value.Cts.CancelAsync().ConfigureAwait(false);
             }
             catch (ObjectDisposedException)
             {
@@ -151,28 +153,39 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.Running, "Apprentice is not running or planning."));
         }
 
-        if (_executionTokens.TryGetValue(apprenticeId, out CancellationTokenSource? cts))
+        long? pauseGeneration = null;
+
+        if (_executionTokens.TryGetValue(apprenticeId, out ExecutionLease? lease))
         {
+            pauseGeneration = lease.Generation;
+
             try
             {
-                await cts.CancelAsync().ConfigureAwait(false);
+                await lease.Cts.CancelAsync().ConfigureAwait(false);
             }
             catch (ObjectDisposedException)
             {
             }
         }
 
-        apprentice.Status = ApprenticeStatus.Paused.ToString();
-
-        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
-        Publish(apprenticeId, new ApprenticeEvent
+        // Only persist Paused if this pause still owns the execution generation. A newer Resume
+        // increments the generation; a late Pause must not clobber that Running status.
+        if (pauseGeneration is null || OwnsExecutionGeneration(apprenticeId, pauseGeneration.Value))
         {
-            Type = ApprenticeEventType.ApprenticePaused,
-            ApprenticeId = apprenticeId,
-            Timestamp = DateTimeOffset.UtcNow,
-            AtStep = apprentice.CurrentStep,
-        });
+
+            apprentice.Status = ApprenticeStatus.Paused.ToString();
+
+            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.ApprenticePaused,
+                ApprenticeId = apprenticeId,
+                Timestamp = DateTimeOffset.UtcNow,
+                AtStep = apprentice.CurrentStep,
+            });
+
+        }
 
         return Result<string>.Success(apprenticeId.ToString());
     }
@@ -282,13 +295,17 @@ internal sealed class ApprenticeService(
 
         }
 
-        if (_executionTokens.TryRemove(apprenticeId, out CancellationTokenSource? cts))
+        long? cancelGeneration = null;
+
+        if (_executionTokens.TryGetValue(apprenticeId, out ExecutionLease? lease))
         {
+
+            cancelGeneration = lease.Generation;
 
             try
             {
 
-                await cts.CancelAsync().ConfigureAwait(false);
+                await lease.Cts.CancelAsync().ConfigureAwait(false);
 
             }
 
@@ -299,20 +316,27 @@ internal sealed class ApprenticeService(
 
         }
 
-        loaded.Status = ApprenticeStatus.Cancelled.ToString();
-
-        await outerRepo.UpdateAsync(loaded, cancellationToken).ConfigureAwait(false);
-
-        Publish(apprenticeId, new ApprenticeEvent
+        // Only persist Cancelled if this cancel still owns the execution generation. A newer Resume
+        // increments the generation; a late Cancel must not clobber that Running status.
+        if (cancelGeneration is null || OwnsExecutionGeneration(apprenticeId, cancelGeneration.Value))
         {
 
-            Type = ApprenticeEventType.ApprenticeCancelled,
+            loaded.Status = ApprenticeStatus.Cancelled.ToString();
 
-            ApprenticeId = apprenticeId,
+            await outerRepo.UpdateAsync(loaded, cancellationToken).ConfigureAwait(false);
 
-            Timestamp = DateTimeOffset.UtcNow,
+            Publish(apprenticeId, new ApprenticeEvent
+            {
 
-        });
+                Type = ApprenticeEventType.ApprenticeCancelled,
+
+                ApprenticeId = apprenticeId,
+
+                Timestamp = DateTimeOffset.UtcNow,
+
+            });
+
+        }
 
         return Result<string>.Success(apprenticeId.ToString());
 
@@ -618,6 +642,10 @@ internal sealed class ApprenticeService(
         if (_concurrencyGate.TryAcquire(maxConcurrent, out IDisposable? lease))
         {
 
+            // Increment generation on acquire so a prior run's CleanupExecution cannot dispose this
+            // lease or clobber status after a Resume wins the slot but before BeginExecutionTask.
+            _executionGenerations.AddOrUpdate(apprenticeId, 1L, static (_, current) => current + 1);
+
             _executionLeases[apprenticeId] = lease!;
 
             return true;
@@ -677,7 +705,16 @@ internal sealed class ApprenticeService(
     private void BeginExecutionTask(Guid apprenticeId)
     {
 
-        Task task = Task.Run(() => RunApprenticeAsync(apprenticeId));
+        // Generation was incremented when the execution slot was acquired (Start/Resume/Intervene/
+        // crash-recovery). Re-read it here so the run + cleanup share the same lease token.
+        if (!_executionGenerations.TryGetValue(apprenticeId, out long generation))
+        {
+
+            generation = _executionGenerations.AddOrUpdate(apprenticeId, 1L, static (_, current) => current + 1);
+
+        }
+
+        Task task = Task.Run(() => RunApprenticeAsync(apprenticeId, generation));
 
         _activeTasks[apprenticeId] = task;
 
@@ -692,7 +729,7 @@ internal sealed class ApprenticeService(
 
                 }
 
-                CleanupExecution(apprenticeId);
+                CleanupExecution(apprenticeId, generation, antecedent);
 
             },
             CancellationToken.None,
@@ -701,22 +738,42 @@ internal sealed class ApprenticeService(
 
     }
 
-    private void CleanupExecution(Guid apprenticeId)
+    private void CleanupExecution(Guid apprenticeId, long generation, Task completedTask)
     {
-        _activeTasks.TryRemove(apprenticeId, out _);
 
-        if (_executionTokens.TryRemove(apprenticeId, out CancellationTokenSource? cts))
+        if (_activeTasks.TryGetValue(apprenticeId, out Task? active)
+            && ReferenceEquals(active, completedTask))
         {
-            cts.Dispose();
+
+            _activeTasks.TryRemove(apprenticeId, out _);
+
         }
 
-        if (_executionLeases.TryRemove(apprenticeId, out IDisposable? lease))
+        if (_executionTokens.TryGetValue(apprenticeId, out ExecutionLease? token)
+            && token.Generation == generation
+            && _executionTokens.TryRemove(KeyValuePair.Create(apprenticeId, token)))
         {
+
+            token.Cts.Dispose();
+
+        }
+
+        if (OwnsExecutionGeneration(apprenticeId, generation)
+            && _executionLeases.TryRemove(apprenticeId, out IDisposable? lease))
+        {
+
             lease.Dispose();
+
+            TryDequeuePendingStart();
+
         }
 
-        TryDequeuePendingStart();
     }
+
+    private bool OwnsExecutionGeneration(Guid apprenticeId, long generation) =>
+        _executionGenerations.TryGetValue(apprenticeId, out long current) && current == generation;
+
+    private sealed record ExecutionLease(CancellationTokenSource Cts, long Generation);
 
     private void TryDequeuePendingStart()
     {
@@ -831,13 +888,13 @@ internal sealed class ApprenticeService(
 
     }
 
-    private async Task RunApprenticeAsync(Guid apprenticeId)
+    private async Task RunApprenticeAsync(Guid apprenticeId, long generation)
     {
         DateTimeOffset runStarted = DateTimeOffset.UtcNow;
 
         using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
 
-        _executionTokens[apprenticeId] = linkedCts;
+        _executionTokens[apprenticeId] = new ExecutionLease(linkedCts, generation);
 
         try
         {
@@ -1394,6 +1451,17 @@ internal sealed class ApprenticeService(
             // the cancel came from host shutdown (StopAsync), the linked CTS is
             // cancelled but no status was set, so persist Paused. Use a fresh scope
             // and a non-cancellable token (the linked CTS is cancelled).
+            //
+            // Generation guard: only mutate status if this run still owns the execution
+            // generation. A newer Resume increments the generation; a late cancel handler
+            // must not clobber Running back to Paused.
+
+            if (!OwnsExecutionGeneration(apprenticeId, generation))
+            {
+
+                return;
+
+            }
 
             try
             {
@@ -1406,7 +1474,7 @@ internal sealed class ApprenticeService(
                     .GetByIdAsync(apprenticeId, CancellationToken.None)
                     .ConfigureAwait(false);
 
-                if (cancelApprentice is not null)
+                if (cancelApprentice is not null && OwnsExecutionGeneration(apprenticeId, generation))
                 {
 
                     string current = cancelApprentice.Status;

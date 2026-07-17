@@ -35,8 +35,11 @@ The Forge requires a reachable Arcanum instance. Start one first:
 arcanum serve
 ```
 
-By default Arcanum listens on `http://localhost:5001` (loopback). The Forge's `forge.json`
-(`BaseUrl`) must point at whatever host/port your instance actually binds to.
+By default Arcanum listens on `http://localhost:5001` (loopback). When the Arcanum host uses
+`ListenAny` / `ARCANUM_HOST_ANY`, it binds **HTTPS-only** on `Arcanum:Host:Https:Port` (default
+5443) — set Forge `BaseUrl` to `https://localhost:5443` (or your host/IP + HTTPS port). The Forge's
+`forge.json` (`BaseUrl`) must point at whatever scheme/host/port your instance actually binds to.
+Do not disable TLS certificate validation.
 
 ## Acquiring an API key
 
@@ -51,6 +54,8 @@ The Forge resolves a key in this order:
 2. Legacy plaintext `apiKey` in `~/.config/arcanum/forge.json` — migrated into the OS store, then stripped.
 3. Shelling out to `arcanum key show` (stderr) — result persisted into the OS store.
 4. Otherwise, a Whispers paste dialog; the pasted key is stored in the OS credential store.
+   Declining the dialog skips re-prompts during the same process; The Anvil shows **Enter API key…**
+   when health reports `Security.MissingApiKey` so you can clear that decline and re-prompt.
 
 Do **not** keep the master key in `forge.json` going forward. To rotate, run `arcanum key set` (or
 update the OS credential) and restart The Forge.
@@ -76,10 +81,18 @@ restarting The Forge:
 }
 ```
 
+When Arcanum is running with ListenAny (HTTPS-only), use e.g. `"baseUrl": "https://localhost:5443"` — TLS validation is not bypassed.
+
 `apiKey` is obsolete (legacy migrate-and-strip only); leave it `null`.
 
 `layoutState` holds a versioned JSON dock layout (`TheForgeDockLayoutDto`) when the operator has
 rearranged tool windows; `null` means use the default shell layout.
+
+The Anvil status chip is **Connect / reconnect** (restarts the health poller when already connected).
+Health failures surface distinct status text: timed out, connection failed, unreachable, or API key
+required (with **Enter API key…** when the paste prompt was previously declined). When status aggregation
+fails, The Anvil keeps last-known metrics and shows a subtle warning from `LastRefreshError`. War Table
+**Chronicle** timelines show a `LastError` banner, streaming indicator, and empty/stream-ended text.
 
 ## Window layout
 
@@ -162,7 +175,9 @@ list/open (diff/activate flows) and advanced import conflict wizards are deferre
 Workspace and campaign spells open with an explicit `?workspace=` context (DocumentKey identity is
 normalized separately from the API workspace value). Same spell name in two workspaces opens two tabs
 (with workspace path tooltips); reopening the same workspace focuses the existing tab. **Validate**,
-**Clone**, **Export**, **Import**, and **Delete** call the matching Arcanum spell routes. Built-in spells are
+**Clone**, **Export**, **Import**, and **Delete** call the matching Arcanum spell routes. **Execute**
+streams NDJSON events and mirrors The Scriptorium with busy state, a **Stop** button, and Execute
+disabled while a run is in progress. Built-in spells are
 read-only for Save/Delete; Clone-to-workspace, Export, and Import remain available. Export uses the server
 export route (persisted artifact). Import reads a JSON file and posts `SpellImportRequest`;
 `Spell.NameCollision` surfaces clearly. Successful delete closes the Workbench tab.
@@ -337,7 +352,9 @@ Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Work
   Mermaid appear as labeled source blocks (no equation engine / no Mermaid graphs / no WebView).
 - Links open in the system browser **only on click**, and only for `http` / `https` / `mailto`.
 - Raw HTML is omitted (`[HTML omitted]`), never executed. Large documents may show **Preview
-  truncated** (256 KiB cap).
+  truncated** (256 KiB cap). Sanitize/Markdig parse run off the UI thread after debounce; Avalonia
+  control build stays on the UI thread, with a generation gate so a stale render cannot overwrite a
+  newer preview.
 - In **Workspace Explorer**, select a `.md` / `.markdown` file, wait for contents to load, then
   **Open Preview** to open a Workbench tab (preview-first).
 - The Scriptorium’s **Render** button remains server-side template render — not markdown preview.

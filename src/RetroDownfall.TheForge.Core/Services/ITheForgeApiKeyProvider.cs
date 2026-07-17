@@ -18,4 +18,9 @@ public interface ITheForgeApiKeyProvider
     /// </summary>
     Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Clears a prior paste-prompt decline so the next <see cref="GetApiKeyAsync"/> may re-prompt.
+    /// </summary>
+    void ClearPasteDecline();
+
 }

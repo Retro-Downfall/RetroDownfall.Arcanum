@@ -62,7 +62,8 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
             10,
             sanctumGuard: guard,
             resourceLimiter: new ProcessResourceLimiter(),
-            campaignWorkspaceRoot: "/fake/workspace");
+            campaignWorkspaceRoot: "/fake/workspace",
+            allowUnsandboxedToolChildren: true);
 
         string? result = await tool.InvokeAsync(
             new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = Path.GetFileName(script) })) as string;
@@ -89,7 +90,8 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
             15,
             sanctumGuard: guard,
             resourceLimiter: new ProcessResourceLimiter(),
-            campaignWorkspaceRoot: "/fake/workspace");
+            campaignWorkspaceRoot: "/fake/workspace",
+            allowUnsandboxedToolChildren: true);
 
         string? result = await tool.InvokeAsync(
             new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = Path.GetFileName(script) })) as string;
@@ -120,7 +122,8 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
             15,
             sanctumGuard: guard,
             resourceLimiter: new ProcessResourceLimiter(),
-            campaignWorkspaceRoot: "/fake/workspace");
+            campaignWorkspaceRoot: "/fake/workspace",
+            allowUnsandboxedToolChildren: true);
 
         string? result = await tool.InvokeAsync(
             new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = Path.GetFileName(script) })) as string;
@@ -213,6 +216,12 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
 
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(limits);
+
+
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
 
         public Task RecordResourceLimitBreachAsync(
             string? workspaceRoot,

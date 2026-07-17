@@ -230,46 +230,53 @@ public sealed class SessionRepository(
     public async Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct)
     {
 
-        int totalSessions = await db.Sessions.AsNoTracking().CountAsync(ct).ConfigureAwait(false);
-
-        int activeSessions = await db.Sessions.AsNoTracking().CountAsync(s => s.Status == "active", ct).ConfigureAwait(false);
-
-        int archivedSessions = await db.Sessions.AsNoTracking().CountAsync(s => s.Status == "archived", ct).ConfigureAwait(false);
-
-        long totalTokensUsed = await db.Sessions.AsNoTracking().SumAsync(s => s.TotalTokensUsed, ct).ConfigureAwait(false);
-
-        int totalEntries = await db.Entries.AsNoTracking().CountAsync(ct).ConfigureAwait(false);
-
-        int userEntries = await db.Entries.AsNoTracking().CountAsync(e => e.Role == MessageRole.User, ct).ConfigureAwait(false);
-
-        int assistantEntries = await db.Entries.AsNoTracking().CountAsync(e => e.Role == MessageRole.Assistant, ct).ConfigureAwait(false);
-
-        int toolEntries = await db.Entries.AsNoTracking().CountAsync(e => e.Role == MessageRole.Tool, ct).ConfigureAwait(false);
-
-        int systemEntries = await db.Entries.AsNoTracking().CountAsync(e => e.Role == MessageRole.System, ct).ConfigureAwait(false);
-
-        List<string> modelNames = await db.Entries
+        var sessionStats = await db.Sessions
             .AsNoTracking()
-            .Where(e => e.ModelUsed != "")
-            .Select(e => e.ModelUsed)
-            .ToListAsync(ct)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                TotalSessions = g.Count(),
+                ActiveSessions = g.Sum(s => s.Status == "active" ? 1 : 0),
+                ArchivedSessions = g.Sum(s => s.Status == "archived" ? 1 : 0),
+                TotalTokensUsed = g.Sum(s => s.TotalTokensUsed),
+            })
+            .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
 
-        Dictionary<string, int> entriesByModel = modelNames
-            .GroupBy(m => m, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        var entryStats = await db.Entries
+            .AsNoTracking()
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                TotalEntries = g.Count(),
+                UserEntries = g.Sum(e => e.Role == MessageRole.User ? 1 : 0),
+                AssistantEntries = g.Sum(e => e.Role == MessageRole.Assistant ? 1 : 0),
+                ToolEntries = g.Sum(e => e.Role == MessageRole.Tool ? 1 : 0),
+                SystemEntries = g.Sum(e => e.Role == MessageRole.System ? 1 : 0),
+            })
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+
+        Dictionary<string, int> entriesByModel = await db.Entries
+            .AsNoTracking()
+            .Where(e => e.ModelUsed != "")
+            .GroupBy(e => e.ModelUsed)
+            .Select(g => new { Model = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Model, x => x.Count, StringComparer.OrdinalIgnoreCase, ct)
+            .ConfigureAwait(false);
 
         return new SessionAnalytics(
-            totalSessions,
-            activeSessions,
-            archivedSessions,
-            totalEntries,
-            userEntries,
-            assistantEntries,
-            toolEntries,
-            systemEntries,
-            totalTokensUsed,
+            sessionStats?.TotalSessions ?? 0,
+            sessionStats?.ActiveSessions ?? 0,
+            sessionStats?.ArchivedSessions ?? 0,
+            entryStats?.TotalEntries ?? 0,
+            entryStats?.UserEntries ?? 0,
+            entryStats?.AssistantEntries ?? 0,
+            entryStats?.ToolEntries ?? 0,
+            entryStats?.SystemEntries ?? 0,
+            sessionStats?.TotalTokensUsed ?? 0L,
             entriesByModel);
+
     }
 
     public async Task<Result<SessionExportResult>> ExportAsync(Guid id, SessionExportFormat format, CancellationToken ct)

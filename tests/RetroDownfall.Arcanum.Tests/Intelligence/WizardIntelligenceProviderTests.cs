@@ -4485,7 +4485,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        public Task RecordResourceLimitBreachAsync(
+        
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
+
+public Task RecordResourceLimitBreachAsync(
             string? workspaceRoot,
             string toolName,
             Core.Platform.ResourceLimitKind resource,

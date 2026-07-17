@@ -82,4 +82,16 @@ public sealed class ListenAnySecurityPolicyTests : IDisposable
 
   }
 
+  [Fact]
+  public void SecurityBanner_describes_https_only_any_ip_not_plaintext()
+  {
+
+    Assert.Contains("HTTPS only", ListenAnySecurityPolicy.SecurityBanner, StringComparison.Ordinal);
+
+    Assert.DoesNotContain("plaintext HTTP", ListenAnySecurityPolicy.SecurityBanner, StringComparison.Ordinal);
+
+    Assert.Contains("HTTPS only", ListenAnySecurityPolicy.InteractiveConfirmPrompt, StringComparison.Ordinal);
+
+  }
+
 }

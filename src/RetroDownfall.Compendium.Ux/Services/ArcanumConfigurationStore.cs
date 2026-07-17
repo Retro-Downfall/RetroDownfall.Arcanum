@@ -81,16 +81,29 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         }
 
-        await using FileStream stream = File.OpenRead(_filePath);
+        try
+        {
 
-        ArcanumConfigurationFile? wrapper = await JsonSerializer.DeserializeAsync(
-            stream,
-            ConfigurationJsonContext.Default.ArcanumConfigurationFile,
-            ct).ConfigureAwait(false);
+            await using FileStream stream = File.OpenRead(_filePath);
 
-        ArcanumSettings settings = wrapper?.Arcanum ?? new ArcanumSettings();
+            ArcanumConfigurationFile? wrapper = await JsonSerializer.DeserializeAsync(
+                stream,
+                ConfigurationJsonContext.Default.ArcanumConfigurationFile,
+                ct).ConfigureAwait(false);
 
-        return _secretProtector.DecryptProviderKeys(settings);
+            ArcanumSettings settings = wrapper?.Arcanum ?? new ArcanumSettings();
+
+            return _secretProtector.DecryptProviderKeys(settings);
+
+        }
+        catch (JsonException ex)
+        {
+
+            throw new InvalidOperationException(
+                $"Failed to parse {_filePath}: {ex.Message}",
+                ex);
+
+        }
 
     }
 

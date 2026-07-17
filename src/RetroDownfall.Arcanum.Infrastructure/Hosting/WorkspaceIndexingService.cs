@@ -33,7 +33,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// Change detection: a file is only re-chunked/re-embedded when its <c>LastWriteTimeUtc</c> differs from
 /// the <c>FileLastWriteTime</c> recorded on its existing <c>workspace_file_chunks</c> rows — unchanged
 /// files are skipped every tick, keeping steady-state re-index cost proportional to the number of edited
-/// files, not the size of the workspace.
+/// files, not the size of the workspace. Existing RelativePath → FileLastWriteTime pairs are loaded in
+/// one query per workspace tick (not a per-file SELECT).
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: IHostedService workspace indexing scheduler; covered via WorkspaceIndexingServiceTests exercising the indexing logic directly.
 internal sealed class WorkspaceIndexingService(
@@ -321,6 +322,11 @@ internal sealed class WorkspaceIndexingService(
         // this set drives orphaned-chunk cleanup after the loop, not just the re-index decision.
         HashSet<string> seenRelativePaths = new(StringComparer.Ordinal);
 
+        // One query per workspace tick: RelativePath → FileLastWriteTime for change detection,
+        // instead of a per-file SELECT (N+1 against workspace_file_chunks).
+        Dictionary<string, DateTime> existingLastWriteByRelativePath =
+            await LoadExistingFileLastWriteTimesAsync(db, workspacePath, cancellationToken).ConfigureAwait(false);
+
         foreach (string fullPath in candidates)
         {
 
@@ -377,13 +383,8 @@ internal sealed class WorkspaceIndexingService(
 
                 DateTime lastWriteUtc = info.LastWriteTimeUtc;
 
-                DateTime? existingLastWriteUtc = await GetExistingFileLastWriteTimeAsync(
-                    db,
-                    workspacePath,
-                    relativePath,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (existingLastWriteUtc is { } existing && existing == lastWriteUtc)
+                if (existingLastWriteByRelativePath.TryGetValue(relativePath, out DateTime existing)
+                    && existing == lastWriteUtc)
                 {
 
                     // Unchanged since last index — skip without consuming the per-tick file budget.
@@ -772,10 +773,14 @@ internal sealed class WorkspaceIndexingService(
 
     }
 
-    private static Task<DateTime?> GetExistingFileLastWriteTimeAsync(
+    /// <summary>
+    /// Loads every indexed file's recorded <c>FileLastWriteTime</c> for <paramref name="workspacePath"/>
+    /// in a single query. Used for change detection so a workspace tick does not issue one SELECT per
+    /// candidate file.
+    /// </summary>
+    private static Task<Dictionary<string, DateTime>> LoadExistingFileLastWriteTimesAsync(
         ArcanumDbContext db,
         string workspacePath,
-        string relativePath,
         CancellationToken cancellationToken)
     {
 
@@ -787,28 +792,36 @@ internal sealed class WorkspaceIndexingService(
 
                 await using DbCommand cmd = connection.CreateCommand();
 
+                // All chunks for a given RelativePath share the same FileLastWriteTime (written together
+                // in IndexFileAsync). DISTINCT is enough; if rows somehow diverge, the last value wins.
                 cmd.CommandText =
                     """
-                    SELECT "FileLastWriteTime"
+                    SELECT DISTINCT "RelativePath", "FileLastWriteTime"
                     FROM "workspace_file_chunks"
-                    WHERE "WorkspacePath" = @workspacePath AND "RelativePath" = @relativePath
-                    LIMIT 1
+                    WHERE "WorkspacePath" = @workspacePath
                     """;
 
                 AddParameter(cmd, "@workspacePath", workspacePath);
 
-                AddParameter(cmd, "@relativePath", relativePath);
+                Dictionary<string, DateTime> map = new(StringComparer.Ordinal);
 
-                object? result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-                if (result is null or DBNull)
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
 
-                    return (DateTime?)null;
+                    string relativePath = reader.GetString(0);
+
+                    DateTime lastWrite = DateTime.Parse(
+                        reader.GetString(1),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind);
+
+                    map[relativePath] = lastWrite;
 
                 }
 
-                return DateTime.Parse((string)result, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+                return map;
 
             },
             cancellationToken);

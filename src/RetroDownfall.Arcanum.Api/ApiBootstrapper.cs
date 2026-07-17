@@ -171,19 +171,33 @@ public static class ApiBootstrapper
     }
 
     /// <summary>
-    /// Effective <c>/metrics</c> auth gate. <c>Arcanum:Metrics:RequireApiKey</c> opts in explicitly; an
-    /// all-interfaces bind (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>) forces the gate on
-    /// regardless of that setting — the same zero-trust downgrade pattern applied to CORS wildcards
+    /// Effective <c>/metrics</c> auth gate. Default is on (<see cref="MetricsSettings.RequireApiKey"/>).
+    /// Explicit <c>false</c> is honored only on a loopback bind; an all-interfaces bind
+    /// (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>) forces the gate on regardless —
+    /// the same zero-trust downgrade pattern applied to CORS wildcards
     /// (<see cref="AddArcanumApiServices"/>) and the rate limiter (<see cref="IsRateLimitEnabled"/>).
     /// </summary>
     private static bool IsMetricsRequireApiKeyEffective(IConfiguration configuration)
     {
-        bool explicitlyRequired = string.Equals(
-            configuration["Arcanum:Metrics:RequireApiKey"]?.Trim(),
-            bool.TrueString,
-            StringComparison.OrdinalIgnoreCase);
 
-        return explicitlyRequired || ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration));
+        if (ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(configuration)))
+        {
+
+            return true;
+
+        }
+
+        string? configured = configuration["Arcanum:Metrics:RequireApiKey"]?.Trim();
+
+        if (string.IsNullOrEmpty(configured))
+        {
+
+            return true;
+
+        }
+
+        return !bool.TryParse(configured, out bool parsed) || parsed;
+
     }
 
     private static string[] ReadCorsAllowedOriginsFromConfiguration(IConfiguration configuration)
@@ -470,16 +484,22 @@ public static class ApiBootstrapper
             apiGroup = apiGroup.RequireRateLimiting(ArcanumRateLimiterPolicyName);
         }
 
-        // /metrics lives outside /api and /v1 by default so Prometheus scrapers work without custom
-        // headers; it is force-routed onto apiGroup instead (inheriting ApiKeyEndpointFilter and any
-        // active rate limiter) when Arcanum:Metrics:RequireApiKey is set or the host binds all interfaces.
+        // Canonical path stays GET /metrics (not /api/metrics). Auth is attached via
+        // ApiKeyEndpointFilter when RequireApiKey is effective (default true; false only on loopback).
+        RouteHandlerBuilder metrics = app.MapMetricsEndpoint();
+
         if (IsMetricsRequireApiKeyEffective(app.Configuration))
         {
-            apiGroup.MapMetricsEndpoint();
-        }
-        else
-        {
-            app.MapMetricsEndpoint();
+
+            metrics.AddEndpointFilter<ApiKeyEndpointFilter>();
+
+            if (rateLimitEnabled)
+            {
+
+                metrics.RequireRateLimiting(ArcanumRateLimiterPolicyName);
+
+            }
+
         }
 
         apiGroup.MapOpenApi();

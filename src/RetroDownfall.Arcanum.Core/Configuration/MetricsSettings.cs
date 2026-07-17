@@ -15,12 +15,13 @@ public sealed record MetricsSettings
     public bool Enabled { get; init; } = true;
 
     /// <summary>
-    /// When <c>true</c>, <c>/metrics</c> is mapped behind <c>ApiKeyEndpointFilter</c> instead of as a
-    /// standalone unauthenticated route. Default <c>false</c> (loopback-only deployments do not need
-    /// header-based auth for a scrape target). This is forced to effectively <c>true</c> — regardless of
-    /// this setting — whenever the host binds to all interfaces (<c>Arcanum:Host:ListenAny</c> /
-    /// <c>ARCANUM_HOST_ANY</c>), mirroring the CORS wildcard downgrade in <c>ApiBootstrapper</c>.
+    /// When <c>true</c> (default), <c>GET /metrics</c> is registered with <c>ApiKeyEndpointFilter</c>
+    /// (accepts <c>X-Arcanum-Key</c> or <c>Authorization: Bearer</c>). Set to <c>false</c> only to
+    /// allow unauthenticated scrapes on a loopback-only bind. Forced to effectively <c>true</c> —
+    /// regardless of this setting — whenever the host binds to all interfaces
+    /// (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>), mirroring the CORS wildcard
+    /// downgrade in <c>ApiBootstrapper</c>.
     /// </summary>
-    public bool RequireApiKey { get; init; }
+    public bool RequireApiKey { get; init; } = true;
 
 }

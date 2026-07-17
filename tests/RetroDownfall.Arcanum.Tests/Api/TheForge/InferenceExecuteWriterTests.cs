@@ -123,13 +123,10 @@ public sealed class InferenceExecuteWriterTests
 
     }
 
-    // W3.4 Group A (S10): a non-disconnect exception thrown by the stream AFTER the response
-    // has started must not write an error frame into the partially-streamed NDJSON body
-    // (HasStarted guard). The response is started by the first successful token write; the
-    // stream then throws InvalidOperationException on the second iteration. With the fix, the
-    // general catch observes Response.HasStarted and skips the error-frame write.
+    // Mid-stream exceptions must still emit a terminal Error frame when the client is writable
+    // (native NDJSON wire contract), even after partial output has been streamed.
     [Fact]
-    public async Task WriteStreamAsync_LateStreamExceptionAfterStart_DoesNotWriteErrorFrame()
+    public async Task WriteStreamAsync_LateStreamExceptionAfterStart_WritesTerminalErrorFrame()
     {
 
         ServiceCollection services = new();
@@ -160,7 +157,7 @@ public sealed class InferenceExecuteWriterTests
 
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
-        Assert.DoesNotContain("error", output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("error", output, StringComparison.OrdinalIgnoreCase);
 
     }
 

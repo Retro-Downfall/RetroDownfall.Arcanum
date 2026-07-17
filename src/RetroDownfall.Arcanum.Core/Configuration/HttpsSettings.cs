@@ -2,17 +2,19 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
 /// Optional HTTPS/TLS binding for the Arcanum Kestrel host. Bound from <c>Arcanum:Host:Https</c>.
-/// Disabled by default — the host keeps its plaintext HTTP loopback binding unchanged until an
-/// operator opts in. When <see cref="Enabled"/> is <c>true</c>, Kestrel adds a second listener on
+/// Disabled by default — on loopback the host keeps its plaintext HTTP binding until an operator opts
+/// in. When <see cref="Enabled"/> is <c>true</c> on loopback, Kestrel adds a second listener on
 /// <see cref="Port"/> using the configured certificate; the plaintext HTTP listener is retained so
-/// existing loopback callers are never broken by turning HTTPS on.
+/// existing loopback callers are never broken by turning HTTPS on. All-interfaces bind
+/// (<c>Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>) requires <see cref="Enabled"/> and binds only
+/// this TLS port — plaintext any-IP HTTP is not permitted.
 /// </summary>
 public sealed record HttpsSettings
 {
 
     /// <summary>
-    /// Master toggle. When <c>false</c> (default), no HTTPS listener is added and none of the other
-    /// fields have any effect — a complete no-op until an operator opts in.
+    /// Master toggle. When <c>false</c> (default) on loopback, no HTTPS listener is added and none of
+    /// the other fields have any effect. Required <c>true</c> when all-interfaces bind is effective.
     /// </summary>
     public bool Enabled { get; init; } = false;
 

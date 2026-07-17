@@ -31,6 +31,15 @@ public interface ISanctumGuard
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns workspace + Sanctum path-boundary policy for child-process FS jailing. Null when
+    /// <paramref name="workspaceRoot"/> does not resolve to a known campaign (callers still jail
+    /// against the workspace root alone on Linux/macOS).
+    /// </summary>
+    Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+        string? workspaceRoot,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Records a <c>ResourceLimit</c> breach (OS-enforced CPU/memory/file-descriptor cap exceeded, or
     /// the limit could not be applied) for the campaign resolved from <paramref name="workspaceRoot"/>.
     /// A no-op (log-only) when the path does not resolve to a known campaign, since breach persistence

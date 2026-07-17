@@ -36,6 +36,8 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
 
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api.DevHost" />
+
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Cli" />
 
   </ItemGroup>

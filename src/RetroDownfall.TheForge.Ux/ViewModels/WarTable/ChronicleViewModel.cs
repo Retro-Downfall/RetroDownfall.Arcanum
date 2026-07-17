@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using CommunityToolkit.Mvvm.ComponentModel;
 using RetroDownfall.TheForge.Core.Chronicle;
 
@@ -20,9 +21,14 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
     private bool _disposed;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowEmptyState))]
+    [NotifyPropertyChangedFor(nameof(EmptyStateText))]
+    [NotifyPropertyChangedFor(nameof(ShowStreamingIndicator))]
     private bool _isStreaming;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowEmptyState))]
+    [NotifyPropertyChangedFor(nameof(ShowErrorBanner))]
     private string? _lastError;
 
     public ChronicleViewModel(Guid apprenticeId, IWarTableDataSource dataSource)
@@ -32,9 +38,21 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
 
         _dataSource = dataSource;
 
+        Entries.CollectionChanged += OnEntriesChanged;
+
     }
 
     public ObservableCollection<ChronicleEntryViewModel> Entries { get; } = [];
+
+    public bool ShowErrorBanner => !string.IsNullOrWhiteSpace(LastError);
+
+    public bool ShowStreamingIndicator => IsStreaming;
+
+    public bool ShowEmptyState => Entries.Count == 0 && string.IsNullOrWhiteSpace(LastError);
+
+    public string EmptyStateText => IsStreaming
+        ? "Listening for chronicle frames…"
+        : "Chronicle stream ended.";
 
     public void Start()
     {
@@ -83,9 +101,20 @@ public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
 
         _disposed = true;
 
+        Entries.CollectionChanged -= OnEntriesChanged;
+
         Stop();
 
         GC.SuppressFinalize(this);
+
+    }
+
+    private void OnEntriesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+
+        OnPropertyChanged(nameof(ShowEmptyState));
+
+        OnPropertyChanged(nameof(EmptyStateText));
 
     }
 

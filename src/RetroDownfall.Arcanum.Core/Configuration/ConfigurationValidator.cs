@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
@@ -593,17 +594,30 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
     }
 
     /// <summary>
-    /// Optional HTTPS binding. Only enforced when <see cref="HttpsSettings.Enabled"/> is <c>true</c>
-    /// (disabled is a complete no-op, so a missing certificate path is fine). The certificate path
-    /// must be set, the TLS port must be within range and distinct from the plaintext HTTP port, and
-    /// the referenced file(s) must exist on disk. No PKCS#12/PEM cryptographic load happens here —
-    /// that is deferred to the Infrastructure loader at bind time — and the certificate password is
-    /// never read or echoed into any error message.
+    /// Optional HTTPS binding. When <see cref="HttpsSettings.Enabled"/> is <c>true</c>, the certificate
+    /// path must be set, the TLS port must be within range and distinct from the plaintext HTTP port, and
+    /// the referenced file(s) must exist on disk. All-interfaces bind (<see cref="HostSettings.ListenAny"/>
+    /// / <c>ARCANUM_HOST_ANY</c>) additionally requires HTTPS enabled — plaintext any-IP HTTP is refused.
+    /// No PKCS#12/PEM cryptographic load happens here — that is deferred to the Infrastructure loader at
+    /// bind time — and the certificate password is never read or echoed into any error message.
     /// </summary>
     private static void ValidateHttps(HostSettings host, List<ConfigurationValidationError> errors)
     {
 
         HttpsSettings https = host.Https ?? new HttpsSettings();
+
+        bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
+
+        if (listenAny && !https.Enabled)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "host.https.enabled",
+                "Host.Https.Enabled must be true when Host.ListenAny or ARCANUM_HOST_ANY is enabled; plaintext any-IP HTTP is not permitted."));
+
+            return;
+
+        }
 
         if (!https.Enabled)
         {

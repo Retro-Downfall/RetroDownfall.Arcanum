@@ -20,11 +20,11 @@ public interface IArsenalDataSource
     /// </summary>
     Task<(IReadOnlyList<McpServerInfo>? Servers, string? Error)> ListMcpServersAsync(CancellationToken cancellationToken);
 
-    Task<bool> StartServerAsync(string name, CancellationToken cancellationToken);
+    Task<(bool Ok, string? Error)> StartServerAsync(string name, CancellationToken cancellationToken);
 
-    Task<bool> StopServerAsync(string name, CancellationToken cancellationToken);
+    Task<(bool Ok, string? Error)> StopServerAsync(string name, CancellationToken cancellationToken);
 
-    Task<bool> RestartServerAsync(string name, CancellationToken cancellationToken);
+    Task<(bool Ok, string? Error)> RestartServerAsync(string name, CancellationToken cancellationToken);
 
     Task<(bool Success, string? Error)> ReloadMcpAsync(string? workingDirectory, CancellationToken cancellationToken);
 
@@ -34,6 +34,10 @@ public interface IArsenalDataSource
     /// </summary>
     Task<(WorkspaceArsenalDto? Arsenal, string? Error)> GetArsenalAsync(string? workingDirectory, CancellationToken cancellationToken);
 
-    Task<ToolInvokeResponse?> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken);
+    /// <summary>
+    /// Invokes a built-in tool. On success <paramref name="Response"/> is non-null and <c>Error</c>
+    /// is null; on failure <c>Response</c> is null and <c>Error</c> describes the failure.
+    /// </summary>
+    Task<(ToolInvokeResponse? Response, string? Error)> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken);
 
 }

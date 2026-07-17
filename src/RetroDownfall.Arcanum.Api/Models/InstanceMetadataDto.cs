@@ -18,4 +18,5 @@ public sealed record InstanceMetadataDto(
     bool TokenTrackingEnabled,
     bool HttpsEnabled,
     int HttpsPort,
-    string? HttpsUrl);
+    string? HttpsUrl,
+    string? HttpUrl);

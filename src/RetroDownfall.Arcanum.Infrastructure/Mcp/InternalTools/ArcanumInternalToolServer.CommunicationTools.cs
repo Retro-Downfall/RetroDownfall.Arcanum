@@ -56,6 +56,22 @@ internal sealed partial class ArcanumInternalToolServer
         {
             throw;
         }
+        catch (HumanPromptTimeoutException ex)
+        {
+            // Expected tool-level timeout — model-visible result, not an infrastructure fault.
+            return new McpToolsCallResultWire
+            {
+                Content =
+                [
+                    new McpToolContentTextWire { Text = ex.Message },
+                ],
+                IsError = false,
+            };
+        }
+        catch (HumanPromptCapExceededException ex)
+        {
+            return ToolError(ex.Message);
+        }
         catch (InvalidOperationException ex)
         {
             _logger?.LogError(ex, "ask_human registration failed.");

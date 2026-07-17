@@ -187,4 +187,57 @@ public sealed class McpSecurityLimitsInheritEnvTests
 
     }
 
+    [Fact]
+    public void BuildChildProcessEnvironment_inheritEnv_cannot_re_admit_ARCANUM_or_hijack_vars()
+    {
+
+        Dictionary<string, string> source = new(StringComparer.Ordinal)
+        {
+            ["ARCANUM_Arcanum__Providers__0__ApiKey"] = "sk-secret",
+            ["LD_PRELOAD"] = "/tmp/evil.so",
+            ["DOTNET_STARTUP_HOOKS"] = "/tmp/hook.dll",
+            ["NODE_OPTIONS"] = "--require /tmp/evil.js",
+            ["OPENAI_API_KEY"] = "sk-operator-mcp",
+            ["PATH"] = "/from/config",
+        };
+
+        HashSet<string> allowlist = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "PATH",
+            "HOME",
+            "ARCANUM_Arcanum__Providers__0__ApiKey",
+            "LD_PRELOAD",
+            "DOTNET_STARTUP_HOOKS",
+            "NODE_OPTIONS",
+        };
+
+        Dictionary<string, string> hostEnv = new(StringComparer.Ordinal)
+        {
+            ["HOME"] = "/home/wizard",
+            ["ARCANUM_Arcanum__Providers__0__ApiKey"] = "from-host",
+            ["LD_PRELOAD"] = "/from/host.so",
+        };
+
+        Dictionary<string, string> result = McpSecurityLimits.BuildChildProcessEnvironment(
+            source,
+            allowlist,
+            hostEnvironmentReader: name => hostEnv.GetValueOrDefault(name));
+
+        Assert.False(result.ContainsKey("ARCANUM_Arcanum__Providers__0__ApiKey"));
+
+        Assert.False(result.ContainsKey("LD_PRELOAD"));
+
+        Assert.False(result.ContainsKey("DOTNET_STARTUP_HOOKS"));
+
+        Assert.False(result.ContainsKey("NODE_OPTIONS"));
+
+        Assert.Equal("/from/config", result["PATH"]);
+
+        Assert.Equal("/home/wizard", result["HOME"]);
+
+        // Operator-provided MCP credentials must still pass through cfg.Env.
+        Assert.Equal("sk-operator-mcp", result["OPENAI_API_KEY"]);
+
+    }
+
 }

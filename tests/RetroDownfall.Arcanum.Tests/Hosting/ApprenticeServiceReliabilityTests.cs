@@ -415,6 +415,81 @@ public sealed class ApprenticeServiceReliabilityTests
 
     }
 
+    // W2.P1-2: a late OperationCanceledException handler from a prior generation must not
+    // persist Paused over a newer Resume that already incremented the execution generation.
+
+    [Fact]
+    public async Task RunApprenticeAsync_StaleGeneration_DoesNotPersistPausedOverNewerResume()
+    {
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+
+            Id = apprenticeId,
+
+            Name = "Reliability-P1-2",
+
+            Goal = "Stale cancel must not clobber resume.",
+
+            WorkspacePath = "/tmp/arcanum-test",
+
+            Status = ApprenticeStatus.Running.ToString(),
+
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 1, Description = "Step cancelled by stale generation" },
+            ]),
+
+            CurrentStep = 0,
+
+            SessionId = Guid.NewGuid(),
+
+        };
+
+        OceOnFirstGetApprenticeRepository repo = new(apprentice);
+
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
+
+        CapturingLogger<ApprenticeService> logger = new();
+
+        ApprenticeService service = CreateService(repo, settings, logger, new FailingPlanIntelligence(), new NotImplementedGrimoireRepository());
+
+        // Stale run owns generation 1; a newer resume already advanced to generation 2.
+        SeedExecutionGeneration(service, apprenticeId, 2L);
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        Task runTask = (Task)method!.Invoke(service, new object[] { apprenticeId, 1L })!;
+
+        await runTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        // OceOnFirstGet would normally drive Paused via the cancel handler; ownership mismatch
+        // must leave the status alone (still Running as left by the newer resume).
+        Assert.Equal(ApprenticeStatus.Running.ToString(), persisted.Status);
+
+    }
+
     // W2.4 Fix 4 (P2): on linked-CTS cancellation (e.g. host StopAsync) the main
     // execution loop's catch(OperationCanceledException) must persist an
     // intermediate status so a later resume does not re-run the in-progress step.
@@ -473,12 +548,14 @@ public sealed class ApprenticeServiceReliabilityTests
 
         ApprenticeService service = CreateService(repo, settings, logger, new FailingPlanIntelligence(), new NotImplementedGrimoireRepository());
 
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
         MethodInfo? method = typeof(ApprenticeService)
             .GetMethod("RunApprenticeAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(method);
 
-        Task runTask = (Task)method!.Invoke(service, new object[] { apprenticeId })!;
+        Task runTask = (Task)method!.Invoke(service, new object[] { apprenticeId, 1L })!;
 
         await runTask.WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -596,7 +673,9 @@ public sealed class ApprenticeServiceReliabilityTests
 
         Assert.NotNull(method);
 
-        Task runTask = (Task)method!.Invoke(service, new object[] { apprenticeId })!;
+        SeedExecutionGeneration(service, apprenticeId, 1L);
+
+        Task runTask = (Task)method!.Invoke(service, new object[] { apprenticeId, 1L })!;
 
         await runTask.WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -681,6 +760,21 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.NotNull(field);
 
         return (ConcurrentDictionary<Guid, Task>)field!.GetValue(service)!;
+
+    }
+
+    private static void SeedExecutionGeneration(ApprenticeService service, Guid apprenticeId, long generation)
+    {
+
+        FieldInfo? field = typeof(ApprenticeService)
+            .GetField("_executionGenerations", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(field);
+
+        ConcurrentDictionary<Guid, long> generations =
+            (ConcurrentDictionary<Guid, long>)field!.GetValue(service)!;
+
+        generations[apprenticeId] = generation;
 
     }
 

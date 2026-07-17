@@ -284,6 +284,87 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task TickAsync_InFlightExpiredBatch_CancelsViaProcessor_DoesNotDeleteFromSweep()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "slow",
+            NextFinishReason = "stop",
+            ExecuteGate = gate,
+        };
+
+        BatchProcessingService service = CreateService(intelligence);
+
+        Guid inputFileId = await SeedInputFileAsync(
+            """{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""" + "\n");
+
+        string inputPath = UploadedFileStorage.ResolvePath(inputFileId);
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.TickAsync(CancellationToken.None);
+
+        Assert.True(await WaitForAsync(() => service.IsBatchInFlight(batch.Id), TimeSpan.FromSeconds(5)));
+
+        Assert.True(File.Exists(inputPath), "Sweep must not delete in-flight input before cancel completes.");
+
+        Assert.True(service.TryRequestExpiryCancel(batch.Id));
+
+        // Processor should observe cancel, mark Expired, and delete files — release the gate so
+        // any race where cancel arrives after ExecutePrompt starts still unwinds.
+        gate.TrySetResult();
+
+        Assert.True(await WaitForAsync(() => !service.IsBatchInFlight(batch.Id), TimeSpan.FromSeconds(10)));
+
+        BatchRecord? finished = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
+
+        Assert.NotNull(finished);
+
+        Assert.Equal(BatchStatuses.Expired, finished!.Status);
+
+        Assert.False(File.Exists(inputPath));
+
+    }
+
+    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
+    {
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+
+            if (condition())
+            {
+
+                return true;
+
+            }
+
+            await Task.Delay(25).ConfigureAwait(false);
+
+        }
+
+        return condition();
+
+    }
+
     private BatchProcessingService CreateService(IArcanumIntelligenceProvider intelligence, int? batchExpiryHours = null)
     {
 

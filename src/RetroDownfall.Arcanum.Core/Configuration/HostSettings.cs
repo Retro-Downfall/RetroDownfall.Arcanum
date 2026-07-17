@@ -37,8 +37,10 @@ public sealed record HostSettings
     public string? SystemFingerprint { get; init; }
 
     /// <summary>
-    /// When <c>true</c>, Kestrel binds to all network interfaces (<c>ListenAnyIP</c>) instead of
-    /// loopback. Default <c>false</c>. The environment variable <c>ARCANUM_HOST_ANY</c> is still
+    /// When <c>true</c>, Kestrel binds HTTPS-only to all network interfaces (<c>ListenAnyIP</c> on
+    /// <see cref="HttpsSettings.Port"/>). Plaintext any-IP HTTP is refused — <see cref="HttpsSettings.Enabled"/>
+    /// and a loadable certificate are required. Default <c>false</c> (loopback HTTP on
+    /// <see cref="Port"/>, optional HTTPS). The environment variable <c>ARCANUM_HOST_ANY</c> is still
     /// honored as an override (operator container deployments).
     /// </summary>
     public bool ListenAny { get; init; } = false;
@@ -67,8 +69,10 @@ public sealed record HostSettings
 
     /// <summary>
     /// Optional HTTPS/TLS binding. Disabled by default — the plaintext HTTP loopback binding is
-    /// unchanged until an operator opts in. When enabled, Kestrel adds a second listener on
-    /// <see cref="HttpsSettings.Port"/> alongside the existing HTTP listener.
+    /// unchanged until an operator opts in. When enabled on loopback, Kestrel adds a second listener on
+    /// <see cref="HttpsSettings.Port"/> alongside the existing HTTP listener. When
+    /// <see cref="ListenAny"/> (or <c>ARCANUM_HOST_ANY</c>) is effective, HTTPS is required and is the
+    /// only listener (HTTPS-only any-IP).
     /// </summary>
     public HttpsSettings Https { get; init; } = new();
 

@@ -30,6 +30,9 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
     [ObservableProperty]
     private string? _lastErrorCode;
 
+    [ObservableProperty]
+    private string? _lastErrorMessage;
+
     private readonly ArcanumApiClient _apiClient;
 
     private readonly IOptionsMonitor<TheForgeSettings> _settingsMonitor;
@@ -79,13 +82,21 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
     }
 
+    /// <summary>
+    /// Starts (or restarts) the health poll loop. Idempotent: if already polling, cancels the
+    /// previous loop and starts a fresh one (true reconnect).
+    /// </summary>
     public void Connect()
     {
 
         if (_pollCts is not null)
         {
 
-            return;
+            _pollCts.Cancel();
+
+            _pollCts.Dispose();
+
+            _pollCts = null;
 
         }
 
@@ -94,6 +105,10 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
         State = ConnectionState.Connecting;
 
         _consecutiveFailures = 0;
+
+        LastErrorCode = null;
+
+        LastErrorMessage = null;
 
         _ = PollLoopAsync(_pollCts.Token);
 
@@ -175,13 +190,17 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
                 LastErrorCode = null;
 
+                LastErrorMessage = null;
+
                 State = ConnectionState.Connected;
 
                 return;
 
             }
 
-            LastErrorCode = response?.Error?.Code;
+            LastErrorCode = response?.Error?.Code ?? "Connection.Failed";
+
+            LastErrorMessage = response?.Error?.Message ?? "Health check failed.";
 
             RegisterFailure();
 
@@ -190,6 +209,23 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
         {
 
             _logger.LogDebug(ex, "Health poll failed.");
+
+            if (ex is TaskCanceledException or TimeoutException)
+            {
+
+                LastErrorCode = "Connection.Timeout";
+
+                LastErrorMessage = "The request to Arcanum timed out.";
+
+            }
+            else
+            {
+
+                LastErrorCode = "Connection.Failed";
+
+                LastErrorMessage = ex.Message;
+
+            }
 
             RegisterFailure();
 

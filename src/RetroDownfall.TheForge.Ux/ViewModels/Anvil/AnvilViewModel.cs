@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 
@@ -24,6 +25,8 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     private readonly IAnvilDataSource _dataSource;
 
     private readonly INavigationService _navigation;
+
+    private readonly ITheForgeApiKeyProvider _apiKeyProvider;
 
     private readonly IOptionsMonitor<TheForgeSettings> _settings;
 
@@ -66,6 +69,7 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         IArcanumConnection connection,
         IAnvilDataSource dataSource,
         INavigationService navigation,
+        ITheForgeApiKeyProvider apiKeyProvider,
         IOptionsMonitor<TheForgeSettings> settings,
         ILogger<AnvilViewModel> logger)
     {
@@ -75,6 +79,8 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         _dataSource = dataSource;
 
         _navigation = navigation;
+
+        _apiKeyProvider = apiKeyProvider;
 
         _settings = settings;
 
@@ -98,13 +104,23 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     {
         ConnectionState.Connected => "Arcanum connected",
         ConnectionState.Connecting => "Seeking Arcanum...",
-        ConnectionState.Error when string.Equals(
-            _connection.LastErrorCode,
-            "Security.MissingApiKey",
-            StringComparison.Ordinal) => "API key required",
+        ConnectionState.Error when IsMissingApiKey => "API key required",
+        ConnectionState.Error when IsTimeout => "Arcanum timed out",
+        ConnectionState.Error when IsConnectionFailed => "Arcanum connection failed",
         ConnectionState.Error => "Arcanum unreachable",
         _ => "Arcanum disconnected",
     };
+
+    public bool ShowEnterApiKey => IsMissingApiKey;
+
+    private bool IsMissingApiKey =>
+        string.Equals(_connection.LastErrorCode, "Security.MissingApiKey", StringComparison.Ordinal);
+
+    private bool IsTimeout =>
+        string.Equals(_connection.LastErrorCode, "Connection.Timeout", StringComparison.Ordinal);
+
+    private bool IsConnectionFailed =>
+        string.Equals(_connection.LastErrorCode, "Connection.Failed", StringComparison.Ordinal);
 
     [RelayCommand]
     private void FocusConnection() => _navigation.FocusPanel(PanelKind.Anvil);
@@ -114,6 +130,16 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void Disconnect() => _connection.Disconnect();
+
+    [RelayCommand]
+    private void EnterApiKey()
+    {
+
+        _apiKeyProvider.ClearPasteDecline();
+
+        _connection.Connect();
+
+    }
 
     [RelayCommand]
     private void FocusCampaign() => _navigation.FocusPanel(PanelKind.Atelier);
@@ -283,12 +309,16 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     private void OnConnectionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
 
-        if (e.PropertyName is nameof(IArcanumConnection.State) or nameof(IArcanumConnection.LastErrorCode))
+        if (e.PropertyName is nameof(IArcanumConnection.State)
+            or nameof(IArcanumConnection.LastErrorCode)
+            or nameof(IArcanumConnection.LastErrorMessage))
         {
 
             ConnectionState = _connection.State;
 
             OnPropertyChanged(nameof(ConnectionStatusText));
+
+            OnPropertyChanged(nameof(ShowEnterApiKey));
 
             if (e.PropertyName == nameof(IArcanumConnection.State)
                 && ConnectionState == ConnectionState.Connected)
@@ -315,6 +345,8 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     {
 
         OnPropertyChanged(nameof(ConnectionStatusText));
+
+        OnPropertyChanged(nameof(ShowEnterApiKey));
 
     }
 

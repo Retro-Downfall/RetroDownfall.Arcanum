@@ -119,7 +119,7 @@
 
                 <TextBlock TextWrapping="Wrap"
                            Foreground="{DynamicResource ForgeMutedTextBrush}"
-                           Text="Enabling HTTPS adds a TLS listener alongside the existing plaintext HTTP listener; the HTTP loopback binding is not removed. Generates a self-signed certificate for localhost only. It is not installed into your OS trust store. Browsers and HTTP clients may warn until you trust it manually. For remote access / ListenAny, use a certificate whose SAN includes your hostname or IP." />
+                           Text="On loopback, enabling HTTPS adds a TLS listener alongside plaintext HTTP. ListenAny / ARCANUM_HOST_ANY requires HTTPS and binds only the TLS port (no plaintext any-IP HTTP). Generates a self-signed certificate for localhost only. It is not installed into your OS trust store. Browsers and HTTP clients may warn until you trust it manually. For remote access / ListenAny, use a certificate whose SAN includes your hostname or IP." />
 
             </Border>
 

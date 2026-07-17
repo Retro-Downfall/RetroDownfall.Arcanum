@@ -62,6 +62,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly string? _campaignWorkspaceRoot;
 
+    private readonly bool _allowUnsandboxedToolChildren;
+
     public ArcanumSpellScriptTool(
         IReadOnlyList<string> scriptsDirectoryPaths,
         TimeSpan executeTimeout,
@@ -70,7 +72,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         ILogger? logger = null,
         ISanctumGuard? sanctumGuard = null,
         IProcessResourceLimiter? resourceLimiter = null,
-        string? campaignWorkspaceRoot = null)
+        string? campaignWorkspaceRoot = null,
+        bool allowUnsandboxedToolChildren = false)
     {
         _executeTimeout = executeTimeout;
 
@@ -85,6 +88,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         _resourceLimiter = resourceLimiter;
 
         _campaignWorkspaceRoot = campaignWorkspaceRoot;
+
+        _allowUnsandboxedToolChildren = allowUnsandboxedToolChildren;
 
         var roots = new List<string>(scriptsDirectoryPaths.Count);
 
@@ -120,7 +125,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         ILogger? logger = null,
         ISanctumGuard? sanctumGuard = null,
         IProcessResourceLimiter? resourceLimiter = null,
-        string? campaignWorkspaceRoot = null)
+        string? campaignWorkspaceRoot = null,
+        bool allowUnsandboxedToolChildren = false)
         : this(
             [scriptsDirectoryPath],
             executeTimeout,
@@ -129,7 +135,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             logger,
             sanctumGuard,
             resourceLimiter,
-            campaignWorkspaceRoot)
+            campaignWorkspaceRoot,
+            allowUnsandboxedToolChildren)
     {
     }
 
@@ -204,6 +211,38 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         try
         {
 
+            string? resolvedScript = File.ResolveLinkTarget(candidate, returnFinalTarget: true)?.FullName;
+
+            if (!string.IsNullOrEmpty(resolvedScript))
+            {
+
+                candidate = Path.GetFullPath(resolvedScript);
+
+                // Rebuild so argv carries the realpath Seatbelt/Landlock will match.
+                psi = BuildProcessStartInfo(
+                    Path.GetDirectoryName(candidate) is string parent
+                        ? parent
+                        : scriptsRootFull,
+                    candidate,
+                    extraArgs);
+
+                // Keep working directory on the resolved scripts root when possible.
+                string? resolvedRoot = Directory.ResolveLinkTarget(scriptsRootFull, returnFinalTarget: true)?.FullName
+                                       ?? scriptsRootFull;
+
+                psi.WorkingDirectory = Path.GetFullPath(resolvedRoot);
+
+            }
+
+        }
+        catch (Exception)
+        {
+
+        }
+
+        try
+        {
+
             if (!File.Exists(candidate))
             {
 
@@ -232,6 +271,19 @@ public sealed class ArcanumSpellScriptTool : AIFunction
                 .GetEffectiveResourceLimitsForWorkspaceAsync(_campaignWorkspaceRoot, cancellationToken)
                 .ConfigureAwait(false);
 
+        SanctumChildProcessBoundary? boundary = _sanctumGuard is null
+            ? null
+            : await _sanctumGuard
+                .GetChildProcessBoundaryForWorkspaceAsync(_campaignWorkspaceRoot, cancellationToken)
+                .ConfigureAwait(false);
+
+        ChildProcessSandboxRequest sandboxRequest = ChildProcessSandboxRoots.ForSpellScript(
+            _scriptsRootsFull,
+            _campaignWorkspaceRoot,
+            boundary?.AllowedPaths,
+            _allowUnsandboxedToolChildren,
+            windowsPathBoundaryRequired: boundary?.PathBoundaryRequired == true);
+
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
@@ -239,10 +291,19 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             _executeTimeout,
             resourceLimits,
             _resourceLimiter,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            sandboxRequest,
+            _logger).ConfigureAwait(false);
 
         switch (runResult.Outcome)
         {
+
+            case CappedChildProcessOutcome.FilesystemSandboxUnavailable:
+
+            case CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum:
+
+                return runResult.FilesystemSandboxDenialMessage
+                       ?? ChildProcessSandboxMessages.SandboxUnavailable;
 
             case CappedChildProcessOutcome.ResourceLimitApplyFailed:
 
@@ -400,7 +461,14 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         if (string.Equals(ext, ".py", StringComparison.OrdinalIgnoreCase))
         {
-            psi.FileName = OperatingSystem.IsWindows() ? "python" : "python3";
+            psi.FileName = OperatingSystem.IsWindows() ? "python" : "/usr/bin/env";
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                psi.ArgumentList.Add("python3");
+
+            }
 
             psi.ArgumentList.Add(scriptFullPath);
 
@@ -408,7 +476,14 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         }
         else if (string.Equals(ext, ".js", StringComparison.OrdinalIgnoreCase))
         {
-            psi.FileName = "node";
+            psi.FileName = OperatingSystem.IsWindows() ? "node" : "/usr/bin/env";
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                psi.ArgumentList.Add("node");
+
+            }
 
             psi.ArgumentList.Add(scriptFullPath);
 
@@ -416,7 +491,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         }
         else if (string.Equals(ext, ".sh", StringComparison.OrdinalIgnoreCase))
         {
-            psi.FileName = "bash";
+            psi.FileName = OperatingSystem.IsWindows() ? "bash" : "/bin/bash";
 
             psi.ArgumentList.Add(scriptFullPath);
 

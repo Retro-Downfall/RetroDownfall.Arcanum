@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -91,13 +92,16 @@ internal static class HealthEndpoints
 
             }
 
-            bool httpsEnabled = settings.Value.Host.Https.Enabled;
+            bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(settings.Value.Host.ListenAny);
+
+            // ListenAny refuses to start without HTTPS, so any running any-IP host is TLS-bound.
+            bool httpsEnabled = settings.Value.Host.Https.Enabled || listenAny;
 
             int httpsPort = ArcanumSettingClamps.HostHttpsPort(settings.Value.Host.Https.Port);
 
-            string? httpsUrl = httpsEnabled
-                ? $"https://localhost:{httpsPort}"
-                : null;
+            string? httpsUrl = ArcanumLocalApiAddress.ResolveHttpsUrl(settings.Value.Host, httpsEnabled);
+
+            string? httpUrl = ArcanumLocalApiAddress.ResolveHttpUrl(settings.Value.Host, listenAny);
 
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
@@ -110,14 +114,15 @@ internal static class HealthEndpoints
                 GrimoireDirectory: ArcanumPaths.GrimoireDirectory,
                 ConfigPath: Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
                 Port: ArcanumSettingClamps.HostPort(settings.Value.Host.Port),
-                ListenAny: ArcanumEnvironment.IsHostAnyEnabled(settings.Value.Host.ListenAny),
+                ListenAny: listenAny,
                 LoreSystemEnabled: settings.Value.Intelligence.EnableLoreSystem,
                 ArchiveSearchEnabled: settings.Value.Intelligence.EnableArchiveSearch,
                 ContextCompressionEnabled: settings.Value.Intelligence.EnableContextCompression,
                 TokenTrackingEnabled: settings.Value.Intelligence.EnableTokenTracking,
                 HttpsEnabled: httpsEnabled,
                 HttpsPort: httpsPort,
-                HttpsUrl: httpsUrl);
+                HttpsUrl: httpsUrl,
+                HttpUrl: httpUrl);
 
             Result<InstanceMetadataDto> metadataResult = metadata;
 

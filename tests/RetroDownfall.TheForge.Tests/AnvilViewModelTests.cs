@@ -109,6 +109,38 @@ public class AnvilViewModelTests
 
     }
 
+    [Fact]
+    public void ConnectionStatusText_MapsDistinctErrorCodes()
+    {
+
+        FakeArcanumConnection connection = new();
+
+        AnvilViewModel viewModel = Create(connection, new FakeAnvilDataSource(), new NavigationService());
+
+        connection.SetError("Security.MissingApiKey");
+
+        Assert.Equal("API key required", viewModel.ConnectionStatusText);
+
+        Assert.True(viewModel.ShowEnterApiKey);
+
+        connection.SetError("Connection.Timeout");
+
+        Assert.Equal("Arcanum timed out", viewModel.ConnectionStatusText);
+
+        Assert.False(viewModel.ShowEnterApiKey);
+
+        connection.SetError("Connection.Failed");
+
+        Assert.Equal("Arcanum connection failed", viewModel.ConnectionStatusText);
+
+        connection.SetError("Http.503");
+
+        Assert.Equal("Arcanum unreachable", viewModel.ConnectionStatusText);
+
+        viewModel.Dispose();
+
+    }
+
     private static AnvilViewModel Create(
         IArcanumConnection connection,
         IAnvilDataSource dataSource,
@@ -117,6 +149,7 @@ public class AnvilViewModelTests
             connection,
             dataSource,
             navigation,
+            new NoopApiKeyProvider(),
             new StaticOptionsMonitor(new TheForgeSettings()),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AnvilViewModel>.Instance);
 
@@ -163,6 +196,8 @@ public class AnvilViewModelTests
 
         public string? LastErrorCode { get; private set; }
 
+        public string? LastErrorMessage { get; private set; }
+
         public void Connect()
         {
         }
@@ -178,6 +213,38 @@ public class AnvilViewModelTests
 
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State)));
 
+        }
+
+        public void SetError(string code, string? message = null)
+        {
+
+            LastErrorCode = code;
+
+            LastErrorMessage = message;
+
+            State = ConnectionState.Error;
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastErrorCode)));
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastErrorMessage)));
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State)));
+
+        }
+
+    }
+
+    private sealed class NoopApiKeyProvider : RetroDownfall.TheForge.Core.Services.ITheForgeApiKeyProvider
+    {
+
+        public Task<string?> GetApiKeyAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public void ClearPasteDecline()
+        {
         }
 
     }

@@ -2503,7 +2503,8 @@ public sealed class WizardIntelligenceProvider(
                 logger,
                 sanctumGuard,
                 processResourceLimiter,
-                workingDirectory));
+                workingDirectory,
+                settings.Value.Security.AllowUnsandboxedToolChildren));
         }
 
         if (settings.Value.WebBrowsing.Enabled)

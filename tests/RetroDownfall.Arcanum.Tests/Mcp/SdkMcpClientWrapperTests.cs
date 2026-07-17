@@ -126,6 +126,13 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings>>(
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Security = new SecuritySettings { AllowUnsandboxedToolChildren = true },
+                }));
+
         services.AddSingleton<IProcessResourceLimiter, ProcessResourceLimiter>();
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
@@ -227,7 +234,13 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        public Task RecordResourceLimitBreachAsync(
+        
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
+
+public Task RecordResourceLimitBreachAsync(
             string? workspaceRoot,
             string toolName,
             ResourceLimitKind resource,

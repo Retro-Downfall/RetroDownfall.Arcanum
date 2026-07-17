@@ -174,7 +174,7 @@ internal static class SandboxedFileIo
         try
         {
 
-            bool replaced = await AtomicFile.ReplaceAsync(
+            AtomicReplaceStatus replaceStatus = await AtomicFile.ReplaceAsync(
                 absolutePath,
                 tempPath,
                 async (stream, ct) =>
@@ -193,7 +193,8 @@ internal static class SandboxedFileIo
                 // filesystem (temp is created in the destination's parent dir), so the destination's
                 // post-move identity must match this. A mismatch means the destination was swapped
                 // (e.g. to a symlink) between the lexical revalidation and the move — a TOCTOU
-                // sandbox escape, which fails the replace closed (temp is removed, destination kept).
+                // sandbox escape. AtomicFile then best-effort restores/quarantines rather than
+                // reporting a generic pre-move failure while leaving unverified content in place.
                 beforeReplace: () =>
                     WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath)
                         && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
@@ -205,14 +206,22 @@ internal static class SandboxedFileIo
                 afterReplace: () =>
                     TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _)).ConfigureAwait(false);
 
-            if (!replaced)
+            if (replaceStatus == AtomicReplaceStatus.Succeeded)
             {
 
-                return (false, ToolError(PathEscapesSandboxMessage));
+                return (true, null);
 
             }
 
-            return (true, null);
+            if (replaceStatus == AtomicReplaceStatus.ReplacedButUnverified)
+            {
+
+                return (false, ToolError(
+                    "Write replaced the file but post-move verification failed; destination left unverified."));
+
+            }
+
+            return (false, ToolError(PathEscapesSandboxMessage));
 
         }
         catch (UnauthorizedAccessException)

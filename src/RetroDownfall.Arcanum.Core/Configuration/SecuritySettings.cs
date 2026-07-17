@@ -25,4 +25,14 @@ public sealed record SecuritySettings
     /// </summary>
     public int IdempotencyMaxResponseBytes { get; init; } = 10 * 1024 * 1024;
 
+    /// <summary>
+    /// When <c>false</c> (default), <c>execute_command</c> / <c>run_spell_script</c> children require an OS
+    /// filesystem sandbox (Landlock on Linux, <c>sandbox-exec</c> on macOS). If the sandbox cannot be
+    /// applied, the tool is denied rather than running unbounded. When <c>true</c>, Arcanum logs a warning
+    /// and runs with resource limits / env scrub only (no FS jail). Windows never provides an FS jail;
+    /// when Sanctum path-boundary enforcement is active, those tools are denied regardless of this flag.
+    /// This MVP is filesystem-only — it does not isolate network use by child binaries.
+    /// </summary>
+    public bool AllowUnsandboxedToolChildren { get; init; } = false;
+
 }

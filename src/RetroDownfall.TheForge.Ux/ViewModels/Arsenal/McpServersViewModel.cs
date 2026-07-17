@@ -170,7 +170,10 @@ public sealed partial class McpServersViewModel : ViewModelBase
 
     }
 
-    private async Task RunServerActionAsync(Func<string, CancellationToken, Task<bool>> action, string verb, CancellationToken cancellationToken)
+    private async Task RunServerActionAsync(
+        Func<string, CancellationToken, Task<(bool Ok, string? Error)>> action,
+        string verb,
+        CancellationToken cancellationToken)
     {
 
         if (SelectedServer is not { } server)
@@ -189,7 +192,7 @@ public sealed partial class McpServersViewModel : ViewModelBase
         try
         {
 
-            bool ok = await action(server.Name, cancellationToken).ConfigureAwait(true);
+            (bool ok, string? error) = await action(server.Name, cancellationToken).ConfigureAwait(true);
 
             await RefreshAsync(cancellationToken).ConfigureAwait(true);
 
@@ -198,9 +201,9 @@ public sealed partial class McpServersViewModel : ViewModelBase
             if (!ok)
             {
 
-                LastError = $"{verb} failed for '{server.Name}'.";
+                LastError = error ?? $"{verb} failed for '{server.Name}'.";
 
-                _foundryFloor.AppendLine($"Arsenal MCP {verb} failed: {server.Name}");
+                _foundryFloor.AppendLine($"Arsenal MCP {verb} failed: {server.Name} — {LastError}");
 
             }
 

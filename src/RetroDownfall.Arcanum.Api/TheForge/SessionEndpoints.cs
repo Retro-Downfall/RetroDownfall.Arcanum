@@ -409,9 +409,20 @@ internal static class SessionEndpoints
                     return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
                 }
 
-                await queue.QueueAsync(id, ctx.RequestAborted).ConfigureAwait(false);
-
                 string acceptedTraceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                if (!queue.TryQueue(id))
+                {
+                    Result<bool> rejected = Result<bool>.Failure(
+                        new Error(
+                            ErrorCodes.Session.RestQueueFull,
+                            "Campaign Log consolidation could not be queued; the queue is full. Try again shortly."));
+
+                    return Results.Json(
+                        ApiResponse<bool>.FromResult(rejected, acceptedTraceId),
+                        ArcanumJsonContext.Default.ApiResponseBoolean,
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
 
                 Result<bool> queued = Result<bool>.Success(true);
 

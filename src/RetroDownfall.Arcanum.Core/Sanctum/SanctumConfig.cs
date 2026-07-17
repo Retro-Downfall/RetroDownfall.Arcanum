@@ -7,7 +7,9 @@ namespace RetroDownfall.Arcanum.Core.Sanctum;
 /// <see cref="ResourceLimits.MaxFileWriteMb"/> is enforced at runtime on in-process file-write tools.
 /// <see cref="ResourceLimits.MaxCpuSeconds"/>, <see cref="ResourceLimits.MaxMemoryMb"/>, and
 /// <see cref="ResourceLimits.MaxFileDescriptors"/> are enforced at the OS level (setrlimit / cgroups v2)
-/// on child processes spawned by <c>execute_command</c> and <c>run_spell_script</c> via
+/// on Unix child processes spawned by <c>execute_command</c> and <c>run_spell_script</c>; on Windows,
+/// Job Objects enforce CPU time, process/job memory, and <see cref="ResourceLimits.MaxProcessCount"/>
+/// (file descriptors have no Job Object equivalent). See DESIGN §11.15 /
 /// <c>Platform.IProcessResourceLimiter</c>. Container/VM isolation remains deferred to phase 2.
 /// </remarks>
 public sealed record SanctumConfig

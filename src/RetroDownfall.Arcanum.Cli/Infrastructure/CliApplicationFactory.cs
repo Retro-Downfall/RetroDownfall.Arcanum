@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Cli.Commands.Wards;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -77,10 +78,9 @@ internal static class CliApplicationFactory
             ArcanumApiClient.StreamingHttpClientName,
             (serviceProvider, client) =>
             {
-                int port = ArcanumSettingClamps.HostPort(
-                    serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Host.Port);
+                HostSettings host = serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Host;
 
-                client.BaseAddress = new Uri($"http://localhost:{port}/");
+                client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(host));
 
                 client.Timeout = Timeout.InfiniteTimeSpan;
             });
@@ -91,12 +91,10 @@ internal static class CliApplicationFactory
             {
                 ArcanumSettings settings = serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
 
-                int port = ArcanumSettingClamps.HostPort(settings.Host.Port);
-
                 int timeoutSeconds = ArcanumSettingClamps.ApiRequestTimeoutSeconds(
                     settings.Cli.ApiRequestTimeoutSeconds);
 
-                client.BaseAddress = new Uri($"http://localhost:{port}/");
+                client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             });

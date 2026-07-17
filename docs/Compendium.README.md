@@ -54,7 +54,7 @@ The Host section includes optional HTTPS settings (`host.https.*`) and a **Gener
 - SANs: `localhost`, `127.0.0.1`, `::1`. BasicConstraints CA=false; RSA 2048; SHA-256; valid up to 397 days.
 - Populates Enabled, CertificatePath, CertificatePassword (random), clears PrivateKeyPath; preserves a valid HTTPS port.
 - Does **not** install the certificate into the OS trust store — browsers/clients may warn until you trust it manually.
-- Loopback SANs only: for ListenAny / remote access, supply a certificate whose SAN includes your hostname or IP.
+- Loopback SANs only: for ListenAny / remote access, HTTPS is required and you must supply a certificate whose SAN includes your hostname or IP (and trust it in the OS store — clients do not skip TLS validation).
 - Password is stored encrypted (`dp:v1:`) on Save; Generate marks the section dirty but does not autosave.
 
 ## Architecture
@@ -71,7 +71,7 @@ The Host section includes optional HTTPS settings (`host.https.*`) and a **Gener
 
 A single `SettingDescriptor` table (`src/RetroDownfall.Compendium.Ux/Models/SettingDescriptors.cs`) is the visual mirror of the `arcanum.json` configuration reference in [`docs/Arcanum.DESIGN.md`](Arcanum.DESIGN.md) §3.4. Each row pairs one setting with:
 
-- `Key` — the dot-path pointer that matches `ConfigurationValidationError.Pointer` (e.g. `host.port`, `mcp.requestTimeoutSeconds`, `cli.themeColors.light.text`), so validation errors route back to the offending field.
+- `Key` — the dot-path pointer that matches `ConfigurationValidationError.Pointer` (e.g. `host.port`, `security.allowUnsandboxedToolChildren`, `mcp.requestTimeoutSeconds`, `cli.themeColors.light.text`), so validation errors route back to the offending field.
 - `Section`, `Label`, `Description` — nav grouping, field label, and the help text shown under the field.
 - `Group` — optional UI-only subgroup for the generic editor (otherwise derived from the key’s second segment).
 - `Kind` — `String`, `Int`, `Long`, `Float`, `Bool`, `Enum`, `StringArray`, `Path`, `Secret`, `Color`, or `Dictionary`. The kind selects the control (dropdown for `Enum`, live swatch for `Color`, chips for `StringArray`, masked entry for `Secret`).
@@ -112,7 +112,9 @@ OS light/dark following is best-effort on Linux; some desktop environments don't
 
 ## State synchronization
 
-- On launch, the root VM loads `arcanum.json` once.
+- On launch, the root VM loads `arcanum.json` once. Corrupt or unparseable JSON shows an alert with
+  the file path and parse error (and sets the status bar); the load does not leave an unobserved task
+  exception.
 - Edits mark dirty through `MarkDirty()` (polished section `PropertyChanged`, nested provider/job/model property changes, collection add/remove, and every `GenericSettingFieldViewModel` change in the generic descriptor editor). `MarkDirty` and `IsDirty`/`IsSaving`/`HasExternalChange` changes notify `SaveCommand` and `CancelCommand` so the Save/Cancel buttons enable correctly.
 - **Cancel** discards unsaved edits by re-applying the in-memory snapshot from the last successful load/save (no disk read, no confirm dialog).
 - A `FileSystemWatcher` watches the config directory and raises `ExternalChange` when the file is modified outside Compendium.

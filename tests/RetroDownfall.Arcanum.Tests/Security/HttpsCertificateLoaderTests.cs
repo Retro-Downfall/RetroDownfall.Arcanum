@@ -206,6 +206,32 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
     }
 
+    [Fact]
+    public void Configure_ListenAnyWithMissingCert_ThrowsSanitized()
+    {
+
+        string missing = Path.Combine(_tempRoot, "listen-any-gone.pfx");
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Host:Https:Enabled"] = "true",
+                ["Arcanum:Host:Https:Port"] = "5443",
+                ["Arcanum:Host:Https:CertificatePath"] = missing,
+            })
+            .Build();
+
+        KestrelServerOptions options = new();
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: true));
+
+        Assert.Contains("missing file", ex.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("CryptographicException", ex.Message, StringComparison.Ordinal);
+
+    }
+
     public void Dispose()
     {
 

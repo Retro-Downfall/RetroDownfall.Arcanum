@@ -127,6 +127,34 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task RunTickAsync_TruncatesContentToChunkSizeChars()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        const int chunkSize = 128;
+
+        string longContent = new('x', chunkSize + 200);
+
+        await CreateEntryAsync(sessionId, longContent);
+
+        FakeWeaveService weave = new();
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings, chunkSizeChars: chunkSize);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Single(weave.LastBatch!);
+
+        Assert.Equal(chunkSize, weave.LastBatch![0].Length);
+
+        Assert.Equal(new string('x', chunkSize), weave.LastBatch![0]);
+
+    }
+
+    [SkippableFact]
     public async Task RunTickAsync_EmbeddingFailure_LogsAndContinues_WritesNoRows()
     {
 
@@ -254,7 +282,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     }
 
-    private EntryWeavingService CreateService(FakeWeaveService weave, out EmbeddingSettings embeddings, int batchSize = 32)
+    private EntryWeavingService CreateService(
+        FakeWeaveService weave,
+        out EmbeddingSettings embeddings,
+        int batchSize = 32,
+        int chunkSizeChars = 1000)
     {
 
         embeddings = new EmbeddingSettings
@@ -264,6 +296,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             Provider = "test",
             Model = "test-embed",
             BatchSize = batchSize,
+            ChunkSizeChars = chunkSizeChars,
         };
 
         IServiceScopeFactory scopeFactory = BuildScopeFactory();

@@ -139,7 +139,13 @@ internal sealed class EntryWeavingService(
 
         int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(embeddings.BatchSize);
 
-        List<(string EntryId, string Content)> pending = await FetchUnembeddedEntriesAsync(db, batchSize, cancellationToken)
+        int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
+
+        List<(string EntryId, string Content)> pending = await FetchUnembeddedEntriesAsync(
+                db,
+                batchSize,
+                chunkSizeChars,
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (pending.Count == 0)
@@ -179,6 +185,7 @@ internal sealed class EntryWeavingService(
     private static Task<List<(string EntryId, string Content)>> FetchUnembeddedEntriesAsync(
         ArcanumDbContext db,
         int batchSize,
+        int chunkSizeChars,
         CancellationToken cancellationToken)
     {
 
@@ -194,9 +201,12 @@ internal sealed class EntryWeavingService(
                 // fetch: filtering post-fetch would let empty-content rows permanently occupy LIMIT
                 // slots every tick (they never gain an entry_embeddings row, so the LEFT JOIN keeps
                 // re-selecting them), starving real work.
+                //
+                // SUBSTR(..., 1, @chunkSize) hard-caps each payload to Embeddings:ChunkSizeChars —
+                // the same per-item ceiling WeaveService.EmbedBatchAsync applies before the provider.
                 cmd.CommandText =
                     """
-                    SELECT e."Id", e."Content"
+                    SELECT e."Id", SUBSTR(e."Content", 1, @chunkSize)
                     FROM "Entries" e
                     LEFT JOIN "entry_embeddings" ee ON ee."EntryId" = e."Id"
                     WHERE ee."EntryId" IS NULL
@@ -207,6 +217,8 @@ internal sealed class EntryWeavingService(
 
                 AddParameter(cmd, "@limit", batchSize);
 
+                AddParameter(cmd, "@chunkSize", chunkSizeChars);
+
                 List<(string EntryId, string Content)> results = [];
 
                 await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -214,7 +226,24 @@ internal sealed class EntryWeavingService(
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
 
-                    results.Add((reader.GetString(0), reader.GetString(1)));
+                    string content = reader.GetString(1);
+
+                    // Defensive surrogate-safe slice: SQLite SUBSTR may land on a UTF-16 high
+                    // surrogate; match WeaveService.EmbedBatchAsync's SafeCharSliceLength boundary.
+                    if (content.Length > chunkSizeChars)
+                    {
+
+                        content = content[..Utf8Truncation.SafeCharSliceLength(content, chunkSizeChars)];
+
+                    }
+                    else if (content.Length > 0 && char.IsHighSurrogate(content[^1]))
+                    {
+
+                        content = content[..^1];
+
+                    }
+
+                    results.Add((reader.GetString(0), content));
 
                 }
 

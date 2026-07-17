@@ -18,6 +18,9 @@ public interface IArcanumConnection : INotifyPropertyChanged
     /// <summary>Last failed health-poll error code (e.g. <c>Security.MissingApiKey</c>), or null when connected.</summary>
     string? LastErrorCode { get; }
 
+    /// <summary>Last failed health-poll error message, or null when connected.</summary>
+    string? LastErrorMessage { get; }
+
     void Connect();
 
     void Disconnect();

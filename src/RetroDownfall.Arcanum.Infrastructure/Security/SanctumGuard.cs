@@ -233,6 +233,54 @@ public sealed class SanctumGuard(
         return ClampResourceLimits(config.ResourceLimits);
     }
 
+    public async Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+        string? workspaceRoot,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            return null;
+        }
+
+        string normalizedRoot;
+
+        try
+        {
+            normalizedRoot = Path.GetFullPath(workspaceRoot.Trim());
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        Campaign? campaign = await campaignRepository
+            .GetByPathAsync(normalizedRoot, ct)
+            .ConfigureAwait(false);
+
+        if (campaign is null)
+        {
+            return null;
+        }
+
+        SanctumConfig config = CampaignRepository.GetSanctumConfig(campaign);
+
+        string campaignWorkspace;
+
+        try
+        {
+            campaignWorkspace = Path.GetFullPath(campaign.Path.Trim());
+        }
+        catch (Exception)
+        {
+            campaignWorkspace = normalizedRoot;
+        }
+
+        return new SanctumChildProcessBoundary(
+            campaignWorkspace,
+            PathBoundaryRequired: config.Enabled && config.EnforcePathBoundary,
+            AllowedPaths: config.AllowedPaths);
+    }
+
     public async Task RecordResourceLimitBreachAsync(
         string? workspaceRoot,
         string toolName,

@@ -7,7 +7,7 @@ public sealed class CampaignLoggerQueueTests
 {
 
     [Fact]
-    public async Task QueueAsync_and_ReadAllAsync_round_trip_conversation_ids()
+    public async Task TryQueue_and_ReadAllAsync_round_trip_conversation_ids()
     {
 
         CampaignLoggerQueue queue = new(NullLogger<CampaignLoggerQueue>.Instance);
@@ -18,11 +18,50 @@ public sealed class CampaignLoggerQueueTests
 
         Task<Guid> readTask = ReadOneAsync(queue, cts.Token);
 
-        await queue.QueueAsync(conversationId);
+        Assert.True(queue.TryQueue(conversationId));
 
         Guid received = await readTask;
 
         Assert.Equal(conversationId, received);
+
+        Assert.Equal(0, queue.PendingCountForTesting);
+
+    }
+
+    [Fact]
+    public void TryQueue_CoalescesDuplicateSessionIds()
+    {
+
+        CampaignLoggerQueue queue = new(NullLogger<CampaignLoggerQueue>.Instance);
+
+        Guid id = Guid.NewGuid();
+
+        Assert.True(queue.TryQueue(id));
+
+        Assert.True(queue.TryQueue(id));
+
+        Assert.Equal(1, queue.PendingCountForTesting);
+
+    }
+
+    [Fact]
+    public void TryQueue_WhenChannelFull_ReturnsFalseAndClearsPending()
+    {
+
+        CampaignLoggerQueue queue = new(NullLogger<CampaignLoggerQueue>.Instance);
+
+        for (int i = 0; i < 100; i++)
+        {
+
+            Assert.True(queue.TryWriteRawForTesting(Guid.NewGuid()));
+
+        }
+
+        Guid rejected = Guid.NewGuid();
+
+        Assert.False(queue.TryQueue(rejected));
+
+        Assert.Equal(0, queue.PendingCountForTesting);
 
     }
 

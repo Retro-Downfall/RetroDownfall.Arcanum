@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -107,9 +108,24 @@ internal sealed partial class ArcanumInternalToolServer
 
         IProcessResourceLimiter resourceLimiter = resourceScope.ServiceProvider.GetRequiredService<IProcessResourceLimiter>();
 
+        IOptionsMonitor<ArcanumSettings> optionsMonitor =
+            resourceScope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
         ResourceLimits resourceLimits = await sanctumGuard
             .GetEffectiveResourceLimitsForWorkspaceAsync(_workspaceRoot, cancellationToken)
             .ConfigureAwait(false);
+
+        SanctumChildProcessBoundary? boundary = await sanctumGuard
+            .GetChildProcessBoundaryForWorkspaceAsync(_workspaceRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        bool allowUnsandboxed = optionsMonitor.CurrentValue.Security.AllowUnsandboxedToolChildren;
+
+        ChildProcessSandboxRequest sandboxRequest = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspaceRoot!,
+            boundary?.AllowedPaths,
+            allowUnsandboxed,
+            windowsPathBoundaryRequired: boundary?.PathBoundaryRequired == true);
 
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
@@ -118,10 +134,20 @@ internal sealed partial class ArcanumInternalToolServer
             _executeCommandTimeout,
             resourceLimits,
             resourceLimiter,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            sandboxRequest,
+            _logger).ConfigureAwait(false);
 
         switch (runResult.Outcome)
         {
+            case CappedChildProcessOutcome.FilesystemSandboxUnavailable:
+
+            case CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum:
+
+                return ToolError(
+                    runResult.FilesystemSandboxDenialMessage
+                    ?? ChildProcessSandboxMessages.SandboxUnavailable);
+
             case CappedChildProcessOutcome.ResourceLimitApplyFailed:
 
                 _logger?.LogError(

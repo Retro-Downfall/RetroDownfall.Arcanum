@@ -50,6 +50,12 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
     public List<string>? NextWarnings { get; set; }
 
+    /// <summary>
+    /// When set, <see cref="ExecutePromptAsync"/> waits on this gate (or until cancelled) before
+    /// returning — used by batch in-flight expiry tests.
+    /// </summary>
+    public TaskCompletionSource? ExecuteGate { get; set; }
+
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
         CancellationToken cancellationToken = default,
@@ -64,6 +70,13 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
         LastAuditContext = auditContext;
 
+        if (ExecuteGate is { } gate)
+        {
+
+            return WaitForGateThenCompleteAsync(gate, request, cancellationToken);
+
+        }
+
         if (NextFailure is Error failure)
         {
 
@@ -77,6 +90,29 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
                 Warnings = NextWarnings ?? [],
                 PreserveProviderToolCallIds = request.ForwardClientTools,
             }));
+
+    }
+
+    private async Task<Result<PromptTurnResult>> WaitForGateThenCompleteAsync(
+        TaskCompletionSource gate,
+        PingRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (NextFailure is Error failure)
+        {
+
+            return Result<PromptTurnResult>.Failure(failure);
+
+        }
+
+        return Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
+        {
+            Warnings = NextWarnings ?? [],
+            PreserveProviderToolCallIds = request.ForwardClientTools,
+        });
 
     }
 

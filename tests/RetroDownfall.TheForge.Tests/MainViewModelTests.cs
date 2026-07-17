@@ -361,6 +361,8 @@ public class MainViewModelTests
 
         public string? LastErrorCode { get; private set; }
 
+        public string? LastErrorMessage { get; private set; }
+
         public int ConnectCallCount { get; private set; }
 
         public int DisconnectCallCount { get; private set; }
@@ -465,6 +467,7 @@ internal static class MainViewModelFactory
                 connection,
                 new NullAnvilDataSource(),
                 navigation,
+                new NoopApiKeyProvider(),
                 new StaticTheForgeSettingsMonitor(),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel>.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor),
@@ -599,6 +602,21 @@ internal sealed class NullAnvilDataSource : RetroDownfall.TheForge.Ux.ViewModels
 
     public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Mcp.McpServerInfo>> ListMcpServersAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Mcp.McpServerInfo>>([]);
+
+}
+
+internal sealed class NoopApiKeyProvider : RetroDownfall.TheForge.Core.Services.ITheForgeApiKeyProvider
+{
+
+    public Task<string?> GetApiKeyAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
+
+    public Task PersistPastedKeyAsync(string apiKey, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    public void ClearPasteDecline()
+    {
+    }
 
 }
 
@@ -854,14 +872,14 @@ internal sealed class NullArsenalDataSource : RetroDownfall.TheForge.Ux.ViewMode
     public Task<(IReadOnlyList<RetroDownfall.Arcanum.Core.Mcp.McpServerInfo>? Servers, string? Error)> ListMcpServersAsync(CancellationToken cancellationToken) =>
         Task.FromResult<(IReadOnlyList<RetroDownfall.Arcanum.Core.Mcp.McpServerInfo>?, string?)>(([], null));
 
-    public Task<bool> StartServerAsync(string name, CancellationToken cancellationToken) =>
-        Task.FromResult(false);
+    public Task<(bool Ok, string? Error)> StartServerAsync(string name, CancellationToken cancellationToken) =>
+        Task.FromResult<(bool, string?)>((false, "Not implemented."));
 
-    public Task<bool> StopServerAsync(string name, CancellationToken cancellationToken) =>
-        Task.FromResult(false);
+    public Task<(bool Ok, string? Error)> StopServerAsync(string name, CancellationToken cancellationToken) =>
+        Task.FromResult<(bool, string?)>((false, "Not implemented."));
 
-    public Task<bool> RestartServerAsync(string name, CancellationToken cancellationToken) =>
-        Task.FromResult(false);
+    public Task<(bool Ok, string? Error)> RestartServerAsync(string name, CancellationToken cancellationToken) =>
+        Task.FromResult<(bool, string?)>((false, "Not implemented."));
 
     public Task<(bool Success, string? Error)> ReloadMcpAsync(string? workingDirectory, CancellationToken cancellationToken) =>
         Task.FromResult((false, (string?)"Not implemented."));
@@ -869,8 +887,8 @@ internal sealed class NullArsenalDataSource : RetroDownfall.TheForge.Ux.ViewMode
     public Task<(WorkspaceArsenalDto? Arsenal, string? Error)> GetArsenalAsync(string? workingDirectory, CancellationToken cancellationToken) =>
         Task.FromResult<(WorkspaceArsenalDto?, string?)>((null, null));
 
-    public Task<ToolInvokeResponse?> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken) =>
-        Task.FromResult<ToolInvokeResponse?>(null);
+    public Task<(ToolInvokeResponse? Response, string? Error)> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<(ToolInvokeResponse?, string?)>((null, "Not implemented."));
 
 }
 

@@ -79,6 +79,9 @@ public static class ErrorCodes
         /// <summary>Pinning an entry would exceed <c>Arcanum:Sessions:MaxPinnedEntries</c>.</summary>
         public const string TooManyPinned = "Session.TooManyPinned";
 
+        /// <summary>Explicit <c>POST /api/sessions/{id}/rest</c> could not enqueue Campaign Log consolidation.</summary>
+        public const string RestQueueFull = "Session.RestQueueFull";
+
     }
 
     /// <summary>Grimoire — lore and knowledge store.</summary>

@@ -25,19 +25,21 @@ internal static class AtomicFile
     /// <param name="beforeReplace">
     /// Optional gate invoked after the temp file is fully written, flushed, and closed but before the
     /// rename. Returning <see langword="false"/> aborts the replace, deletes the temp file, and makes
-    /// this method return <see langword="false"/> (the destination is left untouched).
+    /// this method return <see cref="AtomicReplaceStatus.Aborted"/> (the destination is left untouched).
     /// </param>
     /// <param name="afterReplace">
     /// Optional hook invoked immediately after a successful rename. Use it for post-move side effects
     /// such as permission hardening (perform the side effect and return <see langword="true"/>), or as
-    /// a fail-closed post-move validation (returning <see langword="false"/> makes this method return
-    /// <see langword="false"/> even though the destination has already been replaced).
+    /// a fail-closed post-move validation. Returning <see langword="false"/> triggers best-effort
+    /// restore-from-backup or quarantine of the destination; the method then returns
+    /// <see cref="AtomicReplaceStatus.RolledBack"/> or
+    /// <see cref="AtomicReplaceStatus.ReplacedButUnverified"/> rather than a generic pre-move failure.
     /// </param>
     /// <returns>
-    /// <see langword="true"/> when the destination was replaced and both hooks (if supplied) approved;
-    /// otherwise <see langword="false"/>.
+    /// An <see cref="AtomicReplaceStatus"/> describing whether the destination was replaced and
+    /// whether post-move verification (and any rollback) succeeded.
     /// </returns>
-    public static async Task<bool> ReplaceAsync(
+    public static async Task<AtomicReplaceStatus> ReplaceAsync(
         string destinationPath,
         string tempPath,
         Func<Stream, CancellationToken, Task> writeAsync,
@@ -47,6 +49,8 @@ internal static class AtomicFile
     {
 
         bool replaced = false;
+
+        string? backupPath = null;
 
         try
         {
@@ -69,7 +73,18 @@ internal static class AtomicFile
             if (beforeReplace is not null && !beforeReplace())
             {
 
-                return false;
+                return AtomicReplaceStatus.Aborted;
+
+            }
+
+            if (File.Exists(destinationPath))
+            {
+
+                backupPath = Path.Combine(
+                    Path.GetDirectoryName(destinationPath) ?? string.Empty,
+                    $".arcanum-bak-{Guid.NewGuid():N}");
+
+                File.Copy(destinationPath, backupPath, overwrite: false);
 
             }
 
@@ -80,11 +95,23 @@ internal static class AtomicFile
             if (afterReplace is not null && !afterReplace())
             {
 
-                return false;
+                if (TryRestoreOrQuarantine(destinationPath, backupPath))
+                {
+
+                    backupPath = null;
+
+                    return AtomicReplaceStatus.RolledBack;
+
+                }
+
+                // Keep the backup file for operator recovery; do not delete it in finally.
+                backupPath = null;
+
+                return AtomicReplaceStatus.ReplacedButUnverified;
 
             }
 
-            return true;
+            return AtomicReplaceStatus.Succeeded;
 
         }
         finally
@@ -96,6 +123,81 @@ internal static class AtomicFile
                 TryDeleteTempFile(tempPath);
 
             }
+
+            if (backupPath is not null)
+            {
+
+                TryDeleteTempFile(backupPath);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Best-effort recovery after a failed post-move check: restore the pre-move backup when one
+    /// exists, otherwise quarantine (rename aside) or delete the unverified destination.
+    /// </summary>
+    /// <returns><see langword="true"/> when the destination no longer holds unverified content.</returns>
+    private static bool TryRestoreOrQuarantine(string destinationPath, string? backupPath)
+    {
+
+        if (backupPath is not null && File.Exists(backupPath))
+        {
+
+            try
+            {
+
+                File.Move(backupPath, destinationPath, overwrite: true);
+
+                return true;
+
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+
+                // Fall through to quarantine/delete.
+            }
+
+        }
+
+        if (!File.Exists(destinationPath))
+        {
+
+            return true;
+
+        }
+
+        string quarantinePath = Path.Combine(
+            Path.GetDirectoryName(destinationPath) ?? string.Empty,
+            $".arcanum-quarantine-{Guid.NewGuid():N}");
+
+        try
+        {
+
+            File.Move(destinationPath, quarantinePath, overwrite: false);
+
+            return true;
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+        }
+
+        try
+        {
+
+            File.Delete(destinationPath);
+
+            return true;
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            return false;
 
         }
 

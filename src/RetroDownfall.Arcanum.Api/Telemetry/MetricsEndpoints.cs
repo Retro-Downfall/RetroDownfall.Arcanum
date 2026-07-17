@@ -17,18 +17,18 @@ using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 namespace RetroDownfall.Arcanum.Api.Telemetry;
 
 /// <summary>
-/// Maps <c>GET /metrics</c> — Prometheus text format (<c>0.0.4</c>). Mapped onto <c>app</c> directly
-/// (standalone, unauthenticated) or onto the <c>/api</c> group (behind <c>ApiKeyEndpointFilter</c> and
-/// any active rate limiter) by <c>ApiBootstrapper.MapArcanumEndpoints</c>, depending on the effective
-/// <c>Arcanum:Metrics:RequireApiKey</c> gate.
+/// Maps <c>GET /metrics</c> — Prometheus text format (<c>0.0.4</c>). Always registered at the
+/// canonical <c>/metrics</c> path (not under <c>/api</c>). <c>ApiBootstrapper.MapArcanumEndpoints</c>
+/// attaches <c>ApiKeyEndpointFilter</c> (and the active rate limiter when enabled) when the effective
+/// <c>Arcanum:Metrics:RequireApiKey</c> gate is on.
 /// </summary>
 internal static class MetricsEndpoints
 {
 
-    public static void MapMetricsEndpoint(this IEndpointRouteBuilder endpoints)
+    public static RouteHandlerBuilder MapMetricsEndpoint(this IEndpointRouteBuilder endpoints)
     {
 
-        endpoints.MapGet("/metrics", async (
+        return endpoints.MapGet("/metrics", async (
             PrometheusMetricsExporter exporter,
             ArcanumDbContext db,
             IOptionsSnapshot<ArcanumSettings> settings,

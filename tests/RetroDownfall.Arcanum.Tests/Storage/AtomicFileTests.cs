@@ -37,13 +37,13 @@ public sealed class AtomicFileTests : IDisposable
 
         string tempPath = TempPathFor(destination);
 
-        bool replaced = await AtomicFile.ReplaceAsync(
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
             destination,
             tempPath,
             (stream, ct) => WriteTextAsync(stream, "durable content", ct),
             CancellationToken.None);
 
-        Assert.True(replaced);
+        Assert.Equal(AtomicReplaceStatus.Succeeded, status);
 
         Assert.Equal("durable content", await File.ReadAllTextAsync(destination));
 
@@ -61,13 +61,13 @@ public sealed class AtomicFileTests : IDisposable
 
         await File.WriteAllTextAsync(destination, "original");
 
-        bool replaced = await AtomicFile.ReplaceAsync(
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
             destination,
             TempPathFor(destination),
             (stream, ct) => WriteTextAsync(stream, "replacement", ct),
             CancellationToken.None);
 
-        Assert.True(replaced);
+        Assert.Equal(AtomicReplaceStatus.Succeeded, status);
 
         Assert.Equal("replacement", await File.ReadAllTextAsync(destination));
 
@@ -83,7 +83,7 @@ public sealed class AtomicFileTests : IDisposable
 
         bool destinationExistedWhenHookRan = false;
 
-        bool replaced = await AtomicFile.ReplaceAsync(
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
             destination,
             TempPathFor(destination),
             (stream, ct) => WriteTextAsync(stream, "hooked", ct),
@@ -97,7 +97,7 @@ public sealed class AtomicFileTests : IDisposable
 
             });
 
-        Assert.True(replaced);
+        Assert.Equal(AtomicReplaceStatus.Succeeded, status);
 
         Assert.True(destinationExistedWhenHookRan);
 
@@ -111,14 +111,14 @@ public sealed class AtomicFileTests : IDisposable
 
         string tempPath = TempPathFor(destination);
 
-        bool replaced = await AtomicFile.ReplaceAsync(
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
             destination,
             tempPath,
             (stream, ct) => WriteTextAsync(stream, "should not land", ct),
             CancellationToken.None,
             beforeReplace: () => false);
 
-        Assert.False(replaced);
+        Assert.Equal(AtomicReplaceStatus.Aborted, status);
 
         Assert.False(File.Exists(destination));
 
@@ -129,7 +129,7 @@ public sealed class AtomicFileTests : IDisposable
     }
 
     [Fact]
-    public async Task ReplaceAsync_when_afterReplace_returns_false_still_replaces_but_reports_failure()
+    public async Task ReplaceAsync_when_afterReplace_returns_false_restores_backup()
     {
 
         string destination = Path.Combine(_root, "artifact.txt");
@@ -138,19 +138,51 @@ public sealed class AtomicFileTests : IDisposable
 
         string tempPath = TempPathFor(destination);
 
-        bool replaced = await AtomicFile.ReplaceAsync(
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
             destination,
             tempPath,
             (stream, ct) => WriteTextAsync(stream, "post-move state", ct),
             CancellationToken.None,
             afterReplace: () => false);
 
-        Assert.False(replaced);
+        Assert.Equal(AtomicReplaceStatus.RolledBack, status);
 
-        // The rename happens before afterReplace, so a fail-closed post-move hook cannot undo it.
-        Assert.Equal("post-move state", await File.ReadAllTextAsync(destination));
+        Assert.Equal("original", await File.ReadAllTextAsync(destination));
 
         Assert.False(File.Exists(tempPath));
+
+        Assert.Empty(Directory.GetFiles(_root, ".arcanum-bak-*"));
+
+        Assert.Empty(Directory.GetFiles(_root, ".arcanum-quarantine-*"));
+
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_when_afterReplace_fails_without_prior_file_quarantines_destination()
+    {
+
+        string destination = Path.Combine(_root, "artifact.txt");
+
+        string tempPath = TempPathFor(destination);
+
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+            destination,
+            tempPath,
+            (stream, ct) => WriteTextAsync(stream, "unverified", ct),
+            CancellationToken.None,
+            afterReplace: () => false);
+
+        Assert.Equal(AtomicReplaceStatus.RolledBack, status);
+
+        Assert.False(File.Exists(destination));
+
+        Assert.False(File.Exists(tempPath));
+
+        string[] quarantined = Directory.GetFiles(_root, ".arcanum-quarantine-*");
+
+        Assert.Single(quarantined);
+
+        Assert.Equal("unverified", await File.ReadAllTextAsync(quarantined[0]));
 
     }
 

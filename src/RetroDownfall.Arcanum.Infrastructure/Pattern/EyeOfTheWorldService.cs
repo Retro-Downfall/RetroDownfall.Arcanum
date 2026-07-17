@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Pattern;
 
@@ -26,6 +27,12 @@ public sealed class EyeOfTheWorldService(IOptionsMonitor<ArcanumSettings> settin
         "dist",
         "build",
     };
+
+    /// <summary>
+    /// Path comparison for the visited canonical-directory set that terminates symlink cycles.
+    /// </summary>
+    private static readonly StringComparer CanonicalDirectoryComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     public async Task<PatternSnapshot> PerceivePatternAsync(string directoryPath, CancellationToken cancellationToken)
     {
@@ -61,43 +68,122 @@ public sealed class EyeOfTheWorldService(IOptionsMonitor<ArcanumSettings> settin
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Breadth-first walk that prunes <see cref="IgnoredDirectorySegments"/> and symlink-escaping
+    /// subdirectories <b>before</b> descending (same shape as
+    /// <c>WorkspaceIndexingService.EnumerateCandidateFiles</c>), terminates symlink cycles via a
+    /// canonical visited set, ignores inaccessible directories, and stops once
+    /// <see cref="MaxEnumerationSteps"/> filesystem entries have been visited.
+    /// </summary>
     private ScanResult ScanWorkspace(string root, CancellationToken cancellationToken)
     {
         ScanResult result = new();
-        EnumerationOptions options = new()
-        {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true,
-            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
-        };
+
+        string canonicalRoot = ResolveCanonicalDirectory(root);
+
+        HashSet<string> visitedCanonicalDirs = new(CanonicalDirectoryComparer) { canonicalRoot };
+
+        Queue<string> pendingDirectories = new();
+
+        pendingDirectories.Enqueue(root);
+
         try
         {
-            foreach (string fullPath in Directory.EnumerateFiles(root, "*", options))
+            while (pendingDirectories.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (result.EnumerationSteps >= MaxEnumerationSteps)
+
+                string directory = pendingDirectories.Dequeue();
+
+                IEnumerable<string> entries;
+
+                try
                 {
-                    result.EnumerationTruncated = true;
-                    break;
+                    entries = Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.TopDirectoryOnly);
                 }
-                result.EnumerationSteps++;
-                if (IsUnderIgnoredPath(fullPath, root))
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
+                    // Inaccessible directory — skip and keep walking (IgnoreInaccessible parity).
                     continue;
                 }
 
-                string rel = Path.GetRelativePath(root, fullPath);
-                if (rel is "." or "..")
+                foreach (string fullPath in entries)
                 {
-                    continue;
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                string ext = Path.GetExtension(fullPath);
-                string fileName = Path.GetFileName(fullPath);
-                int depth = CountPathSegments(rel);
-                AccumulateFileTimes(result, rel, fullPath);
-                AccumulateSignature(scan: result, rel, ext, fileName, depth);
-                AccumulateDomainCounts(scan: result, ext);
+                    if (result.EnumerationSteps >= MaxEnumerationSteps)
+                    {
+                        result.EnumerationTruncated = true;
+
+                        return result;
+                    }
+
+                    result.EnumerationSteps++;
+
+                    FileAttributes attributes;
+
+                    try
+                    {
+                        attributes = File.GetAttributes(fullPath);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        continue;
+                    }
+
+                    if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0)
+                    {
+                        continue;
+                    }
+
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        string name = Path.GetFileName(fullPath);
+
+                        if (IgnoredDirectorySegments.Contains(name))
+                        {
+                            // Pruned before recursion — contents are never visited.
+                            continue;
+                        }
+
+                        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, fullPath, out _))
+                        {
+                            // Escaping symlinked directory — never descended into.
+                            continue;
+                        }
+
+                        string canonicalSub = ResolveCanonicalDirectory(fullPath);
+
+                        if (!visitedCanonicalDirs.Add(canonicalSub))
+                        {
+                            // Symlink cycle — already visited this canonical directory.
+                            continue;
+                        }
+
+                        pendingDirectories.Enqueue(fullPath);
+                    }
+                    else
+                    {
+                        string rel = Path.GetRelativePath(root, fullPath);
+
+                        if (rel is "." or "..")
+                        {
+                            continue;
+                        }
+
+                        string ext = Path.GetExtension(fullPath);
+
+                        string fileName = Path.GetFileName(fullPath);
+
+                        int depth = CountPathSegments(rel);
+
+                        AccumulateFileTimes(result, rel, fullPath);
+
+                        AccumulateSignature(scan: result, rel, ext, fileName, depth);
+
+                        AccumulateDomainCounts(scan: result, ext);
+                    }
+                }
             }
         }
         catch (OperationCanceledException)
@@ -110,6 +196,26 @@ public sealed class EyeOfTheWorldService(IOptionsMonitor<ArcanumSettings> settin
         }
 
         return result;
+    }
+
+    private static string ResolveCanonicalDirectory(string directory)
+    {
+        try
+        {
+            return Directory.ResolveLinkTarget(directory, returnFinalTarget: true)?.FullName
+                ?? Path.GetFullPath(directory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            try
+            {
+                return Path.GetFullPath(directory);
+            }
+            catch (Exception inner) when (inner is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
+            {
+                return directory;
+            }
+        }
     }
 
     private static void AccumulateFileTimes(ScanResult result, string rel, string fullPath)
@@ -403,20 +509,6 @@ public sealed class EyeOfTheWorldService(IOptionsMonitor<ArcanumSettings> settin
         }
 
         return count;
-    }
-
-    private static bool IsUnderIgnoredPath(string fullPath, string root)
-    {
-        string rel = Path.GetRelativePath(root, fullPath);
-        foreach (string part in rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-        {
-            if (IgnoredDirectorySegments.Contains(part))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private sealed class ScanResult

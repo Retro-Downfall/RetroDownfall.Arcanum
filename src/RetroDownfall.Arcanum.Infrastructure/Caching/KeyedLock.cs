@@ -4,16 +4,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Caching;
 
 /// <summary>
 /// Self-evicting per-key <see cref="SemaphoreSlim(1, 1)"/> map. Acquire returns a releaser that
-/// releases the semaphore on dispose and, when the semaphore is idle (no waiters) and the map still
-/// holds this exact semaphore, removes the entry so the map stays bounded to keys with active or
-/// in-flight waiters. The reference-equality <see cref="ConcurrentDictionary{TKey, TValue}.TryRemove"/>
-/// guard (mirroring <see cref="SingleFlight"/>) prevents evicting a newer semaphore a concurrent
-/// acquirer added after this release.
+/// releases the semaphore on dispose. Entries are removed only when the per-key waiter/holder
+/// refcount reaches zero, using reference-equality <see cref="ConcurrentDictionary{TKey, TValue}.TryRemove"/>
+/// so a cancelled waiter cannot evict a semaphore another waiter is using or about to use.
 /// </summary>
 internal sealed class KeyedLock<TKey> where TKey : notnull
 {
 
-    private readonly ConcurrentDictionary<TKey, SemaphoreSlim> _map;
+    private readonly ConcurrentDictionary<TKey, LockState> _map;
 
     public KeyedLock(IEqualityComparer<TKey>? comparer = null)
     {
@@ -29,11 +27,44 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
     public async Task<IDisposable> AcquireAsync(TKey key, CancellationToken cancellationToken = default)
     {
 
-        SemaphoreSlim semaphore = _map.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        while (true)
+        {
 
-        await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            LockState state = _map.GetOrAdd(key, static _ => new LockState());
 
-        return new Releaser(_map, key, semaphore);
+            lock (state.Sync)
+            {
+
+                // A state removed between GetOrAdd and this lock must not be reused.
+                if (!_map.TryGetValue(key, out LockState? current) || !ReferenceEquals(current, state))
+                {
+
+                    continue;
+
+                }
+
+                state.RefCount++;
+
+            }
+
+            try
+            {
+
+                await state.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                return new Releaser(_map, key, state);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                ReleaseRef(_map, key, state);
+
+                throw;
+
+            }
+
+        }
 
     }
 
@@ -45,32 +76,62 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
     internal bool IsHeld(TKey key)
     {
 
-        return _map.TryGetValue(key, out SemaphoreSlim? semaphore) && semaphore.CurrentCount == 0;
+        return _map.TryGetValue(key, out LockState? state) && state.Semaphore.CurrentCount == 0;
 
     }
 
     /// <summary>Current entry count of the underlying map; for assertions in the test suite.</summary>
     internal int CountForTesting => _map.Count;
 
+    private static void ReleaseRef(ConcurrentDictionary<TKey, LockState> map, TKey key, LockState state)
+    {
+
+        lock (state.Sync)
+        {
+
+            state.RefCount--;
+
+            if (state.RefCount <= 0)
+            {
+
+                _ = map.TryRemove(new KeyValuePair<TKey, LockState>(key, state));
+
+            }
+
+        }
+
+    }
+
+    private sealed class LockState
+    {
+
+        public object Sync { get; } = new();
+
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+
+        public int RefCount;
+
+    }
+
     private sealed class Releaser : IDisposable
     {
 
-        private readonly ConcurrentDictionary<TKey, SemaphoreSlim> _map;
+        private readonly ConcurrentDictionary<TKey, LockState> _map;
 
         private readonly TKey _key;
 
-        private readonly SemaphoreSlim _semaphore;
+        private readonly LockState _state;
 
         private int _disposed;
 
-        public Releaser(ConcurrentDictionary<TKey, SemaphoreSlim> map, TKey key, SemaphoreSlim semaphore)
+        public Releaser(ConcurrentDictionary<TKey, LockState> map, TKey key, LockState state)
         {
 
             _map = map;
 
             _key = key;
 
-            _semaphore = semaphore;
+            _state = state;
 
         }
 
@@ -84,14 +145,9 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
 
             }
 
-            _semaphore.Release();
+            _state.Semaphore.Release();
 
-            if (_semaphore.CurrentCount == 1)
-            {
-
-                _ = _map.TryRemove(new KeyValuePair<TKey, SemaphoreSlim>(_key, _semaphore));
-
-            }
+            ReleaseRef(_map, _key, _state);
 
         }
 

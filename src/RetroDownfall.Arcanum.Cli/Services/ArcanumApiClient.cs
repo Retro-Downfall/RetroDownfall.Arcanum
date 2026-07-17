@@ -31,14 +31,25 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
     public const string RequestHttpClientName = "ArcanumApiRequest";
 
-    private const string StreamDisconnectMessage =
+    /// <summary>Operator-facing copy when an SSE/NDJSON stream disconnects mid-flight.</summary>
+    public const string StreamDisconnectMessage =
         "The connection to the Arcanum API was lost before the stream completed.";
 
-    private const string StreamTimeoutMessage =
+    /// <summary>Operator-facing copy when a stream/request times out (HttpClient cancel, not Ctrl+C).</summary>
+    public const string StreamTimeoutMessage =
         "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.";
 
-    private const string StreamUnreachableMessage =
+    /// <summary>Operator-facing copy when the API cannot be reached at all.</summary>
+    public const string StreamUnreachableMessage =
         "API is unreachable. Is 'arcanum serve' running in a background terminal?";
+
+    /// <summary>Operator-facing copy when the stream completes with no result payload.</summary>
+    public const string StreamEmptyResultMessage =
+        "Stream ended without a result.";
+
+    /// <summary>Hint appended to stream-failure messages so operators know how to diagnose.</summary>
+    public const string StreamDoctorHint =
+        "Run 'arcanum doctor' to diagnose, or confirm 'arcanum serve' is running.";
 
     private static string? TryMapStreamReadFailure(Exception exception, CancellationToken cancellationToken)
     {
@@ -570,6 +581,19 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                         new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
                 }
 
+                if ((int)response.StatusCode == 503)
+                {
+                    if (boolEnvelope is not null && boolEnvelope is { IsSuccess: false, Error: not null })
+                    {
+                        return Result<bool>.Failure(boolEnvelope.Error.Value);
+                    }
+
+                    return Result<bool>.Failure(
+                        new Error(
+                            ErrorCodes.Session.RestQueueFull,
+                            "Campaign Log consolidation could not be queued; the queue is full. Try again shortly."));
+                }
+
                 ApiResponse<string>? envelope = TryDeserialize(responseBytes, ArcanumJsonContext.Default.ApiResponseString);
 
                 if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
@@ -864,18 +888,18 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
         catch (OperationCanceledException)
         {
-            sendErrorMessage = "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.";
+            sendErrorMessage = StreamTimeoutMessage;
         }
         catch (HttpRequestException)
         {
-            sendErrorMessage = "API is unreachable. Is 'arcanum serve' running in a background terminal?";
+            sendErrorMessage = StreamUnreachableMessage;
         }
 
         if (sendErrorMessage is not null || response is null)
         {
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
-                sendErrorMessage ?? "API is unreachable. Is 'arcanum serve' running in a background terminal?");
+                sendErrorMessage ?? StreamUnreachableMessage);
 
             yield break;
         }
@@ -2251,11 +2275,11 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         }
         catch (OperationCanceledException)
         {
-            sendErrorMessage = "The request to the Arcanum API timed out. The server may be busy with a long-running model operation.";
+            sendErrorMessage = StreamTimeoutMessage;
         }
         catch (HttpRequestException)
         {
-            sendErrorMessage = "API is unreachable. Is 'arcanum serve' running in a background terminal?";
+            sendErrorMessage = StreamUnreachableMessage;
         }
 
         if (sendErrorMessage is not null || response is null)
@@ -2263,7 +2287,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             yield return new ChronicleFrame(
                 "error",
                 null,
-                sendErrorMessage ?? "API is unreachable. Is 'arcanum serve' running in a background terminal?");
+                sendErrorMessage ?? StreamUnreachableMessage);
 
             yield break;
         }

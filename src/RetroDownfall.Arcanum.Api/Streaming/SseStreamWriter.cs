@@ -63,14 +63,19 @@ internal static class SseStreamWriter
 
         await using IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(cancellationToken);
 
+        // Keep a single pending MoveNextAsync for the lifetime of each item wait.
+        // Heartbeats must WhenAny against the same move task — never start a second
+        // MoveNextAsync while one is outstanding (IAsyncEnumerator is not concurrent-safe).
+        Task<bool>? pendingMove = null;
+
         while (true)
         {
 
-            Task<bool> move = enumerator.MoveNextAsync().AsTask();
+            pendingMove ??= enumerator.MoveNextAsync().AsTask();
 
             Task delay = Task.Delay(heartbeatInterval, cancellationToken);
 
-            Task completed = await Task.WhenAny(move, delay).ConfigureAwait(false);
+            Task completed = await Task.WhenAny(pendingMove, delay).ConfigureAwait(false);
 
             if (completed == delay)
             {
@@ -93,7 +98,11 @@ internal static class SseStreamWriter
 
             }
 
-            if (!await move.ConfigureAwait(false))
+            bool hasNext = await pendingMove.ConfigureAwait(false);
+
+            pendingMove = null;
+
+            if (!hasNext)
             {
 
                 break;

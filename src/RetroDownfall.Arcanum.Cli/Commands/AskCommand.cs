@@ -179,6 +179,8 @@ public sealed class AskCommand(
 
         bool streamedTokens = false;
 
+        bool receivedAnyStreamEvent = false;
+
         string? finalText = null;
 
         var accumulatedText = new StringBuilder();
@@ -246,6 +248,8 @@ public sealed class AskCommand(
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
+                receivedAnyStreamEvent = true;
+
                 switch (evt.Type)
                 {
                     case IntelligenceEventType.Status:
@@ -321,7 +325,9 @@ public sealed class AskCommand(
                     case IntelligenceEventType.Error:
 
                         stderrConsole.MarkupLine(
-                            palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(evt.Message)));
+                            palette.ErrorLabelMarkup(
+                                Markup.Escape("Error:"),
+                                Markup.Escape(FormatStreamTransportError(evt.Message))));
 
                         return 1;
                 }
@@ -334,11 +340,22 @@ public sealed class AskCommand(
             // to the generic handler and reports a normal error (exit 1).
             return 130;
         }
+        catch (OperationCanceledException)
+        {
+
+            stderrConsole.MarkupLine(
+                palette.ErrorLabelMarkup(
+                    Markup.Escape("Error:"),
+                    Markup.Escape($"{ArcanumApiClient.StreamTimeoutMessage} {ArcanumApiClient.StreamDoctorHint}")));
+
+            return 1;
+
+        }
         catch (Exception ex)
         {
 
             stderrConsole.MarkupLine(
-                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(ex.Message)));
+                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(FormatStreamTransportError(ex.Message))));
 
             return 1;
 
@@ -365,7 +382,9 @@ public sealed class AskCommand(
         if (finalText is null)
         {
             stderrConsole.MarkupLine(
-                palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("Stream ended without a result.")));
+                palette.ErrorLabelMarkup(
+                    Markup.Escape("Error:"),
+                    Markup.Escape(ResolveStreamEndedWithoutResult(receivedAnyStreamEvent))));
 
             return 1;
         }
@@ -406,6 +425,42 @@ public sealed class AskCommand(
         }
 
         return string.Join(' ', parts);
+    }
+
+    /// <summary>
+    /// Chooses an actionable message when the NDJSON stream completes without a Result (or accumulated text).
+    /// Empty streams usually mean the API never answered; mid-flight silence after events points at disconnect.
+    /// </summary>
+    internal static string ResolveStreamEndedWithoutResult(bool receivedAnyStreamEvent) =>
+        receivedAnyStreamEvent
+            ? $"{ArcanumApiClient.StreamDisconnectMessage} {ArcanumApiClient.StreamDoctorHint}"
+            : $"{ArcanumApiClient.StreamEmptyResultMessage} {ArcanumApiClient.StreamUnreachableMessage} {ArcanumApiClient.StreamDoctorHint}";
+
+    /// <summary>
+    /// Appends the doctor/serve hint when the transport message is one of the known ArcanumApiClient copies.
+    /// </summary>
+    internal static string FormatStreamTransportError(string message)
+    {
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+
+            return $"{ArcanumApiClient.StreamEmptyResultMessage} {ArcanumApiClient.StreamDoctorHint}";
+
+        }
+
+        if (string.Equals(message, ArcanumApiClient.StreamTimeoutMessage, StringComparison.Ordinal)
+            || string.Equals(message, ArcanumApiClient.StreamDisconnectMessage, StringComparison.Ordinal)
+            || string.Equals(message, ArcanumApiClient.StreamUnreachableMessage, StringComparison.Ordinal)
+            || string.Equals(message, ArcanumApiClient.StreamEmptyResultMessage, StringComparison.Ordinal))
+        {
+
+            return $"{message} {ArcanumApiClient.StreamDoctorHint}";
+
+        }
+
+        return message;
+
     }
 
 }

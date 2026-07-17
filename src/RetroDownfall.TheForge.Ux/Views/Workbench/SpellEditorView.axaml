@@ -30,7 +30,12 @@
         <Button Content="Delete" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDelete}" />
         <Button Content="Cast" Command="{Binding CastCommand}" />
         <Button Content="Estimate Mana" Command="{Binding EstimateManaCommand}" />
-        <Button Content="Execute" Command="{Binding ExecuteCommand}" />
+        <Button Content="Execute"
+                Command="{Binding ExecuteCommand}"
+                IsEnabled="{Binding !IsExecuting}" />
+        <Button Content="Stop"
+                Command="{Binding StopExecutionCommand}"
+                IsEnabled="{Binding IsExecuting}" />
         <Button Content="Create Trial" Command="{Binding CreateTrialCommand}" />
       </StackPanel>
     </DockPanel>

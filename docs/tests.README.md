@@ -87,6 +87,7 @@ The following test classes gained cases directly from the bug-squash plan. Each 
 | `ArcanumInternalToolServerTests` (Lexicon) | `tools/list` advertises `scribe_lexicon`/`delete_lexicon` when enabled and omits them (and all lore tools) when disabled; `scribe_lexicon` creates via `ILexiconService`; `delete_lexicon` removes; disabled gate returns a tool error. |
 | `SemanticRouterTests` | Router returns `SemanticSpellRoutingResult(Spell, Entities)`; entities survive `NONE`; missing entities → empty; fenced JSON; malformed JSON → null; cap/dedupe; `LexiconEntityExtractor` extracts from JSON, returns empty on invalid JSON / empty prompt (no LLM call). |
 | `SystemPromptBuilderTests` (Lexicon) | `### Lexicon (Known Context)` injected inside DATA; omitted when no entries; newline/control-char hardening; `LexiconMaxInjectedBytes` truncation. |
+| `SystemPromptBuilderUntrustedFenceTests` | Adaptive markdown fences for Codex/Spell/Additional Instructions/Chronosync/Campaign Summary/Attached Files; Data Streams fence payload + sanitize `StreamId` (no heading/newline breakout) + adaptive fence breakout prevention. |
 | `UnseenServantDaemonJobTests` | `BuildDaemonStateName` deterministic/bounded; enabled → kickoff instructs `scribe_lexicon` and injects Previous State; disabled → no `scribe_lexicon` instruction; missing state does not fail kickoff. |
 
 ## Budget

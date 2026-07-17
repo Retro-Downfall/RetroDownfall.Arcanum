@@ -123,8 +123,11 @@ internal static class McpSecurityLimits
 
     /// <summary>
     /// Builds the explicit environment block for an MCP child process. Blocked keys are removed
-    /// unless the caller explicitly opted in via <paramref name="inheritAllowlist"/>; allowlisted
-    /// names absent from <paramref name="source"/> are inherited from the host process (via
+    /// unless the caller explicitly opted in via <paramref name="inheritAllowlist"/> <em>and</em>
+    /// the key is not on the absolute deny-list (<see cref="IsAbsolutelyDeniedEnvironmentVariable"/>).
+    /// Absolute denials (<c>ARCANUM_*</c>, loader/runtime hijacks) can never be re-admitted via
+    /// <c>inheritEnv</c> or explicit <c>cfg.Env</c>. Allowlisted names absent from
+    /// <paramref name="source"/> are inherited from the host process (via
     /// <paramref name="hostEnvironmentReader"/>, defaulting to <see cref="Environment.GetEnvironmentVariable(string)"/>).
     /// Values from <paramref name="source"/> always win over inherited host values.
     /// </summary>
@@ -143,6 +146,13 @@ internal static class McpSecurityLimits
             {
 
                 if (string.IsNullOrEmpty(kv.Key))
+                {
+
+                    continue;
+
+                }
+
+                if (IsAbsolutelyDeniedEnvironmentVariable(kv.Key))
                 {
 
                     continue;
@@ -177,6 +187,13 @@ internal static class McpSecurityLimits
 
                 }
 
+                if (IsAbsolutelyDeniedEnvironmentVariable(name))
+                {
+
+                    continue;
+
+                }
+
                 string? value = reader(name);
 
                 if (!string.IsNullOrEmpty(value))
@@ -197,6 +214,76 @@ internal static class McpSecurityLimits
     private static bool IsInheritAllowed(string key, IReadOnlySet<string>? inheritAllowlist) =>
         inheritAllowlist is not null && inheritAllowlist.Contains(key);
 
+    /// <summary>
+    /// Variables that must never appear in a child process env — not even when listed in
+    /// <c>inheritEnv</c> or explicit <c>cfg.Env</c>. Covers Arcanum secret/config overlays
+    /// (<c>ARCANUM_*</c>) and process-loader / runtime hijack hooks. Does <em>not</em>
+    /// blanket-ban generic operator credentials such as <c>OPENAI_API_KEY</c>.
+    /// </summary>
+    public static bool IsAbsolutelyDeniedEnvironmentVariable(string key)
+    {
+
+        if (string.IsNullOrEmpty(key))
+        {
+
+            return true;
+
+        }
+
+        if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return true;
+
+        }
+
+        if (key.StartsWith("LD_", StringComparison.OrdinalIgnoreCase)
+            || key.StartsWith("DYLD_", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return true;
+
+        }
+
+        if (key.Equals("DOTNET_STARTUP_HOOKS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("DOTNET_ADDITIONAL_DEPS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("CORECLR_PROFILER", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("CORECLR_ENABLE_PROFILING", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return true;
+
+        }
+
+        if (key.Equals("NODE_OPTIONS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("PYTHONPATH", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("PERL5LIB", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("RUBYLIB", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("GEM_PATH", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("GEM_HOME", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("JAVA_TOOL_OPTIONS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("_JAVA_OPTIONS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("JDK_JAVA_OPTIONS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("BASH_ENV", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("ENV", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("SSLKEYLOGFILE", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("GIT_SSH_COMMAND", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("GIT_ASKPASS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("SSH_ASKPASS", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("GCONV_PATH", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("LOCPATH", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("HOSTALIASES", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("RES_OPTIONS", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return true;
+
+        }
+
+        return false;
+
+    }
+
     public static bool IsBlockedEnvironmentVariable(string key)
     {
 
@@ -207,82 +294,14 @@ internal static class McpSecurityLimits
 
         }
 
+        if (IsAbsolutelyDeniedEnvironmentVariable(key))
+        {
+
+            return true;
+
+        }
+
         if (key.Equals("PATH", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.StartsWith("LD_", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.StartsWith("DYLD_", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("PYTHONPATH", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("PERL5LIB", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("RUBYLIB", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("GEM_PATH", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("GEM_HOME", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("NODE_OPTIONS", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("JAVA_TOOL_OPTIONS", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("_JAVA_OPTIONS", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("JDK_JAVA_OPTIONS", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("GCONV_PATH", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("LOCPATH", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("HOSTALIASES", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("RES_OPTIONS", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("BASH_ENV", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("ENV", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("SSLKEYLOGFILE", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        if (key.Equals("GIT_SSH_COMMAND", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("GIT_ASKPASS", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("SSH_ASKPASS", StringComparison.OrdinalIgnoreCase))
         {
 
             return true;

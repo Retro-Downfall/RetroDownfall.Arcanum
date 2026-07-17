@@ -158,6 +158,8 @@ public class TreasuryViewModelTests
 
         public string? LastErrorCode => null;
 
+        public string? LastErrorMessage => null;
+
         public void Connect()
         {
 

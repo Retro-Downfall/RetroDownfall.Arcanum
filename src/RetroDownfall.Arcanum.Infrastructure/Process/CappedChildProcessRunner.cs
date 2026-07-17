@@ -1,9 +1,11 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
@@ -30,11 +32,22 @@ internal enum CappedChildProcessOutcome
 
     CanceledWhileReadingOutput,
 
-    /// <summary>OS-level resource limits could not be applied to <see cref="ProcessStartInfo"/> before start; the process was never started.</summary>
+    /// <summary>OS-level resource limits could not be applied before start, or the child could not be assigned to a Windows Job Object after start; when assignment fails the process tree is killed so the child is never left running unbounded.</summary>
     ResourceLimitApplyFailed,
 
     /// <summary>The process was killed by the kernel for exceeding an OS-enforced resource limit (CPU time or memory).</summary>
     ResourceLimitExceeded,
+
+    /// <summary>
+    /// Filesystem sandbox could not be applied and <c>AllowUnsandboxedToolChildren</c> is false;
+    /// the process was never started.
+    /// </summary>
+    FilesystemSandboxUnavailable,
+
+    /// <summary>
+    /// Windows + Sanctum path-boundary enforcement: no FS jail available; process never started.
+    /// </summary>
+    FilesystemSandboxDeniedByWindowsSanctum,
 
 }
 
@@ -61,6 +74,13 @@ internal sealed class CappedChildProcessRunResult
     /// <summary>Which resource was exceeded when <see cref="Outcome"/> is <see cref="CappedChildProcessOutcome.ResourceLimitExceeded"/>.</summary>
     internal ResourceLimitKind? ExceededResource { get; init; }
 
+    /// <summary>
+    /// Model-safe detail when <see cref="Outcome"/> is
+    /// <see cref="CappedChildProcessOutcome.FilesystemSandboxUnavailable"/> or
+    /// <see cref="CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum"/>.
+    /// </summary>
+    internal string? FilesystemSandboxDenialMessage { get; init; }
+
 }
 
 internal static class CappedChildProcessRunner
@@ -73,7 +93,9 @@ internal static class CappedChildProcessRunner
         TimeSpan timeout,
         ResourceLimits? resourceLimits,
         IProcessResourceLimiter? resourceLimiter,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ChildProcessSandboxRequest? filesystemSandbox = null,
+        ILogger? logger = null)
     {
 
         ChildProcessEnvironmentScrubber.ApplyProfile(startInfo, environmentProfile);
@@ -110,6 +132,53 @@ internal static class CappedChildProcessRunner
                 ResourceLimitApplyError = limiterResult.Error.Message,
 
             };
+
+        }
+
+        // FS jail wraps the post-rlimit StartInfo (sandbox-exec / __sandbox-exec around the ulimit
+        // prelude when present). Order: env scrub → rlimits → FS jail → start → Job assign.
+        ChildProcessSandboxApplyResult? sandboxResult = null;
+
+        if (filesystemSandbox is not null)
+        {
+
+            sandboxResult = ChildProcessFilesystemJail.Apply(startInfo, filesystemSandbox, logger);
+
+            if (sandboxResult.Status == ChildProcessSandboxApplyStatus.Unavailable)
+            {
+
+                ChildProcessFilesystemJail.CleanupTempPaths(sandboxResult.TempPathsToCleanup);
+
+                return new CappedChildProcessRunResult
+                {
+
+                    Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
+
+                    PerStreamCapBytes = perStreamCapBytes,
+
+                    FilesystemSandboxDenialMessage = ChildProcessSandboxMessages.SandboxUnavailable,
+
+                };
+
+            }
+
+            if (sandboxResult.Status == ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum)
+            {
+
+                ChildProcessFilesystemJail.CleanupTempPaths(sandboxResult.TempPathsToCleanup);
+
+                return new CappedChildProcessRunResult
+                {
+
+                    Outcome = CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum,
+
+                    PerStreamCapBytes = perStreamCapBytes,
+
+                    FilesystemSandboxDenialMessage = ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
+
+                };
+
+            }
 
         }
 
@@ -233,6 +302,37 @@ internal static class CappedChildProcessRunner
             // path rather than this pid (see ProcessResourceLimiter.ApplyOnLinux), so it does not
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
+
+            // Windows Job Objects: AssignProcessToJobObject must run immediately after Start and
+            // before any stdout/stderr wait. .NET cannot create the child suspended, so there is a
+            // brief post-start race before the job binds (DESIGN §11.15). Failure here is fail-closed:
+            // kill the tree and surface ResourceLimitApplyFailed — never leave the child unbounded.
+            if (limiterResult.AssignAfterStart is not null)
+            {
+
+                ResourceLimitError? assignError = limiterResult.AssignAfterStart(process);
+
+                if (assignError is not null)
+                {
+
+                    ProcessTreeKiller.TryKillEntireTree(
+                        process,
+                        context: "execute_command/run_spell_script (Job Object assign failed)");
+
+                    return new CappedChildProcessRunResult
+                    {
+
+                        Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        ResourceLimitApplyError = assignError.Message,
+
+                    };
+
+                }
+
+            }
 
             CancellationTokenRegistration killRegistration = waitToken.Register(
                 static state => ProcessTreeKiller.TryKillEntireTree((Process)state!, context: "execute_command/run_spell_script"),
@@ -375,6 +475,8 @@ internal static class CappedChildProcessRunner
         finally
         {
 
+            ChildProcessFilesystemJail.CleanupTempPaths(sandboxResult?.TempPathsToCleanup);
+
             if (limiterResult.CleanupAsync is not null)
             {
 
@@ -393,6 +495,8 @@ internal static class CappedChildProcessRunner
     /// negative signal number (observed when the tracked pid is signal-killed directly, e.g. after
     /// the prelude's <c>exec</c> has replaced the shell's process image with the real target).
     /// SIGXCPU (24), SIGKILL (9), and SIGSEGV (11) are POSIX-standard and identical on macOS and Linux.
+    /// On Windows, maps the common Job Object memory-kill NTSTATUS <c>STATUS_QUOTA_EXCEEDED</c>
+    /// (<c>0xC0000044</c>) to <see cref="ResourceLimitKind.Memory"/> when a memory limit was configured.
     /// </summary>
     /// <remarks>
     /// Only classifies the exit as a resource-limit breach when the corresponding limit was actually
@@ -405,8 +509,8 @@ internal static class CappedChildProcessRunner
     /// cgroups v2 scope), that evidence is required before attributing the kill to the configured
     /// limit: a bare exit code cannot otherwise distinguish a Sanctum-enforced OOM kill from an
     /// unrelated external <c>kill -9</c> or a system-wide OOM event outside this process's cgroup.
-    /// Falls back to the exit-code-only heuristic when no such evidence is available (macOS, or
-    /// Linux without a usable cgroup).
+    /// Falls back to the exit-code-only heuristic when no such evidence is available (macOS, Windows
+    /// Job Objects, or Linux without a usable cgroup).
     /// </remarks>
     private static async Task<ResourceLimitKind?> CheckSignalKillAsync(
         int exitCode,
@@ -418,6 +522,13 @@ internal static class CappedChildProcessRunner
         {
 
             return null;
+
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return ClassifyWindowsJobExit(exitCode, resourceLimits);
 
         }
 
@@ -446,6 +557,24 @@ internal static class CappedChildProcessRunner
                 return confirmedOomKill ? ResourceLimitKind.Memory : null;
 
             }
+
+            return ResourceLimitKind.Memory;
+
+        }
+
+        return null;
+
+    }
+
+    private static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
+    {
+
+        // Job Object process/job memory violations commonly surface as STATUS_QUOTA_EXCEEDED.
+        // CPU-time kills do not have a stable, documented exit code we can trust across Windows
+        // versions, so wall-clock timeout remains the reliable attribution path for CPU on Windows.
+        if (exitCode == WindowsJobObjectInterop.StatusQuotaExceeded
+            && (resourceLimits.MaxMemoryMb > 0 || resourceLimits.MaxProcessMemoryMb > 0))
+        {
 
             return ResourceLimitKind.Memory;
 

@@ -37,34 +37,76 @@ public sealed class ArsenalDataSource : IArsenalDataSource
 
         }
 
-        return (null, response?.Error?.Message ?? "Failed to list MCP servers.");
+        return (null, ForgeApiError.From(response, "Failed to list MCP servers."));
 
     }
 
-    public async Task<bool> StartServerAsync(string name, CancellationToken cancellationToken)
+    public async Task<(bool Ok, string? Error)> StartServerAsync(string name, CancellationToken cancellationToken)
     {
 
         ApiResponse<bool>? response = await _mcpService.StartAsync(name, cancellationToken).ConfigureAwait(false);
 
-        return response is { IsSuccess: true, Data: true };
+        if (response is { IsSuccess: true, Data: true })
+        {
+
+            return (true, null);
+
+        }
+
+        if (response is { IsSuccess: true })
+        {
+
+            return (false, $"MCP server '{name}' did not start.");
+
+        }
+
+        return (false, ForgeApiError.From(response, $"Failed to start MCP server '{name}'."));
 
     }
 
-    public async Task<bool> StopServerAsync(string name, CancellationToken cancellationToken)
+    public async Task<(bool Ok, string? Error)> StopServerAsync(string name, CancellationToken cancellationToken)
     {
 
         ApiResponse<bool>? response = await _mcpService.StopAsync(name, cancellationToken).ConfigureAwait(false);
 
-        return response is { IsSuccess: true, Data: true };
+        if (response is { IsSuccess: true, Data: true })
+        {
+
+            return (true, null);
+
+        }
+
+        if (response is { IsSuccess: true })
+        {
+
+            return (false, $"MCP server '{name}' did not stop.");
+
+        }
+
+        return (false, ForgeApiError.From(response, $"Failed to stop MCP server '{name}'."));
 
     }
 
-    public async Task<bool> RestartServerAsync(string name, CancellationToken cancellationToken)
+    public async Task<(bool Ok, string? Error)> RestartServerAsync(string name, CancellationToken cancellationToken)
     {
 
         ApiResponse<bool>? response = await _mcpService.RestartAsync(name, cancellationToken).ConfigureAwait(false);
 
-        return response is { IsSuccess: true, Data: true };
+        if (response is { IsSuccess: true, Data: true })
+        {
+
+            return (true, null);
+
+        }
+
+        if (response is { IsSuccess: true })
+        {
+
+            return (false, $"MCP server '{name}' did not restart.");
+
+        }
+
+        return (false, ForgeApiError.From(response, $"Failed to restart MCP server '{name}'."));
 
     }
 
@@ -80,7 +122,7 @@ public sealed class ArsenalDataSource : IArsenalDataSource
 
         }
 
-        return (false, response?.Error?.Message ?? "Failed to reload MCP configuration.");
+        return (false, ForgeApiError.From(response, "Failed to reload MCP configuration."));
 
     }
 
@@ -96,16 +138,23 @@ public sealed class ArsenalDataSource : IArsenalDataSource
 
         }
 
-        return (null, response?.Error?.Message ?? "Failed to load arsenal.");
+        return (null, ForgeApiError.From(response, "Failed to load arsenal."));
 
     }
 
-    public async Task<ToolInvokeResponse?> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken)
+    public async Task<(ToolInvokeResponse? Response, string? Error)> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken)
     {
 
         ApiResponse<ToolInvokeResponse>? response = await _toolInvokeService.InvokeAsync(request, cancellationToken).ConfigureAwait(false);
 
-        return response is { IsSuccess: true, Data: { } result } ? result : null;
+        if (response is { IsSuccess: true, Data: { } result })
+        {
+
+            return (result, null);
+
+        }
+
+        return (null, ForgeApiError.From(response, "Tool invocation failed."));
 
     }
 

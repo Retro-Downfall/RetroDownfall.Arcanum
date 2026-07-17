@@ -1030,6 +1030,27 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
+    public void Validate_ListenAnyWithoutHttps_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings
+            {
+                ListenAny = true,
+                Https = new HttpsSettings { Enabled = false },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.https.enabled");
+
+    }
+
+    [Fact]
     public void Validate_HttpsDisabledWithNoCertificatePath_ReturnsSuccess()
     {
 

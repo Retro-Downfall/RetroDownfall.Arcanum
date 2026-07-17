@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -42,6 +43,43 @@ public sealed class AskCommandBuildPromptTests
         string prompt = AskCommand.BuildPrompt([], escapedArguments: null);
 
         Assert.Equal(string.Empty, prompt);
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResolveStreamEndedWithoutResult_DifferentiatesEmptyAndDisconnect(bool receivedAnyStreamEvent)
+    {
+
+        string message = AskCommand.ResolveStreamEndedWithoutResult(receivedAnyStreamEvent);
+
+        Assert.Contains(ArcanumApiClient.StreamDoctorHint, message, StringComparison.Ordinal);
+
+        if (receivedAnyStreamEvent)
+        {
+
+            Assert.Contains(ArcanumApiClient.StreamDisconnectMessage, message, StringComparison.Ordinal);
+
+        }
+        else
+        {
+
+            Assert.Contains(ArcanumApiClient.StreamEmptyResultMessage, message, StringComparison.Ordinal);
+
+            Assert.Contains(ArcanumApiClient.StreamUnreachableMessage, message, StringComparison.Ordinal);
+
+        }
+
+    }
+
+    [Fact]
+    public void FormatStreamTransportError_AppendsDoctorHintForKnownTransportCopy()
+    {
+
+        string formatted = AskCommand.FormatStreamTransportError(ArcanumApiClient.StreamTimeoutMessage);
+
+        Assert.Equal($"{ArcanumApiClient.StreamTimeoutMessage} {ArcanumApiClient.StreamDoctorHint}", formatted);
 
     }
 

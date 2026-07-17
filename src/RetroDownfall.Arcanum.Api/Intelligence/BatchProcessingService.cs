@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -35,12 +36,52 @@ internal sealed class BatchProcessingService(
 
     private readonly ConcurrentDictionary<Guid, byte> _inFlight = new();
 
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _inFlightCancellation = new();
+
+    private readonly ConcurrentDictionary<Guid, byte> _expiryRequested = new();
+
     // Best-effort early-rejection guard, not a correctness guarantee — there is a race window between
     // this check and the status reset. The real double-processing guard is the worker's
     // _inFlight.TryAdd(batch.Id, 0) before processing (BatchProcessingService.cs:131), which prevents
     // a second worker from picking the same batch up. This endpoint check just gives the operator a
     // clear 409 instead of a confusing reset-while-running.
     public bool IsBatchInFlight(Guid batchId) => _inFlight.ContainsKey(batchId);
+
+    /// <summary>
+    /// Test/ops hook: request expiry cancellation for an in-flight batch without deleting files
+    /// from the expiry sweep. The processor finalizer owns terminal status and file cleanup.
+    /// </summary>
+    internal bool TryRequestExpiryCancel(Guid batchId)
+    {
+
+        if (!_inFlight.ContainsKey(batchId))
+        {
+
+            return false;
+
+        }
+
+        _ = _expiryRequested.TryAdd(batchId, 0);
+
+        if (_inFlightCancellation.TryGetValue(batchId, out CancellationTokenSource? cts))
+        {
+
+            try
+            {
+
+                cts.Cancel();
+
+            }
+            catch (ObjectDisposedException)
+            {
+
+            }
+
+        }
+
+        return true;
+
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -112,6 +153,33 @@ internal sealed class BatchProcessingService(
             if (now - batch.CreatedAt > TimeSpan.FromHours(expiryHours))
             {
 
+                if (_inFlight.ContainsKey(batch.Id))
+                {
+
+                    // In-flight: signal the processor CTS; never delete files from the sweep.
+                    // The processor/finalizer owns terminal status and file cleanup.
+                    _ = _expiryRequested.TryAdd(batch.Id, 0);
+
+                    if (_inFlightCancellation.TryGetValue(batch.Id, out CancellationTokenSource? cts))
+                    {
+
+                        try
+                        {
+
+                            await cts.CancelAsync().ConfigureAwait(false);
+
+                        }
+                        catch (ObjectDisposedException)
+                        {
+
+                        }
+
+                    }
+
+                    continue;
+
+                }
+
                 await ExpireBatchAsync(batch, batches, stoppingToken).ConfigureAwait(false);
 
             }
@@ -142,7 +210,20 @@ internal sealed class BatchProcessingService(
 
             }
 
-            _ = Task.Run(() => ProcessBatchWithCleanupAsync(batch, stoppingToken), CancellationToken.None);
+            CancellationTokenSource batchCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+            if (!_inFlightCancellation.TryAdd(batch.Id, batchCts))
+            {
+
+                batchCts.Dispose();
+
+                _ = _inFlight.TryRemove(batch.Id, out _);
+
+                continue;
+
+            }
+
+            _ = Task.Run(() => ProcessBatchWithCleanupAsync(batch, batchCts), CancellationToken.None);
 
         }
 
@@ -188,13 +269,80 @@ internal sealed class BatchProcessingService(
 
     }
 
-    private async Task ProcessBatchWithCleanupAsync(BatchRecord batch, CancellationToken stoppingToken)
+    private async Task ProcessBatchWithCleanupAsync(BatchRecord batch, CancellationTokenSource batchCts)
     {
 
         try
         {
 
-            await ProcessBatchAsync(batch, stoppingToken).ConfigureAwait(false);
+            await ProcessBatchAsync(batch, batchCts.Token).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (batchCts.IsCancellationRequested)
+        {
+
+            bool expired = _expiryRequested.TryRemove(batch.Id, out _);
+
+            try
+            {
+
+                using IServiceScope scope = scopeFactory.CreateScope();
+
+                IBatchRepository batches = scope.ServiceProvider.GetRequiredService<IBatchRepository>();
+
+                if (expired)
+                {
+
+                    // Expiry-driven cancel: mark expired and delete files from the processor, not the sweep.
+                    TryDeleteFile(UploadedFileStorage.ResolvePath(batch.InputFileId));
+
+                    if (batch.OutputFileId is { } outputFileId)
+                    {
+
+                        TryDeleteFile(UploadedFileStorage.ResolvePath(outputFileId));
+
+                    }
+
+                    if (batch.ErrorFileId is { } errorFileId)
+                    {
+
+                        TryDeleteFile(UploadedFileStorage.ResolvePath(errorFileId));
+
+                    }
+
+                    await batches.UpdateStatusAsync(
+                        batch.Id,
+                        BatchStatuses.Expired,
+                        DateTimeOffset.UtcNow,
+                        batch.OutputFileId,
+                        batch.ErrorFileId,
+                        CancellationToken.None).ConfigureAwait(false);
+
+                }
+                else
+                {
+
+                    await batches.UpdateStatusAsync(
+                        batch.Id,
+                        BatchStatuses.Cancelled,
+                        DateTimeOffset.UtcNow,
+                        null,
+                        null,
+                        CancellationToken.None).ConfigureAwait(false);
+
+                }
+
+            }
+            catch (Exception markTerminalEx)
+            {
+
+                logger.LogError(
+                    markTerminalEx,
+                    "Failed to mark batch {BatchId} as {Status} after cancel.",
+                    batch.Id,
+                    expired ? BatchStatuses.Expired : BatchStatuses.Cancelled);
+
+            }
 
         }
         catch (Exception ex)
@@ -225,6 +373,15 @@ internal sealed class BatchProcessingService(
 
             _ = _inFlight.TryRemove(batch.Id, out _);
 
+            _ = _expiryRequested.TryRemove(batch.Id, out _);
+
+            if (_inFlightCancellation.TryRemove(batch.Id, out CancellationTokenSource? cts))
+            {
+
+                cts.Dispose();
+
+            }
+
         }
 
     }
@@ -253,8 +410,6 @@ internal sealed class BatchProcessingService(
 
         }
 
-        string[] lines = await File.ReadAllLinesAsync(inputPath, stoppingToken).ConfigureAwait(false);
-
         ArcanumSettings settings = optionsMonitor.CurrentValue;
 
         BatchesSettings batchesSettings = settings.Batches ?? new BatchesSettings();
@@ -263,46 +418,142 @@ internal sealed class BatchProcessingService(
 
         int maxConcurrentRequests = ArcanumSettingClamps.BatchesMaxConcurrentRequestsPerBatch(batchesSettings.MaxConcurrentRequestsPerBatch);
 
-        List<(int Line, string Text)> requestLines = [];
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.FilesDirectory);
 
-        for (int i = 0; i < lines.Length && requestLines.Count < maxRequests; i++)
+        string outputTempPath = Path.Combine(Path.GetTempPath(), $"arcanum-batch-{batch.Id:N}-out.jsonl");
+
+        string errorTempPath = Path.Combine(Path.GetTempPath(), $"arcanum-batch-{batch.Id:N}-err.jsonl");
+
+        try
         {
 
-            if (!string.IsNullOrWhiteSpace(lines[i]))
+            int outputLineCount;
+
+            int errorLineCount;
+
+            bool cancelledMidway;
+
             {
 
-                requestLines.Add((i + 1, lines[i]));
+                await using BatchJsonlWriters writers = BatchJsonlWriters.Create(outputTempPath, errorTempPath);
+
+                cancelledMidway = await RunRequestLinesAsync(
+                    EnumerateRequestLinesAsync(inputPath, maxRequests, stoppingToken),
+                    maxConcurrentRequests,
+                    batch.Id,
+                    batches,
+                    intelligence,
+                    settings,
+                    writers,
+                    stoppingToken).ConfigureAwait(false);
+
+                outputLineCount = writers.OutputLineCount;
+
+                errorLineCount = writers.ErrorLineCount;
+
+            }
+
+            Guid? outputFileId = outputLineCount > 0
+                ? await FinalizeResultFileAsync(outputTempPath, "batch_output.jsonl", "batch_output", files, CancellationToken.None).ConfigureAwait(false)
+                : null;
+
+            Guid? errorFileId = errorLineCount > 0
+                ? await FinalizeResultFileAsync(errorTempPath, "batch_errors.jsonl", "error", files, CancellationToken.None).ConfigureAwait(false)
+                : null;
+
+            // Temps were moved (or never written); clear so the finally block does not delete finals.
+            if (outputFileId is not null)
+            {
+
+                outputTempPath = string.Empty;
+
+            }
+
+            if (errorFileId is not null)
+            {
+
+                errorTempPath = string.Empty;
+
+            }
+
+            string finalStatus = cancelledMidway ? BatchStatuses.Cancelled : BatchStatuses.Completed;
+
+            await batches.UpdateStatusAsync(batch.Id, finalStatus, DateTimeOffset.UtcNow, outputFileId, errorFileId, CancellationToken.None).ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            if (!string.IsNullOrEmpty(outputTempPath))
+            {
+
+                TryDeleteFile(outputTempPath);
+
+            }
+
+            if (!string.IsNullOrEmpty(errorTempPath))
+            {
+
+                TryDeleteFile(errorTempPath);
 
             }
 
         }
 
-        ConcurrentBag<string> outputLines = [];
+    }
 
-        ConcurrentBag<string> errorLines = [];
+    /// <summary>
+    /// Streams non-empty JSONL request lines from <paramref name="inputPath"/> without loading the
+    /// entire file into memory. Stops after <paramref name="maxRequests"/> accepted lines.
+    /// </summary>
+    private static async IAsyncEnumerable<(int Line, string Text)> EnumerateRequestLinesAsync(
+        string inputPath,
+        int maxRequests,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
 
-        bool cancelledMidway = await RunRequestLinesAsync(
-            requestLines,
-            maxConcurrentRequests,
-            batch.Id,
-            batches,
-            intelligence,
-            settings,
-            outputLines,
-            errorLines,
-            stoppingToken).ConfigureAwait(false);
+        await using FileStream stream = new(
+            inputPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-        Guid? outputFileId = outputLines.IsEmpty
-            ? null
-            : await WriteResultFileAsync(outputLines, "batch_output.jsonl", "batch_output", files, stoppingToken).ConfigureAwait(false);
+        using StreamReader reader = new(stream);
 
-        Guid? errorFileId = errorLines.IsEmpty
-            ? null
-            : await WriteResultFileAsync(errorLines, "batch_errors.jsonl", "error", files, stoppingToken).ConfigureAwait(false);
+        int lineNumber = 0;
 
-        string finalStatus = cancelledMidway ? BatchStatuses.Cancelled : BatchStatuses.Completed;
+        int accepted = 0;
 
-        await batches.UpdateStatusAsync(batch.Id, finalStatus, DateTimeOffset.UtcNow, outputFileId, errorFileId, CancellationToken.None).ConfigureAwait(false);
+        while (accepted < maxRequests)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+
+            if (line is null)
+            {
+
+                yield break;
+
+            }
+
+            lineNumber++;
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+
+                continue;
+
+            }
+
+            accepted++;
+
+            yield return (lineNumber, line);
+
+        }
 
     }
 
@@ -315,14 +566,13 @@ internal sealed class BatchProcessingService(
     /// <see langword="true"/> when a mid-batch cancellation was observed.
     /// </summary>
     private async Task<bool> RunRequestLinesAsync(
-        List<(int Line, string Text)> requestLines,
+        IAsyncEnumerable<(int Line, string Text)> requestLines,
         int maxConcurrentRequests,
         Guid batchId,
         IBatchRepository batches,
         IArcanumIntelligenceProvider intelligence,
         ArcanumSettings settings,
-        ConcurrentBag<string> outputLines,
-        ConcurrentBag<string> errorLines,
+        BatchJsonlWriters writers,
         CancellationToken stoppingToken)
     {
 
@@ -341,7 +591,7 @@ internal sealed class BatchProcessingService(
                 async (item, ct) =>
                 {
 
-                    await ProcessRequestLineAsync(item.Line, item.Text, intelligence, settings, outputLines, errorLines, ct).ConfigureAwait(false);
+                    await ProcessRequestLineAsync(item.Line, item.Text, intelligence, settings, writers, ct).ConfigureAwait(false);
 
                 }).ConfigureAwait(false);
 
@@ -412,8 +662,7 @@ internal sealed class BatchProcessingService(
         string rawLine,
         IArcanumIntelligenceProvider intelligence,
         ArcanumSettings settings,
-        ConcurrentBag<string> outputLines,
-        ConcurrentBag<string> errorLines,
+        BatchJsonlWriters writers,
         CancellationToken cancellationToken)
     {
 
@@ -428,7 +677,9 @@ internal sealed class BatchProcessingService(
         catch (JsonException ex)
         {
 
-            errorLines.Add(JsonSerializer.Serialize(new BatchJsonlParseError(lineNumber, ex.Message), ArcanumJsonContext.Default.BatchJsonlParseError));
+            await writers.WriteErrorLineAsync(
+                JsonSerializer.Serialize(new BatchJsonlParseError(lineNumber, ex.Message), ArcanumJsonContext.Default.BatchJsonlParseError),
+                cancellationToken).ConfigureAwait(false);
 
             return;
 
@@ -437,9 +688,11 @@ internal sealed class BatchProcessingService(
         if (requestLine is null || requestLine.Body is null)
         {
 
-            errorLines.Add(JsonSerializer.Serialize(
-                new BatchJsonlParseError(lineNumber, "Line did not contain a 'body' object."),
-                ArcanumJsonContext.Default.BatchJsonlParseError));
+            await writers.WriteErrorLineAsync(
+                JsonSerializer.Serialize(
+                    new BatchJsonlParseError(lineNumber, "Line did not contain a 'body' object."),
+                    ArcanumJsonContext.Default.BatchJsonlParseError),
+                cancellationToken).ConfigureAwait(false);
 
             return;
 
@@ -463,12 +716,17 @@ internal sealed class BatchProcessingService(
                 Response: null,
                 Error: new BatchJsonlError(result.Error.Code, result.Error.Message));
 
-        outputLines.Add(JsonSerializer.Serialize(responseLine, ArcanumJsonContext.Default.BatchJsonlResponseLine));
+        await writers.WriteOutputLineAsync(
+            JsonSerializer.Serialize(responseLine, ArcanumJsonContext.Default.BatchJsonlResponseLine),
+            cancellationToken).ConfigureAwait(false);
 
     }
 
-    private static async Task<Guid> WriteResultFileAsync(
-        IEnumerable<string> lines,
+    /// <summary>
+    /// Moves a completed temp JSONL into the uploaded-files directory and registers it.
+    /// </summary>
+    private static async Task<Guid> FinalizeResultFileAsync(
+        string tempPath,
         string filename,
         string purpose,
         IUploadedFileRepository files,
@@ -477,13 +735,9 @@ internal sealed class BatchProcessingService(
 
         Guid id = Guid.NewGuid();
 
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.FilesDirectory);
-
         string path = UploadedFileStorage.ResolvePath(id);
 
-        string content = string.Join('\n', lines) + "\n";
-
-        await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
+        File.Move(tempPath, path, overwrite: true);
 
         SecureFilePermissions.ApplyOwnerOnlyFile(path);
 
@@ -492,6 +746,110 @@ internal sealed class BatchProcessingService(
         await files.CreateAsync(record, cancellationToken).ConfigureAwait(false);
 
         return id;
+
+    }
+
+    /// <summary>
+    /// Thread-safe incremental JSONL writers for batch output/error files. Lines are flushed as they
+    /// complete so peak memory stays per-line rather than the full result set.
+    /// </summary>
+    private sealed class BatchJsonlWriters : IAsyncDisposable
+    {
+
+        private readonly StreamWriter _output;
+
+        private readonly StreamWriter _error;
+
+        private readonly SemaphoreSlim _outputLock = new(1, 1);
+
+        private readonly SemaphoreSlim _errorLock = new(1, 1);
+
+        private int _outputLineCount;
+
+        private int _errorLineCount;
+
+        private BatchJsonlWriters(StreamWriter output, StreamWriter error)
+        {
+
+            _output = output;
+
+            _error = error;
+
+        }
+
+        public int OutputLineCount => Volatile.Read(ref _outputLineCount);
+
+        public int ErrorLineCount => Volatile.Read(ref _errorLineCount);
+
+        public static BatchJsonlWriters Create(string outputTempPath, string errorTempPath)
+        {
+
+            StreamWriter output = new(
+                new FileStream(outputTempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.Asynchronous | FileOptions.SequentialScan));
+
+            StreamWriter error = new(
+                new FileStream(errorTempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.Asynchronous | FileOptions.SequentialScan));
+
+            return new BatchJsonlWriters(output, error);
+
+        }
+
+        public async Task WriteOutputLineAsync(string line, CancellationToken cancellationToken)
+        {
+
+            await _outputLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+
+                await _output.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+                _ = Interlocked.Increment(ref _outputLineCount);
+
+            }
+            finally
+            {
+
+                _ = _outputLock.Release();
+
+            }
+
+        }
+
+        public async Task WriteErrorLineAsync(string line, CancellationToken cancellationToken)
+        {
+
+            await _errorLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+
+                await _error.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+                _ = Interlocked.Increment(ref _errorLineCount);
+
+            }
+            finally
+            {
+
+                _ = _errorLock.Release();
+
+            }
+
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+
+            await _output.DisposeAsync().ConfigureAwait(false);
+
+            await _error.DisposeAsync().ConfigureAwait(false);
+
+            _outputLock.Dispose();
+
+            _errorLock.Dispose();
+
+        }
 
     }
 

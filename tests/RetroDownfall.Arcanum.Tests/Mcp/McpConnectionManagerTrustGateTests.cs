@@ -43,6 +43,13 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings>>(
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings
+                {
+                    Security = new SecuritySettings { AllowUnsandboxedToolChildren = true },
+                }));
+
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         IHumanPromptRegistry humanPrompts = new HumanPromptRegistry();
@@ -123,7 +130,13 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        public Task RecordResourceLimitBreachAsync(
+        
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
+
+public Task RecordResourceLimitBreachAsync(
             string? workspaceRoot,
             string toolName,
             Core.Platform.ResourceLimitKind resource,

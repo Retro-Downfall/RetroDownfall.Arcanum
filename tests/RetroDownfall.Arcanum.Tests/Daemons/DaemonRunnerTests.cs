@@ -141,9 +141,90 @@ public sealed class DaemonRunnerTests
 
     }
 
+    [Fact]
+    public async Task RunScheduledAsync_while_on_demand_running_returns_AlreadyRunning()
+    {
+
+        FakeDaemonJob job = new("job-sched", "Job Sched", canRunOnDemand: true)
+        {
+            RunUntilSignal = true,
+        };
+
+        DaemonRunner runner = CreateRunner([job]);
+
+        Task<Result<DaemonExecutionSummary>> onDemand = runner.RunAsync("job-sched", force: false, CancellationToken.None);
+
+        await job.StartedTask;
+
+        Result<DaemonExecutionSummary> scheduled = await runner.RunScheduledAsync("job-sched", CancellationToken.None);
+
+        Assert.True(scheduled.IsFailure);
+
+        Assert.Equal("Daemon.AlreadyRunning", scheduled.Error.Code);
+
+        job.SignalCompletion();
+
+        _ = await onDemand;
+
+    }
+
+    [Fact]
+    public async Task RunScheduledAsync_skips_CanRunOnDemand_gate()
+    {
+
+        FakeDaemonJob job = new("job-sched-only", "Job Sched Only", canRunOnDemand: false);
+
+        DaemonRunner runner = CreateRunner([job]);
+
+        Result<DaemonExecutionSummary> onDemand = await runner.RunAsync("job-sched-only", force: false, CancellationToken.None);
+
+        Assert.True(onDemand.IsFailure);
+
+        Assert.Equal("Daemon.Disabled", onDemand.Error.Code);
+
+        Result<DaemonExecutionSummary> scheduled = await runner.RunScheduledAsync("job-sched-only", CancellationToken.None);
+
+        Assert.True(scheduled.IsSuccess);
+
+        Assert.Equal(DaemonJobStatus.Completed, scheduled.Value.Status);
+
+    }
+
+    [Fact]
+    public async Task RunAsync_caller_cancel_still_reaches_terminal_Failed_status()
+    {
+
+        FakeDaemonJob job = new("job-cancel", "Job Cancel", canRunOnDemand: true)
+        {
+            RunUntilSignal = true,
+        };
+
+        CapturingEventBus bus = new();
+
+        DaemonRunner runner = CreateRunner([job], bus, out InMemoryDaemonExecutionRepository repository);
+
+        using CancellationTokenSource cts = new();
+
+        Task<Result<DaemonExecutionSummary>> run = runner.RunAsync("job-cancel", force: false, cts.Token);
+
+        await job.StartedTask;
+
+        await cts.CancelAsync();
+
+        Result<DaemonExecutionSummary> result = await run;
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Daemon.Cancelled", result.Error.Code);
+
+        Assert.False(repository.HasRunningExecution("job-cancel"));
+
+    }
+
     private static DaemonRunner CreateRunner(
         IEnumerable<IDaemonJob> jobs,
-        CapturingEventBus? bus = null)
+        CapturingEventBus? bus,
+        out InMemoryDaemonExecutionRepository repository)
     {
 
         ArcanumSettings settings = new()
@@ -154,7 +235,7 @@ public sealed class DaemonRunnerTests
 
         InMemoryLogRingBuffer logBuffer = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
-        InMemoryDaemonExecutionRepository repository = new(
+        repository = new(
             new TestOptionsMonitor<ArcanumSettings>(settings),
             logBuffer);
 
@@ -165,6 +246,15 @@ public sealed class DaemonRunnerTests
         FakeDaemonLogAttacher logAttacher = new();
 
         return new DaemonRunner(registry, repository, eventBus, logAttacher);
+
+    }
+
+    private static DaemonRunner CreateRunner(
+        IEnumerable<IDaemonJob> jobs,
+        CapturingEventBus? bus = null)
+    {
+
+        return CreateRunner(jobs, bus, out _);
 
     }
 

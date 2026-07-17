@@ -50,6 +50,8 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     private IReadOnlyList<string> _toolCatalog = [];
 
+    private CancellationTokenSource? _executeCts;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsBuiltIn))]
     [NotifyPropertyChangedFor(nameof(CanSave))]
@@ -122,6 +124,10 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _isBusy;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ExecuteCommand))]
+    private bool _isExecuting;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanActivateVersion))]
@@ -1017,9 +1023,18 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
     }
 
-    [RelayCommand]
+    private bool CanExecuteSpell() => !IsExecuting;
+
+    [RelayCommand(CanExecute = nameof(CanExecuteSpell))]
     public async Task ExecuteAsync(CancellationToken cancellationToken)
     {
+
+        if (IsExecuting)
+        {
+
+            return;
+
+        }
 
         string prompt = string.IsNullOrWhiteSpace(ExecutionPrompt) ? MarkdownBody : ExecutionPrompt;
 
@@ -1034,10 +1049,20 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
         bool hadError = false;
 
+        _executeCts?.Cancel();
+
+        _executeCts?.Dispose();
+
+        _executeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        CancellationToken runToken = _executeCts.Token;
+
+        IsExecuting = true;
+
         try
         {
 
-            await foreach (IntelligenceEvent ev in _dataSource.ExecuteStreamAsync(SpellName, request, cancellationToken).ConfigureAwait(true))
+            await foreach (IntelligenceEvent ev in _dataSource.ExecuteStreamAsync(SpellName, request, runToken).ConfigureAwait(true))
             {
 
                 ExecutionEvents.Add(ev);
@@ -1080,6 +1105,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
             }
 
         }
+        catch (OperationCanceledException) when (runToken.IsCancellationRequested)
+        {
+
+            StatusText = "Execution stopped.";
+
+        }
         catch (Exception ex)
         {
 
@@ -1092,6 +1123,20 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
             _whispers.Show(WhisperSeverity.Error, "Spell execution failed.");
 
         }
+        finally
+        {
+
+            IsExecuting = false;
+
+        }
+
+    }
+
+    [RelayCommand]
+    private void StopExecution()
+    {
+
+        _executeCts?.Cancel();
 
     }
 

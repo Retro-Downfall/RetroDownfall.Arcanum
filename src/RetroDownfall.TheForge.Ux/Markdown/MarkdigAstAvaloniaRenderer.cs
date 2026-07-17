@@ -63,6 +63,15 @@ public sealed class MarkdigAstAvaloniaRenderer
     public Control Render(
         string markdown,
         IlluminationImageContext imageContext,
+        CancellationToken cancellationToken) =>
+        Render(IlluminationMarkdownPipeline.Parse(markdown), imageContext, cancellationToken);
+
+    /// <summary>
+    /// Renders a pre-parsed Markdig document. Prefer this when sanitize/parse ran off the UI thread.
+    /// </summary>
+    public Control Render(
+        MarkdownDocument document,
+        IlluminationImageContext imageContext,
         CancellationToken cancellationToken)
     {
 
@@ -73,8 +82,6 @@ public sealed class MarkdigAstAvaloniaRenderer
         _imageContext = imageContext;
 
         _cancellationToken = cancellationToken;
-
-        Markdig.Syntax.MarkdownDocument document = IlluminationMarkdownPipeline.Parse(markdown);
 
         StackPanel root = new()
         {

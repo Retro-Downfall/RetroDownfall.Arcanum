@@ -90,6 +90,100 @@ public sealed class SseStreamWriterTests
 
     }
 
+    [Fact]
+    public async Task StreamAsync_with_heartbeat_never_calls_MoveNextAsync_concurrently()
+    {
+
+        ConcurrentMoveGuardEnumerable source = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.Response.Body = new MemoryStream();
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
+
+        await SseStreamWriter.StreamAsync(
+            httpContext,
+            source,
+            async (_, _) => await Task.CompletedTask.ConfigureAwait(false),
+            heartbeatInterval: TimeSpan.FromMilliseconds(20),
+            cts.Token);
+
+        Assert.False(source.ConcurrentMoveDetected, "MoveNextAsync was invoked while a prior move was still pending.");
+
+        Assert.True(source.MoveCount >= 2);
+
+        Assert.True(httpContext.Response.Body.Length > 0, "Expected at least one keep-alive write.");
+
+    }
+
+    private sealed class ConcurrentMoveGuardEnumerable : IAsyncEnumerable<string>
+    {
+
+        public bool ConcurrentMoveDetected { get; private set; }
+
+        public int MoveCount { get; private set; }
+
+        public IAsyncEnumerator<string> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
+            new Enumerator(this, cancellationToken);
+
+        private sealed class Enumerator(ConcurrentMoveGuardEnumerable owner, CancellationToken cancellationToken) : IAsyncEnumerator<string>
+        {
+
+            private int _inFlight;
+
+            private int _yielded;
+
+            public string Current { get; private set; } = string.Empty;
+
+            public ValueTask DisposeAsync() => default;
+
+            public async ValueTask<bool> MoveNextAsync()
+            {
+
+                if (Interlocked.Exchange(ref _inFlight, 1) == 1)
+                {
+
+                    owner.ConcurrentMoveDetected = true;
+
+                }
+
+                try
+                {
+
+                    owner.MoveCount++;
+
+                    // Hold the move long enough that a heartbeat interval can elapse while
+                    // MoveNextAsync is still pending — the bug would start a second move here.
+                    await Task.Delay(60, cancellationToken).ConfigureAwait(false);
+
+                    if (_yielded >= 2)
+                    {
+
+                        return false;
+
+                    }
+
+                    _yielded++;
+
+                    Current = $"item-{_yielded}";
+
+                    return true;
+
+                }
+                finally
+                {
+
+                    Interlocked.Exchange(ref _inFlight, 0);
+
+                }
+
+            }
+
+        }
+
+    }
+
     private static async IAsyncEnumerable<string> SourceAsync()
     {
 

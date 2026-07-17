@@ -56,7 +56,12 @@ internal static class ServiceCollectionConfigurator
 
         services.AddLogging(builder => builder.AddDebug());
 
-        services.AddHttpClient(ArcanumApiClient.HttpClientName);
+        services.AddHttpClient(ArcanumApiClient.HttpClientName, static client =>
+        {
+            // Unary Forge ↔ Arcanum API calls — keep a finite budget (HttpClient default is 100s).
+            // Do not use InfiniteTimeSpan here; inference/streaming uses separate clients on the API side.
+            client.Timeout = TimeSpan.FromSeconds(100);
+        });
 
         // Must use the parameterless-ctor factory, not AddSingleton<IOsCredentialStore, OsCredentialStore>():
         // the generic overload lets the container pick OsCredentialStore's test-seam constructor

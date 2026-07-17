@@ -276,6 +276,58 @@ public class ArsenalViewModelTests
 
     }
 
+    [Fact]
+    public async Task McpServers_StartFailure_SurfacesDataSourceError()
+    {
+
+        FakeArsenalDataSource dataSource = new()
+        {
+
+            Servers = [NewServer("filesystem", McpServerState.Stopped, [])],
+
+            StartResult = (false, "[Mcp.ServerNotFound] filesystem is not configured."),
+
+        };
+
+        McpServersViewModel viewModel = NewMcpServers(dataSource);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        viewModel.SelectedServer = viewModel.Servers[0];
+
+        await viewModel.StartAsync(CancellationToken.None);
+
+        Assert.Equal("[Mcp.ServerNotFound] filesystem is not configured.", viewModel.LastError);
+
+        Assert.Equal("filesystem: start failed.", viewModel.StatusText);
+
+    }
+
+    [Fact]
+    public async Task ScryingPool_InvokeFailure_SurfacesApiErrorText()
+    {
+
+        FakeArsenalDataSource dataSource = new()
+        {
+
+            InvokeError = "[Hub.Error] tool blew up",
+
+        };
+
+        ScryingPoolViewModel viewModel = NewScryingPool(dataSource);
+
+        viewModel.SelectedTool = "fs.read";
+
+        await viewModel.InvokeAsync(CancellationToken.None);
+
+        Assert.Equal("[Hub.Error] tool blew up", viewModel.LastError);
+
+        Assert.Equal("[Hub.Error] tool blew up", viewModel.ResultText);
+
+        Assert.Equal("Invocation failed.", viewModel.StatusText);
+
+    }
+
     private static McpServersViewModel NewMcpServers(FakeArsenalDataSource dataSource) =>
         new(dataSource, new FoundryFloorViewModel(new NullLogService()));
 
@@ -290,11 +342,11 @@ public class ArsenalViewModelTests
 
         public IReadOnlyList<McpServerInfo> Servers { get; init; } = [];
 
-        public bool StartResult { get; init; } = true;
+        public (bool Ok, string? Error) StartResult { get; init; } = (true, null);
 
-        public bool StopResult { get; init; } = true;
+        public (bool Ok, string? Error) StopResult { get; init; } = (true, null);
 
-        public bool RestartResult { get; init; } = true;
+        public (bool Ok, string? Error) RestartResult { get; init; } = (true, null);
 
         public (bool Success, string? Error) ReloadResult { get; set; } = (true, null);
 
@@ -305,6 +357,8 @@ public class ArsenalViewModelTests
         public string? ArsenalError { get; init; }
 
         public ToolInvokeResponse? InvokeResult { get; init; }
+
+        public string? InvokeError { get; init; }
 
         public bool ThrowOnList { get; init; }
 
@@ -339,7 +393,7 @@ public class ArsenalViewModelTests
 
         }
 
-        public Task<bool> StartServerAsync(string name, CancellationToken cancellationToken)
+        public Task<(bool Ok, string? Error)> StartServerAsync(string name, CancellationToken cancellationToken)
         {
 
             LastStartName = name;
@@ -350,7 +404,7 @@ public class ArsenalViewModelTests
 
         }
 
-        public Task<bool> StopServerAsync(string name, CancellationToken cancellationToken)
+        public Task<(bool Ok, string? Error)> StopServerAsync(string name, CancellationToken cancellationToken)
         {
 
             LastStopName = name;
@@ -359,7 +413,7 @@ public class ArsenalViewModelTests
 
         }
 
-        public Task<bool> RestartServerAsync(string name, CancellationToken cancellationToken)
+        public Task<(bool Ok, string? Error)> RestartServerAsync(string name, CancellationToken cancellationToken)
         {
 
             LastRestartName = name;
@@ -385,12 +439,19 @@ public class ArsenalViewModelTests
 
         }
 
-        public Task<ToolInvokeResponse?> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken)
+        public Task<(ToolInvokeResponse? Response, string? Error)> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken)
         {
 
             LastInvokeRequest = request;
 
-            return Task.FromResult(InvokeResult);
+            if (InvokeError is not null)
+            {
+
+                return Task.FromResult<(ToolInvokeResponse?, string?)>((null, InvokeError));
+
+            }
+
+            return Task.FromResult<(ToolInvokeResponse?, string?)>((InvokeResult, null));
 
         }
 

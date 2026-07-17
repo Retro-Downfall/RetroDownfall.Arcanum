@@ -1,7 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Globalization;
-using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -23,6 +21,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 // (-> "entry_embeddings") and the search runs as a managed, brute-force cosine scan in C# via
 // EmbeddingBlobCodec. Column names are shared between both tables by convention (see
 // WeaveSchemaInitializer) so the same primaryKeyColumn/embeddingColumn pair works either way.
+//
+// Managed-path safeguards (hardcoded internal budgets — not Arcanum:* settings): a row scan budget
+// caps worst-case work, results are tracked in a streaming top-K heap (no full scored list + OrderBy),
+// and scoped searches join the scope table in SQL instead of an unbounded IN (...) of every chunk id.
 internal sealed class DivinationService(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
@@ -30,6 +32,13 @@ internal sealed class DivinationService(
 {
 
     private const string VecTableSuffix = "_vec";
+
+    /// <summary>
+    /// Hard cap on embedding rows scored by a single managed (brute-force) Divination search.
+    /// Internal safeguard only — not an <c>Arcanum:*</c> setting. When exceeded, scoring stops early
+    /// and a warning is logged; top-K among the rows already scored is still returned.
+    /// </summary>
+    internal const int ManagedSearchRowBudget = 50_000;
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
         new Dictionary<string, string>(0);
@@ -124,32 +133,21 @@ internal sealed class DivinationService(
 
             }
 
-            HashSet<string> scopeIds = await LoadScopeIdsAsync(
-                connection,
-                scopeTableName,
-                scopeJoinColumn,
-                scopeFilterColumn,
-                scopeFilterValue,
-                cancellationToken).ConfigureAwait(false);
-
-            if (scopeIds.Count == 0)
-            {
-
-                return Result<DivinationResult[]>.Success([]);
-
-            }
-
             float[] queryVector = queryEmbedding.Vector.ToArray();
 
             // The vec0 KNN path (used when IsVecAvailable) has no per-row partition key in its current
             // schema, so a scoped search always ranks via the managed brute-force path below instead —
-            // but bounded to just the scoped candidate rows fetched above, not a full-table scan.
+            // but SQL-joined to the scope table so only in-scope rows are read (no unbounded IN of
+            // every matching chunk id).
             DivinationResult[] results = await SearchManagedScopedAsync(
                 connection,
                 DeriveBlobTableName(tableName),
                 primaryKeyColumn,
                 embeddingColumn,
-                scopeIds,
+                scopeTableName,
+                scopeJoinColumn,
+                scopeFilterColumn,
+                scopeFilterValue,
                 queryVector,
                 maxResults,
                 similarityThreshold,
@@ -177,50 +175,15 @@ internal sealed class DivinationService(
 
     }
 
-    private static async Task<HashSet<string>> LoadScopeIdsAsync(
-        DbConnection connection,
-        string scopeTableName,
-        string scopeJoinColumn,
-        string scopeFilterColumn,
-        string scopeFilterValue,
-        CancellationToken cancellationToken)
-    {
-
-        await using DbCommand cmd = connection.CreateCommand();
-
-        // scopeTableName/scopeJoinColumn/scopeFilterColumn are internal constants owned by the calling
-        // feature's retrieval code (never user input), same as tableName/primaryKeyColumn/embeddingColumn
-        // in SearchVecAsync — only scopeFilterValue is a bound parameter.
-        cmd.CommandText =
-            $"""
-            SELECT DISTINCT "{scopeJoinColumn}"
-            FROM "{scopeTableName}"
-            WHERE "{scopeFilterColumn}" = @scopeFilterValue
-            """;
-
-        AddParameter(cmd, "@scopeFilterValue", scopeFilterValue);
-
-        HashSet<string> ids = new(StringComparer.Ordinal);
-
-        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            ids.Add(reader.GetString(0));
-
-        }
-
-        return ids;
-
-    }
-
-    private static async Task<DivinationResult[]> SearchManagedScopedAsync(
+    private async Task<DivinationResult[]> SearchManagedScopedAsync(
         DbConnection connection,
         string blobTableName,
         string primaryKeyColumn,
         string embeddingColumn,
-        HashSet<string> scopeIds,
+        string scopeTableName,
+        string scopeJoinColumn,
+        string scopeFilterColumn,
+        string scopeFilterValue,
         float[] queryVector,
         int maxResults,
         float similarityThreshold,
@@ -229,67 +192,25 @@ internal sealed class DivinationService(
 
         await using DbCommand cmd = connection.CreateCommand();
 
-        StringBuilder sql = new(
+        // Table/column names are internal constants owned by the calling feature's retrieval code
+        // (never user input); only scopeFilterValue is a bound parameter.
+        cmd.CommandText =
             $"""
-            SELECT "{primaryKeyColumn}", "{embeddingColumn}"
-            FROM "{blobTableName}"
-            WHERE "{primaryKeyColumn}" IN (
-            """);
+            SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
+            FROM "{blobTableName}" e
+            INNER JOIN "{scopeTableName}" s ON e."{primaryKeyColumn}" = s."{scopeJoinColumn}"
+            WHERE s."{scopeFilterColumn}" = @scopeFilterValue
+            """;
 
-        int i = 0;
+        AddParameter(cmd, "@scopeFilterValue", scopeFilterValue);
 
-        foreach (string id in scopeIds)
-        {
-
-            if (i > 0)
-            {
-                sql.Append(", ");
-
-            }
-
-            string paramName = $"@scopeId{i.ToString(CultureInfo.InvariantCulture)}";
-
-            sql.Append(paramName);
-
-            AddParameter(cmd, paramName, id);
-
-            i++;
-
-        }
-
-        sql.Append(')');
-
-        cmd.CommandText = sql.ToString();
-
-        List<(string Id, float Similarity)> scored = [];
-
-        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            string id = reader.GetString(0);
-
-            byte[] blob = (byte[])reader[1];
-
-            float[] candidate = EmbeddingBlobCodec.Decode(blob);
-
-            float similarity = EmbeddingBlobCodec.CosineSimilarity(queryVector, candidate);
-
-            if (similarity >= similarityThreshold)
-            {
-
-                scored.Add((id, similarity));
-
-            }
-
-        }
-
-        return scored
-            .OrderByDescending(static s => s.Similarity)
-            .Take(maxResults)
-            .Select(static s => new DivinationResult(s.Id, s.Similarity, EmptyMetadata))
-            .ToArray();
+        return await ScoreManagedRowsAsync(
+            cmd,
+            blobTableName,
+            queryVector,
+            maxResults,
+            similarityThreshold,
+            cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -351,7 +272,7 @@ internal sealed class DivinationService(
 
     }
 
-    private static async Task<DivinationResult[]> SearchManagedAsync(
+    private async Task<DivinationResult[]> SearchManagedAsync(
         DbConnection connection,
         string blobTableName,
         string primaryKeyColumn,
@@ -370,12 +291,54 @@ internal sealed class DivinationService(
             FROM "{blobTableName}"
             """;
 
-        List<(string Id, float Similarity)> scored = [];
+        return await ScoreManagedRowsAsync(
+            cmd,
+            blobTableName,
+            queryVector,
+            maxResults,
+            similarityThreshold,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Scores rows from an already-configured command with a streaming top-K heap and a hard row
+    /// budget. Stops after <see cref="ManagedSearchRowBudget"/> rows (logging a warning) and never
+    /// materializes a full scored list for <c>OrderBy</c>/<c>Take</c>.
+    /// </summary>
+    private async Task<DivinationResult[]> ScoreManagedRowsAsync(
+        DbCommand cmd,
+        string blobTableName,
+        float[] queryVector,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+
+        int take = Math.Max(0, maxResults);
+
+        // Min-heap by similarity: when full, the peek is the weakest of the current top-K.
+        PriorityQueue<string, float> topK = new();
+
+        int rowsScanned = 0;
+
+        bool budgetExceeded = false;
 
         await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+
+            if (rowsScanned >= ManagedSearchRowBudget)
+            {
+
+                budgetExceeded = true;
+
+                break;
+
+            }
+
+            rowsScanned++;
 
             string id = reader.GetString(0);
 
@@ -385,20 +348,75 @@ internal sealed class DivinationService(
 
             float similarity = EmbeddingBlobCodec.CosineSimilarity(queryVector, candidate);
 
-            if (similarity >= similarityThreshold)
+            if (similarity < similarityThreshold || take == 0)
             {
 
-                scored.Add((id, similarity));
+                continue;
+
+            }
+
+            if (topK.Count < take)
+            {
+
+                topK.Enqueue(id, similarity);
+
+            }
+            else if (topK.TryPeek(out _, out float weakest) && similarity > weakest)
+            {
+
+                _ = topK.Dequeue();
+
+                topK.Enqueue(id, similarity);
 
             }
 
         }
 
-        return scored
-            .OrderByDescending(static s => s.Similarity)
-            .Take(maxResults)
-            .Select(static s => new DivinationResult(s.Id, s.Similarity, EmptyMetadata))
-            .ToArray();
+        if (budgetExceeded)
+        {
+
+            logger.LogWarning(
+                "Managed Divination search against {TableName} hit the internal row budget of {RowBudget} after scoring {RowsScanned} rows; returning top-{MaxResults} among rows already scored (results may be incomplete).",
+                blobTableName,
+                ManagedSearchRowBudget,
+                rowsScanned,
+                take);
+
+        }
+
+        if (topK.Count == 0)
+        {
+
+            return [];
+
+        }
+
+        (string Id, float Similarity)[] scored = new (string Id, float Similarity)[topK.Count];
+
+        for (int i = scored.Length - 1; i >= 0; i--)
+        {
+
+            if (!topK.TryDequeue(out string? id, out float similarity))
+            {
+
+                break;
+
+            }
+
+            scored[i] = (id, similarity);
+
+        }
+
+        DivinationResult[] results = new DivinationResult[scored.Length];
+
+        for (int i = 0; i < scored.Length; i++)
+        {
+
+            results[i] = new DivinationResult(scored[i].Id, scored[i].Similarity, EmptyMetadata);
+
+        }
+
+        return results;
 
     }
 

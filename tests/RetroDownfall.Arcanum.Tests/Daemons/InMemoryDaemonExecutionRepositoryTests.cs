@@ -88,34 +88,85 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
     }
 
-    // W3.3 Fix 4 (id-matched removal): StartAsync overwrites _inFlightByDaemon
-    // blindly (scheduled path), so two executions of the same daemon can both be
-    // recorded as Running with the second one's id holding the in-flight slot.
-    // Completing the OLD execution must NOT remove the NEW execution's in-flight
-    // mapping. The old code did a blind TryRemove(daemonId), which evicted the new
-    // execution's slot and made HasRunningExecution report stale state. The fix
-    // removes the slot only when the stored id matches the completing execution.
+    // W3.3 Fix 4 (id-matched removal): overlapping StartAsync for the same daemon is no
+    // longer allowed (single-flight). Completing a finished execution must not clear a
+    // different daemon's in-flight slot — covered by TryStart + RemoveInFlightIfMatch.
+    // This test verifies two distinct daemons can both be Running concurrently.
     [Fact]
-    public async Task CompleteAsync_OverlappingExecution_DoesNotEvictLaterExecution()
+    public async Task StartAsync_DistinctDaemons_RunConcurrently()
     {
 
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
-        string firstId = await repository.StartAsync("daemon-overlap", "Daemon Overlap", CancellationToken.None);
+        string firstId = await repository.StartAsync("daemon-a", "Daemon A", CancellationToken.None);
 
-        string secondId = await repository.StartAsync("daemon-overlap", "Daemon Overlap", CancellationToken.None);
+        string secondId = await repository.StartAsync("daemon-b", "Daemon B", CancellationToken.None);
+
+        Assert.True(repository.HasRunningExecution("daemon-a"));
+
+        Assert.True(repository.HasRunningExecution("daemon-b"));
+
+        await repository.CompleteAsync(firstId, CancellationToken.None);
+
+        Assert.False(repository.HasRunningExecution("daemon-a"));
+
+        Assert.True(repository.HasRunningExecution("daemon-b"));
+
+        await repository.CompleteAsync(secondId, CancellationToken.None);
+
+        Assert.False(repository.HasRunningExecution("daemon-b"));
+
+    }
+
+    [Fact]
+    public async Task StartAsync_SameDaemonWhileRunning_Throws()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        _ = await repository.StartAsync("daemon-overlap", "Daemon Overlap", CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repository.StartAsync("daemon-overlap", "Daemon Overlap", CancellationToken.None));
 
         Assert.True(repository.HasRunningExecution("daemon-overlap"));
 
-        // Completing the older execution must leave the newer one's slot intact.
-        await repository.CompleteAsync(firstId, CancellationToken.None);
+    }
 
-        Assert.True(repository.HasRunningExecution("daemon-overlap"), "Later execution's in-flight slot was evicted by the older execution's completion.");
+    [Fact]
+    public async Task TrimHistory_NeverRemovesRunningExecutions()
+    {
 
-        // Completing the actual in-flight execution clears the slot.
-        await repository.CompleteAsync(secondId, CancellationToken.None);
+        ArcanumSettings settings = new()
+        {
+            Logs = new LogSettings { RingBufferCapacity = 16 },
+            EventBus = new EventBusSettings { ChannelCapacity = 8 },
+            Daemon = new DaemonSettings { ExecutionHistoryLimit = 2 },
+        };
 
-        Assert.False(repository.HasRunningExecution("daemon-overlap"));
+        InMemoryDaemonExecutionRepository repository = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            CreateLogBuffer());
+
+        string first = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
+
+        await repository.CompleteAsync(first, CancellationToken.None);
+
+        string second = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
+
+        await repository.CompleteAsync(second, CancellationToken.None);
+
+        string running = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
+
+        // Limit is 2; a third start after two completed would normally trim the oldest.
+        // With a Running record present, trim must keep it.
+        DaemonExecutionDetail? detail = await repository.GetAsync(running, CancellationToken.None);
+
+        Assert.NotNull(detail);
+
+        Assert.Equal(DaemonJobStatus.Running, detail!.Status);
+
+        Assert.True(repository.HasRunningExecution("daemon-trim"));
 
     }
 

@@ -24,6 +24,7 @@ public sealed class ServeCommand(IThemePalette themePalette)
 
     /// <summary>
     /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).
+    /// When ListenAny / ARCANUM_HOST_ANY is effective, binds HTTPS-only on Arcanum:Host:Https:Port.
     /// </summary>
     [Command("")]
     public async Task<int> Run(CancellationToken cancellationToken)
@@ -58,7 +59,7 @@ public sealed class ServeCommand(IThemePalette themePalette)
 
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
 
-                if (!AnsiConsole.Confirm("Bind Arcanum to all network interfaces over plaintext HTTP?", defaultValue: false))
+                if (!AnsiConsole.Confirm(ListenAnySecurityPolicy.InteractiveConfirmPrompt, defaultValue: false))
                 {
 
                     AnsiConsole.MarkupLine(
@@ -123,15 +124,22 @@ public sealed class ServeCommand(IThemePalette themePalette)
 
         WebApplication app = builder.Build();
 
-        int configuredPort = ReadConfiguredHostPort(builder.Configuration);
-
-        int listenPort = ArcanumSettingClamps.HostPort(configuredPort);
-
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(ReadConfiguredListenAny(builder.Configuration));
+
+        string listenScheme = listenAny ? "https" : "http";
 
         string listenHost = listenAny ? "0.0.0.0" : "127.0.0.1";
 
-        Log.Information("{Timestamp:o} Arcanum API host configured for http://{ListenHost}:{Port}", DateTimeOffset.UtcNow, listenHost, listenPort);
+        int listenPort = listenAny
+            ? ArcanumSettingClamps.HostHttpsPort(ReadConfiguredHttpsPort(builder.Configuration))
+            : ArcanumSettingClamps.HostPort(ReadConfiguredHostPort(builder.Configuration));
+
+        Log.Information(
+            "{Timestamp:o} Arcanum API host configured for {Scheme}://{ListenHost}:{Port}",
+            DateTimeOffset.UtcNow,
+            listenScheme,
+            listenHost,
+            listenPort);
 
         app.UseArcanumExceptionHandler();
 
@@ -149,11 +157,16 @@ public sealed class ServeCommand(IThemePalette themePalette)
             static state => ((IHostApplicationLifetime)state!).StopApplication(),
             app.Lifetime);
 
-        Log.Information("{Timestamp:o} Arcanum listening on http://{ListenHost}:{Port}", DateTimeOffset.UtcNow, listenHost, listenPort);
+        Log.Information(
+            "{Timestamp:o} Arcanum listening on {Scheme}://{ListenHost}:{Port}",
+            DateTimeOffset.UtcNow,
+            listenScheme,
+            listenHost,
+            listenPort);
 
         AnsiConsole.MarkupLine(
             themePalette.HighlightMarkup(
-                Markup.Escape($"Listening on http://{listenHost}:{listenPort}")));
+                Markup.Escape($"Listening on {listenScheme}://{listenHost}:{listenPort}")));
 
         try
         {
@@ -181,6 +194,20 @@ public sealed class ServeCommand(IThemePalette themePalette)
         return int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
             ? parsed
             : new HostSettings().Port;
+    }
+
+    internal static int ReadConfiguredHttpsPort(IConfiguration configuration)
+    {
+        string? raw = configuration["Arcanum:Host:Https:Port"];
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return new HttpsSettings().Port;
+        }
+
+        return int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+            ? parsed
+            : new HttpsSettings().Port;
     }
 
     internal static bool ReadConfiguredListenAny(IConfiguration configuration)

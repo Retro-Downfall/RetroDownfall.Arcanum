@@ -155,6 +155,63 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         Assert.Equal(2, result.Value.Length);
 
+        Assert.Equal("a", result.Value[0].Id);
+
+        Assert.Equal("b", result.Value[1].Id);
+
+    }
+
+    [SkippableFact]
+    public async Task SearchScopedAsync_ManagedJoin_ReturnsOnlyInScopeRows()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await EnsureWorkspaceTablesAsync();
+
+        await InsertWorkspaceChunkAsync(
+            chunkId: "in-scope",
+            workspacePath: "/workspace/a",
+            relativePath: "a.cs",
+            vector: [1f, 0f, 0f]);
+
+        await InsertWorkspaceChunkAsync(
+            chunkId: "out-of-scope",
+            workspacePath: "/workspace/b",
+            relativePath: "b.cs",
+            vector: [1f, 0f, 0f]);
+
+        DivinationService service = CreateService(vecAvailable: false);
+
+        Embedding<float> query = new(new float[] { 1f, 0f, 0f });
+
+        Result<DivinationResult[]> result = await service.SearchScopedAsync(
+            "workspace_file_embeddings_vec",
+            "ChunkId",
+            "Embedding",
+            "workspace_file_chunks",
+            "ChunkId",
+            "WorkspacePath",
+            "/workspace/a",
+            query,
+            maxResults: 10,
+            similarityThreshold: 0.5f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Single(result.Value);
+
+        Assert.Equal("in-scope", result.Value[0].Id);
+
+    }
+
+    [Fact]
+    public void ManagedSearchRowBudget_IsHardcodedInternalSafeguard()
+    {
+
+        Assert.Equal(50_000, DivinationService.ManagedSearchRowBudget);
+
     }
 
     [SkippableFact]
@@ -241,6 +298,121 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         cmd.Parameters.Add(dimParam);
 
         _ = await cmd.ExecuteNonQueryAsync();
+
+    }
+
+    private async Task EnsureWorkspaceTablesAsync()
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using DbCommand embeddingsCmd = connection.CreateCommand();
+
+        embeddingsCmd.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS workspace_file_embeddings (
+                ChunkId TEXT PRIMARY KEY,
+                Embedding BLOB NOT NULL,
+                Dim INTEGER NOT NULL
+            );
+            """;
+
+        _ = await embeddingsCmd.ExecuteNonQueryAsync();
+
+        await using DbCommand chunksCmd = connection.CreateCommand();
+
+        chunksCmd.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS workspace_file_chunks (
+                ChunkId TEXT PRIMARY KEY,
+                WorkspacePath TEXT NOT NULL,
+                RelativePath TEXT NOT NULL,
+                ChunkIndex INTEGER NOT NULL,
+                Content TEXT NOT NULL,
+                CharOffset INTEGER NOT NULL,
+                CharLength INTEGER NOT NULL,
+                FileLastWriteTime TEXT NOT NULL,
+                IndexedAt TEXT NOT NULL
+            );
+            """;
+
+        _ = await chunksCmd.ExecuteNonQueryAsync();
+
+    }
+
+    private async Task InsertWorkspaceChunkAsync(
+        string chunkId,
+        string workspacePath,
+        string relativePath,
+        float[] vector)
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using DbCommand chunkCmd = connection.CreateCommand();
+
+        chunkCmd.CommandText =
+            """
+            INSERT INTO "workspace_file_chunks"
+                ("ChunkId", "WorkspacePath", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "FileLastWriteTime", "IndexedAt")
+            VALUES
+                (@chunkId, @workspacePath, @relativePath, 0, 'content', 0, 7, @fileLastWriteTime, @indexedAt);
+            """;
+
+        AddParam(chunkCmd, "@chunkId", chunkId);
+
+        AddParam(chunkCmd, "@workspacePath", workspacePath);
+
+        AddParam(chunkCmd, "@relativePath", relativePath);
+
+        AddParam(chunkCmd, "@fileLastWriteTime", DateTime.UtcNow.ToString("o"));
+
+        AddParam(chunkCmd, "@indexedAt", DateTimeOffset.UtcNow.ToString("o"));
+
+        _ = await chunkCmd.ExecuteNonQueryAsync();
+
+        await using DbCommand embeddingCmd = connection.CreateCommand();
+
+        embeddingCmd.CommandText =
+            """
+            INSERT INTO "workspace_file_embeddings" ("ChunkId", "Embedding", "Dim")
+            VALUES (@chunkId, @embedding, @dim);
+            """;
+
+        AddParam(embeddingCmd, "@chunkId", chunkId);
+
+        AddParam(embeddingCmd, "@embedding", EmbeddingBlobCodec.Encode(vector));
+
+        AddParam(embeddingCmd, "@dim", vector.Length);
+
+        _ = await embeddingCmd.ExecuteNonQueryAsync();
+
+    }
+
+    private static void AddParam(DbCommand cmd, string name, object value)
+    {
+
+        DbParameter parameter = cmd.CreateParameter();
+
+        parameter.ParameterName = name;
+
+        parameter.Value = value;
+
+        cmd.Parameters.Add(parameter);
 
     }
 

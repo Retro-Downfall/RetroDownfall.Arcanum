@@ -311,4 +311,109 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task PerceivePatternAsync_prunes_ignored_directories_before_descent()
+    {
+
+        TempWorkspace pruneWorkspace = new();
+
+        await pruneWorkspace.InitializeAsync();
+
+        try
+        {
+
+            pruneWorkspace.WriteFile("App.sln", "solution");
+
+            for (int i = 0; i < 80; i++)
+            {
+
+                pruneWorkspace.WriteFile(
+                    $"node_modules/pkg/file{i}.js".Replace('/', Path.DirectorySeparatorChar),
+                    "console.log('ignored');");
+
+            }
+
+            // Budget smaller than node_modules file count — prune-before-descend must still see App.sln.
+            ArcanumSettings settings = new()
+            {
+                Perception = new PerceptionSettings { MaxEnumerationSteps = 20 },
+            };
+
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+            PatternSnapshot snapshot = await service.PerceivePatternAsync(pruneWorkspace.Root, CancellationToken.None);
+
+            Assert.Equal(DomainType.SoftwareEngineering, snapshot.Domain);
+
+            Assert.Contains(snapshot.Threads, t => t.StartsWith("Solution:", StringComparison.Ordinal));
+
+            Assert.DoesNotContain(snapshot.Threads, t => t.Contains("node_modules", StringComparison.OrdinalIgnoreCase));
+
+            Assert.DoesNotContain(snapshot.Threads, t => t.Contains("truncated", StringComparison.OrdinalIgnoreCase));
+
+        }
+        finally
+        {
+
+            await pruneWorkspace.DisposeAsync();
+
+        }
+
+    }
+
+    [Fact]
+    public async Task PerceivePatternAsync_symlink_cycle_terminates_via_visited_set()
+    {
+
+        TempWorkspace cycleWorkspace = new();
+
+        await cycleWorkspace.InitializeAsync();
+
+        try
+        {
+
+            string nested = cycleWorkspace.CreateSubdir("nested");
+
+            cycleWorkspace.WriteFile("marker.dat", "x");
+
+            string linkPath = Path.Combine(nested, "cycle-back");
+
+            try
+            {
+
+                _ = Directory.CreateSymbolicLink(linkPath, cycleWorkspace.Root);
+
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+
+                // Symlink creation may require privileges on some hosts — skip rather than fail CI.
+                return;
+
+            }
+
+            ArcanumSettings settings = new()
+            {
+                Perception = new PerceptionSettings { MaxEnumerationSteps = 50 },
+            };
+
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+            PatternSnapshot snapshot = await service.PerceivePatternAsync(cycleWorkspace.Root, CancellationToken.None);
+
+            // Completes without hanging; cycle must not consume the full enumeration budget alone.
+            Assert.DoesNotContain(snapshot.Threads, t => t.Contains("truncated", StringComparison.OrdinalIgnoreCase));
+
+            Assert.Contains(snapshot.Threads, t => t.Contains("marker.dat", StringComparison.Ordinal));
+
+        }
+        finally
+        {
+
+            await cycleWorkspace.DisposeAsync();
+
+        }
+
+    }
+
 }

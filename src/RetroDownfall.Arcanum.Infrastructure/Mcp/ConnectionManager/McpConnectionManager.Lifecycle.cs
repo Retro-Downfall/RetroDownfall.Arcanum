@@ -511,8 +511,9 @@ public sealed partial class McpConnectionManager
                 logger: null);
 
         // The server's own RunAsync loop terminates when the client-to-server channel completes
-        // (ChannelClientTransport.DisposeAsync calls toServer.TryComplete() on client disposal), so
-        // no separate lifetime token is needed here — channel completion is the shutdown signal.
+        // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).
+        // On setup failure before a client is attached, the finally block completes the channel so
+        // the server task cannot orphan forever.
         Task serverTask = Task.Run(() => server.RunAsync(CancellationToken.None), CancellationToken.None);
 
         ObserveInternalServerTask(serverTask);
@@ -522,6 +523,8 @@ public sealed partial class McpConnectionManager
         SdkMcpClientWrapper? client = null;
 
         List<IMcpClient> partitionClients = partition.Clients;
+
+        bool attached = false;
 
         try
         {
@@ -534,6 +537,8 @@ public sealed partial class McpConnectionManager
             partitionClients.Add(client);
 
             client = null;
+
+            attached = true;
 
             foreach (McpBridgeTool t in tools)
             {
@@ -556,9 +561,34 @@ public sealed partial class McpConnectionManager
             if (client is not null)
             {
                 await client.DisposeAsync().ConfigureAwait(false);
+
+                client = null;
             }
 
             throw;
+        }
+        finally
+        {
+            if (!attached)
+            {
+                // Complete the client→server channel so RunAsync exits; dispose any leftover client
+                // (idempotent if catch already disposed) and briefly drain the server task.
+                toServer.TryComplete();
+
+                if (client is not null)
+                {
+                    await client.DisposeAsync().ConfigureAwait(false);
+                }
+
+                try
+                {
+                    await serverTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Best-effort drain; ObserveInternalServerTask already logs faults.
+                }
+            }
         }
     }
 

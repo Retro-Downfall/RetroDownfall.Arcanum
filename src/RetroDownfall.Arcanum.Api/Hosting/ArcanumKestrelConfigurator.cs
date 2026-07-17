@@ -11,14 +11,20 @@ namespace RetroDownfall.Arcanum.Api.Hosting;
 
 /// <summary>
 /// Single source of truth for Kestrel listener configuration shared by the CLI <c>serve</c> host and
-/// the dev host. Sets the global request-body limit exactly once, configures the plaintext HTTP
-/// listener, and — only when <c>Arcanum:Host:Https:Enabled</c> is true — adds a second TLS listener on
-/// the configured HTTPS port. Reads configuration through string keys (no reflection binding) to keep
-/// the Native AOT host trim-safe. When HTTPS is enabled and the certificate cannot be loaded, startup
-/// fails with a sanitized, password-free message.
+/// the dev host. Sets the global request-body limit exactly once. Loopback mode binds plaintext HTTP
+/// on <c>Arcanum:Host:Port</c> and optionally HTTPS on <c>Arcanum:Host:Https:Port</c>. All-interfaces
+/// mode (<c>ListenAny</c> / <c>ARCANUM_HOST_ANY</c>) is HTTPS-only: requires
+/// <c>Arcanum:Host:Https:Enabled</c> and a loadable certificate, binds only
+/// <c>ListenAnyIP(HttpsPort)</c> with TLS, and never binds plaintext any-IP HTTP. Reads configuration
+/// through string keys (no reflection binding) to keep the Native AOT host trim-safe. When HTTPS is
+/// required or enabled and the certificate cannot be loaded, startup fails with a sanitized,
+/// password-free message.
 /// </summary>
 public static class ArcanumKestrelConfigurator
 {
+
+    public const string ListenAnyRequiresHttpsMessage =
+        "ListenAny / ARCANUM_HOST_ANY requires Host:Https:Enabled with a loadable certificate; plaintext any-IP HTTP is not permitted.";
 
     public static void Configure(KestrelServerOptions options, IConfiguration configuration, bool listenAny)
     {
@@ -26,37 +32,54 @@ public static class ArcanumKestrelConfigurator
         options.Limits.MaxRequestBodySize = ArcanumSettingClamps.MaxRequestBodyBytes(
             ReadLong(configuration, "Arcanum:Host:MaxRequestBodyBytes", new HostSettings().MaxRequestBodyBytes));
 
-        int httpPort = ArcanumSettingClamps.HostPort(
-            ReadInt(configuration, "Arcanum:Host:Port", new HostSettings().Port));
-
-        ConfigureHttp(options, httpPort, listenAny);
-
-        ConfigureHttpsIfEnabled(options, configuration, listenAny);
-
-    }
-
-    private static void ConfigureHttp(KestrelServerOptions options, int port, bool listenAny)
-    {
+        HttpsSettings https = ReadHttpsSettings(configuration);
 
         if (listenAny)
         {
 
-            options.ListenAnyIP(port);
+            ConfigureListenAnyHttpsOnly(options, https);
+
+            return;
 
         }
-        else
-        {
 
-            options.ListenLocalhost(port);
+        int httpPort = ArcanumSettingClamps.HostPort(
+            ReadInt(configuration, "Arcanum:Host:Port", new HostSettings().Port));
 
-        }
+        ConfigureHttp(options, httpPort);
+
+        ConfigureHttpsIfEnabled(options, https, listenAny: false);
 
     }
 
-    private static void ConfigureHttpsIfEnabled(KestrelServerOptions options, IConfiguration configuration, bool listenAny)
+    private static void ConfigureListenAnyHttpsOnly(KestrelServerOptions options, HttpsSettings https)
     {
 
-        HttpsSettings https = ReadHttpsSettings(configuration);
+        if (!https.Enabled)
+        {
+
+            Log.Error(
+                "{Timestamp:o} {Message}",
+                DateTimeOffset.UtcNow,
+                ListenAnyRequiresHttpsMessage);
+
+            throw new InvalidOperationException(ListenAnyRequiresHttpsMessage);
+
+        }
+
+        BindHttps(options, https, listenAny: true);
+
+    }
+
+    private static void ConfigureHttp(KestrelServerOptions options, int port)
+    {
+
+        options.ListenLocalhost(port);
+
+    }
+
+    private static void ConfigureHttpsIfEnabled(KestrelServerOptions options, HttpsSettings https, bool listenAny)
+    {
 
         if (!https.Enabled)
         {
@@ -64,6 +87,13 @@ public static class ArcanumKestrelConfigurator
             return;
 
         }
+
+        BindHttps(options, https, listenAny);
+
+    }
+
+    private static void BindHttps(KestrelServerOptions options, HttpsSettings https, bool listenAny)
+    {
 
         int httpsPort = ArcanumSettingClamps.HostHttpsPort(https.Port);
 

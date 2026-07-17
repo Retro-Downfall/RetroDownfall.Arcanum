@@ -51,13 +51,13 @@ public sealed class ProcessResourceLimiterTests
     }
 
     [Fact]
-    public void Apply_returns_null_on_windows()
+    public async Task Apply_returns_assign_after_start_on_windows()
     {
 
         if (!OperatingSystem.IsWindows())
         {
 
-            // Windows-only behavior; nothing to verify on this host.
+            // Windows Job Object path; nothing to verify on this host.
             return;
 
         }
@@ -70,10 +70,15 @@ public sealed class ProcessResourceLimiterTests
 
         Assert.Null(result.Error);
 
-        Assert.Null(result.CleanupAsync);
+        Assert.NotNull(result.AssignAfterStart);
 
-        // Windows is a documented no-op: resource limits are not enforced, StartInfo is untouched.
+        Assert.NotNull(result.CleanupAsync);
+
+        // Job Objects do not rewrite StartInfo (unlike the Unix ulimit prelude).
         Assert.Equal("cmd.exe", psi.FileName);
+
+        // Dispose the job without starting a child (empty job + KILL_ON_JOB_CLOSE is fine).
+        await result.CleanupAsync!(0);
 
     }
 

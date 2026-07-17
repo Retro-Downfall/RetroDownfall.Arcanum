@@ -163,6 +163,39 @@ public sealed class TheForgeApiKeyProviderTests
 
     }
 
+    [Fact]
+    public async Task ClearPasteDecline_AllowsRepromptAfterUserDecline()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+
+        int promptCalls = 0;
+
+        TheForgeApiKeyProvider provider = new(
+            resolver,
+            new StaticOptions(new TheForgeSettings()),
+            NullLogger<TheForgeApiKeyProvider>.Instance,
+            _ =>
+            {
+                promptCalls++;
+
+                return Task.FromResult<string?>(null);
+            });
+
+        Assert.Null(await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Equal(1, promptCalls);
+
+        provider.ClearPasteDecline();
+
+        Assert.Null(await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Equal(2, promptCalls);
+
+    }
+
     private sealed class StaticOptions(TheForgeSettings current) : IOptionsMonitor<TheForgeSettings>
     {
 

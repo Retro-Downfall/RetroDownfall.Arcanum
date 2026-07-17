@@ -83,14 +83,10 @@ internal static class InferenceExecuteWriter
 
         Utf8JsonWriter jsonWriter = new(eventBuffer);
 
-        // W3.4 Group A (S10): track whether any NDJSON frame has been streamed to the
-        // response body. This mirrors HttpResponse.HasStarted (which Kestrel sets on the
-        // first body write) but is host-agnostic — DefaultHttpContext does not flip
-        // HasStarted on direct body writes, and the decision here is precisely "have we
-        // already streamed frames" rather than "have HTTP headers been sent". Once true,
-        // a late non-disconnect exception must NOT append an error frame: the frame would
-        // be ambiguous to a client that has already consumed partial output and may target
-        // a dead socket.
+        // Track whether any NDJSON frame has been streamed. Mid-stream exceptions still
+        // emit a terminal IntelligenceEventType.Error when the client is writable (wire
+        // contract). Client disconnects are handled separately and must not write to a
+        // dead socket.
         bool responseStarted = false;
 
         try
@@ -122,9 +118,8 @@ internal static class InferenceExecuteWriter
         catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
         {
 
-            // W3.4 Group A (S10): client disconnected mid-stream (broken pipe / reset).
-            // Cancel the linked inference CTS so the producer stops promptly, then break
-            // silently. No error frame is written to the dead socket.
+            // Client disconnected mid-stream (broken pipe / reset). Cancel the linked
+            // inference CTS so the producer stops promptly, then break silently.
 
             streamCts.Cancel();
 
@@ -132,47 +127,48 @@ internal static class InferenceExecuteWriter
         catch (Exception ex)
         {
 
-            // W3.4 Group A (S10): only emit an error frame when nothing has been streamed
-            // yet. Once the NDJSON response has started (tokens already sent), appending an
-            // error frame is ambiguous to the client and may target a dead socket.
+            // Emit a terminal error frame whenever the client is still writable — including
+            // after partial output — so native NDJSON clients always observe a terminal Error.
 
-            if (!responseStarted)
+            IntelligenceEvent errorEvent = new(
+                IntelligenceEventType.Error,
+                "An internal error occurred during inference streaming.");
+
+            eventBuffer.ResetWrittenCount();
+
+            jsonWriter.Reset();
+
+            JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
+
+            eventBuffer.Write(NewlineBytes);
+
+            try
             {
 
-                IntelligenceEvent errorEvent = new(
-                    IntelligenceEventType.Error,
-                    "An internal error occurred during inference streaming.");
+                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
 
-                eventBuffer.ResetWrittenCount();
+                await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
 
-                jsonWriter.Reset();
+            }
 
-                JsonSerializer.Serialize(jsonWriter, errorEvent, ArcanumJsonContext.Default.IntelligenceEvent);
+            catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
+            {
 
-                eventBuffer.Write(NewlineBytes);
+                // Disconnect while writing the terminal error — swallow as disconnect.
 
-                try
-                {
+            }
 
-                    await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
+            catch (Exception writeEx)
+            {
 
-                    await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
-
-                }
-
-                catch (Exception writeEx)
-                {
-
-                    Debug.WriteLine($"Failed to write stream error frame: {writeEx.Message}");
-
-                }
+                Debug.WriteLine($"Failed to write stream error frame: {writeEx.Message}");
 
             }
 
             if (ex is not OperationCanceledException)
             {
 
-                Debug.WriteLine($"Stream inference failed: {ex.Message}");
+                Debug.WriteLine($"Stream inference failed (responseStarted={responseStarted}): {ex.Message}");
 
             }
 

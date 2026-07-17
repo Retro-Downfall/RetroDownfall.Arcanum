@@ -22,6 +22,12 @@ internal static class ChildProcessEnvironmentScrubber
 
             case ChildProcessEnvironmentProfile.SpellScript:
 
+                // Same scrub as ToolExec — spell scripts must not inherit ARCANUM_* secrets
+                // or loader/runtime hijack variables from the host process.
+                RemoveArcanumSecretVariables(startInfo.Environment);
+
+                RemoveHijackableEnvironmentVariables(startInfo.Environment);
+
                 break;
 
             case ChildProcessEnvironmentProfile.McpChild:

@@ -502,9 +502,12 @@ new HTTP client usage outside `ArcanumApiClient`.
   lists, tables, task lists, fenced code, blockquotes, hr, links). Markdig is **not** referenced
   (unused); a Markdig AST → Avalonia path remains the escape hatch if Tight coverage becomes
   insufficient.
-- **`IlluminationView`.** Bindable markdown source; ~250ms debounce; hard preview cap
+- **`IlluminationView`.** Bindable markdown source; ~250ms debounce off the UI thread; hard preview cap
   (`MarkdownSafetySanitizer.MaxPreviewChars` = 256 KiB) with a muted “Preview truncated” notice.
-  Visual construction stays on the UI thread after debounce (no off-thread rendering claim).
+  Sanitize, Markdig parse, and source-line map precompute run off the UI thread
+  (`IlluminationMarkdownPrepare`); Avalonia control construction, `PreviewHost.Content`, and visibility
+  updates stay on the UI thread. A monotonic `IlluminationRenderGeneration` gate ensures a superseded
+  render cannot overwrite a newer preview if it completes last.
 - **Safety.** Raw HTML is replaced with `[HTML omitted]` before render (never executed). Images are
   rewritten to `[Image: alt — url]` placeholders; `BlockingPathResolver` refuses all image streams
   (no network/disk). Remote image loading toggle is **deferred**. Links open only on explicit click
@@ -712,7 +715,10 @@ and markdown preview (§5.12–§5.13).
 
 ## 7. API integration notes
 
-- **Base URL**: configurable via `TheForgeSettings.BaseUrl`, default `http://localhost:5001`.
+- **Base URL**: configurable via `TheForgeSettings.BaseUrl`, default `http://localhost:5001`
+  (loopback HTTP). When Arcanum runs with ListenAny / `ARCANUM_HOST_ANY`, the host is HTTPS-only on
+  `Host:Https:Port` — set `BaseUrl` to `https://localhost:{HttpsPort}` (or the remote HTTPS URL).
+  TLS validation is not bypassed.
 - **Auth**: `X-Arcanum-Key` header on every `/api/*` request (`Authorization: Bearer` is also
   accepted server-side, but The Forge always sends the dedicated header).
 - **Settings file**: `~/.config/arcanum/forge.json`, loaded with `reloadOnChange: true` so

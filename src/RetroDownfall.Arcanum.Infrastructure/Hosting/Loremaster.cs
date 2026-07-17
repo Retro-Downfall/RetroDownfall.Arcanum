@@ -131,7 +131,8 @@ internal sealed class Loremaster(
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                await queue.QueueAsync(id, cancellationToken).ConfigureAwait(false);
+                // Fail-open: rejected ids remain eligible for a later sweep.
+                _ = queue.TryQueue(id);
             }
         }
         finally

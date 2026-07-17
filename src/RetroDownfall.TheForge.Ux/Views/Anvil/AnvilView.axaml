@@ -21,6 +21,15 @@
           <TextBlock Text="{Binding ConnectionStatusText}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" VerticalAlignment="Center" />
         </StackPanel>
       </Button>
+      <Button Classes="anvil-chip"
+              Content="Enter API key…"
+              Command="{Binding EnterApiKeyCommand}"
+              Padding="4,0"
+              Background="Transparent"
+              BorderThickness="0"
+              FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+              IsVisible="{Binding ShowEnterApiKey}"
+              ToolTip.Tip="Re-prompt for the master API key after a previous decline" />
       <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
       <Button Classes="anvil-chip" Command="{Binding FocusCampaignCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
               Content="{Binding ActiveCampaignName}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
@@ -46,6 +55,15 @@
       <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
       <Button Classes="anvil-chip" Command="{Binding FocusMcpCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
               Content="{Binding McpOnlineTotal, StringFormat=MCP {0}}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="{Binding LastRefreshError}"
+                 Foreground="{DynamicResource ForgeWarningBrush}"
+                 FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                 Opacity="0.85"
+                 TextTrimming="CharacterEllipsis"
+                 MaxWidth="280"
+                 VerticalAlignment="Center"
+                 ToolTip.Tip="{Binding LastRefreshError}"
+                 IsVisible="{Binding LastRefreshError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
     </StackPanel>
   </Border>
 </UserControl>

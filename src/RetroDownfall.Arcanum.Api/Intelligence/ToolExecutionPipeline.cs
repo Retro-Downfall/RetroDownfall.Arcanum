@@ -263,6 +263,22 @@ public sealed class ToolExecutionPipeline(
                 throw;
 
             }
+            catch (HumanPromptTimeoutException ex)
+            {
+
+                wardedExecution = new WardedToolExecutionResult(ex.Message, [], Failed: false);
+
+                RecordToolInvocationMetric(toolName, "success");
+
+            }
+            catch (HumanPromptCapExceededException ex)
+            {
+
+                wardedExecution = new WardedToolExecutionResult(ex.Message, [], Failed: true);
+
+                RecordToolInvocationMetric(toolName, "error");
+
+            }
             catch (Exception ex)
             {
 

@@ -105,6 +105,36 @@ public sealed class ServeCommandConfigReaderTests
 
     }
 
+    [Fact]
+    public void Configure_ListenAnyWithoutHttps_ThrowsBeforeBinding()
+    {
+
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Arcanum:Host:Https:Enabled"] = "false",
+        });
+
+        KestrelServerOptions options = new();
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
+            () => ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: true));
+
+        Assert.Equal(ArcanumKestrelConfigurator.ListenAnyRequiresHttpsMessage, ex.Message);
+
+    }
+
+    [Fact]
+    public void ReadConfiguredHttpsPort_returns_default_when_missing()
+    {
+
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>());
+
+        int port = ServeCommand.ReadConfiguredHttpsPort(configuration);
+
+        Assert.Equal(new HttpsSettings().Port, port);
+
+    }
+
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values)
     {
 

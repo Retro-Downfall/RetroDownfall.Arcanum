@@ -399,12 +399,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         FileHandleIdentity expectedIdentity = default;
 
-        bool replaced;
+        AtomicReplaceStatus replaceStatus;
 
         try
         {
 
-            replaced = await AtomicFile.ReplaceAsync(
+            replaceStatus = await AtomicFile.ReplaceAsync(
                 absolutePath,
                 tempPath,
                 async (stream, cancellationToken) =>
@@ -428,12 +428,14 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
         }
 
-        if (!replaced)
+        return replaceStatus switch
         {
-            return new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
-        }
-
-        return Result.Success();
+            AtomicReplaceStatus.Succeeded => Result.Success(),
+            AtomicReplaceStatus.ReplacedButUnverified => new Error(
+                ErrorCodes.Workspace.WriteFailed,
+                "The file was replaced but post-move verification failed; the destination was left in an unverified state."),
+            _ => new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage),
+        };
     }
 
     /// <summary>

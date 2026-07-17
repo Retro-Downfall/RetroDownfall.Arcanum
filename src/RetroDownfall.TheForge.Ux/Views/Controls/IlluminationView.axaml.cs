@@ -45,11 +45,11 @@ public partial class IlluminationView : UserControl
 
     private readonly IMarkdownCodeHighlighter _highlighter = new ColorCodeMarkdownCodeHighlighter();
 
+    private readonly IlluminationRenderGeneration _renderGeneration = new();
+
     private CancellationTokenSource? _debounceCts;
 
     private CancellationTokenSource? _renderCts;
-
-    private int _renderGeneration;
 
     private MarkdigAstAvaloniaRenderer? _activeRenderer;
 
@@ -220,7 +220,8 @@ public partial class IlluminationView : UserControl
         try
         {
 
-            await Task.Delay(DebounceInterval, cancellationToken).ConfigureAwait(true);
+            // Debounce off the UI thread so typing does not pin the dispatcher for 250ms.
+            await Task.Delay(DebounceInterval, cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException)
@@ -237,9 +238,7 @@ public partial class IlluminationView : UserControl
 
         }
 
-        string sanitized = MarkdownSafetySanitizer.Sanitize(markdown, out bool truncated);
-
-        int generation = Interlocked.Increment(ref _renderGeneration);
+        int generation = _renderGeneration.Begin();
 
         _renderCts?.Cancel();
 
@@ -249,30 +248,62 @@ public partial class IlluminationView : UserControl
 
         _renderCts = renderCts;
 
-        IlluminationImageContext imageContext = new()
+        using CancellationTokenSource linkedCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, renderCts.Token);
+
+        IlluminationPreparedMarkdown prepared;
+
+        try
         {
 
-            LoadRemoteImages = LoadRemoteImages,
+            // Sanitize + Markdig parse + source-line map: pure work, no Avalonia objects.
+            prepared = await Task.Run(
+                    () => IlluminationMarkdownPrepare.Prepare(markdown),
+                    linkedCts.Token)
+                .ConfigureAwait(false);
 
-            WorkspaceId = WorkspaceId,
+        }
+        catch (OperationCanceledException)
+        {
 
-            RelativePath = RelativePath,
+            return;
 
-            BaseRelativeDirectory = BaseRelativeDirectory,
+        }
 
-        };
+        if (!_renderGeneration.IsCurrent(generation) || renderCts.IsCancellationRequested)
+        {
+
+            return;
+
+        }
 
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
 
-            if (renderCts.IsCancellationRequested || generation != Volatile.Read(ref _renderGeneration))
+            if (!_renderGeneration.IsCurrent(generation) || renderCts.IsCancellationRequested)
             {
 
                 return;
 
             }
 
-            TruncationNotice.IsVisible = truncated;
+            TruncationNotice.IsVisible = prepared.Truncated;
+
+            // Precomputed map is available immediately; renderer anchors replace it after control build.
+            _lineMapper = new MarkdownSourceLineMapper(prepared.Anchors);
+
+            IlluminationImageContext imageContext = new()
+            {
+
+                LoadRemoteImages = LoadRemoteImages,
+
+                WorkspaceId = WorkspaceId,
+
+                RelativePath = RelativePath,
+
+                BaseRelativeDirectory = BaseRelativeDirectory,
+
+            };
 
             MarkdigAstAvaloniaRenderer renderer = new(_highlighter, _imageResolver, _hyperlinkCommand);
 
@@ -290,9 +321,10 @@ public partial class IlluminationView : UserControl
 
             };
 
-            Control content = renderer.Render(sanitized, imageContext, renderCts.Token);
+            Control content = renderer.Render(prepared.Document, imageContext, renderCts.Token);
 
-            if (renderCts.IsCancellationRequested || generation != Volatile.Read(ref _renderGeneration))
+            // Stale-render guard: if A started, B superseded it, and A finishes last, A must not publish.
+            if (!_renderGeneration.IsCurrent(generation) || renderCts.IsCancellationRequested)
             {
 
                 return;

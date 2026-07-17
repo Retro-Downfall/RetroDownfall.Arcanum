@@ -7,8 +7,14 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
+
+if (SandboxExecHelper.TryHandle(args))
+{
+    return 0;
+}
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 

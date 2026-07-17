@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -194,7 +195,7 @@ public sealed class HumanPromptRegistryTests
     }
 
     [Fact]
-    public async Task WaitForResponse_Cancellation_CancelsTask()
+    public async Task WaitForResponse_Cancellation_CancelsTaskAndEvictsWaiter()
     {
         HumanPromptRegistry registry = new();
 
@@ -205,6 +206,58 @@ public sealed class HumanPromptRegistryTests
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waitTask);
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
+    }
+
+    [Fact]
+    public async Task WaitForResponse_HardCeiling_ThrowsTimeoutAndEvictsWaiter()
+    {
+        HumanPromptRegistry registry = new()
+        {
+            CeilingForTesting = TimeSpan.FromMilliseconds(50),
+        };
+
+        string promptId = Guid.NewGuid().ToString("N");
+
+        Task<string> waitTask = registry.WaitForResponseAsync(promptId, CancellationToken.None);
+
+        HumanPromptTimeoutException ex = await Assert.ThrowsAsync<HumanPromptTimeoutException>(() => waitTask);
+
+        Assert.Equal(HumanPromptTimeoutException.DefaultMessage, ex.Message);
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.False(registry.TrySubmitResponse(promptId, "too-late"));
+    }
+
+    [Fact]
+    public async Task WaitForResponse_CapExhaustion_ThrowsAndLeavesExistingWaiters()
+    {
+        HumanPromptRegistry registry = new();
+
+        List<(string Id, Task<string> Wait)> tracked = [];
+
+        for (int i = 0; i < HumanPromptRegistry.MaxConcurrentWaiters; i++)
+        {
+            string id = Guid.NewGuid().ToString("N");
+
+            tracked.Add((id, registry.WaitForResponseAsync(id, CancellationToken.None)));
+        }
+
+        await Assert.ThrowsAsync<HumanPromptCapExceededException>(() =>
+            registry.WaitForResponseAsync(Guid.NewGuid().ToString("N"), CancellationToken.None));
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.WaiterCountForTesting);
+
+        foreach ((string id, Task<string> wait) in tracked)
+        {
+            Assert.True(registry.TrySubmitResponse(id, "ok"));
+
+            Assert.Equal("ok", await wait);
+        }
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
     }
 
 }
