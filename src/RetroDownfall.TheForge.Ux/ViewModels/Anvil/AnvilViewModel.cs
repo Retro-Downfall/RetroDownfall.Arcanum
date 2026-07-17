@@ -105,16 +105,20 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         ConnectionState.Connected => "Arcanum connected",
         ConnectionState.Connecting => "Seeking Arcanum...",
         ConnectionState.Error when IsMissingApiKey => "API key required",
+        ConnectionState.Error when IsUnauthorizedApiKey => "API key rejected",
         ConnectionState.Error when IsTimeout => "Arcanum timed out",
         ConnectionState.Error when IsConnectionFailed => "Arcanum connection failed",
         ConnectionState.Error => "Arcanum unreachable",
         _ => "Arcanum disconnected",
     };
 
-    public bool ShowEnterApiKey => IsMissingApiKey;
+    public bool ShowEnterApiKey => IsMissingApiKey || IsUnauthorizedApiKey;
 
     private bool IsMissingApiKey =>
         string.Equals(_connection.LastErrorCode, "Security.MissingApiKey", StringComparison.Ordinal);
+
+    private bool IsUnauthorizedApiKey =>
+        string.Equals(_connection.LastErrorCode, "Auth.Unauthorized", StringComparison.Ordinal);
 
     private bool IsTimeout =>
         string.Equals(_connection.LastErrorCode, "Connection.Timeout", StringComparison.Ordinal);

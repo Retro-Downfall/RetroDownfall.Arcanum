@@ -128,8 +128,11 @@ suggest — recorded here so future changes don't silently drift from the real w
   API key is **not** stored in `forge.json`: Arcanum and The Forge share the OS credential store
   identity `arcanum` / `master-api-key` (`RetroDownfall.Arcanum.Secrets`). Legacy `security.dat`
   remains a Data Protection mirror/fallback for Arcanum only; The Forge resolves via
-  `ITheForgeApiKeyProvider` → `ApiKeyResolver` (OS store → migrate forge.json → `arcanum key show` →
-  paste). The CLI writes `arcanum key show` to **stderr**.
+  `ITheForgeApiKeyProvider` → `ApiKeyResolver` (OS store → migrate forge.json → `THEFORGE_ARCANUM_KEY`
+  process-only override → `arcanum key show` → paste). Env keys are never logged or auto-persisted.
+  Paste may fall back to process-only when the OS store is unavailable. The Anvil **Enter API key…**
+  action clears cached resolution so a bad env key can be overridden. The CLI writes `arcanum key show`
+  to **stderr**.
 - **Enum serialization discipline**: `TheForgeJsonContext` and `TheForgeSettingsJsonContext` never register
   a blanket `JsonStringEnumConverter` in `[JsonSourceGenerationOptions]`. Every Core enum that
   serializes as a string already carries its own

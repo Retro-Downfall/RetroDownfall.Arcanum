@@ -52,17 +52,22 @@ The Forge resolves a key in this order:
 
 1. OS credential store (`arcanum` / `master-api-key`).
 2. Legacy plaintext `apiKey` in `~/.config/arcanum/forge.json` — migrated into the OS store, then stripped.
-3. Shelling out to `arcanum key show` (stderr) — result persisted into the OS store.
-4. Otherwise, a Whispers paste dialog; the pasted key is stored in the OS credential store.
+3. `THEFORGE_ARCANUM_KEY` environment variable (trimmed; empty/whitespace = absent). **Never logged. Never persisted.** Private-beta / automation override only.
+4. Shelling out to `arcanum key show` (stderr) — result persisted into the OS store when possible.
+5. Otherwise, a Whispers paste dialog; the pasted key is stored in the OS credential store when available.
+   If OS persist fails, the key is kept **process-only** with a clear warning Whisper.
    Declining the dialog skips re-prompts during the same process; The Anvil shows **Enter API key…**
-   when health reports `Security.MissingApiKey` so you can clear that decline and re-prompt.
+   for `Security.MissingApiKey` or `Auth.Unauthorized` so you can clear that decline / override a bad
+   env key and re-prompt.
 
 Do **not** keep the master key in `forge.json` going forward. To rotate, run `arcanum key set` (or
 update the OS credential) and restart The Forge.
 
 **Linux:** install `libsecret` and ensure a Secret Service (e.g. gnome-keyring) is running. If the
 OS store is unavailable, Arcanum can still fall back to Data Protection `security.dat`, but The Forge
-cannot share that fallback — paste or `arcanum key set` on a machine with a working keychain.
+cannot share that fallback — paste, `arcanum key set` on a machine with a working keychain, or
+`THEFORGE_ARCANUM_KEY` for a process-only private-beta workaround. `arcanum doctor` reports master-key
+presence and prints this guidance when Secret Service looks unavailable.
 
 ## Settings file
 

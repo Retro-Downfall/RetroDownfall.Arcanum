@@ -73,11 +73,18 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IApiKeyPrompt, AvaloniaApiKeyPrompt>();
 
-        services.AddSingleton<ITheForgeApiKeyProvider>(static sp => new TheForgeApiKeyProvider(
-            sp.GetRequiredService<ApiKeyResolver>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>(),
-            sp.GetRequiredService<ILogger<TheForgeApiKeyProvider>>(),
-            ct => sp.GetRequiredService<IApiKeyPrompt>().PromptForApiKeyAsync(ct)));
+        services.AddSingleton<ITheForgeApiKeyProvider>(static sp =>
+        {
+            TheForgeApiKeyProvider provider = new(
+                sp.GetRequiredService<ApiKeyResolver>(),
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>(),
+                sp.GetRequiredService<ILogger<TheForgeApiKeyProvider>>(),
+                ct => sp.GetRequiredService<IApiKeyPrompt>().PromptForApiKeyAsync(ct));
+
+            return new SessionOnlyWhisperApiKeyProvider(
+                provider,
+                new Lazy<IWhispersService>(sp.GetRequiredService<IWhispersService>));
+        });
 
         services.AddSingleton<ArcanumApiClient>();
 

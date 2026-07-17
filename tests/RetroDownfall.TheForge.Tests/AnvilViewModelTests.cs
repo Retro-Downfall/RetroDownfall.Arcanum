@@ -123,6 +123,12 @@ public class AnvilViewModelTests
 
         Assert.True(viewModel.ShowEnterApiKey);
 
+        connection.SetError("Auth.Unauthorized");
+
+        Assert.Equal("API key rejected", viewModel.ConnectionStatusText);
+
+        Assert.True(viewModel.ShowEnterApiKey);
+
         connection.SetError("Connection.Timeout");
 
         Assert.Equal("Arcanum timed out", viewModel.ConnectionStatusText);

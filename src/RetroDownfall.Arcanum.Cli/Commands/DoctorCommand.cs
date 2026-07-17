@@ -94,6 +94,10 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
+        WriteMasterKeyPanel();
+
+        AnsiConsole.WriteLine();
+
         healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
 
         return healthy ? 0 : 1;
@@ -130,6 +134,8 @@ public sealed class DoctorCommand(
         checks.Add(tokenizerCheck);
 
         checks.Add(BuildToolChildSandboxCheck());
+
+        checks.Add(BuildMasterKeyCheck());
 
         (bool apiHealthy, DoctorCheck apiCheck) = await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
 
@@ -651,6 +657,94 @@ public sealed class DoctorCommand(
             + status.OperatorGuidance;
 
         return new DoctorCheck("ToolChildSandbox", checkStatus, detail);
+
+    }
+
+    private void WriteMasterKeyPanel()
+    {
+
+        (_, Table table) = BuildMasterKeyPanelCore();
+
+        WritePanel("Master API Key", table);
+
+    }
+
+    private (bool InformationalOk, Table Table) BuildMasterKeyPanelCore()
+    {
+
+        (bool present, string detail, string guidance) = ProbeMasterKeyPresence();
+
+        Table table = BuildLabelTable(
+            ("Present", present ? "yes (value not shown)" : "no"),
+            ("Detail", detail),
+            ("Guidance", guidance));
+
+        return (true, table);
+
+    }
+
+    private DoctorCheck BuildMasterKeyCheck()
+    {
+
+        (bool present, string detail, string guidance) = ProbeMasterKeyPresence();
+
+        return new DoctorCheck(
+            "MasterApiKey",
+            present ? "ok" : "warn",
+            $"{detail} {guidance}");
+
+    }
+
+    private (bool Present, string Detail, string Guidance) ProbeMasterKeyPresence()
+    {
+
+        try
+        {
+
+            // Synchronous probe via secret store — never print the key.
+            string? key = secretStore.GetApiKeyAsync().GetAwaiter().GetResult();
+
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+
+                return (
+                    true,
+                    "Master API key is readable from the Arcanum secret store.",
+                    "Use `arcanum key show` only when you need to copy it; Prefer The Forge OS credential store for desktop.");
+
+            }
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            return (
+                false,
+                $"Could not read master API key ({ex.GetType().Name}).",
+                BuildKeyRecoveryGuidance());
+
+        }
+
+        return (
+            false,
+            "Master API key is not present or not readable.",
+            BuildKeyRecoveryGuidance());
+
+    }
+
+    private static string BuildKeyRecoveryGuidance()
+    {
+
+        if (OperatingSystem.IsLinux())
+        {
+
+            return "Run `arcanum key set`, install/start Secret Service (libsecret) for The Forge, "
+                + "or set THEFORGE_ARCANUM_KEY as a private-beta process-only workaround.";
+
+        }
+
+        return "Run `arcanum key set` or paste the key in The Forge when prompted. "
+            + "Optional private-beta override: THEFORGE_ARCANUM_KEY (process-only, not persisted).";
 
     }
 

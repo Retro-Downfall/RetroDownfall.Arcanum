@@ -21,6 +21,9 @@ public delegate Task<string?> ApiKeyPastePrompt(CancellationToken cancellationTo
 public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 {
 
+    public const string SessionOnlyPersistWarning =
+        "API key accepted for this session but could not be persisted to the OS credential store.";
+
     private readonly ApiKeyResolver _resolver;
 
     private readonly IOptionsMonitor<TheForgeSettings> _settings;
@@ -36,6 +39,8 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
     private bool _resolved;
 
     private bool _pasteDeclined;
+
+    private bool _isSessionOnlyKey;
 
     public TheForgeApiKeyProvider(
         ApiKeyResolver resolver,
@@ -53,6 +58,11 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
         _pastePrompt = pastePrompt;
 
     }
+
+    /// <summary>
+    /// True when the cached key is held only in process memory (OS persist failed or env override).
+    /// </summary>
+    public bool IsSessionOnlyKey => _isSessionOnlyKey;
 
     public async Task<string?> GetApiKeyAsync(CancellationToken cancellationToken)
     {
@@ -76,7 +86,12 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 
             }
 
-            string? key = await _resolver.ResolveAsync(_settings.CurrentValue, cancellationToken).ConfigureAwait(false);
+            ApiKeyResolution resolution = await _resolver.ResolveAsync(_settings.CurrentValue, cancellationToken)
+                .ConfigureAwait(false);
+
+            string? key = resolution.Key;
+
+            _isSessionOnlyKey = resolution.IsSessionOnly;
 
             if (string.IsNullOrWhiteSpace(key) && _pastePrompt is not null && !_pasteDeclined)
             {
@@ -89,10 +104,27 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
                     if (!string.IsNullOrWhiteSpace(pasted))
                     {
 
-                        await _resolver.PersistAsync(_settings.CurrentValue, pasted.Trim(), cancellationToken)
-                            .ConfigureAwait(false);
+                        string trimmed = pasted.Trim();
 
-                        key = pasted.Trim();
+                        try
+                        {
+
+                            await _resolver.PersistAsync(_settings.CurrentValue, trimmed, cancellationToken)
+                                .ConfigureAwait(false);
+
+                            _isSessionOnlyKey = false;
+
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+
+                            _logger.LogWarning(ex, SessionOnlyPersistWarning);
+
+                            _isSessionOnlyKey = true;
+
+                        }
+
+                        key = trimmed;
 
                     }
                     else
@@ -121,7 +153,8 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
             {
 
                 _logger.LogWarning(
-                    "No master API key found in the OS credential store, forge.json, or `arcanum key show`.");
+                    "No master API key found in the OS credential store, forge.json, {EnvVar}, or `arcanum key show`.",
+                    ApiKeyResolver.EnvironmentVariableName);
 
                 return null;
 
@@ -157,7 +190,22 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
 
             string trimmed = apiKey.Trim();
 
-            await _resolver.PersistAsync(_settings.CurrentValue, trimmed, cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await _resolver.PersistAsync(_settings.CurrentValue, trimmed, cancellationToken).ConfigureAwait(false);
+
+                _isSessionOnlyKey = false;
+
+            }
+            catch (InvalidOperationException ex)
+            {
+
+                _logger.LogWarning(ex, SessionOnlyPersistWarning);
+
+                _isSessionOnlyKey = true;
+
+            }
 
             _cached = trimmed;
 
@@ -179,6 +227,13 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
     {
 
         _pasteDeclined = false;
+
+        // Allow Anvil "Enter API key…" to override a bad cached env/session key via paste.
+        _resolved = false;
+
+        _cached = null;
+
+        _isSessionOnlyKey = false;
 
     }
 

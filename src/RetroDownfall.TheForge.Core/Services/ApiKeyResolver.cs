@@ -11,12 +11,15 @@ namespace RetroDownfall.TheForge.Core.Services;
 /// <list type="number">
 /// <item>OS keychain (<see cref="ArcanumCredentialIdentity"/>).</item>
 /// <item>Legacy plaintext <c>forge.json</c> <see cref="TheForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
-/// <item>Optional shell-out to <c>arcanum key show</c> — result persisted into the keychain.</item>
+/// <item><c>THEFORGE_ARCANUM_KEY</c> environment variable (trim; empty/whitespace = absent; never persisted).</item>
+/// <item>Optional shell-out to <c>arcanum key show</c> — result persisted into the keychain when possible.</item>
 /// <item>Otherwise <see langword="null"/> — caller prompts the user to paste and calls <see cref="PersistAsync"/>.</item>
 /// </list>
 /// </summary>
 public sealed class ApiKeyResolver
 {
+
+    public const string EnvironmentVariableName = "THEFORGE_ARCANUM_KEY";
 
     private readonly IOsCredentialStore _osStore;
 
@@ -24,10 +27,13 @@ public sealed class ApiKeyResolver
 
     private readonly ILogger<ApiKeyResolver> _logger;
 
+    private readonly Func<string, string?> _getEnvironmentVariable;
+
     public ApiKeyResolver(
         IOsCredentialStore osStore,
         ITheForgeSettingsStore settingsStore,
-        ILogger<ApiKeyResolver> logger)
+        ILogger<ApiKeyResolver> logger,
+        Func<string, string?>? getEnvironmentVariable = null)
     {
 
         _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
@@ -36,14 +42,16 @@ public sealed class ApiKeyResolver
 
         _logger = logger;
 
+        _getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+
     }
 
     /// <summary>
-    /// Resolves the API key from the OS store (with legacy forge.json / CLI fallbacks). Returns
-    /// <see langword="null"/> when no source yields a key; callers should prompt the user to paste
-    /// one and call <see cref="PersistAsync"/>.
+    /// Resolves the API key from the OS store (with legacy forge.json / env / CLI fallbacks). Returns
+    /// a null <see cref="ApiKeyResolution.Key"/> when no source yields a key; callers should prompt
+    /// the user to paste one and call <see cref="PersistAsync"/>.
     /// </summary>
-    public async Task<string?> ResolveAsync(TheForgeSettings currentSettings, CancellationToken cancellationToken)
+    public async Task<ApiKeyResolution> ResolveAsync(TheForgeSettings currentSettings, CancellationToken cancellationToken)
     {
 
         OsCredentialStoreResult os = _osStore.TryGet(
@@ -53,7 +61,7 @@ public sealed class ApiKeyResolver
         if (os.Status == OsCredentialStoreStatus.Ok && !string.IsNullOrWhiteSpace(os.Value))
         {
 
-            return os.Value;
+            return new ApiKeyResolution(os.Value, IsSessionOnly: false);
 
         }
 
@@ -81,17 +89,28 @@ public sealed class ApiKeyResolver
 
                 await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
 
-            }
-            else
-            {
-
-                _logger.LogWarning(
-                    "Could not migrate forge.json apiKey into the OS store ({Message}); using in-memory value only.",
-                    migrate.Message);
+                return new ApiKeyResolution(legacy, IsSessionOnly: false);
 
             }
 
-            return legacy;
+            _logger.LogWarning(
+                "Could not migrate forge.json apiKey into the OS store ({Message}); using in-memory value only.",
+                migrate.Message);
+
+            return new ApiKeyResolution(legacy, IsSessionOnly: true);
+
+        }
+
+        string? envKey = ReadEnvironmentKey();
+
+        if (!string.IsNullOrWhiteSpace(envKey))
+        {
+
+            _logger.LogInformation(
+                "{EnvVar} is set; using process-only API key override (not persisted).",
+                EnvironmentVariableName);
+
+            return new ApiKeyResolution(envKey, IsSessionOnly: true);
 
         }
 
@@ -100,7 +119,7 @@ public sealed class ApiKeyResolver
         if (string.IsNullOrWhiteSpace(shelledOutKey))
         {
 
-            return null;
+            return new ApiKeyResolution(null, IsSessionOnly: false);
 
         }
 
@@ -116,9 +135,11 @@ public sealed class ApiKeyResolver
                 "`arcanum key show` succeeded but OS store persist failed: {Message}",
                 persist.Message);
 
+            return new ApiKeyResolution(shelledOutKey, IsSessionOnly: true);
+
         }
 
-        return shelledOutKey;
+        return new ApiKeyResolution(shelledOutKey, IsSessionOnly: false);
 
     }
 
@@ -145,6 +166,24 @@ public sealed class ApiKeyResolver
         }
 
         await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private string? ReadEnvironmentKey()
+    {
+
+        string? raw = _getEnvironmentVariable(EnvironmentVariableName);
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+
+            return null;
+
+        }
+
+        string trimmed = raw.Trim();
+
+        return trimmed.Length == 0 ? null : trimmed;
 
     }
 

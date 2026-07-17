@@ -196,6 +196,137 @@ public sealed class TheForgeApiKeyProviderTests
 
     }
 
+    [Fact]
+    public async Task ResolveAsync_UsesEnvironmentVariableBeforeCliShellOut()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        Dictionary<string, string?> env = new(StringComparer.Ordinal)
+        {
+            [ApiKeyResolver.EnvironmentVariableName] = "  env-key-value  ",
+        };
+
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            name => env.TryGetValue(name, out string? value) ? value : null);
+
+        ApiKeyResolution resolution = await resolver.ResolveAsync(new TheForgeSettings(), CancellationToken.None);
+
+        Assert.Equal("env-key-value", resolution.Key);
+
+        Assert.True(resolution.IsSessionOnly);
+
+        OsCredentialStoreResult stored = store.TryGet(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount);
+
+        Assert.Equal(OsCredentialStoreStatus.NotFound, stored.Status);
+
+    }
+
+    [Fact]
+    public async Task ResolveAsync_TreatsWhitespaceEnvironmentVariableAsAbsent()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            _ => "   ");
+
+        ApiKeyResolution resolution = await resolver.ResolveAsync(new TheForgeSettings(), CancellationToken.None);
+
+        Assert.Null(resolution.Key);
+
+    }
+
+    [Fact]
+    public async Task GetApiKeyAsync_KeepsSessionOnlyKeyWhenOsPersistFails()
+    {
+
+        UnavailableStore store = new();
+
+        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+
+        TheForgeApiKeyProvider provider = new(
+            resolver,
+            new StaticOptions(new TheForgeSettings()),
+            NullLogger<TheForgeApiKeyProvider>.Instance,
+            _ => Task.FromResult<string?>("pasted-session-only"));
+
+        string? key = await provider.GetApiKeyAsync(CancellationToken.None);
+
+        Assert.Equal("pasted-session-only", key);
+
+        Assert.True(provider.IsSessionOnlyKey);
+
+    }
+
+    [Fact]
+    public async Task ClearPasteDecline_ClearsCachedKeySoPasteCanOverride()
+    {
+
+        InMemoryOsCredentialStore store = new();
+
+        Dictionary<string, string?> env = new(StringComparer.Ordinal)
+        {
+            [ApiKeyResolver.EnvironmentVariableName] = "bad-env-key",
+        };
+
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            name => env.TryGetValue(name, out string? value) ? value : null);
+
+        int promptCalls = 0;
+
+        TheForgeApiKeyProvider provider = new(
+            resolver,
+            new StaticOptions(new TheForgeSettings()),
+            NullLogger<TheForgeApiKeyProvider>.Instance,
+            _ =>
+            {
+                promptCalls++;
+
+                return Task.FromResult<string?>("replacement-key");
+            });
+
+        Assert.Equal("bad-env-key", await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Equal(0, promptCalls);
+
+        provider.ClearPasteDecline();
+
+        env.Remove(ApiKeyResolver.EnvironmentVariableName);
+
+        Assert.Equal("replacement-key", await provider.GetApiKeyAsync(CancellationToken.None));
+
+        Assert.Equal(1, promptCalls);
+
+    }
+
+    private sealed class UnavailableStore : IOsCredentialStore
+    {
+
+        public bool IsAvailable => false;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            OsCredentialStoreResult.Unavailable("test unavailable");
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Unavailable("test unavailable");
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            OsCredentialStoreResult.Unavailable("test unavailable");
+
+    }
+
     private sealed class StaticOptions(TheForgeSettings current) : IOptionsMonitor<TheForgeSettings>
     {
 
