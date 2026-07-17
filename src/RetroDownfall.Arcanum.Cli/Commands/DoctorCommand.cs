@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Spectre.Console;
 using Spectre.Console.Rendering;
@@ -88,6 +89,11 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
+        // Sandbox posture is informational / warn — does not fail doctor exit solely for beta Degraded states.
+        WriteToolChildSandboxPanel();
+
+        AnsiConsole.WriteLine();
+
         healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
 
         return healthy ? 0 : 1;
@@ -122,6 +128,8 @@ public sealed class DoctorCommand(
 
         healthy &= tokenizerHealthy;
         checks.Add(tokenizerCheck);
+
+        checks.Add(BuildToolChildSandboxCheck());
 
         (bool apiHealthy, DoctorCheck apiCheck) = await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
 
@@ -595,6 +603,54 @@ public sealed class DoctorCommand(
         {
             return (false, new DoctorCheck("Tokenizer", "fail", $"{encoding} failed: {ex.Message}"));
         }
+
+    }
+
+    private void WriteToolChildSandboxPanel()
+    {
+
+        (_, Table table) = BuildToolChildSandboxPanelCore();
+
+        WritePanel("Tool Child Sandbox", table);
+
+    }
+
+    private (bool InformationalOk, Table Table) BuildToolChildSandboxPanelCore()
+    {
+
+        bool escapeHatch = options.Value.Security?.AllowUnsandboxedToolChildren ?? false;
+
+        ToolChildSandboxStatus status = ToolChildSandboxCapabilityReporter.BuildForCurrentHost(escapeHatch);
+
+        Table table = BuildLabelTable(
+            ("OS", status.Platform),
+            ("Filesystem jail", status.FilesystemJailMode.ToString()),
+            ("Resource limits", status.ResourceLimitsMode.ToString()),
+            ("Network isolation", status.NetworkIsolationMode.ToString()),
+            ("Escape hatch", status.EscapeHatchEnabled ? "enabled" : "disabled"),
+            ("Beta-safe default", status.IsBetaSafeDefault ? "yes" : "no"),
+            ("Status", status.PublicMessage),
+            ("Guidance", status.OperatorGuidance));
+
+        return (true, table);
+
+    }
+
+    private DoctorCheck BuildToolChildSandboxCheck()
+    {
+
+        bool escapeHatch = options.Value.Security?.AllowUnsandboxedToolChildren ?? false;
+
+        ToolChildSandboxStatus status = ToolChildSandboxCapabilityReporter.BuildForCurrentHost(escapeHatch);
+
+        string checkStatus = status.IsHealthDegraded ? "warn" : "ok";
+
+        string detail =
+            $"{status.Platform}; FS={status.FilesystemJailMode}; rlimits={status.ResourceLimitsMode}; "
+            + $"network={status.NetworkIsolationMode}; escapeHatch={status.EscapeHatchEnabled}. "
+            + status.OperatorGuidance;
+
+        return new DoctorCheck("ToolChildSandbox", checkStatus, detail);
 
     }
 

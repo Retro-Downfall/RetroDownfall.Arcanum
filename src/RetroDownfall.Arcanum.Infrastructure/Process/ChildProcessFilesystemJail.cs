@@ -43,16 +43,19 @@ internal sealed class ChildProcessSandboxApplyResult
 
 /// <summary>
 /// Rewrites <see cref="ProcessStartInfo"/> so the child runs under an OS filesystem jail
-/// (macOS <c>sandbox-exec</c> for Apple Silicon beta), or fail-closes.
-/// Linux Landlock helper code remains in-tree but is <b>inactive</b> for this beta.
+/// (macOS <c>/usr/bin/sandbox-exec</c> Seatbelt for Apple Silicon beta), or fail-closes.
+/// Linux Landlock / internal <c>__sandbox-exec</c> helper code remains in-tree but is <b>inactive</b>
+/// for this beta (probe-first: not wired until end-to-end Landlock activation is validated).
+/// Do not conflate the Apple <c>sandbox-exec</c> binary with the internal helper argv.
 /// </summary>
 internal static class ChildProcessFilesystemJail
 {
 
     internal const string HelperArg = "__sandbox-exec";
 
+    /// <summary>Public model-visible denial when Linux FS jail is inactive (fail-closed).</summary>
     internal const string LinuxDeferredDetail =
-        "Linux filesystem jail deferred for macOS-ARM beta; Landlock not active.";
+        ToolChildSandboxCapabilityReporter.LinuxBetaDenialMessage;
 
     internal static ChildProcessSandboxApplyResult Apply(
         ProcessStartInfo startInfo,
@@ -176,8 +179,8 @@ internal static class ChildProcessFilesystemJail
     }
 
     /// <summary>
-    /// Linux Landlock is present in-tree but inactive for the macOS-ARM beta.
-    /// Never invokes <c>__sandbox-exec</c> / Landlock from this path.
+    /// Linux Landlock / <c>__sandbox-exec</c> helper remains in-tree but is not invoked for this beta.
+    /// Fail-closed with an actionable public message unless the escape hatch is enabled.
     /// </summary>
     private static ChildProcessSandboxApplyResult ApplyLinux(
         ChildProcessSandboxRequest request,

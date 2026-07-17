@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Api.Health;
 
@@ -59,6 +60,19 @@ public sealed class ArcanumHealthChecker(
             providerCount > 0
                 ? $"{providerCount} providers configured; reachability is tracked by resilience probes."
                 : "No providers configured."));
+
+        bool escapeHatch = settings.CurrentValue.Security?.AllowUnsandboxedToolChildren ?? false;
+
+        ToolChildSandboxStatus sandbox = ToolChildSandboxCapabilityReporter.BuildForCurrentHost(escapeHatch);
+
+        components.Add(new HealthComponentDto(
+            "ToolChildSandbox",
+            sandbox.IsHealthDegraded ? HealthStatus.Degraded : HealthStatus.Healthy,
+            $"{sandbox.Platform}: FS jail={sandbox.FilesystemJailMode}; "
+            + $"rlimits={sandbox.ResourceLimitsMode}; "
+            + $"network={sandbox.NetworkIsolationMode}; "
+            + $"escapeHatch={sandbox.EscapeHatchEnabled}. "
+            + sandbox.PublicMessage));
 
         HealthStatus overall = components.Any(static c => c.Status == HealthStatus.Unhealthy)
             ? HealthStatus.Unhealthy
