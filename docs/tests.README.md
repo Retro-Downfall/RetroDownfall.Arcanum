@@ -20,12 +20,16 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 
 Reports are written to `.tmp/coverage/report/index.html`.
 
-### CI drop-in (when CI is introduced)
+### CI
+
+See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Authoritative Arcanum coverage:
 
 ```yaml
 - run: dotnet tool restore
 - run: ./scripts/coverage.sh --threshold
 ```
+
+Compendium and The Forge run as separate `dotnet test` steps in the same job (coverage filters remain Arcanum-only).
 
 ## Conventions
 

@@ -2186,12 +2186,12 @@ Full conventions: [tests.README.md](tests.README.md).
 
 ### CI
 
-No CI workflow exists yet. When introduced, add:
+GitHub Actions workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on `pull_request`, `push` to `main`, and `workflow_dispatch`:
 
-```yaml
-- run: dotnet tool restore
-- run: ./scripts/coverage.sh --threshold
-```
+1. **build-test** (`ubuntu-latest`): restore/build the solution, `dotnet test` for Compendium + The Forge, then the authoritative Arcanum suite + gates via `./scripts/coverage.sh --threshold` (does not double-run Arcanum.Tests).
+2. **aot-il** (`ubuntu-latest`): `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID (documented host-default invocation).
+
+SQLCipher-dependent tests keep their normal `[SkippableFact]` skip behavior when the native asset is unavailable.
 
 ---
 

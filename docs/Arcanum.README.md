@@ -142,6 +142,8 @@ scripts/align-csharp-blanklines.sh       # C# blank-line formatter entrypoint
 scripts/align_csharp_blanklines.py       # C# blank-line formatter logic
 scripts/verify-aot-il-warnings.sh        # AOT IL-warning gate
 scripts/packaging/macos/                 # signed macOS arm64 release packaging (see RELEASE-MACOS.md)
+scripts/packaging/linux/                 # unsigned Linux private-beta tarballs (CLI AOT + Forge/Compendium)
+scripts/packaging/windows/               # unsigned Windows private-beta zips (CLI AOT + Forge/Compendium)
 Directory.Build.props                    # shared MSBuild props + CVE pin (Microsoft.Bcl.Memory)
 ```
 
@@ -442,20 +444,21 @@ dotnet run --project src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum
 
 ## Build, test & verify
 
-**Prerequisites:** [.NET 10 SDK](https://dotnet.microsoft.com/download); at least one configured OpenAI-compatible provider (Ollama via `http://localhost:11434/v1` is fine).
-
 ```bash
 dotnet build RetroDownfall.Arcanum.slnx
 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
-```
-
-**Code coverage** (Core + Infrastructure + Api + Cli; `Api.DevHost` is wiring-only and excluded from the denominator):
-
-```bash
-dotnet tool restore
+dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
+dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj
 ./scripts/coverage.sh              # HTML report under .tmp/coverage/report/
 ./scripts/coverage.sh --threshold  # fails if line < 85%, branch < 75%, or security types < 100% branch
+./scripts/verify-aot-il-warnings.sh
 ```
+
+CI (`.github/workflows/ci.yml`) runs Compendium + The Forge tests, then `./scripts/coverage.sh --threshold` as the authoritative Arcanum path, plus the host-RID AOT IL gate.
+
+**Prerequisites:** [.NET 10 SDK](https://dotnet.microsoft.com/download); at least one configured OpenAI-compatible provider (Ollama via `http://localhost:11434/v1` is fine).
+
+**Code coverage** (Core + Infrastructure + Api + Cli; `Api.DevHost` is wiring-only and excluded from the denominator):
 
 See [tests.README.md](tests.README.md) for fixtures, collections, and conventions.
 
