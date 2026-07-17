@@ -481,6 +481,15 @@ dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c
 
 Manual workflow **Release macOS arm64** produces a notarized `arcanum-osx-arm64.zip` (signed Native AOT `arcanum` inside; zip is not stapled), plus Compendium/The Forge DMGs. See [`RELEASE-MACOS.md`](RELEASE-MACOS.md) for secrets (`APPLE_SIGNING_IDENTITY` must be a **Developer ID Application** identity), SemVer rules, runner requirements (`macos-15-xlarge`), and how to publish the draft release.
 
+### Private beta (Windows / Linux)
+
+Unsigned private-beta archives (CLI Native AOT + The Forge + Compendium self-contained Avalonia folders) are built by:
+
+- Local (host OS only): [`scripts/packaging/linux/package-linux.sh`](../scripts/packaging/linux/package-linux.sh), [`scripts/packaging/windows/package-windows.ps1`](../scripts/packaging/windows/package-windows.ps1)
+- CI: workflow **Private beta release (Windows / Linux)** (`workflow_dispatch`) — [`.github/workflows/private-beta-release.yml`](../.github/workflows/private-beta-release.yml)
+
+See [`PRIVATE-BETA-NOTES.md`](PRIVATE-BETA-NOTES.md) for SmartScreen caveats, Linux permissions, first-run `arcanum serve`, and API key recovery.
+
 `dotnet build` is warning-clean in Debug/Release. `dotnet publish` may emit clang `.pcm`/`ld` toolchain notices (not IL diagnostics); on Homebrew `dotnet`, the CLI adds conditional linker paths for keg-only OpenSSL/Brotli, and forces the classic `ld_classic` linker on macOS to work around a confirmed Xcode 15+ `ld64` crash (`"too many large addends"`, [dotnet/runtime#119380](https://github.com/dotnet/runtime/issues/119380)) that large Native AOT binaries can trigger. See [DESIGN.md §9.3](Arcanum.DESIGN.md#93-tradeoffs-and-constraints).
 
 > **CVE note:** `Microsoft.Bcl.Memory` is pinned to a patched build in [`Directory.Build.props`](../Directory.Build.props) to mitigate **CVE-2026-26127** (a DoS in Base64Url decoding pulled in transitively by `Microsoft.ML.Tokenizers.Data.O200kBase`). After bumping major packages, run `dotnet list package --vulnerable` and an AOT publish to confirm no regressions.

@@ -318,6 +318,8 @@ dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.cspr
 
 The Forge ships as a signed, notarized, stapled `the-forge-osx-arm64.dmg` containing `The Forge.app` (self-contained Avalonia on .NET 10 — **not** Native AOT). Packaging defaults to **multi-file** publish so native libraries can be codesigned individually. See [`RELEASE-MACOS.md`](RELEASE-MACOS.md) for the manual workflow, required **Developer ID Application** secrets, SemVer vs `CFBundle*` versioning, and draft-release steps.
 
+Windows/Linux private-beta archives (unsigned by default) are produced by `scripts/packaging/windows/package-windows.ps1`, `scripts/packaging/linux/package-linux.sh`, or the **Private beta release** workflow. See [`PRIVATE-BETA-NOTES.md`](PRIVATE-BETA-NOTES.md).
+
 ## Status
 
 The Forge is in **beta** (`0.1.0-beta`, inherited from [`Directory.Build.props`](../Directory.Build.props)). **Milestones A–H are complete**, plus **H1/H2 (The

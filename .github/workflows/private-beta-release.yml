@@ -1,0 +1,106 @@
+name: Private beta release (Windows / Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package-linux:
+    name: Package Linux x64
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Validate version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          if [[ "$VERSION" == *+* ]]; then
+            echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: invalid SemVer '$VERSION'" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Package Linux artifacts
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/packaging/linux/package-linux.sh
+          mkdir -p dist/linux
+          ./scripts/packaging/linux/package-linux.sh \
+            --version "${{ steps.ver.outputs.version }}" \
+            --output-dir ./dist/linux \
+            --rid linux-x64
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-beta-linux-x64
+          path: dist/linux/
+          if-no-files-found: error
+
+  package-windows:
+    name: Package Windows x64
+    runs-on: windows-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Validate version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          if [[ "$VERSION" == *+* ]]; then
+            echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: invalid SemVer '$VERSION'" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Package Windows artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          .\scripts\packaging\windows\package-windows.ps1 `
+            -Version "${{ steps.ver.outputs.version }}" `
+            -OutputDir .\dist\windows
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-beta-win-x64
+          path: dist/windows/
+          if-no-files-found: error
