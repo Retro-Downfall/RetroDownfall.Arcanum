@@ -56,6 +56,10 @@ public sealed class MetaEndpointTests
 
         Assert.Equal(5443, body.Data.HttpsPort);
 
+        Assert.False(string.IsNullOrWhiteSpace(body.Data.EmbeddingsVectorMode));
+
+        Assert.True(body.Data.EmbeddingsManagedSearchRowBudget > 0);
+
         Assert.DoesNotContain("llamaCppEnabled", json, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("LlamaCppEnabled", json, StringComparison.Ordinal);

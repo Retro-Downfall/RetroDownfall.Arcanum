@@ -23,4 +23,8 @@ public sealed record InstanceMetadataDto(
     bool HttpsEnabled,
     int HttpsPort,
     string? HttpsUrl,
-    string? HttpUrl);
+    string? HttpUrl,
+    bool EmbeddingsEnabled,
+    string EmbeddingsVectorMode,
+    string EmbeddingsVectorDiagnostic,
+    int EmbeddingsManagedSearchRowBudget);

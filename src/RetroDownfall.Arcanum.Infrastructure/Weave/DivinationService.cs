@@ -38,7 +38,7 @@ internal sealed class DivinationService(
     /// Internal safeguard only — not an <c>Arcanum:*</c> setting. When exceeded, scoring stops early
     /// and a warning is logged; top-K among the rows already scored is still returned.
     /// </summary>
-    internal const int ManagedSearchRowBudget = 50_000;
+    internal const int ManagedSearchRowBudget = WeaveIndexAvailability.ManagedSearchRowBudget;
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
         new Dictionary<string, string>(0);

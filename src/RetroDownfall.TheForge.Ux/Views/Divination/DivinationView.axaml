@@ -6,7 +6,7 @@
              xmlns:workspaces="using:RetroDownfall.Arcanum.Core.Workspaces"
              x:Class="RetroDownfall.TheForge.Ux.Views.Divination.DivinationView"
              x:DataType="vm:DivinationViewModel">
-  <Grid RowDefinitions="Auto,Auto,*">
+  <Grid RowDefinitions="Auto,Auto,Auto,*">
 
     <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
       <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -15,9 +15,11 @@
       <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" />
     </DockPanel>
 
-    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    <TextBlock Grid.Row="1" Text="{Binding ManagedWeaveBannerMessage}" Opacity="0.85" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding ShowManagedWeaveBanner}" />
 
-    <TabControl Grid.Row="2">
+    <TextBlock Grid.Row="2" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <TabControl Grid.Row="3">
 
       <TabItem Header="Sessions">
         <Grid RowDefinitions="Auto,*">

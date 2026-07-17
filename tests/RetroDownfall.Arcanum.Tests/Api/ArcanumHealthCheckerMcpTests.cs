@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -20,7 +21,8 @@ public sealed class ArcanumHealthCheckerMcpTests
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new AllDownMcpManager(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new WeaveIndexAvailability());
 
         HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
 
@@ -39,7 +41,8 @@ public sealed class ArcanumHealthCheckerMcpTests
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
             new EmptyMcpManager(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new WeaveIndexAvailability());
 
         HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
 

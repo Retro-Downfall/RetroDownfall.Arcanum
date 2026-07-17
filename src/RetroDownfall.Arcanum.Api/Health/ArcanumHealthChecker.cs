@@ -4,13 +4,15 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Health;
 
 public sealed class ArcanumHealthChecker(
     IGrimoireDbReadiness grimoireReadiness,
     IMcpConnectionManager mcpConnectionManager,
-    IOptionsMonitor<ArcanumSettings> settings)
+    IOptionsMonitor<ArcanumSettings> settings,
+    WeaveIndexAvailability weaveIndexAvailability)
 {
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
@@ -73,6 +75,21 @@ public sealed class ArcanumHealthChecker(
             + $"network={sandbox.NetworkIsolationMode}; "
             + $"escapeHatch={sandbox.EscapeHatchEnabled}. "
             + sandbox.PublicMessage));
+
+        (bool embeddingsEnabled, string vectorMode, string vectorDiagnostic, int managedBudget) =
+            EmbeddingsVectorStatus.Resolve(settings.CurrentValue.Embeddings, weaveIndexAvailability);
+
+        HealthStatus embeddingsHealth = vectorMode switch
+        {
+            WeaveIndexAvailability.ModeUnavailable => HealthStatus.Degraded,
+            _ => HealthStatus.Healthy,
+        };
+
+        string embeddingsDetail = embeddingsEnabled
+            ? $"mode={vectorMode}; budget={managedBudget}. {vectorDiagnostic}"
+            : $"disabled. {vectorDiagnostic}";
+
+        components.Add(new HealthComponentDto("Embeddings", embeddingsHealth, embeddingsDetail));
 
         HealthStatus overall = components.Any(static c => c.Status == HealthStatus.Unhealthy)
             ? HealthStatus.Unhealthy

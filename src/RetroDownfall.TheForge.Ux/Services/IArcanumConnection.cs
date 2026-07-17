@@ -15,6 +15,9 @@ public interface IArcanumConnection : INotifyPropertyChanged
 
     HealthReportDto? LastReport { get; }
 
+    /// <summary>Last successful <c>GET /api/meta</c> payload (typed feature flags), or null.</summary>
+    InstanceMetadataDto? LastMeta { get; }
+
     /// <summary>Last failed health-poll error code (e.g. <c>Security.MissingApiKey</c>), or null when connected.</summary>
     string? LastErrorCode { get; }
 

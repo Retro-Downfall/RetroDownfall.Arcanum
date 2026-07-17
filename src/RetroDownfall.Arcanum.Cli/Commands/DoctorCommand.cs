@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -98,6 +99,10 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
+        WriteEmbeddingsPanel();
+
+        AnsiConsole.WriteLine();
+
         healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
 
         return healthy ? 0 : 1;
@@ -136,6 +141,8 @@ public sealed class DoctorCommand(
         checks.Add(BuildToolChildSandboxCheck());
 
         checks.Add(BuildMasterKeyCheck());
+
+        checks.Add(BuildEmbeddingsCheck());
 
         (bool apiHealthy, DoctorCheck apiCheck) = await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
 
@@ -745,6 +752,73 @@ public sealed class DoctorCommand(
 
         return "Run `arcanum key set` or paste the key in The Forge when prompted. "
             + "Optional private-beta override: THEFORGE_ARCANUM_KEY (process-only, not persisted).";
+
+    }
+
+    private void WriteEmbeddingsPanel()
+    {
+
+        (_, Table table) = BuildEmbeddingsPanelCore();
+
+        WritePanel("Embeddings / Weave", table);
+
+    }
+
+    private (bool InformationalOk, Table Table) BuildEmbeddingsPanelCore()
+    {
+
+        EmbeddingSettings embeddings = options.Value.Embeddings ?? new EmbeddingSettings();
+
+        bool enabled = embeddings.Enabled;
+
+        string provider = string.IsNullOrWhiteSpace(embeddings.Provider) ? "(none)" : embeddings.Provider.Trim();
+
+        string model = string.IsNullOrWhiteSpace(embeddings.Model) ? "(none)" : embeddings.Model.Trim();
+
+        // Doctor runs outside the API host process — report configured posture + managed beta default.
+        string mode = !enabled
+            ? "disabled"
+            : (string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model)
+                ? "unavailable"
+                : "managed");
+
+        string guidance = mode == "managed"
+            ? "When the API host is running without sqlite-vec, Divination uses managed SIMD fallback "
+              + $"(preview/performance-limited; row budget {WeaveIndexAvailability.ManagedSearchRowBudget}). "
+              + "Confirm live mode via GET /api/meta embeddingsVectorMode."
+            : mode == "disabled"
+                ? "Set Arcanum:Embeddings:Enabled=true (and provider/model) to enable The Weave."
+                : "Configure Arcanum:Embeddings:Provider and Model.";
+
+        Table table = BuildLabelTable(
+            ("Enabled", enabled ? "yes" : "no"),
+            ("Provider", provider),
+            ("Model", model),
+            ("Vector mode (configured default)", mode),
+            ("Managed row budget", WeaveIndexAvailability.ManagedSearchRowBudget.ToString()),
+            ("Guidance", guidance));
+
+        return (true, table);
+
+    }
+
+    private DoctorCheck BuildEmbeddingsCheck()
+    {
+
+        (_, Table _) = BuildEmbeddingsPanelCore();
+
+        EmbeddingSettings embeddings = options.Value.Embeddings ?? new EmbeddingSettings();
+
+        string mode = !embeddings.Enabled
+            ? "disabled"
+            : (string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model)
+                ? "unavailable"
+                : "managed");
+
+        return new DoctorCheck(
+            "Embeddings",
+            mode is "disabled" or "managed" ? "ok" : "warn",
+            $"enabled={embeddings.Enabled}; mode={mode}; budget={WeaveIndexAvailability.ManagedSearchRowBudget}");
 
     }
 

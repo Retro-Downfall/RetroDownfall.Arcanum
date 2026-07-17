@@ -4,7 +4,7 @@
              xmlns:models="using:RetroDownfall.Arcanum.Core.Weave"
              x:Class="RetroDownfall.TheForge.Ux.Views.Archive.SagaArchiveView"
              x:DataType="vm:SagaArchiveViewModel">
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+  <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto">
 
     <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
       <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -14,9 +14,11 @@
       <Button DockPanel.Dock="Right" Content="Delete all…" Command="{Binding DeleteAllMemoriesCommand}" Margin="0,0,8,0" />
     </DockPanel>
 
-    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    <TextBlock Grid.Row="1" Text="{Binding ManagedWeaveBannerMessage}" Opacity="0.85" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding ShowManagedWeaveBanner}" />
 
-    <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,8">
+    <TextBlock Grid.Row="2" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <StackPanel Grid.Row="3" Spacing="6" Margin="0,0,0,8">
       <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IsFeatureDisabled}" />
       <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding IsFeatureDisabled}" />
       <DockPanel LastChildFill="False">
@@ -27,7 +29,7 @@
       </DockPanel>
     </StackPanel>
 
-    <Grid Grid.Row="3">
+    <Grid Grid.Row="4">
       <TextBlock Text="{Binding EmptyState}" Opacity="0.7" Margin="0,8,0,0" IsVisible="{Binding HasNoMemories}" />
       <ListBox ItemsSource="{Binding Memories}" SelectedItem="{Binding SelectedMemory}" IsVisible="{Binding !HasNoMemories}" BorderThickness="0">
         <ListBox.ItemTemplate>
@@ -43,7 +45,7 @@
       </ListBox>
     </Grid>
 
-    <Border Grid.Row="4" Margin="0,8,0,8" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" IsVisible="{Binding SelectedMemory, Converter={x:Static ObjectConverters.IsNotNull}}">
+    <Border Grid.Row="5" Margin="0,8,0,8" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" IsVisible="{Binding SelectedMemory, Converter={x:Static ObjectConverters.IsNotNull}}">
       <StackPanel Spacing="4">
         <TextBlock Text="Detail" FontWeight="SemiBold" Opacity="0.8" />
         <TextBlock Text="{Binding SelectedMemory.Content}" TextWrapping="Wrap" />

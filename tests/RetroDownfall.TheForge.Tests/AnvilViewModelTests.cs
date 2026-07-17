@@ -200,6 +200,8 @@ public class AnvilViewModelTests
 
         public HealthReportDto? LastReport { get; private set; }
 
+        public InstanceMetadataDto? LastMeta { get; private set; }
+
         public string? LastErrorCode { get; private set; }
 
         public string? LastErrorMessage { get; private set; }

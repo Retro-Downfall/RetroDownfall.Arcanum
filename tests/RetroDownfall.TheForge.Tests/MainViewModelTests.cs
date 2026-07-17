@@ -359,6 +359,8 @@ public class MainViewModelTests
 
         public HealthReportDto? LastReport { get; private set; }
 
+        public InstanceMetadataDto? LastMeta { get; private set; }
+
         public string? LastErrorCode { get; private set; }
 
         public string? LastErrorMessage { get; private set; }
@@ -471,13 +473,14 @@ internal static class MainViewModelFactory
                 new StaticTheForgeSettingsMonitor(),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel>.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor),
-            new RetroDownfall.TheForge.Ux.ViewModels.Archive.SagaArchiveViewModel(new NullSagaArchiveDataSource(), foundryFloor, new NullConfirmationDialogService(), new FakeClipboardService(), new FakeWhispersService()),
+            new RetroDownfall.TheForge.Ux.ViewModels.Archive.SagaArchiveViewModel(new NullSagaArchiveDataSource(), foundryFloor, new NullConfirmationDialogService(), new FakeClipboardService(), new FakeWhispersService(), connection),
             new RetroDownfall.TheForge.Ux.ViewModels.Divination.DivinationViewModel(
                 new NullDivinationDataSource(),
                 new NullWorkspaceExplorerDataSource(),
                 navigation,
                 foundryFloor,
-                new FakeClipboardService()),
+                new FakeClipboardService(),
+                connection),
             new RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer.WorkspaceExplorerViewModel(
                 new NullWorkspaceExplorerDataSource(),
                 new NullConfirmationDialogService(),
@@ -485,7 +488,8 @@ internal static class MainViewModelFactory
                 navigation,
                 foundryFloor,
                 new FakeClipboardService(),
-                new FakeWhispersService()),
+                new FakeWhispersService(),
+                connection),
             new RetroDownfall.TheForge.Ux.ViewModels.Workbench.WorkbenchDocumentFactory(
                 new NullSpellEditorDataSource(),
                 new NullPromptEditorDataSource(),

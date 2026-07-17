@@ -271,6 +271,9 @@ delete-one, and Saga Divination. When Saga Divination is disabled the banner nam
 ## Divination
 
 **Divination** (View → **Divination**; hidden by default) runs semantic search over sessions,
+workspace files, and Saga memories. When Embeddings are enabled and `GET /api/meta`
+`embeddingsVectorMode` is `managed`, a non-blocking info banner explains the private-beta
+managed SIMD fallback (50,000 row budget; sqlite-vec not shipped). Features stay enabled.
 workspace files, and Saga. Each tab names the exact embedding paths when disabled (Sessions:
 `Arcanum:Embeddings:Enabled` + `Arcanum:Embeddings:SessionSearchEnabled`; Workspace:
 `Arcanum:Embeddings:Enabled` + `Arcanum:Embeddings:CodebaseRetrievalEnabled`; Saga:

@@ -17,14 +17,56 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 public sealed class WeaveIndexAvailability
 {
 
+    /// <summary>Stable wire / meta string when embeddings are disabled.</summary>
+    public const string ModeDisabled = "disabled";
+
+    /// <summary>Stable wire / meta string for managed SIMD brute-force fallback.</summary>
+    public const string ModeManaged = "managed";
+
+    /// <summary>Stable wire / meta string when sqlite-vec vec0 is loaded.</summary>
+    public const string ModeVec0 = "vec0";
+
+    /// <summary>Stable wire / meta string when vector status cannot be determined.</summary>
+    public const string ModeUnavailable = "unavailable";
+
+    /// <summary>
+    /// Hard row budget for managed cosine scans — single source of truth for
+    /// <c>DivinationService</c> and operator-facing diagnostics.
+    /// </summary>
+    public const int ManagedSearchRowBudget = 50_000;
+
     private volatile bool _isVecAvailable;
+
+    private volatile string _diagnostic =
+        "sqlite-vec not shipped; using managed SIMD fallback (preview/performance-limited).";
 
     public bool IsVecAvailable => _isVecAvailable;
 
-    public void SetAvailable(bool available)
+    /// <summary>
+    /// Runtime mode string: <see cref="ModeVec0"/> or <see cref="ModeManaged"/> after bootstrap
+    /// (feature-disabled mapping is applied by health/meta callers).
+    /// </summary>
+    public string Mode => _isVecAvailable ? ModeVec0 : ModeManaged;
+
+    public string Diagnostic => _diagnostic;
+
+    public void SetAvailable(bool available, string? diagnostic = null)
     {
 
         _isVecAvailable = available;
+
+        if (!string.IsNullOrWhiteSpace(diagnostic))
+        {
+
+            _diagnostic = diagnostic.Trim();
+
+            return;
+
+        }
+
+        _diagnostic = available
+            ? "sqlite-vec vec0 acceleration index is loaded."
+            : "sqlite-vec not shipped; using managed SIMD fallback (preview/performance-limited).";
 
     }
 

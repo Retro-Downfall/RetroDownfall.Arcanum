@@ -34,6 +34,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
     private readonly IWhispersService _whispers;
 
+    private readonly IArcanumConnection _connection;
+
     private bool _loaded;
 
     [ObservableProperty]
@@ -53,6 +55,11 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _isVisible;
+
+    [ObservableProperty]
+    private bool _showManagedWeaveBanner;
+
+    public string ManagedWeaveBannerMessage => ManagedWeaveBanner.Message;
 
     [ObservableProperty]
     private WorkspaceInfo? _selectedWorkspace;
@@ -91,7 +98,8 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         INavigationService navigation,
         FoundryFloorViewModel foundryFloor,
         IClipboardService clipboard,
-        IWhispersService whispers)
+        IWhispersService whispers,
+        IArcanumConnection connection)
     {
 
         _dataSource = dataSource;
@@ -107,6 +115,18 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
         _clipboard = clipboard;
 
         _whispers = whispers;
+
+        _connection = connection;
+
+        _connection.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(IArcanumConnection.LastMeta) or nameof(IArcanumConnection.State))
+            {
+                ShowManagedWeaveBanner = ManagedWeaveBanner.ShouldShow(_connection.LastMeta);
+            }
+        };
+
+        ShowManagedWeaveBanner = ManagedWeaveBanner.ShouldShow(_connection.LastMeta);
 
         Title = "Workspace Explorer";
 

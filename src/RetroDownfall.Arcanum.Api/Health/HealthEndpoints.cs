@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Health;
 
@@ -60,7 +61,10 @@ internal static class HealthEndpoints
         })
         .WithName("GetGrimoireStats");
 
-        apiGroup.MapGet("/meta", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
+        apiGroup.MapGet("/meta", (
+            IOptionsSnapshot<ArcanumSettings> settings,
+            WeaveIndexAvailability weaveIndexAvailability,
+            HttpContext httpContext) =>
         {
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
@@ -103,6 +107,9 @@ internal static class HealthEndpoints
 
             string? httpUrl = ArcanumLocalApiAddress.ResolveHttpUrl(settings.Value.Host, listenAny);
 
+            (bool embeddingsEnabled, string vectorMode, string vectorDiagnostic, int managedBudget) =
+                EmbeddingsVectorStatus.Resolve(settings.Value.Embeddings, weaveIndexAvailability);
+
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
                 OsDescription: RuntimeInformation.OSDescription,
@@ -122,7 +129,11 @@ internal static class HealthEndpoints
                 HttpsEnabled: httpsEnabled,
                 HttpsPort: httpsPort,
                 HttpsUrl: httpsUrl,
-                HttpUrl: httpUrl);
+                HttpUrl: httpUrl,
+                EmbeddingsEnabled: embeddingsEnabled,
+                EmbeddingsVectorMode: vectorMode,
+                EmbeddingsVectorDiagnostic: vectorDiagnostic,
+                EmbeddingsManagedSearchRowBudget: managedBudget);
 
             Result<InstanceMetadataDto> metadataResult = metadata;
 

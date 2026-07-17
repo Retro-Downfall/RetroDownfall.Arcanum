@@ -156,6 +156,8 @@ public class TreasuryViewModelTests
 
         public HealthReportDto? LastReport => null;
 
+        public InstanceMetadataDto? LastMeta => null;
+
         public string? LastErrorCode => null;
 
         public string? LastErrorMessage => null;

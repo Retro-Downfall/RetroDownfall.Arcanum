@@ -14,6 +14,7 @@
     </DockPanel>
 
     <StackPanel Grid.Row="1" Spacing="4" Margin="0,0,0,8">
+      <TextBlock Text="{Binding ManagedWeaveBannerMessage}" Opacity="0.85" TextWrapping="Wrap" IsVisible="{Binding ShowManagedWeaveBanner}" />
       <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
       <TextBlock Text="{Binding IndexFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IndexFeatureDisabled}" />
       <Button Content="Copy setting paths" Command="{Binding CopyIndexDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding IndexFeatureDisabled}" />

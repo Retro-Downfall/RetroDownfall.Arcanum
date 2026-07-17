@@ -34,6 +34,8 @@ public sealed partial class DivinationViewModel : ViewModelBase
 
     private readonly IClipboardService _clipboard;
 
+    private readonly IArcanumConnection _connection;
+
     private bool _loaded;
 
     [ObservableProperty]
@@ -47,6 +49,11 @@ public sealed partial class DivinationViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _isVisible;
+
+    [ObservableProperty]
+    private bool _showManagedWeaveBanner;
+
+    public string ManagedWeaveBannerMessage => ManagedWeaveBanner.Message;
 
     // Sessions tab
     [ObservableProperty]
@@ -86,7 +93,8 @@ public sealed partial class DivinationViewModel : ViewModelBase
         IWorkspaceExplorerDataSource workspaceDataSource,
         INavigationService navigation,
         FoundryFloorViewModel foundryFloor,
-        IClipboardService clipboard)
+        IClipboardService clipboard,
+        IArcanumConnection connection)
     {
 
         _dataSource = dataSource;
@@ -99,9 +107,30 @@ public sealed partial class DivinationViewModel : ViewModelBase
 
         _clipboard = clipboard;
 
+        _connection = connection;
+
+        _connection.PropertyChanged += OnConnectionPropertyChanged;
+
+        RefreshManagedWeaveBanner();
+
         Title = "Divination";
 
     }
+
+    private void OnConnectionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+
+        if (e.PropertyName is nameof(IArcanumConnection.LastMeta) or nameof(IArcanumConnection.State))
+        {
+
+            RefreshManagedWeaveBanner();
+
+        }
+
+    }
+
+    private void RefreshManagedWeaveBanner() =>
+        ShowManagedWeaveBanner = ManagedWeaveBanner.ShouldShow(_connection.LastMeta);
 
     public ObservableCollection<WorkspaceInfo> Workspaces { get; } = [];
 

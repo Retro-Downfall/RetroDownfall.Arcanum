@@ -1,5 +1,8 @@
+using System.ComponentModel;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.ViewModels.Archive;
@@ -203,7 +206,37 @@ public class SagaArchiveViewModelTests
             new FoundryFloorViewModel(new NullLogService()),
             confirmation ?? new NullConfirmationDialogService(),
             clipboard ?? new FakeClipboardService(),
-            new FakeWhispersService());
+            new FakeWhispersService(),
+            new NullArcanumConnection());
+
+    private sealed class NullArcanumConnection : IArcanumConnection
+    {
+
+        public ConnectionState State => ConnectionState.Disconnected;
+
+        public HealthReportDto? LastReport => null;
+
+        public InstanceMetadataDto? LastMeta => null;
+
+        public string? LastErrorCode => null;
+
+        public string? LastErrorMessage => null;
+
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public void Connect()
+        {
+        }
+
+        public void Disconnect()
+        {
+        }
+
+    }
 
     private sealed class FakeSagaArchiveDataSource : ISagaArchiveDataSource
     {

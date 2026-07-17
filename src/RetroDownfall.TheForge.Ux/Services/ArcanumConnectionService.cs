@@ -28,6 +28,9 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
     private HealthReportDto? _lastReport;
 
     [ObservableProperty]
+    private InstanceMetadataDto? _lastMeta;
+
+    [ObservableProperty]
     private string? _lastErrorCode;
 
     [ObservableProperty]
@@ -193,6 +196,28 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
                 LastErrorMessage = null;
 
                 State = ConnectionState.Connected;
+
+                try
+                {
+
+                    ApiResponse<InstanceMetadataDto>? meta = await _apiClient
+                        .GetAsync("/api/meta", TheForgeJsonContext.Default.ApiResponseInstanceMetadataDto, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (meta is { IsSuccess: true, Data: not null })
+                    {
+
+                        LastMeta = meta.Data;
+
+                    }
+
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+
+                    _logger.LogDebug(ex, "Meta poll failed after successful health.");
+
+                }
 
                 return;
 
