@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 /// <summary>
@@ -12,7 +10,9 @@ internal static class ChildProcessSandboxRoots
         string workspaceRoot,
         IReadOnlyList<string>? sanctumAllowedPaths,
         bool allowUnsandboxed,
-        bool windowsPathBoundaryRequired)
+        bool windowsPathBoundaryRequired,
+        string? toolName = null,
+        string? campaignId = null)
     {
 
         List<string> readWrite = [];
@@ -40,32 +40,46 @@ internal static class ChildProcessSandboxRoots
             AllowUnsandboxed = allowUnsandboxed,
 
             WindowsPathBoundaryRequired = windowsPathBoundaryRequired,
+
+            ToolName = toolName ?? "execute_command",
+
+            CampaignIdForLog = campaignId,
+
+            WorkspaceRootForLog = workspaceRoot,
         };
 
     }
 
+    /// <summary>
+    /// Spell scripts: script roots are read+execute only; workspace / AllowedPaths remain read+write.
+    /// Global spell roots are not writable unless also listed as an AllowedPath / workspace.
+    /// </summary>
     internal static ChildProcessSandboxRequest ForSpellScript(
         IReadOnlyList<string> scriptRoots,
         string? workspaceRoot,
         IReadOnlyList<string>? sanctumAllowedPaths,
         bool allowUnsandboxed,
-        bool windowsPathBoundaryRequired)
+        bool windowsPathBoundaryRequired,
+        string? toolName = null,
+        string? campaignId = null)
     {
 
         List<string> readWrite = [];
 
+        List<string> readExecute = SystemRuntimeRoots();
+
         foreach (string root in scriptRoots)
         {
 
-            AddRoot(readWrite, root);
+            AddRoot(readExecute, root);
 
-            // Parent of scripts/ is often the spell dir; include it for relative asset reads.
+            // Parent of scripts/ is often the spell dir; include for relative asset reads (R+X).
             try
             {
 
                 string? parent = Path.GetDirectoryName(Path.GetFullPath(root.Trim()));
 
-                AddRoot(readWrite, parent);
+                AddRoot(readExecute, parent);
 
             }
             catch (Exception)
@@ -93,11 +107,17 @@ internal static class ChildProcessSandboxRoots
         {
             ReadWriteRoots = readWrite,
 
-            ReadExecuteRoots = SystemRuntimeRoots(),
+            ReadExecuteRoots = readExecute,
 
             AllowUnsandboxed = allowUnsandboxed,
 
             WindowsPathBoundaryRequired = windowsPathBoundaryRequired,
+
+            ToolName = toolName ?? "run_spell_script",
+
+            CampaignIdForLog = campaignId,
+
+            WorkspaceRootForLog = workspaceRoot,
         };
 
     }
@@ -159,10 +179,29 @@ internal static class ChildProcessSandboxRoots
 
         }
 
+        foreach (char c in path)
+        {
+
+            if (char.IsControl(c))
+            {
+
+                return;
+
+            }
+
+        }
+
         try
         {
 
             string full = Path.GetFullPath(path.Trim());
+
+            if (full is "/" or "\\")
+            {
+
+                return;
+
+            }
 
             try
             {
@@ -203,6 +242,13 @@ internal static class ChildProcessSandboxRoots
             }
             catch (Exception)
             {
+
+            }
+
+            if (full is "/" or "\\")
+            {
+
+                return;
 
             }
 

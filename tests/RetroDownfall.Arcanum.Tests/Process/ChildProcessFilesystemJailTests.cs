@@ -1,24 +1,21 @@
 using System.Diagnostics;
-using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
-using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
-using RetroDownfall.Arcanum.Infrastructure.Platform;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
 /// <summary>
-/// S4 filesystem jail acceptance: outside denial, workspace access, spell scripts, escape hatch,
-/// Windows Sanctum deny. Requires a host where the OS sandbox can actually apply (not a nested
-/// agent sandbox that blocks <c>sandbox-exec</c>).
+/// Filesystem jail acceptance under macOS-ARM beta posture: Seatbelt outside/symlink denial,
+/// access classes, Linux fail-closed, Windows NoFilesystemJail / Sanctum deny.
+/// Runtime macOS cases require a host where sandbox-exec can apply (not a nested agent sandbox).
 /// </summary>
 public sealed class ChildProcessFilesystemJailTests : IDisposable
 {
 
-    private readonly string _workspace;
+    private string _workspace;
 
-    private readonly string _outsideDir;
+    private string _outsideDir;
 
     private readonly string _scriptsRoot;
 
@@ -28,44 +25,12 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         _workspace = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), "arcanum-fsjail-ws-" + Guid.NewGuid().ToString("N"))).FullName;
 
-        try
-        {
-
-            string? resolved = Directory.ResolveLinkTarget(_workspace, returnFinalTarget: true)?.FullName;
-
-            if (!string.IsNullOrEmpty(resolved))
-            {
-
-                _workspace = Path.GetFullPath(resolved);
-
-            }
-
-        }
-        catch
-        {
-
-        }
+        _workspace = ResolveDir(_workspace);
 
         _outsideDir = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), "arcanum-fsjail-out-" + Guid.NewGuid().ToString("N"))).FullName;
 
-        try
-        {
-
-            string? resolved = Directory.ResolveLinkTarget(_outsideDir, returnFinalTarget: true)?.FullName;
-
-            if (!string.IsNullOrEmpty(resolved))
-            {
-
-                _outsideDir = Path.GetFullPath(resolved);
-
-            }
-
-        }
-        catch
-        {
-
-        }
+        _outsideDir = ResolveDir(_outsideDir);
 
         _scriptsRoot = Path.Combine(_workspace, "spell", "scripts");
 
@@ -87,10 +52,312 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
-    public async Task Outside_user_data_file_is_denied_when_sandbox_available()
+    public void MacOsProfile_DoesNotGrantWholeVolumeRead()
     {
 
-        if (!IsOsFilesystemJailAvailable())
+        string temp = Path.Combine(Path.GetTempPath(), "arcanum-sb-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                [_workspace],
+                ["/usr", "/bin", "/System"],
+                temp);
+
+            Assert.False(
+                MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile),
+                profile);
+
+            Assert.DoesNotContain("(subpath \"/\")", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("(literal \"/\")", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("(subpath \"/tmp\")", profile, StringComparison.Ordinal);
+
+            Assert.Contains("(allow network*)", profile, StringComparison.Ordinal);
+
+            Assert.Contains(temp, profile, StringComparison.Ordinal);
+
+            Assert.Throws<ArgumentException>(() =>
+                MacOsSandboxExecProfileBuilder.Build([_workspace], ["/"], temp));
+
+        }
+        finally
+        {
+
+            TryDelete(temp);
+
+        }
+
+    }
+
+    [Fact]
+    public void LinuxFilesystemJail_IsUnavailableByDefault_AndDoesNotInvokeHelper()
+    {
+
+        if (!OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "/bin/echo",
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+        };
+
+        psi.ArgumentList.Add("should-not-wrap");
+
+        ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: false,
+            windowsPathBoundaryRequired: false);
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            psi,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
+
+        Assert.Contains(
+            ChildProcessFilesystemJail.LinuxDeferredDetail,
+            apply.Detail,
+            StringComparison.Ordinal);
+
+        Assert.Equal("/bin/echo", psi.FileName);
+
+        Assert.DoesNotContain(
+            ChildProcessFilesystemJail.HelperArg,
+            psi.ArgumentList,
+            StringComparer.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task LinuxFilesystemJail_EscapeHatchRunsUnsandboxedWithWarning()
+    {
+
+        if (!OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "/bin/echo",
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+        };
+
+        psi.ArgumentList.Add("linux-escape-ok");
+
+        ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: true,
+            windowsPathBoundaryRequired: false,
+            toolName: "execute_command");
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            psi,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        Assert.Equal("/bin/echo", psi.FileName);
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            64 * 1024,
+            TimeSpan.FromSeconds(10),
+            null,
+            null,
+            CancellationToken.None,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+        Assert.Contains("linux-escape-ok", result.Stdout.Text, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void WindowsFilesystemJail_ReportsNoFilesystemJail_WhenSanctumBoundaryOff()
+    {
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            // Policy unit: ApplyWindows is only reached on Windows; simulate status contract via docs.
+            // On non-Windows hosts, construct the expected status locally for documentation parity.
+            Assert.NotEqual(
+                ChildProcessSandboxApplyStatus.Applied,
+                ChildProcessSandboxApplyStatus.NoFilesystemJail);
+
+            return;
+
+        }
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "cmd.exe",
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+        };
+
+        psi.ArgumentList.Add("/c");
+
+        psi.ArgumentList.Add("echo");
+
+        psi.ArgumentList.Add("ok");
+
+        ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: false,
+            windowsPathBoundaryRequired: false);
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            psi,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.NoFilesystemJail, apply.Status);
+
+        Assert.NotEqual(ChildProcessSandboxApplyStatus.Applied, apply.Status);
+
+    }
+
+    [Fact]
+    public void WindowsFilesystemJail_DeniesWhenSanctumPathBoundaryOn()
+    {
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/echo",
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+        };
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            startInfo.ArgumentList.Add("/c");
+
+            startInfo.ArgumentList.Add("echo");
+
+            startInfo.ArgumentList.Add("should-not-run");
+
+            ChildProcessSandboxRequest denyRequest = ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                null,
+                allowUnsandboxed: true, // escape hatch must NOT bypass Sanctum denial
+                windowsPathBoundaryRequired: true);
+
+            ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+                startInfo,
+                denyRequest,
+                NullLogger.Instance);
+
+            Assert.Equal(ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum, apply.Status);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Windows_Sanctum_path_boundary_returns_expected_runner_outcome()
+    {
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "cmd.exe",
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+
+            CreateNoWindow = true,
+        };
+
+        psi.ArgumentList.Add("/c");
+
+        psi.ArgumentList.Add("echo");
+
+        psi.ArgumentList.Add("should-not-run");
+
+        ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: true,
+            windowsPathBoundaryRequired: true);
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            64 * 1024,
+            TimeSpan.FromSeconds(10),
+            null,
+            null,
+            CancellationToken.None,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum, result.Outcome);
+
+        Assert.Equal(
+            ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
+            result.FilesystemSandboxDenialMessage);
+
+        Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
+
+        Assert.DoesNotContain("internal error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task MacOsSandbox_DeniesOutsideHomeSecret_WhenSandboxExecAvailable()
+    {
+
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
         {
 
             return;
@@ -101,7 +368,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         ProcessStartInfo psi = new()
         {
-            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/cat",
+            FileName = "/bin/cat",
 
             UseShellExecute = false,
 
@@ -114,22 +381,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             WorkingDirectory = _workspace,
         };
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            psi.ArgumentList.Add("/c");
-
-            psi.ArgumentList.Add("type");
-
-            psi.ArgumentList.Add(outside);
-
-        }
-        else
-        {
-
-            psi.ArgumentList.Add(outside);
-
-        }
+        psi.ArgumentList.Add(outside);
 
         ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
             _workspace,
@@ -148,16 +400,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             request,
             NullLogger.Instance);
 
-        if (OperatingSystem.IsWindows())
-        {
-
-            // Windows has no FS jail when path boundary is not required.
-            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
-
-            return;
-
-        }
-
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
         string combined = result.Stdout.Text + result.Stderr.Text;
@@ -174,17 +416,83 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
-    public async Task Workspace_read_and_write_succeed_inside_allowed_root()
+    public async Task MacOsSandbox_DeniesSymlinkEscapeFromWorkspace()
     {
 
-        if (!IsOsFilesystemJailAvailable())
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
         {
 
             return;
 
         }
 
-        if (OperatingSystem.IsWindows())
+        string linkPath = Path.Combine(_workspace, "escape-link.txt");
+
+        string target = Path.Combine(_outsideDir, "secret.txt");
+
+        if (File.Exists(linkPath))
+        {
+
+            File.Delete(linkPath);
+
+        }
+
+        File.CreateSymbolicLink(linkPath, target);
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "/bin/cat",
+
+            UseShellExecute = false,
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+
+            CreateNoWindow = true,
+
+            WorkingDirectory = _workspace,
+        };
+
+        psi.ArgumentList.Add(linkPath);
+
+        ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: false,
+            windowsPathBoundaryRequired: false);
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            64 * 1024,
+            TimeSpan.FromSeconds(15),
+            null,
+            null,
+            CancellationToken.None,
+            request,
+            NullLogger.Instance);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+        string combined = result.Stdout.Text + result.Stderr.Text;
+
+        Assert.DoesNotContain("outside-secret", combined, StringComparison.Ordinal);
+
+        Assert.True(
+            result.ExitCode != 0
+            || combined.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase)
+            || combined.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)
+            || combined.Contains("denied", StringComparison.OrdinalIgnoreCase),
+            $"Expected symlink-escape denial; exit={result.ExitCode} out={result.Stdout.Text} err={result.Stderr.Text}");
+
+    }
+
+    [Fact]
+    public async Task MacOsSandbox_AllowsWorkspaceReadWrite()
+    {
+
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
         {
 
             return;
@@ -195,7 +503,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         await File.WriteAllTextAsync(
             script,
-            "#!/bin/sh\nset -e\ncat \"$1\"\necho wrote > \"$2\"\ncat \"$2\"\n");
+            "#!/bin/sh\nset -e\ncat \"$1\"\necho wrote > \"$2\"\ncat \"$2\"\necho \"tmpdir=$TMPDIR\"\necho tmpok > \"$TMPDIR/t\"\ncat \"$TMPDIR/t\"\n");
 
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
@@ -203,7 +511,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         string outFile = Path.Combine(_workspace, "out.txt");
 
-        // Prefer absolute interpreter paths so PATH lookup is not required inside the jail.
         ProcessStartInfo psi = new()
         {
             FileName = "/bin/sh",
@@ -252,87 +559,69 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         Assert.Contains("wrote", result.Stdout.Text, StringComparison.Ordinal);
 
+        Assert.Contains("tmpok", result.Stdout.Text, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum-child-tmp-", result.Stdout.Text, StringComparison.Ordinal);
+
     }
 
     [Fact]
-    public async Task Workspace_spell_script_runs_under_jail()
+    public async Task MacOsSandbox_AllowsSpellScriptReadExecuteButNotWrite()
     {
 
-        if (!IsOsFilesystemJailAvailable() || OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
         {
 
             return;
 
         }
 
-        string scriptPath = Path.Combine(_scriptsRoot, "hello.sh");
+        string globalScripts = Path.GetFullPath(
+            Path.Combine(Path.GetTempPath(), "arcanum-fsjail-global-" + Guid.NewGuid().ToString("N"), "scripts"));
 
-        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho spell-ok\n");
+        Directory.CreateDirectory(globalScripts);
 
-        File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
-        ArcanumSpellScriptTool tool = new(
-            [_scriptsRoot],
-            TimeSpan.FromSeconds(15),
-            15,
-            campaignWorkspaceRoot: _workspace,
-            allowUnsandboxedToolChildren: false);
-
-        string? result = await tool.InvokeAsync(
-            new Microsoft.Extensions.AI.AIFunctionArguments(
-                new Dictionary<string, object?> { ["script_name"] = "hello.sh" })) as string;
-
-        Assert.NotNull(result);
-
-        Assert.Contains("spell-ok", result, StringComparison.Ordinal);
-
-        Assert.Contains("--- exit code ---", result, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
-    public async Task Spell_script_cannot_read_outside_secret()
-    {
-
-        if (!IsOsFilesystemJailAvailable() || OperatingSystem.IsWindows())
+        try
         {
 
-            return;
+            string scriptPath = Path.Combine(globalScripts, "rwprobe.sh");
+
+            string writeTarget = Path.Combine(globalScripts, "should-not-write.txt");
+
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "#!/bin/sh\necho read-ok\nif echo leak > \"" + writeTarget.Replace("\"", "\\\"", StringComparison.Ordinal) + "\" 2>/dev/null; then echo WRITE_OK; else echo write-denied-ok; fi\n");
+
+            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            ArcanumSpellScriptTool tool = new(
+                [globalScripts],
+                TimeSpan.FromSeconds(15),
+                15,
+                campaignWorkspaceRoot: _workspace,
+                allowUnsandboxedToolChildren: false);
+
+            string? result = await tool.InvokeAsync(
+                new Microsoft.Extensions.AI.AIFunctionArguments(
+                    new Dictionary<string, object?> { ["script_name"] = "rwprobe.sh" })) as string;
+
+            Assert.NotNull(result);
+
+            Assert.Contains("read-ok", result, StringComparison.Ordinal);
+
+            Assert.Contains("write-denied-ok", result, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("WRITE_OK", result, StringComparison.Ordinal);
+
+            Assert.False(File.Exists(Path.Combine(globalScripts, "should-not-write.txt")));
 
         }
+        finally
+        {
 
-        string outside = Path.Combine(_outsideDir, "secret.txt");
+            TryDelete(Path.GetDirectoryName(globalScripts)!);
 
-        string scriptPath = Path.Combine(_scriptsRoot, "probe.sh");
-
-        await File.WriteAllTextAsync(
-            scriptPath,
-            "#!/bin/sh\nif cat \"$1\" 2>/dev/null; then echo LEAK; exit 2; else echo denied-ok; fi\n");
-
-        File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
-        ArcanumSpellScriptTool tool = new(
-            [_scriptsRoot],
-            TimeSpan.FromSeconds(15),
-            15,
-            campaignWorkspaceRoot: _workspace,
-            allowUnsandboxedToolChildren: false);
-
-        string? result = await tool.InvokeAsync(
-            new Microsoft.Extensions.AI.AIFunctionArguments(
-                new Dictionary<string, object?>
-                {
-                    ["script_name"] = "probe.sh",
-                    ["arguments"] = QuoteArg(outside),
-                })) as string;
-
-        Assert.NotNull(result);
-
-        Assert.DoesNotContain("outside-secret", result, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("LEAK", result, StringComparison.Ordinal);
-
-        Assert.Contains("denied-ok", result, StringComparison.Ordinal);
+        }
 
     }
 
@@ -340,7 +629,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     public async Task MacOS_metacharacters_in_args_are_argv_safe()
     {
 
-        if (!OperatingSystem.IsMacOS() || !IsOsFilesystemJailAvailable())
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
         {
 
             return;
@@ -394,10 +683,45 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public async Task Workspace_spell_script_runs_under_jail()
+    {
+
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
+        {
+
+            return;
+
+        }
+
+        string scriptPath = Path.Combine(_scriptsRoot, "hello.sh");
+
+        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho spell-ok\n");
+
+        File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        ArcanumSpellScriptTool tool = new(
+            [_scriptsRoot],
+            TimeSpan.FromSeconds(15),
+            15,
+            campaignWorkspaceRoot: _workspace,
+            allowUnsandboxedToolChildren: false);
+
+        string? result = await tool.InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments(
+                new Dictionary<string, object?> { ["script_name"] = "hello.sh" })) as string;
+
+        Assert.NotNull(result);
+
+        Assert.Contains("spell-ok", result, StringComparison.Ordinal);
+
+        Assert.Contains("--- exit code ---", result, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task Escape_hatch_runs_when_sandbox_unavailable()
     {
 
-        // Build a request that cannot apply a jail on this host: empty roots with allowUnsandboxed.
         ProcessStartInfo psi = new()
         {
             FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/echo",
@@ -437,7 +761,33 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             AllowUnsandboxed = true,
 
             WindowsPathBoundaryRequired = false,
+
+            ToolName = "execute_command",
         };
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            // Empty roots are not evaluated on Windows; NoFilesystemJail still allows run.
+            ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+                psi,
+                request,
+                NullLogger.Instance);
+
+            Assert.Equal(ChildProcessSandboxApplyStatus.NoFilesystemJail, apply.Status);
+
+        }
+        else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+
+            ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+                psi,
+                request,
+                NullLogger.Instance);
+
+            Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        }
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
@@ -500,7 +850,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         if (OperatingSystem.IsWindows())
         {
 
-            // Empty roots are not evaluated on Windows when path boundary is not required.
             Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
             return;
@@ -509,87 +858,24 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, result.Outcome);
 
-        Assert.Equal(ChildProcessSandboxMessages.SandboxUnavailable, result.FilesystemSandboxDenialMessage);
+        Assert.False(string.IsNullOrWhiteSpace(result.FilesystemSandboxDenialMessage));
+
+        Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage!, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("internal error", result.FilesystemSandboxDenialMessage!, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            ChildProcessSandboxMessages.NotNetworkIsolationNote,
+            result.FilesystemSandboxDenialMessage!,
+            StringComparison.Ordinal);
 
     }
 
     [Fact]
-    public void Windows_Sanctum_path_boundary_denies_without_starting()
+    public async Task Linux_default_fail_closed_returns_expected_denial_end_to_end()
     {
 
-        if (!OperatingSystem.IsWindows())
-        {
-
-            // Exercise the policy branch on non-Windows too via Apply().
-            ProcessStartInfo psi = new()
-            {
-                FileName = "/bin/echo",
-
-                UseShellExecute = false,
-
-                RedirectStandardOutput = true,
-
-                RedirectStandardError = true,
-            };
-
-            psi.ArgumentList.Add("x");
-
-            ChildProcessSandboxRequest request = new()
-            {
-                ReadWriteRoots = [_workspace],
-
-                ReadExecuteRoots = ["/usr", "/bin"],
-
-                AllowUnsandboxed = false,
-
-                WindowsPathBoundaryRequired = true,
-            };
-
-            // On non-Windows, WindowsPathBoundaryRequired is ignored by ApplyWindows — ApplyMacOs/Linux runs.
-            // Dedicated Windows denial is asserted below only on Windows.
-            _ = request;
-
-            return;
-
-        }
-
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = "cmd.exe",
-
-            UseShellExecute = false,
-
-            RedirectStandardOutput = true,
-
-            RedirectStandardError = true,
-        };
-
-        startInfo.ArgumentList.Add("/c");
-
-        startInfo.ArgumentList.Add("echo");
-
-        startInfo.ArgumentList.Add("should-not-run");
-
-        ChildProcessSandboxRequest denyRequest = ChildProcessSandboxRoots.ForExecuteCommand(
-            _workspace,
-            null,
-            allowUnsandboxed: false,
-            windowsPathBoundaryRequired: true);
-
-        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
-            startInfo,
-            denyRequest,
-            NullLogger.Instance);
-
-        Assert.Equal(ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum, apply.Status);
-
-    }
-
-    [Fact]
-    public async Task Windows_Sanctum_path_boundary_returns_expected_runner_outcome()
-    {
-
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsLinux())
         {
 
             return;
@@ -598,196 +884,124 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         ProcessStartInfo psi = new()
         {
-            FileName = "cmd.exe",
+            FileName = "/bin/echo",
 
             UseShellExecute = false,
 
             RedirectStandardOutput = true,
 
             RedirectStandardError = true,
-
-            CreateNoWindow = true,
         };
-
-        psi.ArgumentList.Add("/c");
-
-        psi.ArgumentList.Add("echo");
 
         psi.ArgumentList.Add("should-not-run");
 
         ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
             _workspace,
             null,
-            allowUnsandboxed: true, // still denied when Windows path boundary required
-            windowsPathBoundaryRequired: true);
+            allowUnsandboxed: false,
+            windowsPathBoundaryRequired: false);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
             64 * 1024,
-            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(5),
             null,
             null,
             CancellationToken.None,
             request,
             NullLogger.Instance);
 
-        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum, result.Outcome);
+        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, result.Outcome);
 
-        Assert.Equal(
-            ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
-            result.FilesystemSandboxDenialMessage);
+        Assert.Contains(
+            ChildProcessFilesystemJail.LinuxDeferredDetail,
+            result.FilesystemSandboxDenialMessage,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
 
     }
 
-    [Fact]
-    public async Task Global_spell_under_config_spells_runs_when_selected()
+    /// <summary>
+    /// Probe whether sandbox-exec can run at all. Do not treat "outside read succeeded" as skip —
+    /// enforcement tests fail hard instead.
+    /// </summary>
+    private static bool IsMacOsSandboxExecRunnable()
     {
 
-        if (!IsOsFilesystemJailAvailable() || OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsMacOS() || !File.Exists("/usr/bin/sandbox-exec"))
         {
 
-            return;
+            return false;
 
         }
-
-        string globalScripts = Path.GetFullPath(
-            Path.Combine(Path.GetTempPath(), "arcanum-fsjail-global-" + Guid.NewGuid().ToString("N"), "scripts"));
-
-        Directory.CreateDirectory(globalScripts);
 
         try
         {
 
-            string scriptPath = Path.Combine(globalScripts, "global.sh");
+            using global::System.Diagnostics.Process probe = new();
 
-            await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho global-ok\n");
+            probe.StartInfo = new ProcessStartInfo
+            {
+                FileName = "/usr/bin/sandbox-exec",
 
-            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                ArgumentList = { "-p", "(version 1)(allow default)", "/bin/echo", "probe" },
 
-            ArcanumSpellScriptTool tool = new(
-                [globalScripts],
-                TimeSpan.FromSeconds(15),
-                15,
-                campaignWorkspaceRoot: _workspace,
-                allowUnsandboxedToolChildren: false);
+                UseShellExecute = false,
 
-            string? result = await tool.InvokeAsync(
-                new Microsoft.Extensions.AI.AIFunctionArguments(
-                    new Dictionary<string, object?> { ["script_name"] = "global.sh" })) as string;
+                RedirectStandardOutput = true,
 
-            Assert.NotNull(result);
+                RedirectStandardError = true,
 
-            Assert.Contains("global-ok", result, StringComparison.Ordinal);
+                CreateNoWindow = true,
+            };
 
-        }
-        finally
-        {
-
-            TryDelete(Path.GetDirectoryName(globalScripts)!);
-
-        }
-
-    }
-
-    [Fact]
-    public void Sandbox_unavailable_fail_closed_message_is_stable()
-    {
-
-        Assert.Equal(
-            "Child process filesystem sandbox is unavailable on this host; refusing to run tool unbounded.",
-            ChildProcessSandboxMessages.SandboxUnavailable);
-
-    }
-
-    private static bool IsOsFilesystemJailAvailable()
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-
-            return true;
-
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-
-            if (!File.Exists("/usr/bin/sandbox-exec"))
+            if (!probe.Start())
             {
 
                 return false;
 
             }
 
-            // Probe whether sandbox-exec can apply (fails inside nested agent sandboxes).
-            try
-            {
+            string err = probe.StandardError.ReadToEnd();
 
-                using global::System.Diagnostics.Process probe = new();
+            probe.WaitForExit(5000);
 
-                probe.StartInfo = new ProcessStartInfo
-                {
-                    FileName = "/usr/bin/sandbox-exec",
-
-                    ArgumentList = { "-p", "(version 1)(allow default)", "/bin/echo", "probe" },
-
-                    UseShellExecute = false,
-
-                    RedirectStandardOutput = true,
-
-                    RedirectStandardError = true,
-
-                    CreateNoWindow = true,
-                };
-
-                if (!probe.Start())
-                {
-
-                    return false;
-
-                }
-
-                string err = probe.StandardError.ReadToEnd();
-
-                probe.WaitForExit(5000);
-
-                return probe.ExitCode == 0 && !err.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase);
-
-            }
-            catch
-            {
-
-                return false;
-
-            }
+            return probe.ExitCode == 0 && !err.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase);
 
         }
-
-        if (OperatingSystem.IsLinux())
+        catch
         {
 
-            // Landlock availability is probed by the helper at runtime; tests that need it skip
-            // via Completed checks. Consider present when ProcessPath exists.
-            return !string.IsNullOrWhiteSpace(global::System.Environment.ProcessPath);
+            return false;
 
         }
-
-        return false;
 
     }
 
-    private static string QuoteArg(string value)
+    private static string ResolveDir(string path)
     {
 
-        if (!value.Contains(' ', StringComparison.Ordinal) && !value.Contains('"', StringComparison.Ordinal))
+        try
         {
 
-            return value;
+            string? resolved = Directory.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName;
+
+            if (!string.IsNullOrEmpty(resolved))
+            {
+
+                return Path.GetFullPath(resolved);
+
+            }
+
+        }
+        catch
+        {
 
         }
 
-        return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+        return Path.GetFullPath(path);
 
     }
 

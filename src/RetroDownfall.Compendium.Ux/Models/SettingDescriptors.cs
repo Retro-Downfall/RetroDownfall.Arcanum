@@ -289,7 +289,7 @@ public static class SettingDescriptors
 
         new("security.idempotencyMaxResponseBytes", ConfigSection.Security, "Idempotency-Key max cached response (bytes)", "Maximum buffered response size cached for an Idempotency-Key request; larger responses still stream fully to the client but are never cached.", SettingKind.Int, 1024 * 1024, 100 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes)),
 
-        new("security.allowUnsandboxedToolChildren", ConfigSection.Security, "Allow unsandboxed tool children", "When false (default), execute_command and run_spell_script require an OS filesystem sandbox (Landlock / sandbox-exec). Setup failure refuses the tool rather than running unbounded. When true, logs a warning and runs without the FS jail (resource limits still apply where available). Filesystem-only — does not isolate network. Windows with Sanctum path-boundary enforcement still denies these tools.", SettingKind.Bool),
+        new("security.allowUnsandboxedToolChildren", ConfigSection.Security, "Allow unsandboxed tool children", "When false (default), execute_command and run_spell_script require an OS filesystem jail where active for this beta (macOS sandbox-exec). Linux Landlock is inactive (fail-closed). Setup failure refuses the tool rather than running unbounded. When true, logs a warning and runs without the FS jail (resource limits still apply). Filesystem-only — does not isolate network. Windows has no FS jail; Sanctum path-boundary enforcement still denies these tools (escape hatch does not bypass).", SettingKind.Bool),
 
         // ===== CommLink =====
 

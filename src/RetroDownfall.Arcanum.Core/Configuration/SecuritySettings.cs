@@ -27,11 +27,13 @@ public sealed record SecuritySettings
 
     /// <summary>
     /// When <c>false</c> (default), <c>execute_command</c> / <c>run_spell_script</c> children require an OS
-    /// filesystem sandbox (Landlock on Linux, <c>sandbox-exec</c> on macOS). If the sandbox cannot be
+    /// filesystem jail where one is active for this beta (macOS deprecated <c>sandbox-exec</c>). Linux Landlock
+    /// is present in-tree but inactive — fail-closed unless this escape hatch is true. If the jail cannot be
     /// applied, the tool is denied rather than running unbounded. When <c>true</c>, Arcanum logs a warning
-    /// and runs with resource limits / env scrub only (no FS jail). Windows never provides an FS jail;
-    /// when Sanctum path-boundary enforcement is active, those tools are denied regardless of this flag.
-    /// This MVP is filesystem-only — it does not isolate network use by child binaries.
+    /// (platform, tool, campaign id) and runs with resource limits / env scrub only (no FS jail). Windows never
+    /// provides an FS jail; when Sanctum path-boundary enforcement is active, those tools are denied regardless
+    /// of this flag (escape hatch does not bypass that denial). This MVP is filesystem-only — it does not
+    /// isolate network use by child binaries.
     /// </summary>
     public bool AllowUnsandboxedToolChildren { get; init; } = false;
 

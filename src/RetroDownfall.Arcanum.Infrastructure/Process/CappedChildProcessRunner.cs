@@ -135,8 +135,8 @@ internal static class CappedChildProcessRunner
 
         }
 
-        // FS jail wraps the post-rlimit StartInfo (sandbox-exec / __sandbox-exec around the ulimit
-        // prelude when present). Order: env scrub → rlimits → FS jail → start → Job assign.
+        // FS jail wraps the post-rlimit StartInfo (macOS sandbox-exec around the ulimit prelude when
+        // present; Linux Landlock inactive for macOS-ARM beta). Order: env scrub → rlimits → FS jail → start → Job assign.
         ChildProcessSandboxApplyResult? sandboxResult = null;
 
         if (filesystemSandbox is not null)
@@ -156,7 +156,9 @@ internal static class CappedChildProcessRunner
 
                     PerStreamCapBytes = perStreamCapBytes,
 
-                    FilesystemSandboxDenialMessage = ChildProcessSandboxMessages.SandboxUnavailable,
+                    FilesystemSandboxDenialMessage = string.IsNullOrWhiteSpace(sandboxResult.Detail)
+                        ? ChildProcessSandboxMessages.SandboxUnavailable
+                        : sandboxResult.Detail + " " + ChildProcessSandboxMessages.NotNetworkIsolationNote,
 
                 };
 
@@ -179,6 +181,9 @@ internal static class CappedChildProcessRunner
                 };
 
             }
+
+            // Applied (macOS Seatbelt), NoFilesystemJail (Windows Job Objects only), and
+            // EscapedByOperator continue — never treat NoFilesystemJail as Applied FS confinement.
 
         }
 

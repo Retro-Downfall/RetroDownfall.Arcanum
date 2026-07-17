@@ -1,21 +1,31 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
+/// <summary>
+/// Result of attempting to apply an OS filesystem jail to a tool child.
+/// Windows without Sanctum path-boundary uses <see cref="NoFilesystemJail"/> — never <see cref="Applied"/>.
+/// </summary>
 internal enum ChildProcessSandboxApplyStatus
 {
 
+    /// <summary>macOS Seatbelt / sandbox-exec profile is active.</summary>
     Applied,
 
+    /// <summary>Jail required but unavailable (Linux beta default, missing sandbox-exec, setup failure).</summary>
     Unavailable,
 
+    /// <summary>Windows Sanctum Enabled + EnforcePathBoundary — child tools denied.</summary>
     DeniedByWindowsSanctum,
 
-    EscapedUnsandboxed,
+    /// <summary>Operator escape hatch: ran without FS jail (rlimits may still apply).</summary>
+    EscapedByOperator,
+
+    /// <summary>Windows without Sanctum path-boundary: no FS jail; Job Objects only.</summary>
+    NoFilesystemJail,
 
 }
 
@@ -24,7 +34,7 @@ internal sealed class ChildProcessSandboxApplyResult
 
     internal ChildProcessSandboxApplyStatus Status { get; init; }
 
-    /// <summary>Owner-only temp files (profile/config) to delete after the child exits.</summary>
+    /// <summary>Owner-only temp files (profile/config/invocation TMPDIR) to delete after the child exits.</summary>
     internal IReadOnlyList<string> TempPathsToCleanup { get; init; } = [];
 
     internal string? Detail { get; init; }
@@ -33,12 +43,16 @@ internal sealed class ChildProcessSandboxApplyResult
 
 /// <summary>
 /// Rewrites <see cref="ProcessStartInfo"/> so the child runs under an OS filesystem jail
-/// (macOS <c>sandbox-exec</c>, Linux Landlock via <c>__sandbox-exec</c>), or fail-closes.
+/// (macOS <c>sandbox-exec</c> for Apple Silicon beta), or fail-closes.
+/// Linux Landlock helper code remains in-tree but is <b>inactive</b> for this beta.
 /// </summary>
 internal static class ChildProcessFilesystemJail
 {
 
     internal const string HelperArg = "__sandbox-exec";
+
+    internal const string LinuxDeferredDetail =
+        "Linux filesystem jail deferred for macOS-ARM beta; Landlock not active.";
 
     internal static ChildProcessSandboxApplyResult Apply(
         ProcessStartInfo startInfo,
@@ -67,7 +81,7 @@ internal static class ChildProcessFilesystemJail
         if (OperatingSystem.IsLinux())
         {
 
-            return ApplyLinux(startInfo, request, logger);
+            return ApplyLinux(request, logger);
 
         }
 
@@ -104,12 +118,18 @@ internal static class ChildProcessFilesystemJail
                     File.Delete(path);
 
                 }
+                else if (Directory.Exists(path))
+                {
+
+                    Directory.Delete(path, recursive: true);
+
+                }
 
             }
             catch (Exception)
             {
 
-                // Best-effort cleanup of owner-only temp profile/config.
+                // Best-effort cleanup of owner-only temp profile/config/TMPDIR.
 
             }
 
@@ -140,17 +160,29 @@ internal static class ChildProcessFilesystemJail
 
         }
 
-        // No Sanctum path containment required: Job Objects / rlimits only (S3); no FS jail.
+        logger?.LogDebug(
+            "Windows: no filesystem jail for this invocation (Job Object resource limits only). {Note}",
+            ChildProcessSandboxMessages.NotNetworkIsolationNote);
+
         return new ChildProcessSandboxApplyResult
         {
 
-            Status = ChildProcessSandboxApplyStatus.Applied,
+            Status = ChildProcessSandboxApplyStatus.NoFilesystemJail,
 
-            Detail = "Windows: filesystem jail not required for this invocation.",
+            Detail = "Windows: no filesystem jail; Job Object resource limits only.",
 
         };
 
     }
+
+    /// <summary>
+    /// Linux Landlock is present in-tree but inactive for the macOS-ARM beta.
+    /// Never invokes <c>__sandbox-exec</c> / Landlock from this path.
+    /// </summary>
+    private static ChildProcessSandboxApplyResult ApplyLinux(
+        ChildProcessSandboxRequest request,
+        ILogger? logger) =>
+        FailClosedOrEscape(request, logger, LinuxDeferredDetail);
 
     private static ChildProcessSandboxApplyResult ApplyMacOs(
         ProcessStartInfo startInfo,
@@ -170,66 +202,62 @@ internal static class ChildProcessFilesystemJail
 
         }
 
-        List<string> readWriteRoots = NormalizeExistingRoots(request.ReadWriteRoots);
-
-        List<string> readExecuteRoots = NormalizeExistingRoots(request.ReadExecuteRoots);
-
-        if (readWriteRoots.Count == 0 && readExecuteRoots.Count == 0)
-        {
-
-            return FailClosedOrEscape(request, logger, "No allowed filesystem roots for the child-process jail.");
-
-        }
-
-        // Align WorkingDirectory with realpath so Seatbelt subpath filters match kernel paths
-        // (/var → /private/var on macOS).
-        if (!string.IsNullOrWhiteSpace(startInfo.WorkingDirectory))
-        {
-
-            try
-            {
-
-                string cwdFull = Path.GetFullPath(startInfo.WorkingDirectory);
-
-                if (Directory.Exists(cwdFull))
-                {
-
-                    string? resolved = Directory.ResolveLinkTarget(cwdFull, returnFinalTarget: true)?.FullName
-                                       ?? new DirectoryInfo(cwdFull).FullName;
-
-                    startInfo.WorkingDirectory = Path.GetFullPath(resolved);
-
-                }
-
-            }
-            catch (Exception)
-            {
-
-            }
-
-        }
-
-        string profile;
-
-        try
-        {
-
-            profile = MacOsSandboxExecProfileBuilder.Build(readWriteRoots, readExecuteRoots);
-
-        }
-        catch (Exception ex)
-        {
-
-            logger?.LogError(ex, "Failed to build macOS sandbox-exec profile.");
-
-            return FailClosedOrEscape(request, logger, "Failed to build macOS sandbox-exec profile.");
-
-        }
+        string? invocationTempDir = null;
 
         string? profilePath = null;
 
         try
         {
+
+            List<string> readWriteRoots = NormalizeExistingRoots(request.ReadWriteRoots);
+
+            List<string> readExecuteRoots = NormalizeExistingRoots(request.ReadExecuteRoots);
+
+            if (readWriteRoots.Count == 0 && readExecuteRoots.Count == 0)
+            {
+
+                return FailClosedOrEscape(request, logger, "No allowed filesystem roots for the child-process jail.");
+
+            }
+
+            if (!string.IsNullOrWhiteSpace(startInfo.WorkingDirectory))
+            {
+
+                try
+                {
+
+                    string cwdFull = Path.GetFullPath(startInfo.WorkingDirectory);
+
+                    if (Directory.Exists(cwdFull))
+                    {
+
+                        string? resolved = Directory.ResolveLinkTarget(cwdFull, returnFinalTarget: true)?.FullName
+                                           ?? new DirectoryInfo(cwdFull).FullName;
+
+                        startInfo.WorkingDirectory = Path.GetFullPath(resolved);
+
+                    }
+
+                }
+                catch (Exception)
+                {
+
+                }
+
+            }
+
+            invocationTempDir = CreateOwnerOnlyTempDirectory("arcanum-child-tmp-");
+
+            startInfo.Environment["TMPDIR"] = invocationTempDir;
+
+            startInfo.Environment["TMP"] = invocationTempDir;
+
+            startInfo.Environment["TEMP"] = invocationTempDir;
+
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                readWriteRoots,
+                readExecuteRoots,
+                invocationTempDir);
 
             profilePath = WriteOwnerOnlyTempFile("arcanum-sb-", ".sb", profile);
 
@@ -240,115 +268,35 @@ internal static class ChildProcessFilesystemJail
 
                 Status = ChildProcessSandboxApplyStatus.Applied,
 
-                TempPathsToCleanup = [profilePath],
+                TempPathsToCleanup = [profilePath, invocationTempDir],
 
             };
 
         }
         catch (Exception ex)
         {
+
+            List<string> cleanup = [];
 
             if (profilePath is not null)
             {
 
-                CleanupTempPaths([profilePath]);
+                cleanup.Add(profilePath);
 
             }
+
+            if (invocationTempDir is not null)
+            {
+
+                cleanup.Add(invocationTempDir);
+
+            }
+
+            CleanupTempPaths(cleanup);
 
             logger?.LogError(ex, "Failed to prepare macOS sandbox-exec wrapper.");
 
             return FailClosedOrEscape(request, logger, "Failed to prepare macOS sandbox-exec wrapper.");
-
-        }
-
-    }
-
-    private static ChildProcessSandboxApplyResult ApplyLinux(
-        ProcessStartInfo startInfo,
-        ChildProcessSandboxRequest request,
-        ILogger? logger)
-    {
-
-        string? processPath = Environment.ProcessPath;
-
-        if (string.IsNullOrWhiteSpace(processPath) || !File.Exists(processPath))
-        {
-
-            return FailClosedOrEscape(
-                request,
-                logger,
-                "Environment.ProcessPath is unavailable; cannot invoke the Landlock __sandbox-exec helper.");
-
-        }
-
-        List<string> readWriteRoots = NormalizeExistingRoots(request.ReadWriteRoots);
-
-        List<string> readExecuteRoots = NormalizeExistingRoots(request.ReadExecuteRoots);
-
-        if (readWriteRoots.Count == 0 && readExecuteRoots.Count == 0)
-        {
-
-            return FailClosedOrEscape(request, logger, "No allowed filesystem roots for the child-process jail.");
-
-        }
-
-        SandboxExecHelperPayload payload = new()
-        {
-            Target = startInfo.FileName,
-
-            Arguments = [.. startInfo.ArgumentList],
-
-            ReadWriteRoots = [.. readWriteRoots],
-
-            ReadExecuteRoots = [.. readExecuteRoots],
-
-            WorkingDirectory = string.IsNullOrWhiteSpace(startInfo.WorkingDirectory)
-                ? null
-                : startInfo.WorkingDirectory,
-        };
-
-        string? configPath = null;
-
-        try
-        {
-
-            string json = JsonSerializer.Serialize(payload, SandboxExecJsonContext.Default.SandboxExecHelperPayload);
-
-            configPath = WriteOwnerOnlyTempFile("arcanum-ll-", ".json", json);
-
-            startInfo.ArgumentList.Clear();
-
-            startInfo.ArgumentList.Add(HelperArg);
-
-            startInfo.ArgumentList.Add("--config");
-
-            startInfo.ArgumentList.Add(configPath);
-
-            startInfo.FileName = processPath;
-
-            return new ChildProcessSandboxApplyResult
-            {
-
-                Status = ChildProcessSandboxApplyStatus.Applied,
-
-                TempPathsToCleanup = [configPath],
-
-            };
-
-        }
-        catch (Exception ex)
-        {
-
-            if (configPath is not null)
-            {
-
-                CleanupTempPaths([configPath]);
-
-            }
-
-            logger?.LogError(ex, "Failed to prepare Linux Landlock __sandbox-exec helper.");
-
-            return FailClosedOrEscape(request, logger, "Failed to prepare Linux Landlock __sandbox-exec helper.");
 
         }
 
@@ -364,14 +312,18 @@ internal static class ChildProcessFilesystemJail
         {
 
             logger?.LogWarning(
-                "Child process filesystem sandbox unavailable ({Detail}); AllowUnsandboxedToolChildren=true — running without FS jail. {Note}",
+                "Filesystem jail disabled by operator (AllowUnsandboxedToolChildren=true). Platform={Platform} Tool={ToolName} Workspace={Workspace} Campaign={CampaignId}. Detail={Detail}. {Note}",
+                GetPlatformLabel(),
+                string.IsNullOrWhiteSpace(request.ToolName) ? "(unknown)" : request.ToolName,
+                string.IsNullOrWhiteSpace(request.WorkspaceRootForLog) ? "(none)" : RedactPathForLog(request.WorkspaceRootForLog),
+                string.IsNullOrWhiteSpace(request.CampaignIdForLog) ? "(none)" : request.CampaignIdForLog,
                 detail,
                 ChildProcessSandboxMessages.NotNetworkIsolationNote);
 
             return new ChildProcessSandboxApplyResult
             {
 
-                Status = ChildProcessSandboxApplyStatus.EscapedUnsandboxed,
+                Status = ChildProcessSandboxApplyStatus.EscapedByOperator,
 
                 Detail = detail,
 
@@ -380,8 +332,10 @@ internal static class ChildProcessFilesystemJail
         }
 
         logger?.LogWarning(
-            "Child process filesystem sandbox unavailable ({Detail}); refusing unbounded tool child. {Note}",
+            "Child process filesystem sandbox unavailable ({Detail}); refusing unbounded tool child. Platform={Platform} Tool={ToolName}. {Note}",
             detail,
+            GetPlatformLabel(),
+            string.IsNullOrWhiteSpace(request.ToolName) ? "(unknown)" : request.ToolName,
             ChildProcessSandboxMessages.NotNetworkIsolationNote);
 
         return new ChildProcessSandboxApplyResult
@@ -392,6 +346,54 @@ internal static class ChildProcessFilesystemJail
             Detail = detail,
 
         };
+
+    }
+
+    private static string GetPlatformLabel()
+    {
+
+        if (OperatingSystem.IsMacOS())
+        {
+
+            return "macOS";
+
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+
+            return "Linux";
+
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return "Windows";
+
+        }
+
+        return "Unknown";
+
+    }
+
+    private static string RedactPathForLog(string path)
+    {
+
+        // Keep only the last path segment for diagnostics — avoid dumping full home trees.
+        try
+        {
+
+            return Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                   ?? "(path)";
+
+        }
+        catch (Exception)
+        {
+
+            return "(path)";
+
+        }
 
     }
 
@@ -418,6 +420,19 @@ internal static class ChildProcessFilesystemJail
         }
 
         startInfo.FileName = sandboxExecPath;
+
+    }
+
+    private static string CreateOwnerOnlyTempDirectory(string prefix)
+    {
+
+        string path = Path.Combine(Path.GetTempPath(), prefix + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(path);
+
+        SecureFilePermissions.ApplyOwnerOnlyDirectory(path);
+
+        return path;
 
     }
 
@@ -466,6 +481,20 @@ internal static class ChildProcessFilesystemJail
 
             }
 
+            // Reject control characters / newlines before profile generation.
+            foreach (char c in root)
+            {
+
+                if (char.IsControl(c))
+                {
+
+                    throw new InvalidOperationException(
+                        "Sandbox root paths must not contain control characters or newlines.");
+
+                }
+
+            }
+
             string full;
 
             try
@@ -473,35 +502,20 @@ internal static class ChildProcessFilesystemJail
 
                 full = Path.GetFullPath(root.Trim());
 
-                if (Directory.Exists(full) || File.Exists(full))
+                if (File.Exists(full) && !Directory.Exists(full))
                 {
 
-                    // Prefer directory form for Landlock/sandbox-exec subpath rules.
-                    if (File.Exists(full) && !Directory.Exists(full))
+                    string? parent = Path.GetDirectoryName(full);
+
+                    if (!string.IsNullOrEmpty(parent))
                     {
 
-                        string? parent = Path.GetDirectoryName(full);
-
-                        if (!string.IsNullOrEmpty(parent))
-                        {
-
-                            full = Path.GetFullPath(parent);
-
-                        }
+                        full = Path.GetFullPath(parent);
 
                     }
 
                 }
-                else
-                {
 
-                    // Still include the intended root so the jail grants the path once created;
-                    // sandbox-exec / Landlock accept non-existent paths as allow rules on some hosts.
-                    full = Path.GetFullPath(root.Trim());
-
-                }
-
-                // Resolve symlinks when possible so deny/allow filters match kernel paths (e.g. /var → /private/var).
                 string? resolved = null;
 
                 try
@@ -512,13 +526,6 @@ internal static class ChildProcessFilesystemJail
 
                         resolved = Directory.ResolveLinkTarget(full, returnFinalTarget: true)?.FullName
                                    ?? new DirectoryInfo(full).FullName;
-
-                    }
-                    else if (File.Exists(full))
-                    {
-
-                        resolved = File.ResolveLinkTarget(full, returnFinalTarget: true)?.FullName
-                                   ?? new FileInfo(full).FullName;
 
                     }
 
@@ -536,6 +543,12 @@ internal static class ChildProcessFilesystemJail
                     full = Path.GetFullPath(resolved);
 
                 }
+
+            }
+            catch (InvalidOperationException)
+            {
+
+                throw;
 
             }
             catch (Exception)

@@ -187,6 +187,89 @@ public sealed class WindowsJobObjectSessionTests
     }
 
     [Fact]
+    public async Task WindowsJobObject_AssignmentFailureKillsStartedProcess()
+    {
+
+        ProcessStartInfo psi;
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+
+                ArgumentList = { "/c", "ping", "-n", "30", "127.0.0.1" },
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                UseShellExecute = false,
+
+                CreateNoWindow = true,
+            };
+
+        }
+        else
+        {
+
+            psi = new ProcessStartInfo
+            {
+                FileName = "/bin/sleep",
+
+                ArgumentList = { "30" },
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                UseShellExecute = false,
+            };
+
+        }
+
+        AssignFailingLimiterWithCapture limiter = new();
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 65_536,
+            timeout: TimeSpan.FromSeconds(10),
+            resourceLimits: new ResourceLimits { MaxMemoryMb = 64 },
+            resourceLimiter: limiter,
+            CancellationToken.None);
+
+        Assert.Equal(CappedChildProcessOutcome.ResourceLimitApplyFailed, result.Outcome);
+
+        Assert.True(limiter.CapturedPid > 0);
+
+        // Process object may be disposed by the runner; verify by pid that the tree was killed.
+        bool stillAlive;
+
+        try
+        {
+
+            using global::System.Diagnostics.Process surviving =
+                global::System.Diagnostics.Process.GetProcessById(limiter.CapturedPid);
+
+            stillAlive = !surviving.HasExited;
+
+        }
+        catch (ArgumentException)
+        {
+
+            stillAlive = false;
+
+        }
+
+        Assert.False(
+            stillAlive,
+            "Assign-after-start failure must kill the started process tree before returning.");
+
+    }
+
+    [Fact]
     public async Task CappedChildProcessRunner_AssignAfterStartFailure_ReturnsApplyFailed()
     {
 
@@ -258,6 +341,25 @@ public sealed class WindowsJobObjectSessionTests
                 CleanupAsync: _ => Task.CompletedTask,
                 WasOomKilledAsync: null,
                 AssignAfterStart: _ => new ResourceLimitError("Job Object assign failed (test)."));
+
+    }
+
+    private sealed class AssignFailingLimiterWithCapture : IProcessResourceLimiter
+    {
+
+        public int CapturedPid { get; private set; }
+
+        public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
+            new(
+                null,
+                CleanupAsync: _ => Task.CompletedTask,
+                WasOomKilledAsync: null,
+                AssignAfterStart: process =>
+                {
+                    CapturedPid = process.Id;
+
+                    return new ResourceLimitError("Job Object assign failed (test).");
+                });
 
     }
 
