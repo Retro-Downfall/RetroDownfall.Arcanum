@@ -5,7 +5,7 @@ public sealed record ThemeSemanticColors
 
     public string Text { get; init; } = "#2A1545";
 
-    public string Heading { get; init; } = "#8B1538";
+    public string Heading { get; init; } = "#1E3A8A";
 
     public string Highlight { get; init; } = "#008F11";
 

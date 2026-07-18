@@ -10,7 +10,7 @@ public sealed record ThemeColors
 
         Text = "#E8DCC4",
 
-        Heading = "#00FFD5",
+        Heading = "#60A5FA",
 
         Highlight = "#39FF14",
 

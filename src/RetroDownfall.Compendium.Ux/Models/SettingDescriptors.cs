@@ -431,7 +431,7 @@ public static class SettingDescriptors
 
         new("cli.themeColors.light.text", ConfigSection.Cli, "Light — text", "Body text color for the Light CLI theme.", SettingKind.Color, Placeholder: "#2A1545"),
 
-        new("cli.themeColors.light.heading", ConfigSection.Cli, "Light — heading", "Heading text color for the Light CLI theme.", SettingKind.Color, Placeholder: "#8B1538"),
+        new("cli.themeColors.light.heading", ConfigSection.Cli, "Light — heading", "Heading text color for the Light CLI theme.", SettingKind.Color, Placeholder: "#1E3A8A"),
 
         new("cli.themeColors.light.highlight", ConfigSection.Cli, "Light — highlight", "Highlight color for the Light CLI theme.", SettingKind.Color, Placeholder: "#008F11"),
 
@@ -443,7 +443,7 @@ public static class SettingDescriptors
 
         new("cli.themeColors.dark.text", ConfigSection.Cli, "Dark — text", "Body text color for the Dark CLI theme.", SettingKind.Color, Placeholder: "#E8DCC4"),
 
-        new("cli.themeColors.dark.heading", ConfigSection.Cli, "Dark — heading", "Heading text color for the Dark CLI theme.", SettingKind.Color, Placeholder: "#00FFD5"),
+        new("cli.themeColors.dark.heading", ConfigSection.Cli, "Dark — heading", "Heading text color for the Dark CLI theme.", SettingKind.Color, Placeholder: "#60A5FA"),
 
         new("cli.themeColors.dark.highlight", ConfigSection.Cli, "Dark — highlight", "Highlight color for the Dark CLI theme.", SettingKind.Color, Placeholder: "#39FF14"),
 
