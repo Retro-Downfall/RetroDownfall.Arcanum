@@ -21,6 +21,8 @@
              xmlns:divinationViews="using:RetroDownfall.TheForge.Ux.Views.Divination"
              xmlns:workspaceExplorer="using:RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer"
              xmlns:workspaceExplorerViews="using:RetroDownfall.TheForge.Ux.Views.WorkspaceExplorer"
+             xmlns:weaveInspector="using:RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector"
+             xmlns:weaveInspectorViews="using:RetroDownfall.TheForge.Ux.Views.WeaveInspector"
              xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
              x:Class="RetroDownfall.TheForge.Ux.Views.Docking.DockGroupView"
              x:DataType="dock:DockGroupViewModel">
@@ -98,6 +100,9 @@
               </DataTemplate>
               <DataTemplate DataType="workspaceExplorer:WorkspaceExplorerViewModel">
                 <workspaceExplorerViews:WorkspaceExplorerView />
+              </DataTemplate>
+              <DataTemplate DataType="weaveInspector:WeaveInspectorViewModel">
+                <weaveInspectorViews:WeaveInspectorView />
               </DataTemplate>
               <DataTemplate DataType="dock:OutputToolContent">
                 <TextBlock Text="{Binding FoundryFloor.OutputEmptyState}" TextWrapping="Wrap" Margin="8" />

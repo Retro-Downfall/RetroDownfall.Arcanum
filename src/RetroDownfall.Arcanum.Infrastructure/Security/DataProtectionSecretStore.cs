@@ -69,14 +69,23 @@ public sealed class DataProtectionSecretStore(
     public async Task<string?> GetGrimoireEncryptionSecretAsync()
     {
 
-        SecretStoreReadResult result = await ReadProtectedResultAsync(
-            GrimoireStorePath,
-            _grimoireProtector,
-            corruptMessage: "grimoire-key.dat is present but could not be decrypted.").ConfigureAwait(false);
+        SecretStoreReadResult result = await GetGrimoireEncryptionSecretReadResultAsync().ConfigureAwait(false);
 
         return result.Status == SecretStoreReadStatus.Ok ? result.Value : null;
 
     }
+
+    /// <summary>
+    /// Like <see cref="GetGrimoireEncryptionSecretAsync"/> but preserves
+    /// <see cref="SecretStoreReadStatus.Corrupted"/> so callers can refuse a silent
+    /// API-key fallback when the sealed secret is present but undecryptable.
+    /// </summary>
+    public Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync() =>
+        ReadProtectedResultAsync(
+            GrimoireStorePath,
+            _grimoireProtector,
+            corruptMessage: "grimoire-key.dat is present but could not be decrypted (corrupt or missing Data Protection key).");
+
 
     public async Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
     {

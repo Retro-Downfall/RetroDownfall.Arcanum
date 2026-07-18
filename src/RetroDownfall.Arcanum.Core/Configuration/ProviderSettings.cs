@@ -5,17 +5,17 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record ProviderSettings
 {
 
-    public string Name { get; init; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
 
-    public AiProviderKind Type { get; init; }
+    public AiProviderKind Type { get; set; }
 
-    public string Endpoint { get; init; } = string.Empty;
+    public string Endpoint { get; set; } = string.Empty;
 
-    public string? ApiKey { get; init; }
+    public string? ApiKey { get; set; }
 
-    public IReadOnlyList<ModelEntry> Models { get; init; } = [];
+    public IReadOnlyList<ModelEntry> Models { get; set; } = [];
 
-    public int ContextWindowLimit { get; init; } = 8192;
+    public int ContextWindowLimit { get; set; } = 8192;
 
     /// <summary>
     /// When <see langword="true"/>, Arcanum records <c>arcanum_prompt_cache_tokens</c> metrics for
@@ -23,7 +23,7 @@ public sealed record ProviderSettings
     /// <see langword="true"/> for OpenAI-compatible providers (which cache automatically).
     /// Operators can force this off for providers that do not support caching to avoid misleading metrics.
     /// </summary>
-    public bool? SupportsPromptCaching { get; init; }
+    public bool? SupportsPromptCaching { get; set; }
 
     public override string ToString()
     {

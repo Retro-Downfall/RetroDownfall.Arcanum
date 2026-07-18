@@ -3,17 +3,17 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record IntelligenceSettings
 {
 
-    public int ExecuteCommandTimeoutSeconds { get; init; } = 30;
+    public int ExecuteCommandTimeoutSeconds { get; set; } = 30;
 
-    public int SemanticRouterPreflightTimeoutSeconds { get; init; } = 15;
+    public int SemanticRouterPreflightTimeoutSeconds { get; set; } = 15;
 
-    public int SemanticRouterMaxTokens { get; init; } = 128;
+    public int SemanticRouterMaxTokens { get; set; } = 128;
 
-    public float SemanticRouterTemperature { get; init; } = 0.0f;
+    public float SemanticRouterTemperature { get; set; } = 0.0f;
 
-    public int ListDirectoryMaxPaths { get; init; } = 500;
+    public int ListDirectoryMaxPaths { get; set; } = 500;
 
-    public bool EnableLoreSystem { get; init; } = true;
+    public bool EnableLoreSystem { get; set; } = true;
 
     /// <summary>
     /// Gates the <c>scribe_lexicon</c> / <c>delete_lexicon</c> MCP tools and the Lexicon retrieval /
@@ -21,45 +21,45 @@ public sealed record IntelligenceSettings
     /// model-writable memory via <c>EnableLoreSystem</c> must now set this to <c>false</c>. The legacy
     /// <c>EnableLoreSystem</c> flag no longer gates any MCP tool — Lore tools are removed.
     /// </summary>
-    public bool EnableLexiconSystem { get; init; } = true;
+    public bool EnableLexiconSystem { get; set; } = true;
 
     /// <summary>Maximum Lexicon entries returned per inference-turn <c>MatchEntitiesAsync</c> query.</summary>
-    public int LexiconMaxMatchedEntries { get; init; } = 16;
+    public int LexiconMaxMatchedEntries { get; set; } = 16;
 
     /// <summary>Hard cap (bytes) on the rendered <c>### Lexicon (Known Context)</c> DATA block.</summary>
-    public int LexiconMaxInjectedBytes { get; init; } = 4096;
+    public int LexiconMaxInjectedBytes { get; set; } = 4096;
 
-    public bool EnableArchiveSearch { get; init; } = true;
+    public bool EnableArchiveSearch { get; set; } = true;
 
-    public int ArchiveSearchMaxResults { get; init; } = 5;
+    public int ArchiveSearchMaxResults { get; set; } = 5;
 
-    public int ArchiveSearchMaxQueryLength { get; init; } = 512;
+    public int ArchiveSearchMaxQueryLength { get; set; } = 512;
 
-    public int CampaignLogThreshold { get; init; } = 25;
+    public int CampaignLogThreshold { get; set; } = 25;
 
-    public int CampaignLogIdleTimeoutMinutes { get; init; } = 240;
+    public int CampaignLogIdleTimeoutMinutes { get; set; } = 240;
 
-    public int CampaignLogSweepIntervalMinutes { get; init; } = 15;
+    public int CampaignLogSweepIntervalMinutes { get; set; } = 15;
 
-    public int ContextWindowCompressionThreshold { get; init; } = 85;
+    public int ContextWindowCompressionThreshold { get; set; } = 85;
 
-    public bool EnableContextCompression { get; init; } = true;
+    public bool EnableContextCompression { get; set; } = true;
 
-    public bool EnableTokenTracking { get; init; } = true;
+    public bool EnableTokenTracking { get; set; } = true;
 
     /// <summary>
     /// Hard cap (bytes) on captured <c>stdout</c> and <c>stderr</c> for in-process MCP
     /// <c>execute_command</c> and the <c>run_spell_script</c> hub tool. Output beyond this is
     /// truncated with a marker so verbose tool calls cannot exhaust host memory.
     /// </summary>
-    public long ToolOutputCapBytes { get; init; } = 1L * 1024L * 1024L;
+    public long ToolOutputCapBytes { get; set; } = 1L * 1024L * 1024L;
 
     /// <summary>
     /// Maximum number of agentic tool rounds the hub will execute per inference turn.
     /// A round = one model response containing tool calls + one server-side execution batch.
     /// Beyond this cap, the hub fails the turn with <c>Hub.ToolLoop</c>.
     /// </summary>
-    public int MaxToolInferenceRounds { get; init; } = 8;
+    public int MaxToolInferenceRounds { get; set; } = 8;
 
     /// <summary>
     /// When <see langword="true"/> (default), an unexpected exception from a single tool
@@ -74,47 +74,47 @@ public sealed record IntelligenceSettings
     /// <c>/v1</c> streaming) already tolerates tool failures unconditionally and is not affected by
     /// this setting.
     /// </summary>
-    public bool TolerateToolFailures { get; init; } = true;
+    public bool TolerateToolFailures { get; set; } = true;
 
     /// <summary>
     /// Minimum assembled-message count before context-compression preflight runs. Short threads
     /// are assumed to fit and skip tokenizer cost. Default 6.
     /// </summary>
-    public int CompressionPreflightMinMessages { get; init; } = 6;
+    public int CompressionPreflightMinMessages { get; set; } = 6;
 
     /// <summary>
     /// Per-message overhead (tokens) added to the pre-flight count to approximate chat-template
     /// framing (role markers, separators). Default 4.
     /// </summary>
-    public int PerMessageTemplateOverheadTokens { get; init; } = 4;
+    public int PerMessageTemplateOverheadTokens { get; set; } = 4;
 
     /// <summary>
     /// Tiktoken encoding name used by <c>InferenceTokenizerResolver</c>. Default <c>o200k_base</c>.
     /// Operators only need to change this if they validate counts against a specific
     /// non-OpenAI model family that ships a different encoding.
     /// </summary>
-    public string TokenizerEncoding { get; init; } = "o200k_base";
+    public string TokenizerEncoding { get; set; } = "o200k_base";
 
-    public int MaxOpenApiMessages { get; init; } = 1_000;
+    public int MaxOpenApiMessages { get; set; } = 1_000;
 
-    public int MaxStatelessMessages { get; init; } = 100;
+    public int MaxStatelessMessages { get; set; } = 100;
 
-    public int MaxContentPartsPerMessage { get; init; } = 64;
+    public int MaxContentPartsPerMessage { get; set; } = 64;
 
-    public int MaxPingPromptChars { get; init; } = 32_768;
+    public int MaxPingPromptChars { get; set; } = 32_768;
 
-    public int MaxPlanSteps { get; init; } = 30;
+    public int MaxPlanSteps { get; set; } = 30;
 
     /// <summary>
     /// Wall-clock timeout (seconds) for a single inference turn (buffered or streaming), including tool rounds.
     /// Default 600. Linked to the caller cancellation token.
     /// </summary>
-    public int InferenceTimeoutSeconds { get; init; } = 600;
+    public int InferenceTimeoutSeconds { get; set; } = 600;
 
     /// <summary>
     /// When <c>true</c>, semantic spell-router preflight uses <see cref="ArcanumSettings.FastModel"/> when configured.
     /// </summary>
-    public bool UseFastModelForSpellRouting { get; init; }
+    public bool UseFastModelForSpellRouting { get; set; }
 
 }
 

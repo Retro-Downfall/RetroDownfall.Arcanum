@@ -509,6 +509,17 @@ internal static class MainViewModelFactory
                 new FakeClipboardService(),
                 new FakeWhispersService(),
                 connection),
+            new RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector.WeaveInspectorViewModel(
+                new NullWeaveInspectorDataSource(),
+                new NullWorkspaceExplorerDataSource(),
+                new NullDivinationDataSource(),
+                new NullSagaArchiveDataSource(),
+                navigation,
+                foundryFloor,
+                new NullConfirmationDialogService(),
+                new FakeClipboardService(),
+                new FakeWhispersService(),
+                connection),
             new RetroDownfall.TheForge.Ux.ViewModels.Workbench.WorkbenchDocumentFactory(
                 new NullSpellEditorDataSource(),
                 new NullPromptEditorDataSource(),
@@ -992,6 +1003,20 @@ internal sealed class NullDivinationDataSource : RetroDownfall.TheForge.Ux.ViewM
 
     public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Weave.SagaSearchResult>> DivineSagaAsync(RetroDownfall.Arcanum.Core.Weave.SagaSearchRequest request, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Weave.SagaSearchResult>(null, true, null, null));
+
+}
+
+internal sealed class NullWeaveInspectorDataSource : RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector.IWeaveInspectorDataSource
+{
+
+    public Task<DataSourceResult<WorkspaceIndexStatusDto>> GetIndexStatusAsync(string workspaceId, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<WorkspaceIndexStatusDto>(null, true, null, null));
+
+    public Task<DataSourceResult<WorkspaceFileChunkPage>> GetChunksAsync(string workspaceId, string? relativePath, int limit, int offset, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<WorkspaceFileChunkPage>(new([], 0, 50, 0, false, null), true, null, null));
+
+    public Task<DataSourceResult<EmbeddingsResetResult>> ResetEmbeddingsAsync(string scope, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<EmbeddingsResetResult>(null, true, null, null));
 
 }
 

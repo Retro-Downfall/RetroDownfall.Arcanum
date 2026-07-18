@@ -26,6 +26,6 @@ public sealed record PricingSettings
     /// Fallback pricing when a model is not present in <see cref="ModelPricing"/>. Default free
     /// (0.00 USD / 1M tokens) so unknown models do not block inference.
     /// </summary>
-    public ModelPricingEntry DefaultPricing { get; init; } = new();
+    public ModelPricingEntry DefaultPricing { get; set; } = new();
 
 }

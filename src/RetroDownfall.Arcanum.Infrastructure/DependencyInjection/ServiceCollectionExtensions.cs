@@ -102,6 +102,8 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<IGrimoireDbPassphraseSource, GrimoireDbPassphraseSource>();
 
+        services.AddSingleton<IGrimoireDbReadiness, GrimoireDbReadiness>();
+
         services.AddSingleton(TimeProvider.System);
 
         services.AddDbContext<ArcanumDbContext>();
@@ -244,6 +246,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<WeaveIndexAvailability>();
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped<EmbeddingsResetService>();
+        // Phase 7 — read-only RAG / The Weave inspector over the existing workspace chunk tables. Scoped
+        // because it depends on the scoped ArcanumDbContext; never triggers indexing or mutates state.
+        services.AddScoped<IWorkspaceIndexInspectorService, WorkspaceIndexInspectorService>();
         services.AddSingleton<SpellWeaveCache>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
 

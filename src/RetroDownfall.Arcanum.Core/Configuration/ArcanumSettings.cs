@@ -3,81 +3,81 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record ArcanumSettings
 {
 
-    public HostSettings Host { get; init; } = new();
+    public HostSettings Host { get; set; } = new();
 
-    public ServerSettings Server { get; init; } = new();
+    public ServerSettings Server { get; set; } = new();
 
-    public ProviderSettings[] Providers { get; init; } = [];
+    public ProviderSettings[] Providers { get; set; } = [];
 
-    public string? DefaultModel { get; init; }
+    public string? DefaultModel { get; set; }
 
-    public string? FastModel { get; init; }
+    public string? FastModel { get; set; }
 
-    public ConclaveSettings Conclave { get; init; } = new();
+    public ConclaveSettings Conclave { get; set; } = new();
 
-    public IntelligenceSettings Intelligence { get; init; } = new();
+    public IntelligenceSettings Intelligence { get; set; } = new();
 
-    public PerceptionSettings Perception { get; init; } = new();
+    public PerceptionSettings Perception { get; set; } = new();
 
-    public SpellSettings Spells { get; init; } = new();
+    public SpellSettings Spells { get; set; } = new();
 
-    public CampaignsSettings Campaigns { get; init; } = new();
+    public CampaignsSettings Campaigns { get; set; } = new();
 
-    public CliSettings Cli { get; init; } = new();
+    public CliSettings Cli { get; set; } = new();
 
-    public SecuritySettings Security { get; init; } = new();
+    public SecuritySettings Security { get; set; } = new();
 
-    public DaemonSettings Daemon { get; init; } = new();
+    public DaemonSettings Daemon { get; set; } = new();
 
-    public CommLinkSettings CommLink { get; init; } = new();
+    public CommLinkSettings CommLink { get; set; } = new();
 
-    public GrimoireSettings Grimoire { get; init; } = new();
+    public GrimoireSettings Grimoire { get; set; } = new();
 
-    public EventBusSettings EventBus { get; init; } = new();
+    public EventBusSettings EventBus { get; set; } = new();
 
-    public LogSettings Logs { get; init; } = new();
+    public LogSettings Logs { get; set; } = new();
 
-    public WorkspaceSettings Workspaces { get; init; } = new();
+    public WorkspaceSettings Workspaces { get; set; } = new();
 
-    public SessionSettings Sessions { get; init; } = new();
+    public SessionSettings Sessions { get; set; } = new();
 
-    public WardSettings Ward { get; init; } = new();
+    public WardSettings Ward { get; set; } = new();
 
-    public ApprenticeSettings Apprentices { get; init; } = new();
+    public ApprenticeSettings Apprentices { get; set; } = new();
 
-    public CodexSettings Codex { get; init; } = new();
+    public CodexSettings Codex { get; set; } = new();
 
-    public ProvingGroundsSettings ProvingGrounds { get; init; } = new();
+    public ProvingGroundsSettings ProvingGrounds { get; set; } = new();
 
-    public McpSettings Mcp { get; init; } = new();
+    public McpSettings Mcp { get; set; } = new();
 
-    public PromptSettings Prompts { get; init; } = new();
+    public PromptSettings Prompts { get; set; } = new();
 
-    public ResilienceSettings Resilience { get; init; } = new();
+    public ResilienceSettings Resilience { get; set; } = new();
 
-    public MetricsSettings Metrics { get; init; } = new();
+    public MetricsSettings Metrics { get; set; } = new();
 
-    public EmbeddingSettings Embeddings { get; init; } = new();
+    public EmbeddingSettings Embeddings { get; set; } = new();
 
-    public ScryingSettings Scrying { get; init; } = new();
+    public ScryingSettings Scrying { get; set; } = new();
 
-    public ModerationsSettings Moderations { get; init; } = new();
+    public ModerationsSettings Moderations { get; set; } = new();
 
-    public StructuredOutputSettings StructuredOutput { get; init; } = new();
+    public StructuredOutputSettings StructuredOutput { get; set; } = new();
 
-    public FilesSettings Files { get; init; } = new();
+    public FilesSettings Files { get; set; } = new();
 
-    public BatchesSettings Batches { get; init; } = new();
+    public BatchesSettings Batches { get; set; } = new();
 
-    public PricingSettings Pricing { get; init; } = new();
+    public PricingSettings Pricing { get; set; } = new();
 
-    public BudgetSettings Budget { get; init; } = new();
+    public BudgetSettings Budget { get; set; } = new();
 
-    public WebBrowsingSettings WebBrowsing { get; init; } = new();
+    public WebBrowsingSettings WebBrowsing { get; set; } = new();
 
-    public ClientToolForwardingSettings ClientToolForwarding { get; init; } = new();
+    public ClientToolForwardingSettings ClientToolForwarding { get; set; } = new();
 
-    public GuardrailsSettings Guardrails { get; init; } = new();
+    public GuardrailsSettings Guardrails { get; set; } = new();
 
 }
 

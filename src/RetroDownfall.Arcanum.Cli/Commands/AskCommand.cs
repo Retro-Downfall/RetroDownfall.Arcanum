@@ -23,7 +23,8 @@ public sealed class AskCommand(
     IGrimoireCliInitialization grimoireBootstrapper,
     IServiceScopeFactory scopeFactory,
     ICliEnvironment cliEnvironment,
-    IOptions<ArcanumSettings> arcanumSettings)
+    IOptions<ArcanumSettings> arcanumSettings,
+    IArcanumServeLauncher serveLauncher)
 {
 
     /// <summary>
@@ -206,6 +207,8 @@ public sealed class AskCommand(
                 return 1;
 
             }
+
+            _ = await serveLauncher.EnsureRunningAsync(linked.Token).ConfigureAwait(false);
 
             ChronosyncReport chronosyncDelta;
 

@@ -1,0 +1,57 @@
+<h2>CLI UX blue — which heading blue?</h2>
+<p class="subtitle">Only the chrome (headings, borders, Figlet, prompt). <code>Error</code> / warning reds stay. Light theme Heading is currently wine <code>#8B1538</code>; Dark Heading is already cyan.</p>
+
+<div class="cards">
+  <div class="card" data-choice="royal" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#f5f0e8;padding:16px;font-family:ui-monospace,monospace;font-size:13px;line-height:1.4;">
+        <div style="color:#1e3a8a;font-weight:700;border:2px solid #1e3a8a;padding:8px 12px;">
+          <div style="font-size:18px;letter-spacing:2px;">ARCANUM</div>
+          <div style="color:#6B5D7A;font-size:11px;margin-top:4px;">the conversational grimoire</div>
+          <div style="margin-top:8px;"><span style="color:#1e3a8a;font-weight:700;">Mage</span> <span style="color:#2A1545;">&gt;</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#666;">Error sample: <span style="color:#C41E3A;">auth failed</span> (unchanged)</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Royal blue <code>#1E3A8A</code></h3>
+      <p>Deep, serious; good on light terminals. Pair Dark Heading → <code>#60A5FA</code>.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="azure" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#f5f0e8;padding:16px;font-family:ui-monospace,monospace;font-size:13px;line-height:1.4;">
+        <div style="color:#2563eb;font-weight:700;border:2px solid #2563eb;padding:8px 12px;">
+          <div style="font-size:18px;letter-spacing:2px;">ARCANUM</div>
+          <div style="color:#6B5D7A;font-size:11px;margin-top:4px;">the conversational grimoire</div>
+          <div style="margin-top:8px;"><span style="color:#2563eb;font-weight:700;">Mage</span> <span style="color:#2A1545;">&gt;</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#666;">Error sample: <span style="color:#C41E3A;">auth failed</span> (unchanged)</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Azure <code>#2563EB</code></h3>
+      <p>Brighter modern blue. Pair Dark Heading → <code>#38BDF8</code>.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="steel" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#f5f0e8;padding:16px;font-family:ui-monospace,monospace;font-size:13px;line-height:1.4;">
+        <div style="color:#3b82f6;font-weight:700;border:2px solid #3b82f6;padding:8px 12px;">
+          <div style="font-size:18px;letter-spacing:2px;">ARCANUM</div>
+          <div style="color:#6B5D7A;font-size:11px;margin-top:4px;">the conversational grimoire</div>
+          <div style="margin-top:8px;"><span style="color:#3b82f6;font-weight:700;">Mage</span> <span style="color:#2A1545;">&gt;</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#666;">Error sample: <span style="color:#C41E3A;">auth failed</span> (unchanged)</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Steel blue <code>#3B82F6</code></h3>
+      <p>Softer sky-leaning blue. Pair Dark Heading → <code>#93C5FD</code> (replace current cyan).</p>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:1.5rem;">Recommended: <strong>A</strong> — reads clearly as “blue UX” without competing with neon highlight green or error red. We’ll also update Compendium placeholders.</p>

@@ -611,6 +611,47 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task RecordWorkspaceContextAsync_and_GetLatestWorkspaceContextAsync_round_trip_without_offset_orderby_error()
+    {
+        // Regression guard for the first-message chat crash: ChronosyncEngine.AnalyzeAndSyncAsync
+        // calls these two methods on every chat turn. The EF Core SQLite provider cannot
+        // translate DateTimeOffset in ORDER BY, so the repository must materialize and sort
+        // client-side. Without that, the first chat message throws
+        // "SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses".
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        string workspacePath = "/tmp/arcanum-regression/" + Guid.NewGuid().ToString("N");
+
+        WorkspaceContext first = new()
+        {
+            Id = Guid.NewGuid(),
+            CreatedAt = new DateTimeOffset(2026, 7, 18, 12, 0, 0, TimeSpan.Zero),
+            WorkspacePath = workspacePath,
+            SerializedSnapshot = "{\"domain\":\"SoftwareEngineering\"}",
+        };
+
+        await repository.RecordWorkspaceContextAsync(first, CancellationToken.None);
+
+        WorkspaceContext second = new()
+        {
+            Id = Guid.NewGuid(),
+            CreatedAt = new DateTimeOffset(2026, 7, 18, 12, 5, 0, TimeSpan.Zero),
+            WorkspacePath = workspacePath,
+            SerializedSnapshot = "{\"domain\":\"Research\"}",
+        };
+
+        await repository.RecordWorkspaceContextAsync(second, CancellationToken.None);
+
+        WorkspaceContext? latest = await repository.GetLatestWorkspaceContextAsync(workspacePath, CancellationToken.None);
+
+        Assert.NotNull(latest);
+        Assert.Equal(second.Id, latest!.Id);
+        Assert.Equal(second.CreatedAt, latest.CreatedAt);
+    }
+
     private GrimoireRepository CreateRepository()
     {
 

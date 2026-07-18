@@ -29,11 +29,14 @@ public sealed class ApiKeyResolver
 
     private readonly Func<string, string?> _getEnvironmentVariable;
 
+    private readonly Func<CancellationToken, Task<string?>> _shellOut;
+
     public ApiKeyResolver(
         IOsCredentialStore osStore,
         ITheForgeSettingsStore settingsStore,
         ILogger<ApiKeyResolver> logger,
-        Func<string, string?>? getEnvironmentVariable = null)
+        Func<string, string?>? getEnvironmentVariable = null,
+        Func<CancellationToken, Task<string?>>? shellOut = null)
     {
 
         _osStore = osStore ?? throw new ArgumentNullException(nameof(osStore));
@@ -43,6 +46,8 @@ public sealed class ApiKeyResolver
         _logger = logger;
 
         _getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+
+        _shellOut = shellOut ?? TryShellOutAsync;
 
     }
 
@@ -114,7 +119,7 @@ public sealed class ApiKeyResolver
 
         }
 
-        string? shelledOutKey = await TryShellOutAsync(cancellationToken).ConfigureAwait(false);
+        string? shelledOutKey = await _shellOut(cancellationToken).ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(shelledOutKey))
         {

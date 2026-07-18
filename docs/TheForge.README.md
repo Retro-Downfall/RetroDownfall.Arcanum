@@ -333,6 +333,31 @@ offers **Copy setting paths**; the server returns `Session.MemoryManagementDisab
 controls turn off (chat still works). Pinning past the server pin limit surfaces
 `Session.TooManyPinned`. Divination focuses the Divination dock tool.
 
+## The Weave Inspector
+
+**The Weave Inspector** (View → **The Weave Inspector**; hidden by default, opens in the right dock) is
+a tabbed inspector for the RAG retrieval substrate — not just semantic search.
+
+- **Index** — pick a workspace; see the live vector mode + diagnostic from `GET /api/meta`; read-only
+  indexing status (`GET /api/workspaces/{id}/files/index/status`: total indexed files/chunks, oldest &
+  newest indexed timestamps, stored embedding dimensions, whether indexing is enabled, and an honest
+  note that Arcanum does not persist skipped-file reasons). Browse indexed chunks in a paginated list
+  (`GET /api/workspaces/{id}/files/chunks?relativePath=&limit=&offset=`, 500-char content preview cap,
+  Prev/Next paging, selected-chunk detail). **Re-index** triggers the server's
+  `POST .../files/index` (202, runs in the background). **Reset embeddings…** calls
+  `POST /api/embeddings/reset?scope=workspace_file&confirm=true` behind a strong confirmation dialog
+  (cancel is a no-op) and reports the deleted row counts, then refreshes the view.
+- **Workspace Divination** — semantic search over the selected workspace's indexed files; each hit has a
+  **Browse chunks** button that filters the Index tab's chunk browser to that file and focuses it.
+- **Saga** — Saga Divination with per-memory similarity scores (the Divination tool's Saga tab drops
+  them) plus a Refresh-stats summary.
+- **Sessions** — session Divination; hits open The Tome.
+
+When a surface is disabled, the banner names the exact `Arcanum:Embeddings:*` paths with **Copy setting
+paths**. The Forge never embeds or searches client-side; all inspection is read-only except the
+explicit, confirmed reset. Requires Arcanum embeddings enabled server-side for the Divination tabs and
+re-index; the Index status route itself is always available.
+
 ## The Codex
 
 **The Codex** is a Workbench document for `CODEX.md`. Open a campaign Codex from the Atelier campaign
@@ -365,8 +390,8 @@ Windows/Linux private-beta archives (unsigned by default) are produced by `scrip
 ## Status
 
 The Forge is in **beta** (`0.1.0-beta`, inherited from [`Directory.Build.props`](../Directory.Build.props)). **Milestones A–H are complete**, plus **H1/H2 (The
-Illumination)**, and Phases **5–7 polish** (Spell Metadata Designer, Proving Grounds UI, campaign
-CRUD + import/export): Avalonia shell, Atelier, Spell editor, Tome, War Table,
+Illumination)**, Phases **5–7 polish** (Spell Metadata Designer, Proving Grounds UI, campaign
+CRUD + import/export), and **RAG Phase 7 — The Weave Inspector**: Avalonia shell, Atelier, Spell editor, Tome, War Table,
 Gatehouse, Anvil, Visual Studio 2026 Fluent-inspired theming (Cascadia Mono / Segoe UI Variable,
 Dark/Light resource dictionaries, ManaBar, Icons, `forge.json` `Theme` swap), Atelier artifact
 creation and **campaign New / Edit / Delete (unregister) / Export / Import**, The Scriptorium prompt

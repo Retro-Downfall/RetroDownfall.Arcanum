@@ -64,6 +64,7 @@
           <MenuItem Header="The Archive" Command="{Binding ShowArchiveCommand}" />
           <MenuItem Header="Divination" Command="{Binding ShowDivinationCommand}" />
           <MenuItem Header="Workspace Explorer" Command="{Binding ShowWorkspaceExplorerCommand}" />
+          <MenuItem Header="The Weave Inspector" Command="{Binding ShowWeaveInspectorCommand}" />
           <MenuItem Header="The Codex" Command="{Binding OpenGlobalCodexCommand}" />
           <Separator />
           <MenuItem Header="Connect to Arcanum" Command="{Binding ConnectCommand}" />

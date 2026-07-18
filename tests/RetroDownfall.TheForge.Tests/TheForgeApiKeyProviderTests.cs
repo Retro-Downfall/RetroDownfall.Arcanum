@@ -18,7 +18,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         store.Set(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MasterApiKeyAccount, "key-from-os");
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -37,7 +41,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         TheForgeSettings settings = new() { ApiKey = "legacy-plaintext" };
 
@@ -66,7 +74,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -92,7 +104,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -111,7 +127,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         int promptCalls = 0;
 
@@ -140,7 +160,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         int promptCalls = 0;
 
@@ -169,7 +193,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         InMemoryOsCredentialStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         int promptCalls = 0;
 
@@ -237,7 +265,8 @@ public sealed class TheForgeApiKeyProviderTests
             store,
             new NullSettingsStore(),
             NullLogger<ApiKeyResolver>.Instance,
-            _ => "   ");
+            _ => "   ",
+            NoCliShellOut);
 
         ApiKeyResolution resolution = await resolver.ResolveAsync(new TheForgeSettings(), CancellationToken.None);
 
@@ -251,7 +280,11 @@ public sealed class TheForgeApiKeyProviderTests
 
         UnavailableStore store = new();
 
-        ApiKeyResolver resolver = new(store, new NullSettingsStore(), NullLogger<ApiKeyResolver>.Instance);
+        ApiKeyResolver resolver = new(
+            store,
+            new NullSettingsStore(),
+            NullLogger<ApiKeyResolver>.Instance,
+            shellOut: NoCliShellOut);
 
         TheForgeApiKeyProvider provider = new(
             resolver,
@@ -282,7 +315,8 @@ public sealed class TheForgeApiKeyProviderTests
             store,
             new NullSettingsStore(),
             NullLogger<ApiKeyResolver>.Instance,
-            name => env.TryGetValue(name, out string? value) ? value : null);
+            name => env.TryGetValue(name, out string? value) ? value : null,
+            NoCliShellOut);
 
         int promptCalls = 0;
 
@@ -326,6 +360,9 @@ public sealed class TheForgeApiKeyProviderTests
             OsCredentialStoreResult.Unavailable("test unavailable");
 
     }
+
+    private static Task<string?> NoCliShellOut(CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
 
     private sealed class StaticOptions(TheForgeSettings current) : IOptionsMonitor<TheForgeSettings>
     {

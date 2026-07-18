@@ -101,6 +101,10 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<ArcanumApiClient>();
 
+        services.AddSingleton<IServeProcessLauncher, ServeProcessLauncher>();
+
+        services.AddSingleton<IArcanumServeLauncher, ArcanumServeLauncher>();
+
         services.AddArcanumEyeOfTheWorld();
 
         services.AddArcanumDaemonManagement();
@@ -172,7 +176,7 @@ internal static class CliApplicationFactory
         // JsonSerializerOptions is supplied.
         ConsoleApp.JsonSerializerOptions = CliJsonArrayContext.Default.Options;
 
-        string[] mergedArgs = RepeatableOptionMerger.Merge(args);
+        string[] mergedArgs = ApplyDefaultCommand(RepeatableOptionMerger.Merge(args));
 
         var app = ConsoleApp.Create();
 
@@ -221,6 +225,24 @@ internal static class CliApplicationFactory
         await app.RunAsync(mergedArgs, startHost: true, stopHost: true, disposeServiceProvider: false).ConfigureAwait(false);
 
         return Environment.ExitCode;
+
+    }
+
+    /// <summary>
+    /// Bare <c>arcanum</c> (no command) opens the interactive chat REPL — the primary UX.
+    /// Explicit help/version and every named command still behave as before.
+    /// </summary>
+    internal static string[] ApplyDefaultCommand(string[] mergedArgs)
+    {
+
+        ArgumentNullException.ThrowIfNull(mergedArgs);
+
+        if (mergedArgs.Length == 0)
+        {
+            return ["chat"];
+        }
+
+        return mergedArgs;
 
     }
 

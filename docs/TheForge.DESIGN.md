@@ -472,6 +472,21 @@ are **separate dock tools** (hidden by default so the default shell is unchanged
   `Arcanum:Workspaces:EnableFileWrite`; `403 Workspace.FileWriteDisabled` sets `IsWriteDisabled` and
   disables write buttons. Deletes require confirmation. Too-large / not-found surface via error codes
   (e.g. `Workspace.FileTooLarge`, `Workspace.FileNotFound`).
+- **The Weave Inspector** (`WeaveInspectorViewModel`, dock tool id `weaveInspector`, hidden by default →
+  Right). A tabbed RAG-substrate inspector — not just semantic search. **Index** tab: workspace picker;
+  live vector mode + diagnostic from `IArcanumConnection.LastMeta` (`/api/meta`); read-only indexing
+  status (`GET .../files/index/status` — total files/chunks, oldest/newest `IndexedAt`, stored embedding
+  dimensions, `IndexingEnabled`); an honest skipped-files note (Arcanum does not persist skip reasons);
+  a paginated chunk browser (`GET .../files/chunks?relativePath=&limit=&offset=`, 500-char preview cap,
+  prev/next paging, selected-chunk detail); manual re-index (`POST .../files/index`, 202); and a
+  destructive embeddings reset (`POST /api/embeddings/reset?scope=workspace_file&confirm=true`) behind a
+  strong confirmation dialog (`confirmIsDefault: false`), surfacing deleted row counts and refreshing the
+  view. **Workspace Divination** tab reuses `IWorkspaceExplorerDataSource.DivineWorkspaceFilesAsync` and
+  cross-links hits into the Index tab's chunk browser (`LoadChunksForFile`). **Saga** tab reuses
+  `ISagaArchiveDataSource.DivineAsync` and **displays per-memory similarities** (the Divination tool's
+  Saga tab drops them) plus `GetStatsAsync`. **Sessions** tab reuses `IDivinationDataSource.DivineSessionsAsync`;
+  hits open The Tome. Per-surface `Embeddings.FeatureDisabled` banners with Copy setting paths. Nothing
+  embeds or searches client-side; `IWeaveInspectorDataSource` is the test seam.
 - **Session memory controls (The Tome).** Refresh entries (authoritative `EntryId` / `IsPinned`),
   pin / unpin / delete entry, compact, and Divination focus. Disabled when
   `Session.MemoryManagementDisabled` (`Arcanum:Sessions:AllowMemoryManagement`); `Session.TooManyPinned`
@@ -481,10 +496,10 @@ are **separate dock tools** (hidden by default so the default shell is unchanged
   Codex (`id == "global"`). Atelier campaign tree opens via `CodexNodeViewModel`; View → The Codex
   opens the global document. Load/save/delete through `/api/campaigns/{id}/codex` and `/api/codex`.
   Missing Codex (`Exists=false`) → empty editable state. No disk reads.
-- **Shell.** New dock tool ids (`lore`, `archive`, `divination`, `workspaceExplorer`) default to
-  `DockRegion.Hidden` with `PreferredShowRegions` (Lore/Workspace Explorer → Left; Archive/Divination
-  → Right). View menu shows each tool + The Codex. `PanelKind` focus wiring for Anvil / Atelier /
-  Tome Divination. Workspace Atelier nodes focus Workspace Explorer.
+- **Shell.** New dock tool ids (`lore`, `archive`, `divination`, `workspaceExplorer`, `weaveInspector`)
+  default to `DockRegion.Hidden` with `PreferredShowRegions` (Lore/Workspace Explorer → Left;
+  Archive/Divination/Weave Inspector → Right). View menu shows each tool + The Codex. `PanelKind` focus
+  wiring for Anvil / Atelier / Tome Divination. Workspace Atelier nodes focus Workspace Explorer.
 - **`TheForgeJsonContext`.** Registrations for workspace file browse/write DTOs, CompactResult /
   EntryDto[], Saga stats, and related `ApiResponse<T>` wrappers. No duplicate JSON context; no blanket
   `JsonStringEnumConverter`.
@@ -746,7 +761,7 @@ identifiers (`RetroDownfall.TheForge.*`, `forge.json`, `TheForgeJsonContext`) re
 | 4 | Prompt Mirror | implemented |
 | 5 | Inference trace/debug inspector | implemented |
 | 6 | Diagnostic MCP Invocation workbench | implemented |
-| 7 | RAG / The Weave inspector | planned |
+| 7 | RAG / The Weave inspector | implemented |
 | 8 | Audit and guardrails browser | planned |
 | 9 | Files and batch-job UI | planned |
 | 10 | The Ledger Git UI | planned |
@@ -795,12 +810,14 @@ green before the next begins.
 | Phase 4 — The Mirror | — | Spell editor version panel: list / GET body / local LCS compare / activate / create / update; dirty-buffer warning; builtin mutation gated |
 | Phase 5 — Spell Metadata Designer | — | Visual SPELL.json designer + raw editor; known-field round-trip only |
 | Phase 7 polish — Campaign CRUD + import/export | — | Atelier campaign New/Edit/Delete(unregister)/Export/Import; spell+prompt Import; ArtifactImportExportHelper |
+| RAG Phase 7 — The Weave Inspector | — | Tabbed RAG-substrate dock tool (`weaveInspector`): read-only `GET .../files/index/status` + paginated `GET .../files/chunks` (500-char preview cap, `relativePath` validation, clamped limit/offset); live vector mode from `/api/meta`; manual re-index (`POST .../files/index`); destructive embeddings reset (`POST /api/embeddings/reset?scope=workspace_file&confirm=true`, strong confirmation, deleted-row-count feedback); Workspace Divination cross-link into chunk browser; Saga Divination with per-memory similarities + stats; Session Divination → The Tome. Backend `IWorkspaceIndexInspectorService` + `WorkspaceIndexInspectorEndpoints` (registry-only, no new tables) |
 
 As of this document's last update, **Milestones A–H are implemented**, plus **Milestone H1 (The
 Illumination)**, **Milestone H2 (The Illumination Completion)**, **The Hearth** local terminal
 (§5.8), **The Mirror** spell-version panel (§5.15), **Spell Metadata Designer** (§5.16),
-**Proving Grounds UI** (§5.17), **Campaign CRUD + import/export** (§5.18), and **Diagnostic MCP
-Invocation** (§5.19, Phase 6 of the inference IDE expansion — §5.20): the solution scaffold
+**Proving Grounds UI** (§5.17), **Campaign CRUD + import/export** (§5.18), **Diagnostic MCP
+Invocation** (§5.19, Phase 6 of the inference IDE expansion — §5.20), and **The Weave Inspector**
+(RAG Phase 7 — §5.11): the solution scaffold
 through The Tome, War Table, Gatehouse, Anvil, VS 2026 Fluent-inspired theme polish, the dockable
 Hearth command runner, Atelier artifact creation, The Scriptorium (§5.9), the operational panels —
 The Arsenal, Models & Providers, and The Treasury (§5.10), Context & Memory (§5.11),

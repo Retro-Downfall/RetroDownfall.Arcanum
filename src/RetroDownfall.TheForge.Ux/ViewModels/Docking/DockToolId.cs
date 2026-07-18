@@ -28,6 +28,8 @@ public static class DockToolId
 
     public const string WorkspaceExplorer = "workspaceExplorer";
 
+    public const string WeaveInspector = "weaveInspector";
+
     public static IReadOnlyList<string> All { get; } =
     [
         Atelier,
@@ -42,6 +44,7 @@ public static class DockToolId
         Archive,
         Divination,
         WorkspaceExplorer,
+        WeaveInspector,
     ];
 
 }

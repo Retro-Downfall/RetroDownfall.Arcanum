@@ -30,4 +30,6 @@ public enum PanelKind
 
     WorkspaceExplorer,
 
+    WeaveInspector,
+
 }

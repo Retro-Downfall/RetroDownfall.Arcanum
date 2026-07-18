@@ -13,7 +13,7 @@ public sealed record ScryingSettings
     /// Master kill-switch. When <c>false</c>, image content is rejected at the API boundary even
     /// for vision-capable models — useful for privacy-sensitive deployments.
     /// </summary>
-    public bool Enabled { get; init; } = true;
+    public bool Enabled { get; set; } = true;
 
     /// <summary>
     /// Maximum bytes per image, measured against the decoded <c>data:</c> URI payload (base64
@@ -21,20 +21,20 @@ public sealed record ScryingSettings
     /// <c>http(s)</c>-hosted images are not size-checked here — the downstream provider fetches
     /// and rejects them.
     /// </summary>
-    public long MaxImageBytes { get; init; } = 1_048_576L;
+    public long MaxImageBytes { get; set; } = 1_048_576L;
 
     /// <summary>
     /// Maximum images per inference request (across native <c>ScryingFoci</c>/<c>ContentParts</c>
     /// and <c>/v1</c> <c>image_url</c> parts combined). Default <c>10</c>; clamped 1-100 at runtime.
     /// </summary>
-    public int MaxImagesPerRequest { get; init; } = 10;
+    public int MaxImagesPerRequest { get; set; } = 10;
 
     /// <summary>
     /// Allowed image MIME types. Non-matching types are rejected. Only enforced for
     /// <c>data:</c>-URI images (CLI <c>ScryingFoci</c> and inline data URIs) where the MIME type is
     /// present in the payload; not enforced for <c>http(s)</c> URLs.
     /// </summary>
-    public string[] AllowedMimeTypes { get; init; } =
+    public string[] AllowedMimeTypes { get; set; } =
     [
         "image/png",
         "image/jpeg",

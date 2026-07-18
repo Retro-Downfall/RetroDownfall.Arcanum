@@ -9,6 +9,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record ModerationsSettings
 {
 
-    public bool Enabled { get; init; } = false;
+    public bool Enabled { get; set; } = false;
 
 }

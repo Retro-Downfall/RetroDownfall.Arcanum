@@ -597,6 +597,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapWorkspaceDivinationEndpoints();
 
+        apiGroup.MapWorkspaceIndexInspectorEndpoints();
+
         apiGroup.MapEmbeddingsResetEndpoints();
 
         apiGroup.MapEventEndpoints();

@@ -60,12 +60,18 @@ public sealed class PromptRepository : IPromptRepository
     {
         string trimmedName = name.Trim();
 
-        return await _db.Prompts
+        // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY (see
+        // PromptRepository.ListAsync for the same constraint). Materialize the name+campaign-
+        // scoped rows (small set) and sort client-side.
+        List<Prompt> matched = await _db.Prompts
             .AsNoTracking()
             .Where(p => p.Name == trimmedName && p.CampaignId == campaignId)
-            .OrderByDescending(p => p.UpdatedAt)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        return matched
+            .OrderByDescending(p => p.UpdatedAt)
+            .ToArray();
     }
 
     public async Task<ListPageResult<Prompt>> ListAsync(

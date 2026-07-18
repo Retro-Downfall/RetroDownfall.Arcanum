@@ -215,6 +215,12 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
     public Task<string?> GetGrimoireEncryptionSecretAsync() =>
         _dataProtectionStore.GetGrimoireEncryptionSecretAsync();
 
+    /// <summary>
+    /// Forwards to <see cref="DataProtectionSecretStore.GetGrimoireEncryptionSecretReadResultAsync"/>.
+    /// </summary>
+    public Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync() =>
+        _dataProtectionStore.GetGrimoireEncryptionSecretReadResultAsync();
+
     public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
         _dataProtectionStore.SaveGrimoireEncryptionSecretAsync(encryptionSecret);
 

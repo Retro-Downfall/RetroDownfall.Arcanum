@@ -8,9 +8,30 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// Scrying (vision) capability alongside the model name so a provider can mix vision-capable and
 /// text-only models in the same <c>models</c> array.
 /// </summary>
+/// <remarks>
+/// Properties use <c>set</c> (not <c>init</c>) so the configuration binding source generator can
+/// assign them — <c>init</c>-only properties are silently skipped (dotnet/runtime#107856).
+/// </remarks>
 [JsonConverter(typeof(ModelEntryJsonConverter))]
-public sealed record ModelEntry(string Name, bool SupportsVision = false)
+public sealed record ModelEntry
 {
+
+    public ModelEntry()
+    {
+    }
+
+    public ModelEntry(string Name, bool SupportsVision = false)
+    {
+
+        this.Name = Name;
+
+        this.SupportsVision = SupportsVision;
+
+    }
+
+    public string Name { get; set; } = string.Empty;
+
+    public bool SupportsVision { get; set; }
 
     /// <summary>
     /// Implicit conversion from a bare model name — mirrors the JSON string-or-object back-compat

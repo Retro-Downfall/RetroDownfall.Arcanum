@@ -12,6 +12,24 @@ public sealed class CliApplicationFactoryTests
 {
 
     [Fact]
+    public void Empty_args_defaults_to_chat_command()
+    {
+
+        string[] empty = CliApplicationFactory.ApplyDefaultCommand([]);
+
+        Assert.Equal(["chat"], empty);
+
+        string[] unchanged = CliApplicationFactory.ApplyDefaultCommand(["ask", "hello"]);
+
+        Assert.Equal(["ask", "hello"], unchanged);
+
+        string[] helpUnchanged = CliApplicationFactory.ApplyDefaultCommand(["--help"]);
+
+        Assert.Equal(["--help"], helpUnchanged);
+
+    }
+
+    [Fact]
     public void Help_smoke_lists_core_commands()
     {
 
@@ -107,6 +125,32 @@ public sealed class CliApplicationFactoryTests
         AskCommand askCommand = provider.GetRequiredService<AskCommand>();
 
         Assert.NotNull(askCommand);
+
+    }
+
+    [Fact]
+    public void ConfigureCliServices_registers_grimoire_readiness_so_chat_command_resolves()
+    {
+
+        // Regression guard: GrimoireDatabaseBootstrapper (used by ChatCommand via
+        // IGrimoireCliInitialization) requires IGrimoireDbReadiness to mark the database ready.
+        // The CLI's narrow grimoire stack must register the same singleton as the API host.
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Core.TheForge.IGrimoireDbReadiness readiness = provider.GetRequiredService<Core.TheForge.IGrimoireDbReadiness>();
+
+        Assert.NotNull(readiness);
+
+        ChatCommand chatCommand = provider.GetRequiredService<ChatCommand>();
+
+        Assert.NotNull(chatCommand);
 
     }
 

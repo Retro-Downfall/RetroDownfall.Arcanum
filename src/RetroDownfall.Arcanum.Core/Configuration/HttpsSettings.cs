@@ -16,14 +16,14 @@ public sealed record HttpsSettings
     /// Master toggle. When <c>false</c> (default) on loopback, no HTTPS listener is added and none of
     /// the other fields have any effect. Required <c>true</c> when all-interfaces bind is effective.
     /// </summary>
-    public bool Enabled { get; init; } = false;
+    public bool Enabled { get; set; } = false;
 
     /// <summary>
     /// TLS listen port. Default <c>5443</c>; clamped 1&#8211;65535. Must differ from
     /// <see cref="HostSettings.Port"/> — the plaintext HTTP listener and the HTTPS listener cannot
     /// share a port.
     /// </summary>
-    public int Port { get; init; } = 5443;
+    public int Port { get; set; } = 5443;
 
     /// <summary>
     /// Path to the certificate file. When <see cref="PrivateKeyPath"/> is set, this is a PEM
@@ -32,14 +32,14 @@ public sealed record HttpsSettings
     /// Leading <c>~</c>, <c>~/</c>, and <c>~\</c> are expanded to the user profile directory; the
     /// result is resolved to a full path.
     /// </summary>
-    public string? CertificatePath { get; init; }
+    public string? CertificatePath { get; set; }
 
     /// <summary>
     /// Optional path to a PEM private key file. When set, HTTPS is loaded from the PEM certificate at
     /// <see cref="CertificatePath"/> plus this key (<see cref="CertificatePassword"/> is ignored for
     /// PEM). When empty (default), <see cref="CertificatePath"/> is treated as a PKCS#12 bundle.
     /// </summary>
-    public string? PrivateKeyPath { get; init; }
+    public string? PrivateKeyPath { get; set; }
 
     /// <summary>
     /// Optional password for a PKCS#12 (PFX) bundle. Only consulted for PFX loading — ignored when
@@ -47,6 +47,6 @@ public sealed record HttpsSettings
     /// Data Protection prefix (unprotected at load time) or as plaintext. Never logged and never
     /// surfaced in validation or load errors.
     /// </summary>
-    public string? CertificatePassword { get; init; }
+    public string? CertificatePassword { get; set; }
 
 }

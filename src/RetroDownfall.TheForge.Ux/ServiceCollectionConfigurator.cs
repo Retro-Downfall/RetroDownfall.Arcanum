@@ -25,6 +25,7 @@ using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using RetroDownfall.TheForge.Ux.ViewModels.Archive;
 using RetroDownfall.TheForge.Ux.ViewModels.Divination;
 using RetroDownfall.TheForge.Ux.ViewModels.Lore;
+using RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector;
 using RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
 
 namespace RetroDownfall.TheForge.Ux;
@@ -198,6 +199,8 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IWorkspaceExplorerDataSource, WorkspaceExplorerDataSource>();
 
+        services.AddSingleton<IWeaveInspectorDataSource, WeaveInspectorDataSource>();
+
         services.AddSingleton<ICodexDataSource, CodexDataSource>();
 
         services.AddSingleton<ITrialDataSource, TrialDataSource>();
@@ -266,6 +269,8 @@ internal static class ServiceCollectionConfigurator
 
         services.AddTransient<WorkspaceExplorerViewModel>();
 
+        services.AddTransient<WeaveInspectorViewModel>();
+
     }
 
     private static void RegisterRouteServices(ServiceCollection services)
@@ -304,6 +309,8 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<WorkspaceService>();
 
         services.AddSingleton<DivinationService>();
+
+        services.AddSingleton<WeaveInspectorService>();
 
         services.AddSingleton<CommLinkService>();
 

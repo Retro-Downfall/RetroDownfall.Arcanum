@@ -8,9 +8,9 @@ public sealed record ModelPricingEntry
 {
 
     /// <summary>USD cost per 1,000,000 input (prompt) tokens. Default 0.00.</summary>
-    public decimal InputPer1M { get; init; } = 0.00m;
+    public decimal InputPer1M { get; set; } = 0.00m;
 
     /// <summary>USD cost per 1,000,000 output (completion) tokens. Default 0.00.</summary>
-    public decimal OutputPer1M { get; init; } = 0.00m;
+    public decimal OutputPer1M { get; set; } = 0.00m;
 
 }

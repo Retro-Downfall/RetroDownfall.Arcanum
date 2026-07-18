@@ -13,26 +13,26 @@ public sealed record SpellSettings
     /// <see cref="WorkspaceRootPolicy"/>). When non-empty, resolved workspace paths must
     /// fall under one of these roots.
     /// </summary>
-    public string[] AllowedWorkspaceRoots { get; init; } = [];
+    public string[] AllowedWorkspaceRoots { get; set; } = [];
 
     /// <summary>
     /// Maximum <c>SPELL.md</c> (and related frontmatter) read size in bytes. Default 256 KiB; clamp 1 KiB–1 MiB,
     /// further capped by <see cref="WorkspaceSettings.MaxFileReadSizeBytes"/>.
     /// </summary>
-    public long MaxFileSizeBytes { get; init; } = 262_144L;
+    public long MaxFileSizeBytes { get; set; } = 262_144L;
 
     /// <summary>
     /// TTL in seconds for the in-process spell-metadata scan cache used by routing and Arcane Resonance.
     /// <c>0</c> disables caching.
     /// </summary>
-    public int MetadataScanCacheTtlSeconds { get; init; } = 5;
+    public int MetadataScanCacheTtlSeconds { get; set; } = 5;
 
-    public int MaxDependencies { get; init; } = 20;
+    public int MaxDependencies { get; set; } = 20;
 
-    public int MaxDeclaredTools { get; init; } = 50;
+    public int MaxDeclaredTools { get; set; } = 50;
 
-    public int MaxResonantDependencies { get; init; } = 10;
+    public int MaxResonantDependencies { get; set; } = 10;
 
-    public int MaxResonantBytes { get; init; } = 131_072;
+    public int MaxResonantBytes { get; set; } = 131_072;
 
 }

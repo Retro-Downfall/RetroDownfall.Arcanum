@@ -7,6 +7,6 @@ public sealed record ArcanumConfigurationFile
 
     [JsonPropertyName("Arcanum")]
 
-    public ArcanumSettings Arcanum { get; init; } = new();
+    public ArcanumSettings Arcanum { get; set; } = new();
 
 }

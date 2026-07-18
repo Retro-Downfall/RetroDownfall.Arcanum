@@ -9,16 +9,20 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
@@ -32,7 +36,8 @@ public sealed class ChatCommand(
     MarkdigSpectreRenderer markdig,
     IGrimoireCliInitialization grimoireBootstrapper,
     IServiceScopeFactory scopeFactory,
-    ICliEnvironment cliEnvironment)
+    ICliEnvironment cliEnvironment,
+    IArcanumServeLauncher serveLauncher)
 {
 
     private long MaxAttachFileSizeBytes =>
@@ -45,6 +50,21 @@ public sealed class ChatCommand(
         arcanumSettings.Value.Scrying.AllowedMimeTypes ?? [];
 
     private const string DefaultStagedOnlyPrompt = "Please review the attached files.";
+
+    private static readonly TimeSpan McpRefreshThrottle = TimeSpan.FromSeconds(5);
+
+    private ServeLaunchResult _serveLaunch = new(
+        ServeLaunchStatus.LaunchDisabled,
+        HealthProbeState.NotAttempted,
+        TimeSpan.Zero,
+        null,
+        null);
+
+    private IReadOnlyList<McpServerInfo> _mcpServers = [];
+
+    private bool _mcpUnavailable;
+
+    private DateTimeOffset _lastMcpRefresh = DateTimeOffset.MinValue;
 
     private static readonly HashSet<string> SlashCommandVerbs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -147,6 +167,8 @@ public sealed class ChatCommand(
 
         }
 
+        _serveLaunch = await serveLauncher.EnsureRunningAsync(cancellationToken).ConfigureAwait(false);
+
         SessionMut session = new()
         {
             CurrentModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
@@ -154,7 +176,7 @@ public sealed class ChatCommand(
             CampaignId = campaignId,
         };
 
-        WriteStartupBanner(session, unattended, flags);
+        await WriteStartupBannerAsync(session, unattended, flags, cancellationToken).ConfigureAwait(false);
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
@@ -165,6 +187,21 @@ public sealed class ChatCommand(
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            await RefreshMcpServersThrottledAsync(cancellationToken).ConfigureAwait(false);
+
+            if (cliEnvironment.IsInteractive)
+            {
+                string statusBar = StatusBarRenderer.RenderCompact(
+                    session.CurrentModel ?? arcanumSettings.Value.DefaultModel,
+                    _mcpServers.Count(s => s.State == McpServerState.Running),
+                    _mcpServers.Count,
+                    _mcpUnavailable,
+                    _serveLaunch.Status,
+                    themePalette);
+
+                AnsiConsole.MarkupLine(statusBar);
+            }
 
             string? raw;
 
@@ -913,42 +950,84 @@ public sealed class ChatCommand(
         return true;
     }
 
-    private void WriteStartupBanner(SessionMut session, bool unattended, InferenceFlagBinder.Parsed flags)
+    private async Task WriteStartupBannerAsync(
+        SessionMut session,
+        bool unattended,
+        InferenceFlagBinder.Parsed flags,
+        CancellationToken cancellationToken)
     {
 
-        Table table = new();
+        await RefreshMcpServersThrottledAsync(cancellationToken, force: true).ConfigureAwait(false);
 
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
+        List<string> overrides = CollectInferenceOverrides(flags);
 
         string modelLabel = session.CurrentModel ?? arcanumSettings.Value.DefaultModel ?? "(first configured)";
 
-        table.AddRow(
-            themePalette.MutedMarkup(Markup.Escape("Model:")),
-            themePalette.HighlightMarkup(Markup.Escape(modelLabel)));
+        BannerContext ctx = new(
+            _serveLaunch.Status,
+            _serveLaunch.Health,
+            ArcanumLocalApiAddress.ResolveBaseUrl(arcanumSettings.Value.Host),
+            modelLabel,
+            session.CampaignId,
+            unattended,
+            session.DisableTools,
+            overrides,
+            _mcpServers.Count(s => s.State == McpServerState.Running),
+            _mcpServers.Count,
+            _mcpUnavailable,
+            ArcanumBuildInfo.InformationalVersion,
+            themePalette);
 
-        table.AddRow(
-            themePalette.MutedMarkup(Markup.Escape("MCP tools:")),
-            themePalette.TextMarkup(Markup.Escape(session.DisableTools ? "disabled (--no-tools)" : "enabled")));
+        AnsiConsole.Write(ArcanumBannerRenderer.Render(ctx));
 
-        if (session.CampaignId is { } campaignId)
+        AnsiConsole.WriteLine();
+
+    }
+
+    private async Task RefreshMcpServersThrottledAsync(CancellationToken cancellationToken, bool force = false)
+    {
+
+        if (!force && DateTimeOffset.UtcNow - _lastMcpRefresh < McpRefreshThrottle)
         {
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape("Campaign:")),
-                themePalette.HighlightMarkup(Markup.Escape(campaignId.ToString("D"))));
+            return;
         }
 
-        if (unattended)
+        _lastMcpRefresh = DateTimeOffset.UtcNow;
+
+        try
         {
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape("Mode:")),
-                themePalette.HighlightMarkup(Markup.Escape("unattended (ask_human auto-replies)")));
+            Result<IReadOnlyList<McpServerInfo>> result = await apiClient
+                .GetMcpServersAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result.IsSuccess && result.Value is not null)
+            {
+                _mcpServers = result.Value;
+
+                _mcpUnavailable = false;
+            }
+            else
+            {
+                _mcpUnavailable = true;
+
+                _mcpServers = [];
+            }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            _mcpUnavailable = true;
+
+            _mcpServers = [];
+        }
+
+    }
+
+    private static List<string> CollectInferenceOverrides(InferenceFlagBinder.Parsed flags)
+    {
 
         List<string> overrides = new();
 
@@ -992,31 +1071,20 @@ public sealed class ChatCommand(
             overrides.Add($"stop=[{string.Join(", ", stops)}]");
         }
 
-        if (overrides.Count > 0)
-        {
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape("Inference:")),
-                themePalette.TextMarkup(Markup.Escape(string.Join("  ", overrides))));
-        }
-
-        table.AddRow(
-            themePalette.MutedMarkup(Markup.Escape("Tip:")),
-            themePalette.MutedMarkup(
-                Markup.Escape("/help for slash commands  -  /exit to quit  -  Ctrl+C to cancel a turn")));
-
-        Panel banner = new(table)
-        {
-            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Arcanum chat"))),
-            Border = BoxBorder.Rounded,
-            BorderStyle = themePalette.HeadingStyle(),
-            Padding = new Padding(1, 0, 1, 0),
-        };
-
-        AnsiConsole.Write(banner);
-
-        AnsiConsole.WriteLine();
+        return overrides;
 
     }
+
+    /// <summary>
+    /// Live layout requires an interactive color terminal with enough space.
+    /// Trusts <see cref="ICliEnvironment.IsInteractive"/> (already encodes redirect)
+    /// rather than re-checking <see cref="Console.IsOutputRedirected"/>.
+    /// </summary>
+    internal static bool ShouldUseLiveLayout(ICliEnvironment env, IAnsiConsole console) =>
+        env.IsInteractive
+        && env.ColorEnabled
+        && console.Profile.Width >= 100
+        && console.Profile.Height >= 24;
 
     private void RenderHelp()
     {
@@ -1534,6 +1602,17 @@ public sealed class ChatCommand(
                 CampaignId: session.CampaignId,
                 ScryingFoci: scryingFoci);
 
+            if (ShouldUseLiveLayout(cliEnvironment, AnsiConsole.Console))
+            {
+                return await RunTurnLiveAsync(
+                        ping,
+                        session,
+                        unattended,
+                        stderrConsole,
+                        perTurnCts.Token)
+                    .ConfigureAwait(false);
+            }
+
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {
                 switch (evt.Type)
@@ -1744,6 +1823,304 @@ public sealed class ChatCommand(
         AnsiConsole.WriteLine();
 
         return true;
+    }
+
+    private async Task<bool> RunTurnLiveAsync(
+        PingRequest ping,
+        SessionMut session,
+        bool unattended,
+        IAnsiConsole stderrConsole,
+        CancellationToken cancellationToken)
+    {
+
+        StringBuilder assistantText = new();
+
+        List<ToolDiagnosticLine> liveDiagnostics = new();
+
+        string? finalText = null;
+
+        bool cancelled = false;
+
+        bool errored = false;
+
+        bool submitFailed = false;
+
+        int tokenSinceRefresh = 0;
+
+        System.Diagnostics.Stopwatch refreshClock = System.Diagnostics.Stopwatch.StartNew();
+
+        ChatLayoutContext BuildCtx(bool generating) => new(
+            StatusBarRenderer.RenderCompact(
+                session.CurrentModel ?? arcanumSettings.Value.DefaultModel,
+                _mcpServers.Count(s => s.State == McpServerState.Running),
+                _mcpServers.Count,
+                _mcpUnavailable,
+                _serveLaunch.Status,
+                themePalette),
+            assistantText.ToString(),
+            liveDiagnostics,
+            Array.Empty<IRenderable>(),
+            _mcpServers,
+            session.CurrentModel ?? arcanumSettings.Value.DefaultModel,
+            FormatManaSummary(session),
+            _serveLaunch.Status,
+            themePalette,
+            generating);
+
+        try
+        {
+            await AnsiConsole.Live(ChatLayoutRenderer.Build(BuildCtx(generating: true)))
+                .AutoClear(true)
+                .Overflow(VerticalOverflow.Ellipsis)
+                .StartAsync(async live =>
+                {
+                    void Refresh(bool force)
+                    {
+                        if (!force
+                            && tokenSinceRefresh < 32
+                            && refreshClock.ElapsedMilliseconds < 75)
+                        {
+                            return;
+                        }
+
+                        live.UpdateTarget(ChatLayoutRenderer.Build(BuildCtx(generating: true)));
+
+                        tokenSinceRefresh = 0;
+
+                        refreshClock.Restart();
+                    }
+
+                    await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, cancellationToken).ConfigureAwait(false))
+                    {
+                        switch (evt.Type)
+                        {
+                            case IntelligenceEventType.Status:
+
+                                if (string.Equals(
+                                        evt.Message,
+                                        IntelligenceStatusMessages.MemoryCompressionNotice,
+                                        StringComparison.Ordinal))
+                                {
+                                    session.MemoryCompressed = true;
+                                }
+
+                                stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(evt.Message ?? string.Empty)));
+
+                                break;
+
+                            case IntelligenceEventType.Token:
+
+                                string chunk = evt.Data ?? string.Empty;
+
+                                if (chunk.Length == 0)
+                                {
+                                    break;
+                                }
+
+                                assistantText.Append(chunk);
+
+                                tokenSinceRefresh++;
+
+                                Refresh(force: false);
+
+                                break;
+
+                            case IntelligenceEventType.ToolCall:
+
+                                AskHumanResult humanResult = await AskHumanToolCallStreamHandler
+                                    .TryHandleAskHumanAsync(
+                                        evt,
+                                        unattended,
+                                        cliEnvironment.IsInteractive,
+                                        apiClient,
+                                        themePalette,
+                                        cancellationToken)
+                                    .ConfigureAwait(false);
+
+                                if (humanResult == AskHumanResult.SubmitFailed)
+                                {
+                                    submitFailed = true;
+
+                                    errored = true;
+
+                                    break;
+                                }
+
+                                if (humanResult == AskHumanResult.Handled)
+                                {
+                                    Refresh(force: true);
+
+                                    break;
+                                }
+
+                                liveDiagnostics.Add(ToolDiagnosticLine.Create(
+                                    evt.Message ?? "tool",
+                                    ToolDiagnosticOutcome.Succeeded,
+                                    evt.Data ?? evt.Message ?? string.Empty));
+
+                                Refresh(force: true);
+
+                                break;
+
+                            case IntelligenceEventType.ToolError:
+
+                                liveDiagnostics.Add(ToolDiagnosticLine.Create(
+                                    evt.Message ?? "tool",
+                                    ToolDiagnosticOutcome.Failed,
+                                    evt.Data ?? evt.Message ?? "failed"));
+
+                                Refresh(force: true);
+
+                                break;
+
+                            case IntelligenceEventType.ToolResult:
+
+                                liveDiagnostics.Add(ToolDiagnosticLine.Create(
+                                    evt.Message ?? "tool",
+                                    ToolDiagnosticOutcome.Succeeded,
+                                    evt.Data ?? evt.Message ?? string.Empty));
+
+                                Refresh(force: true);
+
+                                break;
+
+                            case IntelligenceEventType.SessionBound:
+                            case IntelligenceEventType.ConversationBound:
+
+                                if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
+                                {
+                                    cliSession.SaveSessionId(boundId);
+                                }
+
+                                break;
+
+                            case IntelligenceEventType.Result:
+
+                                if (evt.Usage is { } usageTurn)
+                                {
+                                    session.SessionMana = AccumulateSessionMana(session.SessionMana, usageTurn);
+                                }
+                                else if (evt.Data is not null
+                                    && int.TryParse(evt.Data, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedUsage))
+                                {
+                                    session.SessionMana = AccumulateSessionMana(
+                                        session.SessionMana,
+                                        new ChatCompletionUsage(0, 0, parsedUsage));
+                                }
+
+                                finalText = assistantText.ToString();
+
+                                Refresh(force: true);
+
+                                break;
+
+                            case IntelligenceEventType.Error:
+
+                                Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(evt.Message ?? string.Empty))))
+                                {
+                                    Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Error"))),
+                                    Border = BoxBorder.Rounded,
+                                    BorderStyle = themePalette.ErrorStyle(),
+                                    Padding = new Padding(1, 0, 1, 0),
+                                };
+
+                                AnsiConsole.Write(errorPanel);
+
+                                errored = true;
+
+                                break;
+                        }
+
+                        if (submitFailed || errored)
+                        {
+                            break;
+                        }
+                    }
+                })
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            cancelled = true;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.WriteLine();
+
+            Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(ex.Message))))
+            {
+                Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape("Error"))),
+                Border = BoxBorder.Rounded,
+                BorderStyle = themePalette.ErrorStyle(),
+                Padding = new Padding(1, 0, 1, 0),
+            };
+
+            AnsiConsole.Write(errorPanel);
+
+            return false;
+        }
+
+        if (cancelled)
+        {
+            AnsiConsole.WriteLine();
+
+            AnsiConsole.Write(new Rule(themePalette.HighlightMarkup(Markup.Escape("\u29D6 Turn cancelled")))
+            {
+                Justification = Justify.Left,
+                Style = themePalette.MutedStyle(),
+            });
+
+            string partial = assistantText.ToString();
+
+            if (!string.IsNullOrEmpty(partial))
+            {
+                AnsiConsole.Write(markdig.Render(partial));
+
+                AnsiConsole.WriteLine();
+            }
+
+            return true;
+        }
+
+        if (errored)
+        {
+            return false;
+        }
+
+        string body = finalText ?? assistantText.ToString();
+
+        if (string.IsNullOrEmpty(body))
+        {
+            AnsiConsole.WriteLine();
+
+            return true;
+        }
+
+        AnsiConsole.Write(markdig.Render(body));
+
+        AnsiConsole.WriteLine();
+
+        return true;
+
+    }
+
+    private string FormatManaSummary(SessionMut session)
+    {
+
+        if (session.SessionMana is null)
+        {
+            return "(untracked)";
+        }
+
+        int used = session.SessionMana.TotalTokens;
+
+        if (TryGetManaBarContextLimit(session, out int limit) && limit > 0)
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"{used}/{limit} tokens");
+        }
+
+        return string.Create(CultureInfo.InvariantCulture, $"{used} tokens");
+
     }
 
     internal static void AdvanceLineCounter(string chunk, int width, ref int linesPrinted, ref int currentLineLen)

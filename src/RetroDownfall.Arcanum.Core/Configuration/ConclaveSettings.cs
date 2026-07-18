@@ -22,23 +22,23 @@ public sealed record ConclaveSettings
     /// <summary>
     /// When <c>true</c>, enables The Conclave's cross-Apprentice delegation (Cast Sending). Default <c>false</c>.
     /// </summary>
-    public bool Enabled { get; init; } = false;
+    public bool Enabled { get; set; } = false;
 
     /// <summary>
     /// Maximum delegation depth from a Conclave root Apprentice (0 = root only, no children). Default <c>3</c>.
     /// </summary>
-    public int MaxDelegationDepth { get; init; } = 3;
+    public int MaxDelegationDepth { get; set; } = 3;
 
     /// <summary>
     /// Maximum total descendant Apprentices allowed under one Conclave root. Default <c>16</c>.
     /// </summary>
-    public int MaxDescendantsPerRoot { get; init; } = 16;
+    public int MaxDescendantsPerRoot { get; set; } = 16;
 
     /// <summary>
     /// A2A (Agent-to-Agent) protocol interoperability surface for The Conclave. Bound from
     /// <c>Arcanum:Conclave:A2A</c>. See <see cref="ConclaveA2ASettings"/>.
     /// </summary>
-    public ConclaveA2ASettings A2A { get; init; } = new();
+    public ConclaveA2ASettings A2A { get; set; } = new();
 
 }
 
@@ -64,56 +64,56 @@ public sealed record ConclaveA2ASettings
     /// <summary>
     /// Master toggle gating both the A2A server and client surfaces. Default <c>false</c>.
     /// </summary>
-    public bool Enabled { get; init; } = false;
+    public bool Enabled { get; set; } = false;
 
     /// <summary>
     /// When <c>true</c> (and <see cref="Enabled"/>), exposes Arcanum Apprentices as an A2A server. Default <c>false</c>.
     /// </summary>
-    public bool ServerEnabled { get; init; } = false;
+    public bool ServerEnabled { get; set; } = false;
 
     /// <summary>
     /// HTTP path under which the A2A server endpoints (and authenticated Agent Card) are mapped. Default <c>/api/conclave/a2a</c>.
     /// </summary>
-    public string ServerPath { get; init; } = "/api/conclave/a2a";
+    public string ServerPath { get; set; } = "/api/conclave/a2a";
 
     /// <summary>
     /// Display name advertised on the A2A Agent Card ("Heraldry").
     /// </summary>
-    public string? AgentCardName { get; init; }
+    public string? AgentCardName { get; set; }
 
     /// <summary>
     /// Display description advertised on the A2A Agent Card ("Heraldry").
     /// </summary>
-    public string? AgentCardDescription { get; init; }
+    public string? AgentCardDescription { get; set; }
 
     /// <summary>
     /// When <c>true</c> (and <see cref="Enabled"/>), advertises and enables the in-process <c>dispatch_sending</c>
     /// MCP tool so an Apprentice can delegate to an external A2A agent. Default <c>false</c>.
     /// </summary>
-    public bool ClientEnabled { get; init; } = false;
+    public bool ClientEnabled { get; set; } = false;
 
     /// <summary>
     /// Maximum number of concurrently in-flight external (client-side) A2A delegations. Default <c>50</c>, clamped 1-500.
     /// </summary>
-    public int MaxExternalTasks { get; init; } = 50;
+    public int MaxExternalTasks { get; set; } = 50;
 
     /// <summary>
     /// Per-delegation timeout, in minutes, for a client-side <c>dispatch_sending</c> call. Default <c>60</c>, clamped 5-1440.
     /// </summary>
-    public int ExternalTaskTimeoutMinutes { get; init; } = 60;
+    public int ExternalTaskTimeoutMinutes { get; set; } = 60;
 
     /// <summary>
     /// Optional allowlist of remote Agent Card URLs (or origins) that <c>dispatch_sending</c> may target.
     /// Empty (default) means any URL is a candidate, subject to the outbound SSRF guard, which always applies
     /// regardless of this allowlist.
     /// </summary>
-    public string[] AllowedRemoteAgents { get; init; } = [];
+    public string[] AllowedRemoteAgents { get; set; } = [];
 
     /// <summary>
     /// Fallback workspace path for inbound A2A tasks (server side) when the request carries no workspace or
     /// campaign hint. Empty (default) falls back to <c>Arcanum:Host:Workspace</c>, then the process's current
     /// directory, validated the same way as every other Apprentice workspace resolution.
     /// </summary>
-    public string DefaultWorkspace { get; init; } = string.Empty;
+    public string DefaultWorkspace { get; set; } = string.Empty;
 
 }

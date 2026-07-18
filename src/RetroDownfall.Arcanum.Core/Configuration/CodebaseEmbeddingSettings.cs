@@ -12,19 +12,19 @@ public sealed record CodebaseEmbeddingSettings
     /// Maximum files to embed per workspace during a single indexing tick. Default <c>500</c>; clamped
     /// 1–10,000 at runtime.
     /// </summary>
-    public int MaxFilesToIndex { get; init; } = 500;
+    public int MaxFilesToIndex { get; set; } = 500;
 
     /// <summary>
     /// Files larger than this (in characters) are skipped during indexing. Default <c>50,000</c>;
     /// clamped 1,000–500,000 at runtime.
     /// </summary>
-    public int MaxFileSizeChars { get; init; } = 50_000;
+    public int MaxFileSizeChars { get; set; } = 50_000;
 
     /// <summary>
     /// File extensions (including the leading dot) eligible for indexing, matched case-insensitively.
     /// An empty array means nothing is indexed.
     /// </summary>
-    public string[] FileExtensions { get; init; } =
+    public string[] FileExtensions { get; set; } =
     [
         ".cs",
         ".py",
@@ -44,12 +44,12 @@ public sealed record CodebaseEmbeddingSettings
     /// Background re-indexing interval, in minutes, for workspaces with active inference (see
     /// <c>WorkspaceIndexingService</c>). Default <c>60</c>; clamped 5–1,440 at runtime.
     /// </summary>
-    public int IndexingIntervalMinutes { get; init; } = 60;
+    public int IndexingIntervalMinutes { get; set; } = 60;
 
     /// <summary>
     /// Maximum retrieved file chunks injected into the system prompt per inference turn. Default
     /// <c>5</c>; clamped 1–50 at runtime.
     /// </summary>
-    public int MaxRetrievedChunks { get; init; } = 5;
+    public int MaxRetrievedChunks { get; set; } = 5;
 
 }

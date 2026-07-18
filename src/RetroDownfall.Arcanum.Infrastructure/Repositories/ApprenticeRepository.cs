@@ -64,16 +64,23 @@ public sealed class ApprenticeRepository : IApprenticeRepository
             query = query.Where(a => a.Status == statusFilter);
         }
 
-        if (beforeUpdatedAt is DateTimeOffset before)
-        {
-            query = query.Where(a => a.UpdatedAt < before);
-        }
-
-        List<Apprentice> page = await query
-            .OrderByDescending(a => a.UpdatedAt)
-            .Take(pageSize + 1)
+        // DateTimeOffset comparison and ORDER BY cannot be translated by EF Core's SQLite
+        // provider (see EntryTemporalQueries and PromptRepository.ListAsync). Materialize the
+        // server-side-filtered set, then apply the temporal cursor and ordering client-side.
+        // Apprentice tables are workspace-scoped and small, so this is not a performance concern.
+        List<Apprentice> matched = await query
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        if (beforeUpdatedAt is DateTimeOffset beforeCutoff)
+        {
+            matched = matched.Where(a => a.UpdatedAt < beforeCutoff).ToList();
+        }
+
+        List<Apprentice> page = matched
+            .OrderByDescending(a => a.UpdatedAt)
+            .Take(pageSize + 1)
+            .ToList();
 
         bool hasMore = page.Count > pageSize;
 

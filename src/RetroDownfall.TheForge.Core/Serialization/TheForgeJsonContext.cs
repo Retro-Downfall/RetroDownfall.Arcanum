@@ -227,6 +227,17 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(WorkspaceSemanticSearchRequest))]
 [JsonSerializable(typeof(ApiResponse<WorkspaceSearchResult[]>))]
 
+// The Weave Inspector (Phase 7 — RAG substrate inspection, read-only) + embeddings reset
+[JsonSerializable(typeof(WorkspaceIndexStatusDto))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceIndexStatusDto>))]
+[JsonSerializable(typeof(WorkspaceFileChunkDto))]
+[JsonSerializable(typeof(WorkspaceFileChunkDto[]))]
+[JsonSerializable(typeof(WorkspaceFileChunkPage))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceFileChunkPage>))]
+[JsonSerializable(typeof(EmbeddingsResetResult))]
+[JsonSerializable(typeof(Dictionary<string, int>))]
+[JsonSerializable(typeof(ApiResponse<EmbeddingsResetResult>))]
+
 // Comm Link Alert Dashboard
 [JsonSerializable(typeof(CommLinkMessageRequestDto))]
 

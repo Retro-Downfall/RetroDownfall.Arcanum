@@ -9,9 +9,11 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Hosting;
+using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Spectre.Console;
@@ -111,14 +113,30 @@ public sealed class ServeCommand(IThemePalette themePalette)
 
         builder.Services.AddArcanumApiServices(builder.Configuration);
 
+        bool autoLaunched = IsAutoLaunched();
+
+        if (autoLaunched)
+        {
+            RedirectConsoleToBootstrapLog();
+        }
+
         if (await ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync(cancellationToken).ConfigureAwait(false) is string newApiKey)
         {
 
-            AnsiConsole.WriteLine(newApiKey);
+            if (autoLaunched)
+            {
+                AnsiConsole.MarkupLine(
+                    themePalette.HighlightMarkup(
+                        Markup.Escape("Master API key generated. Retrieve it with 'arcanum key show'.")));
+            }
+            else
+            {
+                AnsiConsole.WriteLine(newApiKey);
 
-            AnsiConsole.MarkupLine(
-                themePalette.HighlightMarkup(
-                    Markup.Escape("New Master API Key generated and secured. Save this key — it will not be shown again.")));
+                AnsiConsole.MarkupLine(
+                    themePalette.HighlightMarkup(
+                        Markup.Escape("New Master API Key generated and secured. Save this key — it will not be shown again.")));
+            }
 
         }
 
@@ -164,9 +182,12 @@ public sealed class ServeCommand(IThemePalette themePalette)
             listenHost,
             listenPort);
 
-        AnsiConsole.MarkupLine(
-            themePalette.HighlightMarkup(
-                Markup.Escape($"Listening on {listenScheme}://{listenHost}:{listenPort}")));
+        if (!autoLaunched)
+        {
+            AnsiConsole.MarkupLine(
+                themePalette.HighlightMarkup(
+                    Markup.Escape($"Listening on {listenScheme}://{listenHost}:{listenPort}")));
+        }
 
         try
         {
@@ -221,4 +242,49 @@ public sealed class ServeCommand(IThemePalette themePalette)
 
         return bool.TryParse(configured.Trim(), out bool parsed) && parsed;
     }
+
+    internal static bool IsAutoLaunched()
+    {
+        string? env = Environment.GetEnvironmentVariable(ArcanumServeLauncher.AutoLaunchedEnvVar);
+
+        if (string.IsNullOrWhiteSpace(env))
+        {
+            return false;
+        }
+
+        return string.Equals(env.Trim(), "1", StringComparison.Ordinal)
+            || string.Equals(env.Trim(), bool.TrueString, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Redirects Console.Out/Error to an owner-only bootstrap log so stray Console.WriteLine
+    /// from libraries does not vanish. Does not add a second Serilog sink.
+    /// </summary>
+    internal static void RedirectConsoleToBootstrapLog()
+    {
+        string logPath = ArcanumServeLauncher.BootstrapLogPath;
+
+        string? directory = Path.GetDirectoryName(logPath);
+
+        if (!string.IsNullOrEmpty(directory))
+        {
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
+        }
+
+        StreamWriter writer = new(new FileStream(
+            logPath,
+            FileMode.Append,
+            FileAccess.Write,
+            FileShare.ReadWrite))
+        {
+            AutoFlush = true,
+        };
+
+        Console.SetOut(writer);
+
+        Console.SetError(writer);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(logPath);
+    }
+
 }

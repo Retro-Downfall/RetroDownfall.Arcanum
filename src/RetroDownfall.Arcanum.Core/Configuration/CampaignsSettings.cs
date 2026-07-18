@@ -12,11 +12,11 @@ public sealed record CampaignsSettings
     /// <see cref="WorkspaceRootPolicy"/>). When non-empty, resolved paths must fall under
     /// one of these roots.
     /// </summary>
-    public string[] AllowedRoots { get; init; } = [];
+    public string[] AllowedRoots { get; set; } = [];
 
     /// <summary>
     /// Maximum number of registered campaigns in the Grimoire database.
     /// </summary>
-    public int MaxCampaigns { get; init; } = 500;
+    public int MaxCampaigns { get; set; } = 500;
 
 }

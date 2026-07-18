@@ -35,6 +35,7 @@ public static class DockLayoutDefaults
             [DockToolId.WorkspaceExplorer] = DockRegion.Left,
             [DockToolId.Archive] = DockRegion.Right,
             [DockToolId.Divination] = DockRegion.Right,
+            [DockToolId.WeaveInspector] = DockRegion.Right,
         };
 
     public static IReadOnlyList<(string ToolId, string Title, string? IconKey, DockRegion Region, int Order)> Tools { get; } =
@@ -48,6 +49,7 @@ public static class DockLayoutDefaults
         (DockToolId.WarTable, "The War Table", "IconApprentice", DockRegion.Right, 3),
         (DockToolId.Archive, "The Archive", "IconSession", DockRegion.Hidden, 0),
         (DockToolId.Divination, "Divination", "IconSpell", DockRegion.Hidden, 0),
+        (DockToolId.WeaveInspector, "The Weave Inspector", "IconCodex", DockRegion.Hidden, 0),
         (DockToolId.Output, "Output", "IconSession", DockRegion.Bottom, 0),
         (DockToolId.Logs, "Logs", "IconCodex", DockRegion.Bottom, 1),
         (DockToolId.Hearth, "The Hearth", "IconSanctum", DockRegion.Bottom, 2),

@@ -4,17 +4,48 @@
 
     <OutputType>Exe</OutputType>
 
-    <PublishAot>true</PublishAot>
-
     <IsAotCompatible>true</IsAotCompatible>
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
     <InvariantGlobalization>true</InvariantGlobalization>
 
-    <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
-
     <EFOptimizeContext>false</EFOptimizeContext>
+
+  </PropertyGroup>
+
+  <PropertyGroup>
+
+    <!-- Native AOT produces the self-contained CLI binary on Linux and Windows. -->
+
+    <PublishAot Condition="'$(RuntimeIdentifier)' == '' or !$(RuntimeIdentifier.StartsWith('osx'))">true</PublishAot>
+
+    <!-- macOS 27 / Xcode 26+ ld-prime crashes on large Native AOT object files with
+         "Assertion failed: (_addend == uniqueIndex &amp;&amp; 'too many large addends')"
+         (dotnet/runtime#119380). The runtime fix is not yet in .NET 10.0.10, and
+         ld_classic is no longer supported. Until the runtime fix ships, fall back
+         to a single-file self-contained publish on macOS. The output is still one
+         signed Mach-O executable; startup is slower than AOT but the build works. -->
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">true</PublishSingleFile>
+
+    <PublishTrimmed Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">true</PublishTrimmed>
+
+  </PropertyGroup>
+
+  <PropertyGroup>
+
+    <!-- Keep the Native AOT object file small where AOT is still used. -->
+    <OptimizationPreference>Size</OptimizationPreference>
+
+    <StackTraceSupport>false</StackTraceSupport>
+
+    <DebuggerSupport>false</DebuggerSupport>
+
+    <UseWindowsThreadPool>false</UseWindowsThreadPool>
+
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
 
   </PropertyGroup>
 
@@ -37,13 +68,6 @@
     <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
 
     <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
-
-    <!-- Xcode 15+'s new ld64 can crash on large Native AOT object files with
-         "Assertion failed: (_addend == uniqueIndex && "too many large addends")"
-         (a confirmed Apple/dotnet toolchain bug, tracked at dotnet/runtime#119380).
-         The CLI's growing command surface (Phase 2 CLI parity) crosses that threshold
-         on some hosts; force the classic linker as the documented workaround. -->
-    <LinkerArg Include="-ld_classic" />
 
   </ItemGroup>
 
@@ -77,7 +101,7 @@
 
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
 
-    <PackageReference Include="Spectre.Console" Version="0.55.0" />
+    <PackageReference Include="Spectre.Console" Version="0.57.2" />
 
     <PackageReference Include="ConsoleAppFramework" Version="5.7.13">
 

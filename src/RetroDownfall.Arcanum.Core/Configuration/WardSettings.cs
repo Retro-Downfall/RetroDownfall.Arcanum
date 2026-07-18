@@ -3,7 +3,7 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record WardSettings
 {
 
-    public bool Enabled { get; init; } = true;
+    public bool Enabled { get; set; } = true;
 
     private readonly List<string> _forbiddenArts = new()
     {
@@ -23,10 +23,10 @@ public sealed record WardSettings
 
     }
 
-    public int TimeoutSeconds { get; init; } = 120;
+    public int TimeoutSeconds { get; set; } = 120;
 
-    public int MaxActiveWards { get; init; } = 50;
+    public int MaxActiveWards { get; set; } = 50;
 
-    public bool AutoDenyInUnattendedMode { get; init; } = true;
+    public bool AutoDenyInUnattendedMode { get; set; } = true;
 
 }

@@ -20,6 +20,7 @@ using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
 using RetroDownfall.TheForge.Ux.ViewModels.Lore;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
+using RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
 
@@ -83,6 +84,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     public WorkspaceExplorerViewModel WorkspaceExplorer { get; }
 
+    public WeaveInspectorViewModel WeaveInspector { get; }
+
     public MainViewModel(
         IArcanumConnection connection,
         INavigationService navigation,
@@ -98,6 +101,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         SagaArchiveViewModel archive,
         DivinationViewModel divination,
         WorkspaceExplorerViewModel workspaceExplorer,
+        WeaveInspectorViewModel weaveInspector,
         IWorkbenchDocumentFactory documentFactory,
         ITheForgeSettingsStore settingsStore,
         IOptionsMonitor<TheForgeSettings> settings,
@@ -135,6 +139,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         Divination = divination;
 
         WorkspaceExplorer = workspaceExplorer;
+
+        WeaveInspector = weaveInspector;
 
         _documentFactory = documentFactory;
 
@@ -215,6 +221,9 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void ShowWorkspaceExplorer() => DockLayout.ShowTool(DockToolId.WorkspaceExplorer);
+
+    [RelayCommand]
+    private void ShowWeaveInspector() => DockLayout.ShowTool(DockToolId.WeaveInspector);
 
     [RelayCommand]
     private void OpenGlobalCodex() => _navigation.OpenDocument(DocumentKind.Codex, "global");
@@ -342,6 +351,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         DockLayout.SetContent(DockToolId.WorkspaceExplorer, WorkspaceExplorer);
 
+        DockLayout.SetContent(DockToolId.WeaveInspector, WeaveInspector);
+
     }
 
     private void ApplyToolVisibility()
@@ -382,6 +393,11 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             rightSelected == DockToolId.WorkspaceExplorer
             || bottomSelected == DockToolId.WorkspaceExplorer
             || leftSelected == DockToolId.WorkspaceExplorer;
+
+        WeaveInspector.IsVisible =
+            rightSelected == DockToolId.WeaveInspector
+            || bottomSelected == DockToolId.WeaveInspector
+            || leftSelected == DockToolId.WeaveInspector;
 
         bool foundryVisible = !DockLayout.Bottom.IsCollapsed
             && DockLayout.Bottom.Tools.Any(t =>
@@ -546,6 +562,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             PanelKind.Archive => DockToolId.Archive,
             PanelKind.Divination => DockToolId.Divination,
             PanelKind.WorkspaceExplorer => DockToolId.WorkspaceExplorer,
+            PanelKind.WeaveInspector => DockToolId.WeaveInspector,
             _ => null,
         };
 

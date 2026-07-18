@@ -308,6 +308,14 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(WorkspaceSearchResult))]
 [JsonSerializable(typeof(WorkspaceSearchResult[]))]
 [JsonSerializable(typeof(ApiResponse<WorkspaceSearchResult[]>))]
+
+// The Weave Inspector (Phase 7 — RAG substrate inspection, read-only)
+[JsonSerializable(typeof(WorkspaceIndexStatusDto))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceIndexStatusDto>))]
+[JsonSerializable(typeof(WorkspaceFileChunkDto))]
+[JsonSerializable(typeof(WorkspaceFileChunkDto[]))]
+[JsonSerializable(typeof(WorkspaceFileChunkPage))]
+[JsonSerializable(typeof(ApiResponse<WorkspaceFileChunkPage>))]
 [JsonSerializable(typeof(SagaMemoryDto))]
 [JsonSerializable(typeof(SagaMemoryDto[]))]
 [JsonSerializable(typeof(SagaSearchRequest))]

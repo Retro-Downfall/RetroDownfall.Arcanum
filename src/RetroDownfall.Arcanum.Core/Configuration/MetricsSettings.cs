@@ -12,7 +12,7 @@ public sealed record MetricsSettings
     /// When <c>true</c> (default), <c>GET /metrics</c> renders Prometheus text format; when
     /// <c>false</c>, the endpoint returns <c>404</c>.
     /// </summary>
-    public bool Enabled { get; init; } = true;
+    public bool Enabled { get; set; } = true;
 
     /// <summary>
     /// When <c>true</c> (default), <c>GET /metrics</c> is registered with <c>ApiKeyEndpointFilter</c>
@@ -22,6 +22,6 @@ public sealed record MetricsSettings
     /// (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>), mirroring the CORS wildcard
     /// downgrade in <c>ApiBootstrapper</c>.
     /// </summary>
-    public bool RequireApiKey { get; init; } = true;
+    public bool RequireApiKey { get; set; } = true;
 
 }

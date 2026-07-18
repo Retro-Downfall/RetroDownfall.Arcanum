@@ -4,7 +4,6 @@ using System.Text.Json;
 using ConsoleAppFramework;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
-using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
@@ -851,6 +850,7 @@ public sealed class DoctorCommand(
 
         DoctorProbeResult probe = await ProbeApiReachabilityAsync(
                 client,
+                new Uri(targetUrl),
                 apiKey,
                 timeoutSeconds,
                 cancellationToken)
@@ -970,6 +970,7 @@ public sealed class DoctorCommand(
 
         DoctorProbeResult probe = await ProbeApiReachabilityAsync(
                 client,
+                new Uri(targetUrl),
                 apiKey,
                 timeoutSeconds,
                 cancellationToken)
@@ -995,6 +996,7 @@ public sealed class DoctorCommand(
 
     private async Task<DoctorProbeResult> ProbeApiReachabilityAsync(
         HttpClient client,
+        Uri healthUrl,
         string? apiKey,
         int timeoutSeconds,
         CancellationToken cancellationToken)
@@ -1002,7 +1004,7 @@ public sealed class DoctorCommand(
 
         Task<DoctorProbeResult> RunProbeAsync()
         {
-            return ProbeApiReachabilityInnerAsync(client, apiKey, timeoutSeconds, cancellationToken);
+            return ProbeApiReachabilityInnerAsync(client, healthUrl, apiKey, timeoutSeconds, cancellationToken);
         }
 
         if (!cliEnvironment.IsInteractive || !cliEnvironment.ColorEnabled)
@@ -1029,56 +1031,57 @@ public sealed class DoctorCommand(
 
     private static async Task<DoctorProbeResult> ProbeApiReachabilityInnerAsync(
         HttpClient client,
+        Uri healthUrl,
         string? apiKey,
         int timeoutSeconds,
         CancellationToken cancellationToken)
     {
 
-        using HttpRequestMessage request = new(HttpMethod.Get, "api/health");
-
-        if (apiKey is not null)
-        {
-            _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-        }
-
-        using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
         try
         {
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+            HealthProbeResult probe = await ArcanumHealthProbe
+                .ProbeAsync(
+                    client,
+                    healthUrl,
+                    apiKey,
+                    TimeSpan.FromSeconds(timeoutSeconds),
+                    cancellationToken)
                 .ConfigureAwait(false);
 
-            int statusCode = (int)response.StatusCode;
-
-            if (response.IsSuccessStatusCode)
-            {
-                return new DoctorProbeResult(DoctorProbeKind.Ok, statusCode, null);
-            }
-
-            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-            {
-                return new DoctorProbeResult(DoctorProbeKind.Unauthorized, statusCode, null);
-            }
-
-            return new DoctorProbeResult(DoctorProbeKind.UnexpectedStatus, statusCode, response.ReasonPhrase);
+            return MapHealthProbe(probe);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return new DoctorProbeResult(DoctorProbeKind.Cancelled, 0, null);
         }
-        catch (OperationCanceledException)
-        {
-            return new DoctorProbeResult(DoctorProbeKind.Timeout, 0, null);
-        }
-        catch (HttpRequestException ex)
-        {
-            return new DoctorProbeResult(DoctorProbeKind.Unreachable, 0, ex.Message);
-        }
 
     }
+
+    private static DoctorProbeResult MapHealthProbe(HealthProbeResult probe) =>
+        probe.State switch
+        {
+            HealthProbeState.Healthy => new DoctorProbeResult(
+                DoctorProbeKind.Ok,
+                probe.StatusCode ?? 200,
+                null),
+            HealthProbeState.Unauthorized => new DoctorProbeResult(
+                DoctorProbeKind.Unauthorized,
+                probe.StatusCode ?? 401,
+                null),
+            HealthProbeState.UnhealthyStatus => new DoctorProbeResult(
+                DoctorProbeKind.UnexpectedStatus,
+                probe.StatusCode ?? 0,
+                probe.Error),
+            HealthProbeState.Timeout => new DoctorProbeResult(DoctorProbeKind.Timeout, 0, probe.Error),
+            HealthProbeState.ConnectionRefused
+                or HealthProbeState.NetworkUnreachable
+                or HealthProbeState.DnsFailure
+                or HealthProbeState.TlsFailure => new DoctorProbeResult(
+                    DoctorProbeKind.Unreachable,
+                    0,
+                    probe.Error),
+            _ => new DoctorProbeResult(DoctorProbeKind.Unreachable, 0, probe.Error),
+        };
 
     private bool AddPathRow(Table table, string label, string path, bool exists, bool optional)
     {

@@ -107,7 +107,11 @@ public class AnvilSetupActionsTests
 
         public List<string> Calls { get; } = [];
 
-        public event PropertyChangedEventHandler? PropertyChanged;
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
 
         public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
 

@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
@@ -455,6 +456,27 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 return Result<bool>.Failure(new Error("Api.HttpError", fallback));
             },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<IReadOnlyList<McpServerInfo>>> GetMcpServersAsync(CancellationToken cancellationToken = default)
+    {
+        Result<McpServerInfo[]> result = await SendRequestAsync(
+            HttpMethod.Get,
+            "api/mcp",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseMcpServerInfoArray,
+            static envelope => envelope.Data is null
+                ? Result<McpServerInfo[]>.Failure(new Error("Api.InvalidResponse", "MCP servers payload was empty."))
+                : Result<McpServerInfo[]>.Success(envelope.Data),
+            cancellationToken).ConfigureAwait(false);
+
+        if (!result.IsSuccess)
+        {
+            return Result<IReadOnlyList<McpServerInfo>>.Failure(result.Error!);
+        }
+
+        return Result<IReadOnlyList<McpServerInfo>>.Success(result.Value!);
     }
 
     public async Task<Result<string>> ReloadMcpAsync(OptionalWorkspaceRequest request, CancellationToken cancellationToken)

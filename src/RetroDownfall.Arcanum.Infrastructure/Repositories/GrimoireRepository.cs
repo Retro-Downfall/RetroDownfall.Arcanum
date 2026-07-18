@@ -837,14 +837,21 @@ public sealed class GrimoireRepository : IGrimoireRepository
         DateTime idleCutoff,
         CancellationToken cancellationToken = default)
     {
-        List<Guid> unknownIds = await _db.Sessions
+        // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY or comparisons
+        // (see EntryTemporalQueries and SessionRepository.QueryAsync). Project the scalars we
+        // need, materialize, and apply the temporal ordering/filter client-side.
+        var unknownRows = await _db.Sessions
             .AsNoTracking()
             .Where(s => s.UnsummarizedEntryCount == -1)
+            .Select(s => new { s.Id, s.UpdatedAt })
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<Guid> unknownIds = unknownRows
             .OrderBy(s => s.UpdatedAt)
             .Take(MaxLegacyBackfillPerSweep)
             .Select(s => s.Id)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+            .ToList();
 
         foreach (Guid sessionId in unknownIds)
         {
@@ -861,15 +868,22 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         DateTimeOffset idleCutoffOffset = new(idleCutoff, TimeSpan.Zero);
 
-        return await _db.Sessions
+        // Server-side filter narrows to candidates with pending work; the temporal idle cutoff
+        // is applied client-side because it compares a DateTimeOffset column.
+        var candidates = await _db.Sessions
             .AsNoTracking()
+            .Where(s => s.UnsummarizedEntryCount == -1 || s.UnsummarizedEntryCount > 0)
+            .Select(s => new { s.Id, s.UnsummarizedEntryCount, s.UpdatedAt })
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return candidates
             .Where(s =>
                 s.UnsummarizedEntryCount == -1
                 || s.UnsummarizedEntryCount > threshold
                 || (s.UnsummarizedEntryCount > 0 && s.UpdatedAt < idleCutoffOffset))
             .Select(s => s.Id)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+            .ToList();
     }
 
     public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
@@ -882,13 +896,16 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         DateTimeOffset watermarkOffset = new(watermark, TimeSpan.Zero);
 
-        List<Entry> candidates = await _db.Entries
+        // EF Core's SQLite provider cannot translate DateTimeOffset comparisons in WHERE;
+        // filter by session server-side, then apply the watermark client-side.
+        List<Entry> sessionEntries = await _db.Entries
             .AsNoTracking()
-            .Where(m => m.SessionId == sessionId && m.CreatedAt > watermarkOffset)
+            .Where(m => m.SessionId == sessionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return candidates
+        return sessionEntries
+            .Where(m => m.CreatedAt > watermarkOffset)
             .OrderBy(m => m.CreatedAt)
             .Take(take)
             .ToList();
@@ -1011,14 +1028,20 @@ public sealed class GrimoireRepository : IGrimoireRepository
             int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
                 _arcOptions.Value.Grimoire.WorkspaceContextRetentionCount);
 
-            List<Guid> idsToKeep = await _db.WorkspaceContexts
+            // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY; materialize
+            // the workspace-scoped rows and pick the newest `retain` client-side. The retention
+            // cap keeps this set small.
+            List<WorkspaceContext> candidates = await _db.WorkspaceContexts
                 .AsNoTracking()
                 .Where(w => w.WorkspacePath == context.WorkspacePath)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            List<Guid> idsToKeep = candidates
                 .OrderByDescending(w => w.CreatedAt)
                 .Take(retain)
                 .Select(w => w.Id)
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
+                .ToList();
 
             if (idsToKeep.Count >= retain)
             {
@@ -1043,12 +1066,19 @@ public sealed class GrimoireRepository : IGrimoireRepository
         string workspacePath,
         CancellationToken cancellationToken = default)
     {
-        return await _db.WorkspaceContexts
+        // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY (see
+        // EntryTemporalQueries and PromptRepository.ListAsync for the same constraint).
+        // Materialize the workspace-scoped rows (bounded by WorkspaceContextRetentionCount)
+        // and pick the latest client-side.
+        List<WorkspaceContext> rows = await _db.WorkspaceContexts
             .AsNoTracking()
             .Where(w => w.WorkspacePath == workspacePath)
-            .OrderByDescending(w => w.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken)
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        return rows
+            .OrderByDescending(w => w.CreatedAt)
+            .FirstOrDefault();
     }
 
     public async Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default)

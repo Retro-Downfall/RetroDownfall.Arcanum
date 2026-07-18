@@ -10,16 +10,16 @@ public sealed record ProvingGroundsSettings
     /// <summary>
     /// Maximum number of Inquisitors allowed on a single Trial. Default <c>20</c>; clamped 1–200 at runtime.
     /// </summary>
-    public int MaxInquisitorsPerTrial { get; init; } = 20;
+    public int MaxInquisitorsPerTrial { get; set; } = 20;
 
     /// <summary>
     /// Maximum completion tokens for a Semantic Inquisitor FastModel judge call. Default <c>8</c>.
     /// </summary>
-    public int SemanticJudgeMaxTokens { get; init; } = 8;
+    public int SemanticJudgeMaxTokens { get; set; } = 8;
 
     /// <summary>
     /// Timeout in seconds for a Semantic Inquisitor judge inference call. Default <c>60</c>.
     /// </summary>
-    public int SemanticJudgeTimeoutSeconds { get; init; } = 60;
+    public int SemanticJudgeTimeoutSeconds { get; set; } = 60;
 
 }

@@ -407,16 +407,55 @@ public static class GrimoireDatabaseBootstrapper
         CancellationToken cancellationToken)
     {
 
-        string? dedicatedSecret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
+        SecretStoreReadResult dedicated = await ReadGrimoireSecretResultAsync(secretStore).ConfigureAwait(false);
 
-        if (!string.IsNullOrEmpty(dedicatedSecret))
+        if (dedicated.Status == SecretStoreReadStatus.Ok
+            && !string.IsNullOrEmpty(dedicated.Value))
         {
 
-            return dedicatedSecret;
+            return dedicated.Value;
+
+        }
+
+        if (dedicated.Status == SecretStoreReadStatus.Corrupted)
+        {
+
+            // Sidecar-backed databases are keyed from the dedicated secret. Falling back to the
+            // API key here yields a wrong passphrase and a confusing "key verification failed"
+            // FailFast — surface the real cause (missing/corrupt Data Protection key material).
+            Log.Fatal(
+                "Grimoire encryption secret store is present but cannot be decrypted ({Message}). "
+                + "The Data Protection key that sealed grimoire-key.dat is missing from ~/.config/arcanum/keys/. "
+                + "Restore the matching key-*.xml from backup, or reset the Grimoire (delete arcanum.db, arcanum.db.kdf under ~/.config/arcanum/, and grimoire-key.dat under the Application Support arcanum folder) to start fresh — session data is otherwise unrecoverable.",
+                dedicated.Message ?? "unknown");
+
+            Environment.FailFast(
+                "Arcanum Grimoire encryption secret cannot be decrypted (missing Data Protection key). See logs for recovery steps.");
+
+            throw new InvalidOperationException("Unreachable.");
 
         }
 
         return apiKey;
+
+    }
+
+    private static Task<SecretStoreReadResult> ReadGrimoireSecretResultAsync(ISecretStore secretStore) =>
+        secretStore switch
+        {
+            OsKeychainSecretStore os => os.GetGrimoireEncryptionSecretReadResultAsync(),
+            DataProtectionSecretStore dp => dp.GetGrimoireEncryptionSecretReadResultAsync(),
+            _ => ReadGrimoireSecretResultFallbackAsync(secretStore),
+        };
+
+    private static async Task<SecretStoreReadResult> ReadGrimoireSecretResultFallbackAsync(ISecretStore secretStore)
+    {
+
+        string? value = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
+
+        return value is null
+            ? SecretStoreReadResult.Missing()
+            : SecretStoreReadResult.Ok(value);
 
     }
 

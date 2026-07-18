@@ -370,7 +370,7 @@ public sealed class SessionRepository(
 
         }
 
-        // Maintain the unsummarized-entry counter so the Forge append path no longer drifts
+        // Maintain the unsummarized-entry counter so The Forge append path no longer drifts
         // it (the inference path already does this). -1 means "unknown legacy"; leave it.
         await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
 
