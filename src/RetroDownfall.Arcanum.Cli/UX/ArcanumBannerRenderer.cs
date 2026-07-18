@@ -15,18 +15,30 @@ internal static class ArcanumBannerRenderer
 
     private const string TipText = "/help for slash commands  -  /exit to quit  -  Ctrl+C to cancel a turn";
 
+    private const string TitleArt =
+        """
+         _    ____   ____    _    _   _ _   _ __  __
+        / \  |  _ \ / ___|  / \  | \ | | | | |  \/  |
+        ○═╪/═_═\═|═|_)═|═|═════/═_═\═|══\|═|═|═|═|═|\/|═|══>
+        / ___ \|  _ <| |___ / ___ \| |\  | |_| | |  | |
+        /_/   \_\_| \_\\____/_/   \_\_| \_|\___/|_|  |_|
+        """;
+
     internal static IRenderable Render(BannerContext ctx)
     {
 
         ArgumentNullException.ThrowIfNull(ctx);
 
-        FigletText title = new FigletText(FigletFont.Default, "ARCANUM").Color(ctx.Theme.Heading).Centered();
+        Markup title = new(
+            ctx.Theme.HeadingBoldMarkup(Markup.Escape(TitleArt.Trim('\r', '\n'))));
+
+        IRenderable centeredTitle = Align.Center(title);
 
         Markup subtitle = new(ctx.Theme.MutedMarkup(Markup.Escape($"the conversational grimoire  -  v{ctx.Version}")));
 
         Table table = BuildDetailsTable(ctx);
 
-        Rows content = new(title, subtitle, table);
+        Rows content = new(centeredTitle, subtitle, table);
 
         return new Panel(content)
         {

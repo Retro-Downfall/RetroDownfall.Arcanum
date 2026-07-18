@@ -72,6 +72,18 @@ public sealed class ArcanumBannerRendererTests
 
     }
 
+    [Fact]
+    public void Render_includes_sword_through_title()
+    {
+        TestConsole console = new();
+
+        console.Write(ArcanumBannerRenderer.Render(CreateContext(ServeLaunchStatus.AlreadyRunning)));
+
+        Assert.Contains('═', console.Output);
+        Assert.Contains('>', console.Output);
+        Assert.Contains('╪', console.Output);
+    }
+
     private static BannerContext CreateContext(
         ServeLaunchStatus status,
         HealthProbeState health = HealthProbeState.Healthy,
