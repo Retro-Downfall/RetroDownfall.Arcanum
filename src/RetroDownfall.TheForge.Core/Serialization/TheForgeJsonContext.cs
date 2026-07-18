@@ -168,6 +168,11 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<ToolInvokeResponse>))]
 [JsonSerializable(typeof(ToolInvokeResponse))]
 
+// Diagnostic MCP Invocation — POST /api/mcp/tools/invoke (external MCP only; internal + Forbidden Arts blocked)
+[JsonSerializable(typeof(McpToolInvokeRequest))]
+[JsonSerializable(typeof(ApiResponse<McpToolInvokeResponse>))]
+[JsonSerializable(typeof(McpToolInvokeResponse))]
+
 // Lore Browser
 [JsonSerializable(typeof(ApiResponse<ListPageResult<LoreDto>>), TypeInfoPropertyName = "ApiResponseListPageResultLoreDto")]
 [JsonSerializable(typeof(ApiResponse<LoreDto>))]

@@ -11,6 +11,9 @@
     <TabItem Header="Scrying Pool">
       <arsenalViews:ScryingPoolView DataContext="{Binding ScryingPool}" />
     </TabItem>
+    <TabItem Header="Diagnostic MCP Invocation">
+      <arsenalViews:DiagnosticMcpInvocationView DataContext="{Binding DiagnosticMcp}" />
+    </TabItem>
     <TabItem Header="Models &amp; Providers">
       <arsenalViews:ModelsProvidersView DataContext="{Binding ModelsProviders}" />
     </TabItem>

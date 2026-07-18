@@ -455,6 +455,9 @@ public class ArsenalViewModelTests
 
         }
 
+        public Task<(McpToolInvokeResponse? Response, string? Error)> InvokeDiagnosticMcpAsync(McpToolInvokeRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult<(McpToolInvokeResponse?, string?)>((null, "Not implemented."));
+
     }
 
 }

@@ -238,6 +238,27 @@ public static class ErrorCodes
 
         public const string ServerNotFound = "Mcp.ServerNotFound";
 
+        /// <summary>Diagnostic MCP Invocation: the named server is not running.</summary>
+        public const string ServerNotRunning = "Mcp.ServerNotRunning";
+
+        /// <summary>Diagnostic MCP Invocation: the workspace-local MCP surface is not trusted.</summary>
+        public const string WorkspaceNotTrusted = "Mcp.WorkspaceNotTrusted";
+
+        /// <summary>Diagnostic MCP Invocation: the requested tool name was not found on any visible external server.</summary>
+        public const string ToolNotFound = "Mcp.ToolNotFound";
+
+        /// <summary>Diagnostic MCP Invocation: the requested tool belongs to the internal server or is a Forbidden Art and cannot be invoked from the diagnostic endpoint.</summary>
+        public const string DiagnosticBlocked = "Mcp.DiagnosticBlocked";
+
+        /// <summary>Diagnostic MCP Invocation: the tool name is provided by more than one visible external server; specify serverName.</summary>
+        public const string AmbiguousTool = "Mcp.AmbiguousTool";
+
+        /// <summary>Diagnostic MCP Invocation: the tool returned an error result.</summary>
+        public const string ToolError = "Mcp.ToolError";
+
+        /// <summary>Diagnostic MCP Invocation: the request exceeded the configured timeout.</summary>
+        public const string DiagnosticTimeout = "Mcp.DiagnosticTimeout";
+
     }
 
     /// <summary>Daemon — background job orchestration.</summary>

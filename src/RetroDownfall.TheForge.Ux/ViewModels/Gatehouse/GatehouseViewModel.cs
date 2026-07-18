@@ -45,7 +45,7 @@ public sealed partial class GatehouseViewModel : ViewModelBase, IDisposable
 
     public bool HasNoWards => Wards.Count == 0;
 
-    public string EmptyState => "No active wards — the Forge is quiet.";
+    public string EmptyState => "No active wards — The Forge is quiet.";
 
     partial void OnIsVisibleChanged(bool value)
     {

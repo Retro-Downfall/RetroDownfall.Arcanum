@@ -97,11 +97,15 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         Title = $"Tome: {sessionId:D}";
 
+        Trace = new InferenceTraceViewModel();
+
     }
 
     public override DocumentKind? Kind => DocumentKind.Session;
 
     public Guid SessionId { get; private set; }
+
+    public InferenceTraceViewModel Trace { get; }
 
     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
 
@@ -180,6 +184,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         CancellationToken sendToken = _sendCts.Token;
 
         IsStreaming = true;
+
+        Trace.BeginCapture("session", SessionId.ToString("D"));
 
         try
         {
@@ -591,6 +597,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     private void ApplyIntelligenceEvent(IntelligenceEvent ev)
     {
+
+        Trace.Capture(ev);
 
         switch (ev.Type)
         {

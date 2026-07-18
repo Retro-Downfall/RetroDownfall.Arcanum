@@ -31,7 +31,7 @@ Three projects, added to the existing `RetroDownfall.Arcanum.slnx` solution:
 | `RetroDownfall.TheForge.Ux` | Avalonia desktop app (the IDE itself) | `RetroDownfall.TheForge.Core` |
 | `RetroDownfall.TheForge.Tests` | xUnit test project | `RetroDownfall.TheForge.Ux` |
 
-`RetroDownfall.TheForge.Core` holds Forge-specific models, re-declared DTOs, settings, the JSON
+`RetroDownfall.TheForge.Core` holds The Forge-specific models, re-declared DTOs, settings, the JSON
 source-generation context, and the API key resolver — nothing that needs Avalonia. Referencing
 `RetroDownfall.Arcanum.Core` (a pure leaf project, net10.0, AOT-compatible, no project references of
 its own) gives The Forge every wire DTO it needs except a handful of Health/Meta/Budget types that
@@ -119,7 +119,7 @@ suggest — recorded here so future changes don't silently drift from the real w
   `wardId`, `toolName`, `arguments`, `allowed`, `reason` — directly onto the Chronicle frame, with no
   nested `wizardEvent` object. Three lifecycle event types (`CastSent`, `SimulacrumStarted`,
   `SimulacrumCompleted`) are emitted **PascalCase** on the wire while every other type is camelCase.
-  For this reason, `ArcanumSseClient.StreamChronicleAsync` deserializes into the Forge-local
+  For this reason, `ArcanumSseClient.StreamChronicleAsync` deserializes into The Forge-local
   `ChronicleFrame` record (raw string `Type`, compared case-insensitively via `IsType(...)`) instead
   of `RetroDownfall.Arcanum.Core.TheForge.ApprenticeEvent` — deserializing straight into
   `ApprenticeEvent` would silently drop every pass-through field.
@@ -163,7 +163,7 @@ suggest — recorded here so future changes don't silently drift from the real w
 | Entry inspector | The Loupe | Artifact import/export | Export / Import *(Atelier + Spell/Scriptorium; §5.18)* |
 | Markdown preview | The Illumination | | |
 
-`Compendium` here refers to Forge's Settings panel concept, distinct from the existing
+`Compendium` here refers to The Forge's Settings panel concept, distinct from the existing
 `RetroDownfall.Compendium.Ux` Avalonia project (Arcanum's separate configuration-editor app) already in
 the solution — the two are unrelated products that happen to share a name from the same fantasy
 vocabulary.
@@ -270,7 +270,7 @@ Phase 7 replaces the War Table placeholder with apprentice orchestration:
   goal with `@file` mentions, workspace + campaign selectors), and hosts the selected detail pane.
 - `ApprenticeDetailViewModel` loads detail/plan, walks Conclave lineage via
   `ParentApprenticeId`, and exposes Start/Pause/Resume/Cancel/Reweave/Intervene.
-- `ChronicleViewModel` streams `GET /api/apprentices/{id}/chronicle` into Forge-local
+- `ChronicleViewModel` streams `GET /api/apprentices/{id}/chronicle` into The Forge-local
   `ChronicleFrame` entries (raw-string `Type`); pass-through Wizard events and `eventsDropped`
   warnings are rendered by `ChronicleTimeline`.
 - Visibility is gated with the right panel (same seam as The Gatehouse).
@@ -284,7 +284,7 @@ Phase 8 replaces the Gatehouse placeholder with live ward governance:
 - `WardCardViewModel` shows tool name, truncated indented JSON arguments, session id, and an
   `ExpiresAt` countdown refreshed each poll tick.
 - Approve / Deny call `POST /api/wards/{id}` with `ResolveWardRequest` (`allow` + optional deny
-  reason). Empty state: "No active wards — the Forge is quiet." Ward SSE auto-refresh is noted as a
+  reason). Empty state: "No active wards — The Forge is quiet." Ward SSE auto-refresh is noted as a
   future hook, not built.
 
 ### 5.6 Phase 9 The Anvil
@@ -330,7 +330,7 @@ from The Hearth until **The Ledger** (dedicated Git UI) ships.
 - Built-in `cd` (no child process): home, `~` / `~/…`, relative/absolute paths, simple quotes.
   Working directory defaults to the user profile; toolbar **Home** resets to that profile.
 - Output is a capped line list (`HearthLineKind`: Command / StandardOutput / StandardError / System),
-  styled with Forge theme brushes and `ForgeCodeFontFamily`.
+  styled with The Forge theme brushes and `ForgeCodeFontFamily`.
 - `MainViewModel` operationally owns and disposes the transient `HearthViewModel` (dispose is
   idempotent and cancels any running process).
 
@@ -340,7 +340,7 @@ yet; no folder picker for cwd; no automatic command execution.
 ### 5.9 Phase 11 — Author & test (Milestone F)
 
 Milestone F makes The Forge capable of creating and authoring primary inference artifacts from the
-GUI, all through the existing Arcanum HTTP routes via the Forge service layer (no server-side
+GUI, all through the existing Arcanum HTTP routes via The Forge service layer (no server-side
 changes):
 
 - **Atelier creation.** Campaign nodes expose **New Spell / New Prompt / New Session** context-menu
@@ -384,16 +384,17 @@ blank numeric fields preserving the server value and empty JSON saving as `{}`. 
 (validate/clone/export/import/delete for spells; clone/delete/import/export plus version list/open
 for prompts) and workspace-aware spell navigation are implemented. **The Mirror** (spell version
 list / fetch body / LCS compare / activate / create / update) ships in the Spell editor (§5.15).
-Still deferred: full prompt-version management beyond list/open, advanced import
-conflict handling (name-collision / duplicate-version surface clearly; conflict wizards deferred),
-The Ledger, and a true PTY Hearth (Arsenal/Treasury ship in
-Milestone G — see §5.10). Campaign CRUD and import/export ship in §5.18. The Proving Grounds UI
-ships in §5.17. The visual SPELL.json metadata designer ships in §5.16.
+**The Mirror** for prompts ships in The Scriptorium (§5.20 phase 4): version list, fetch-by-id,
+multi-field LCS diff, dirty-buffer warning, clone/export/import — no activate-prompt (Arcanum has
+no such concept). Still deferred: advanced import conflict wizards, The Ledger, and a true PTY
+Hearth (Arsenal/Treasury ship in Milestone G — see §5.10). Campaign CRUD and import/export ship in
+§5.18. The Proving Grounds UI ships in §5.17. The visual SPELL.json metadata designer ships in
+§5.16. Comparison Workbench and Inference Trace ship in §5.20 phases 3 and 5.
 
 ### 5.10 Phase 12 — Operate Inference (Milestone G)
 
 Milestone G replaces the Arsenal and Treasury placeholders with real API-backed operational panels
-for running inference infrastructure — all through existing Arcanum HTTP routes via the Forge
+for running inference infrastructure — all through existing Arcanum HTTP routes via The Forge
 service layer (no server-side changes). The Arsenal becomes a tabbed panel; the Treasury becomes a
 budget dashboard. The Forge stays a pure API client: no `HttpClient` outside `ArcanumApiClient`, no
 reference to `RetroDownfall.Arcanum.Api`, no Grimoire access.
@@ -542,7 +543,7 @@ only. H1 remains complete; H2 is additive.
   `UsePreciseSourceLocation`, `UsePipeTables`, `UseTaskLists`, `UseEmphasisExtras`, `UseAutoLinks`,
   `UseFootnotes`, `UseMathematics`. Do not upgrade Markdig casually.
 - **Raw HTML.** Always muted `[HTML omitted]` (never escaped HTML as body text; never executed).
-- **Syntax highlighting.** `ColorCode.Core` → Avalonia inlines; colors only via Dark/Light Forge
+- **Syntax highlighting.** `ColorCode.Core` → Avalonia inlines; colors only via Dark/Light The Forge
   brushes (`ForgeCodeKeywordBrush`, `ForgeCodeStringBrush`, `ForgeCodeCommentBrush`,
   `ForgeCodeNumberBrush`, `ForgeCodeTypeBrush`). Unknown languages → plain themed blocks.
 - **Images.** Opt-in remote toggle (default **off**). Dedicated `IRemoteMarkdownImageLoader` (not
@@ -578,9 +579,10 @@ that copies newline-joined paths to the clipboard via `IClipboardService` / `Ava
   memory management, budget enforcement).
 - **Surfaces.** Divination (per-tab messages), The Archive, Workspace Explorer (index + write
   banners), The Tome (memory management), The Treasury (budget disabled).
-- **Follow-ups (honest).** **Open Compendium** deep-link from a banner is deferred. A dedicated
+- **Follow-ups (honest).** Disabled banners also offer **Open Compendium** (The Treasury) and The
+  Anvil / View menu host **Setup wizard…** / **Open Compendium** via `ICompendiumLauncher`. A dedicated
   **Guardrails** settings panel in The Forge is deferred — operators edit `arcanum.json` or use
-  RetroDownfall.Compendium.Ux today.
+  Compendium today.
 
 ### 5.15 Phase 4 — The Mirror (spell version panel)
 
@@ -590,7 +592,7 @@ Floor detail.
 
 - **Backend (U5).** `GET /api/spells/{name}/versions/{version}` returns `SpellVersionDetailDto`
   (`Version`, `IsActive`, `CreatedAt`, `Description`, `Body` — markdown body only, no filesystem
-  paths). Forge `SpellService` / `SpellEditorDataSource` expose GetVersionDetail plus Create/Update
+  paths). The Forge `SpellService` / `SpellEditorDataSource` expose GetVersionDetail plus Create/Update
   version clients. Create/Update send markdown `Body` only (`CreateSpellVersionRequest` /
   `UpdateSpellVersionRequest`).
 - **LCS diff.** Local no-NuGet helper `Services/Diff/LineDiff.cs` classifies lines as
@@ -603,12 +605,12 @@ Floor detail.
   mutation (Create / Update / Activate / Save) stays disabled via the existing `CanSave` matrix;
   read/compare remains allowed when GET detail succeeds.
 - **UI.** Spell editor **The Mirror** tab: version list, unified diff pane, dirty warning, action
-  buttons. Selection refreshes the diff via view code-behind.
+  buttons. Selection refreshes the diff via view code-behind. Prompt **The Mirror** is in The
+  Scriptorium (§5.20 phase 4).
 
-**Known limitations (honest):** advanced prompt-version management beyond Scriptorium list/open,
-import conflict wizards, The Ledger Git UI, a true PTY Hearth, and Phase 7 War Table orchestration
-remain deferred. Campaign CRUD and import/export ship in §5.18. Proving Grounds UI ships in §5.17.
-Visual SPELL.json metadata designer ships in §5.16.
+**Known limitations (honest):** advanced import conflict wizards, The Ledger Git UI, a true PTY
+Hearth, and Phase 7 War Table orchestration remain deferred. Campaign CRUD and import/export ship in
+§5.18. Proving Grounds UI ships in §5.17. Visual SPELL.json metadata designer ships in §5.16.
 
 ### 5.16 Phase 5 U2 — Visual Spell Metadata Designer
 
@@ -633,13 +635,14 @@ the update path. Empty schemas display as `{}`.
 Phase 6 adds **The Proving Grounds** as a **singleton** Workbench document (`DocumentKind.Trial`,
 fixed id `proving-grounds`) — one tab, focused on re-open; never one tab per shortcut.
 
-- **Ephemeral only.** Draft Trials are in-memory; there is no Grimoire persistence and no Trial
-  library. Persistent Trial libraries remain deferred.
+- **Ephemeral drafts + local suites.** Single-Trial drafts remain in-memory. Persistent suites and
+  run history live in The Forge-local `~/.config/arcanum/the-forge-trial-suites.json` (versioned,
+  atomic, owner-only, 100-run cap per suite). Not Grimoire / not `forge.json`.
 - **Targets.** `TrialTargetKind`: Spell (picker + name), Prompt (picker + GUID), ApprenticeGoal
   (free-text). Optional workspace, model, trial name, and key/value variables (non-empty keys).
 - **Inquisitors.** Regex (`pattern`, `shouldMatch`, `ignoreCase`), JsonSchema (local JSON validate),
   Semantic (`question`, `expectedAnswer` **bool**). Core DTOs from
-  `RetroDownfall.Arcanum.Core.ProvingGrounds` — no Forge mirrors.
+  `RetroDownfall.Arcanum.Core.ProvingGrounds` — no The Forge mirrors.
 - **Run.** `ITrialDataSource` → `TrialService.RunAsync` (`POST /api/proving-grounds/trials/run`).
   Cancel via linked CTS. Results: passed/failed summary, output, verdicts, usage, API errors.
 - **Whispers / Floor.** Success if passed, Warning if failed, Error if API failed; Floor logs start
@@ -650,13 +653,13 @@ fixed id `proving-grounds`) — one tab, focused on re-open; never one tab per s
 - **JSON.** `TheForgeJsonContext` registers the full Proving Grounds graph (Inquisitor polymorphism,
   TrialResult / InquisitorVerdict, TrialTargetKind) matching ArcanumJsonContext.
 
-**Known limitations (honest):** persistent Trial libraries deferred; advanced import conflict
+**Known limitations (honest):** advanced import conflict
 wizards, The Ledger Git UI, and a true PTY Hearth remain gaps. Campaign CRUD and artifact
-import/export ship in §5.18.
+import/export ship in §5.18. Suite persistence is The Forge-local only (not Grimoire).
 
 ### 5.18 Phase 7 polish — Campaign management and import/export
 
-Phase 7 (Forge UI polish, distinct from War Table orchestration in §5.7) adds campaign registry CRUD
+Phase 7 (The Forge UI polish, distinct from War Table orchestration in §5.7) adds campaign registry CRUD
 and unified artifact import/export through existing Arcanum routes only (no Grimoire/disk bypass):
 
 - **Services (U5).** `CampaignService` already exposes List/Get/Create/Update/Delete;
@@ -682,6 +685,94 @@ and unified artifact import/export through existing Arcanum routes only (no Grim
 **Known limitations (honest):** advanced import conflict wizards deferred; full campaign Settings
 editor deferred; War Table / Chronicle / Gatehouse orchestration remains §5.7.
 
+### 5.19 Phase 6 — Diagnostic MCP Invocation
+
+Phase 6 adds a **Diagnostic MCP Invocation** tab to **The Arsenal** (between **Scrying Pool** and
+**Models & Providers**) — an operator-facing workbench for directly invoking **external** MCP tools
+outside of an inference turn. It surfaces Arcanum's `POST /api/mcp/tools/invoke` (Arcanum.DESIGN.md §11.28).
+
+- **Policy, server-side.** External MCP tools only. The internal `arcanum-internal` server and all
+  five Forbidden Arts (`execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`,
+  `run_spell_script`) are blocked by the Arcanum service with a clear message: *"This tool cannot be
+  invoked from the diagnostic endpoint because it is a Forbidden Art or requires the Wizard tool
+  execution pipeline."* The Forge UI never has to enforce policy itself — it surfaces the server's
+  `Mcp.DiagnosticBlocked` / `Mcp.ServerNotRunning` / `Mcp.AmbiguousTool` / `Mcp.ToolNotFound` /
+  `Mcp.ToolError` / `Mcp.DiagnosticTimeout` errors as-is.
+- **Picker.** `Refresh` calls `GetArsenalAsync(workingDirectory?)`; the server list filters out
+  `arcanum-internal` and any server whose state is not `running`. Selecting a server populates its
+  `ProvidedTools` as the tool list. Optional **Workspace** scopes the visible MCP surface.
+- **Invoke.** JSON args editor (`{}` default); **Invoke** requires a confirmation dialog with a
+  mutation warning ("Some MCP tools mutate state, write files, or call external services. Confirm
+  before invoking.") and **Cancel is the default** button. The request carries `serverName` for
+  disambiguation. Result panel shows the parsed JSON (or wrapped string), `durationMs`, a truncation
+  flag (when the server hit `ToolOutputCapBytes`), and the resolved server name. Invalid arguments
+  JSON is caught before the dialog is shown.
+- **Fixtures (local, explicit).** **Save fixture** prompts for a name and stores `{toolName,
+  serverName, workingDirectory, argumentsJson, lastResultJson, lastInvokedAt}` in The Forge-local
+  `~/.config/arcanum/the-forge-diagnostic-mcp-fixtures.json` (versioned, atomic, owner-only, 100-cap,
+  deduped by name keeping the newest). A **sensitive-data warning** is shown in the Fixtures expander
+  ("Saved fixtures may contain tool arguments and outputs (potentially sensitive). They are stored
+  locally on this machine."). Fixtures are never written implicitly — only on the explicit Save
+  command. **Load into editor** restores tool/server/workspace/args; **Delete** and **Clear all**
+  both confirm first; **Export result** writes the last result to a file the operator chooses.
+- **Built-ins unchanged.** The Scrying Pool tab keeps `POST /api/tools/invoke` for the low-risk
+  built-in tools; its note now points operators to the Diagnostic MCP Invocation tab for external MCP.
+- **Data seams.** `IArsenalDataSource.InvokeDiagnosticMcpAsync(McpToolInvokeRequest)` (API-backed by
+  `McpService.InvokeDiagnosticMcpAsync`); `IDiagnosticMcpFixtureStore` /
+  `DiagnosticMcpFixtureStore` mirror the existing atomic owner-only store pattern.
+  `TheForgeSettings.MaxDiagnosticMcpFixtures` (default 100) bounds retention. `TheForgeJsonContext`
+  and a new `TheForgeDiagnosticMcpFixturesJsonContext` carry the source-generated JSON.
+
+**Known limitations (honest):** internal-tool diagnostics (e.g. testing `execute_command` capture /
+truncation) are not available from this endpoint — they require the Wizard tool execution pipeline
+with a real campaign (preferred policy, deferred; see Arcanum.DESIGN.md §11.28 for the feasibility
+assessment). The merged-surface `AIFunction` is invoked by name; in the rare case of a tool-name
+collision across two external servers, the merger's local-wins + fallback-client resolution applies
+and the operator's `serverName` is treated as a validation gate + disambiguation hint, not a hard
+dispatch selector (documenting the merger's behavior honestly).
+
+### 5.20 Inference IDE expansion tracker
+
+Phased expansion of **The Forge** into a deeper inference-developer IDE. Status values:
+`planned` → `in-progress` → `implemented`. Operator-visible prose uses **The Forge**; technical
+identifiers (`RetroDownfall.TheForge.*`, `forge.json`, `TheForgeJsonContext`) remain unchanged.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | Inventory, seams, naming cleanup | implemented |
+| 1 | Setup wizard + Compendium deep-link | implemented |
+| 2 | Persistent Proving Grounds suites (The Forge-local) | implemented |
+| 3 | Comparison Workbench | implemented |
+| 4 | Prompt Mirror | implemented |
+| 5 | Inference trace/debug inspector | implemented |
+| 6 | Diagnostic MCP Invocation workbench | implemented |
+| 7 | RAG / The Weave inspector | planned |
+| 8 | Audit and guardrails browser | planned |
+| 9 | Files and batch-job UI | planned |
+| 10 | The Ledger Git UI | planned |
+
+Local history stores (suites, comparisons, traces, fixtures) use versioned JSON under
+`~/.config/arcanum/`, atomic writes, owner-only permissions, bounded retention, and sensitive-data
+UI warnings. Do not document those stores in `docs/Arcanum.PERSISTENCE.md`.
+
+**Phase 3 — Comparison Workbench:** `DocumentKind.Comparison`, Trial menu entry, sequential variant
+runs, honest cost labeling, LineDiff, local history (`the-forge-comparisons.json`).
+
+**Phase 4 — Prompt Mirror:** Scriptorium **The Mirror** tab (fetch-by-id, multi-field diff, dirty
+warning, clone/export/import; no activate-prompt).
+
+**Phase 5 — Inference Trace:** `InferenceTraceViewModel` + control; capture on Tome / Spell /
+Scriptorium / Comparison; export + optional local traces (`the-forge-inference-traces.json`); Cast /
+Test dry-run pointers only.
+
+**Phase 6 — Diagnostic MCP Invocation:** The Arsenal **Diagnostic MCP Invocation** tab surfaces
+`POST /api/mcp/tools/invoke` (§11.28) — policy-constrained external MCP tool invoke by an operator.
+External servers only; `arcanum-internal` and all five Forbidden Arts are blocked server-side. Server/tool
+pickers populated from `GetArsenalAsync`; JSON args editor; confirm-before-invoke (mutation warning);
+result + duration + truncation flag; local fixtures (`the-forge-diagnostic-mcp-fixtures.json`, 100 cap,
+user-managed by name) with sensitive-data warning; export result. Built-ins stay on the Scrying Pool tab
+(`POST /api/tools/invoke`). Not model execution; not unauthenticated.
+
 ## 6. Feature catalog (phased)
 
 Delivered in buildable milestones rather than one drop — each keeps `dotnet build`/`dotnet test`
@@ -699,16 +790,17 @@ green before the next begins.
 | H — Context and Memory | — | Lore Browser, The Archive (Saga), Divination, Workspace Explorer (read-first + optional server-gated writes), Tome session memory controls, The Codex; `DataSourceResult<T>`, `PatchAsync`, confirmation dialogs; dock tools hidden-by-default |
 | H1 — The Illumination | — | Native markdown preview (`IlluminationView` / Markdown.Avalonia.Tight); Source/Split/Preview in Spell editor + The Codex; standalone markdown Workbench tab; Workspace Explorer Open Preview; link/image/HTML safety policies |
 | H2 — The Illumination Completion | — | Markdig 1.2.0 AST → Avalonia; ColorCode theme brushes; SSRF-safe opt-in remote images + data URIs; approximate AvaloniaEdit scroll sync; footnotes; math/Mermaid source blocks; extended markdown payload context |
-| Phase 2.2 — Disabled-state guidance | — | Exact `Arcanum:*` paths in disabled banners; Copy setting paths via `IClipboardService`; Open Compendium deep-link deferred; Guardrails panel deferred |
+| Phase 2.2 — Disabled-state guidance | — | Exact `Arcanum:*` paths in disabled banners; Copy setting paths via `IClipboardService`; Open Compendium via `ICompendiumLauncher`; Guardrails panel deferred |
+| Phase 6 — Proving Grounds UI | — | Singleton Trial Workbench document; ephemeral run + The Forge-local persistent suites; Regex / JsonSchema / Semantic Inquisitors; shortcuts from Spell / Scriptorium |
 | Phase 4 — The Mirror | — | Spell editor version panel: list / GET body / local LCS compare / activate / create / update; dirty-buffer warning; builtin mutation gated |
 | Phase 5 — Spell Metadata Designer | — | Visual SPELL.json designer + raw editor; known-field round-trip only |
-| Phase 6 — Proving Grounds UI | — | Singleton Trial Workbench document; ephemeral run; Regex / JsonSchema / Semantic Inquisitors; shortcuts from Spell / Scriptorium |
 | Phase 7 polish — Campaign CRUD + import/export | — | Atelier campaign New/Edit/Delete(unregister)/Export/Import; spell+prompt Import; ArtifactImportExportHelper |
 
 As of this document's last update, **Milestones A–H are implemented**, plus **Milestone H1 (The
 Illumination)**, **Milestone H2 (The Illumination Completion)**, **The Hearth** local terminal
 (§5.8), **The Mirror** spell-version panel (§5.15), **Spell Metadata Designer** (§5.16),
-**Proving Grounds UI** (§5.17), and **Campaign CRUD + import/export** (§5.18): the solution scaffold
+**Proving Grounds UI** (§5.17), **Campaign CRUD + import/export** (§5.18), and **Diagnostic MCP
+Invocation** (§5.19, Phase 6 of the inference IDE expansion — §5.20): the solution scaffold
 through The Tome, War Table, Gatehouse, Anvil, VS 2026 Fluent-inspired theme polish, the dockable
 Hearth command runner, Atelier artifact creation, The Scriptorium (§5.9), the operational panels —
 The Arsenal, Models & Providers, and The Treasury (§5.10), Context & Memory (§5.11),
@@ -737,6 +829,6 @@ and markdown preview (§5.12–§5.13).
 Any change that touches The Forge's architecture, wire contracts, project structure, or UI feature
 set must update this document in the same change set as the code — mirroring
 [`docs/Arcanum.DESIGN.md` §18](Arcanum.DESIGN.md#18-document-maintenance)'s policy for Arcanum itself. Do not close
-Forge work with only code changes; update the feature-catalog table in §6 as milestones land, and
+The Forge work with only code changes; update the feature-catalog table in §6 as milestones land, and
 keep [`docs/TheForge.README.md`](TheForge.README.md) in sync for anything operator-visible (build/run
 steps, API key acquisition, settings file location).

@@ -18,6 +18,8 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
 
     private readonly ScryingPoolViewModel _scryingPool;
 
+    private readonly DiagnosticMcpInvocationViewModel _diagnosticMcp;
+
     private readonly ModelsProvidersViewModel _modelsProviders;
 
     private bool _disposed;
@@ -26,6 +28,7 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
         IArcanumConnection connection,
         McpServersViewModel mcpServers,
         ScryingPoolViewModel scryingPool,
+        DiagnosticMcpInvocationViewModel diagnosticMcp,
         ModelsProvidersViewModel modelsProviders)
     {
 
@@ -34,6 +37,8 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
         _mcpServers = mcpServers;
 
         _scryingPool = scryingPool;
+
+        _diagnosticMcp = diagnosticMcp;
 
         _modelsProviders = modelsProviders;
 
@@ -54,6 +59,8 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
 
     public ScryingPoolViewModel ScryingPool => _scryingPool;
 
+    public DiagnosticMcpInvocationViewModel DiagnosticMcp => _diagnosticMcp;
+
     public ModelsProvidersViewModel ModelsProviders => _modelsProviders;
 
     [RelayCommand]
@@ -63,6 +70,7 @@ public sealed partial class ArsenalViewModel : ViewModelBase, IDisposable
         await Task.WhenAll(
             _mcpServers.RefreshAsync(cancellationToken),
             _scryingPool.RefreshAsync(cancellationToken),
+            _diagnosticMcp.RefreshAsync(cancellationToken),
             _modelsProviders.RefreshAsync(cancellationToken)).ConfigureAwait(true);
 
     }

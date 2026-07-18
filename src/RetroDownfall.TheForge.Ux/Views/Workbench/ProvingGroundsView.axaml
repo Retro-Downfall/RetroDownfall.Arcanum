@@ -16,6 +16,7 @@
       </StackPanel>
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
         <Button Content="Refresh pickers" Command="{Binding LoadPickersCommand}" />
+        <Button Content="Load suites" Command="{Binding LoadSuitesCommand}" />
         <Button Content="Run" Command="{Binding RunCommand}" IsEnabled="{Binding !IsBusy}" />
         <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsBusy}" />
         <Button Content="Reset" Command="{Binding ResetCommand}" IsEnabled="{Binding !IsBusy}" />
@@ -26,6 +27,69 @@
 
       <ScrollViewer Grid.Column="0">
         <StackPanel Spacing="10" Margin="0,0,8,0">
+
+          <StackPanel Spacing="4">
+            <TextBlock Text="Suites (local)" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding SuitePassRateSummary}" Opacity="0.75" TextWrapping="Wrap" />
+            <TextBlock Text="This history may contain prompts, model outputs, tool arguments, and file snippets. It is stored locally on this machine."
+                       Opacity="0.6"
+                       TextWrapping="Wrap"
+                       FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBox Text="{Binding NewSuiteName}" MinWidth="140" Watermark="Suite name" />
+              <Button Content="Create suite" Command="{Binding CreateSuiteCommand}" />
+            </StackPanel>
+            <ListBox ItemsSource="{Binding Suites}"
+                     SelectedItem="{Binding SelectedSuite}"
+                     MinHeight="72"
+                     MaxHeight="120">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Add draft" Command="{Binding AddDraftToSuiteCommand}" />
+              <Button Content="Run suite" Command="{Binding RunSelectedSuiteCommand}" IsEnabled="{Binding !IsBusy}" />
+              <Button Content="Run item" Command="{Binding RunSelectedSuiteItemCommand}" IsEnabled="{Binding !IsBusy}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Clear history" Command="{Binding ClearSuiteRunHistoryCommand}" />
+              <Button Content="Export" Command="{Binding ExportSuiteCommand}" />
+              <Button Content="Import" Command="{Binding ImportSuiteCommand}" />
+              <Button Content="Delete suite" Command="{Binding DeleteSuiteCommand}" />
+            </StackPanel>
+            <ListBox ItemsSource="{Binding SelectedSuite.Trials}"
+                     SelectedItem="{Binding SelectedSuiteItem}"
+                     MinHeight="56"
+                     MaxHeight="100"
+                     IsVisible="{Binding SelectedSuite, Converter={x:Static ObjectConverters.IsNotNull}}">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <TextBlock Text="Run history" Opacity="0.72" />
+            <ListBox ItemsSource="{Binding SelectedSuiteRuns}"
+                     SelectedItem="{Binding SelectedSuiteRun}"
+                     MinHeight="56"
+                     MaxHeight="120">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock>
+                    <TextBlock.Text>
+                      <MultiBinding StringFormat="{}{0:g} — {1} result(s)">
+                        <Binding Path="StartedAt" />
+                        <Binding Path="Results.Count" />
+                      </MultiBinding>
+                    </TextBlock.Text>
+                  </TextBlock>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </StackPanel>
 
           <StackPanel Spacing="4">
             <TextBlock Text="Target kind" Opacity="0.72" />
@@ -207,7 +271,8 @@
     <TextBlock Grid.Row="2"
                Margin="0,8,0,0"
                Opacity="0.55"
-               Text="Ephemeral only — Trials are not saved. Persistent Trial libraries are deferred." />
+               Text="{Binding SuiteStatusText}"
+               TextWrapping="Wrap" />
 
   </Grid>
 </UserControl>

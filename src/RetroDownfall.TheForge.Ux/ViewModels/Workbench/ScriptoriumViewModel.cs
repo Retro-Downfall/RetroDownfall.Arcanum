@@ -181,11 +181,16 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         Title = $"Scriptorium: {promptId:D}";
 
+        Trace = new InferenceTraceViewModel(
+            openPromptTestPreview: () => StatusText = "Use the Test tab for assembled-context preview (no LLM cost).");
+
     }
 
     public override DocumentKind? Kind => DocumentKind.Prompt;
 
     public Guid PromptId { get; }
+
+    public InferenceTraceViewModel Trace { get; }
 
     public ObservableCollection<PromptVersionDto> Versions { get; } = [];
 
@@ -242,6 +247,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             Title = $"Scriptorium: {Prompt.Name} {Prompt.Version}";
 
             StatusText = "Loaded.";
+
+            CapturePersistedSnapshot();
 
             await LoadVersionsAsync(cancellationToken).ConfigureAwait(true);
 
@@ -378,6 +385,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             Prompt = saved;
 
             StatusText = "Saved.";
+
+            CapturePersistedSnapshot();
 
             _whispers.Show(WhisperSeverity.Success, "Prompt saved.");
 
@@ -568,6 +577,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         LastError = null;
 
         RunResultText = string.Empty;
+
+        Trace.BeginCapture("prompt", Prompt.Id.ToString("D"));
 
         _runCts?.Cancel();
 
@@ -1095,6 +1106,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
     private void ApplyIntelligenceEvent(IntelligenceEvent ev)
     {
+
+        Trace.Capture(ev);
 
         switch (ev.Type)
         {

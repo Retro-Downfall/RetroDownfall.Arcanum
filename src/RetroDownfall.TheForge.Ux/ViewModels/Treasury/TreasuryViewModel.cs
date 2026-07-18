@@ -4,6 +4,8 @@ using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Treasury;
@@ -23,6 +25,10 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
     private readonly FoundryFloorViewModel _foundryFloor;
 
     private readonly IClipboardService _clipboard;
+
+    private readonly ICompendiumLauncher _compendiumLauncher;
+
+    private readonly IWhispersService _whispers;
 
     private bool _disposed;
 
@@ -45,7 +51,9 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         IArcanumConnection connection,
         ITreasuryDataSource dataSource,
         FoundryFloorViewModel foundryFloor,
-        IClipboardService clipboard)
+        IClipboardService clipboard,
+        ICompendiumLauncher compendiumLauncher,
+        IWhispersService whispers)
     {
 
         _connection = connection;
@@ -55,6 +63,10 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         _foundryFloor = foundryFloor;
 
         _clipboard = clipboard;
+
+        _compendiumLauncher = compendiumLauncher;
+
+        _whispers = whispers;
 
         Title = "The Treasury";
 
@@ -84,6 +96,18 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         await _clipboard
             .SetTextAsync(DisabledSettingPaths.JoinForClipboard(DisabledSettingPaths.Budget), cancellationToken)
             .ConfigureAwait(true);
+
+    [RelayCommand]
+    private void OpenCompendium()
+    {
+
+        CompendiumLaunchResult result = _compendiumLauncher.TryLaunch();
+
+        _whispers.Show(
+            result.Launched ? WhisperSeverity.Success : WhisperSeverity.Warning,
+            result.Message);
+
+    }
 
     partial void OnBudgetChanged(BudgetSummaryDto? value)
     {

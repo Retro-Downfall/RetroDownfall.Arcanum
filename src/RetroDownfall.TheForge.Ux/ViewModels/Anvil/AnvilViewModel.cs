@@ -8,6 +8,8 @@ using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.TheForge.Ux.Services.Whispers;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 
@@ -27,6 +29,12 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     private readonly INavigationService _navigation;
 
     private readonly ITheForgeApiKeyProvider _apiKeyProvider;
+
+    private readonly ISetupWizardDialogService _setupWizard;
+
+    private readonly ICompendiumLauncher _compendiumLauncher;
+
+    private readonly IWhispersService _whispers;
 
     private readonly IOptionsMonitor<TheForgeSettings> _settings;
 
@@ -70,6 +78,9 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         IAnvilDataSource dataSource,
         INavigationService navigation,
         ITheForgeApiKeyProvider apiKeyProvider,
+        ISetupWizardDialogService setupWizard,
+        ICompendiumLauncher compendiumLauncher,
+        IWhispersService whispers,
         IOptionsMonitor<TheForgeSettings> settings,
         ILogger<AnvilViewModel> logger)
     {
@@ -81,6 +92,12 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         _navigation = navigation;
 
         _apiKeyProvider = apiKeyProvider;
+
+        _setupWizard = setupWizard;
+
+        _compendiumLauncher = compendiumLauncher;
+
+        _whispers = whispers;
 
         _settings = settings;
 
@@ -142,6 +159,32 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         _apiKeyProvider.ClearPasteDecline();
 
         _connection.Connect();
+
+    }
+
+    [RelayCommand]
+    private void Reconnect()
+    {
+
+        _connection.Disconnect();
+
+        _connection.Connect();
+
+    }
+
+    [RelayCommand]
+    private async Task OpenSetupWizardAsync(CancellationToken cancellationToken) =>
+        await _setupWizard.ShowAsync(cancellationToken).ConfigureAwait(true);
+
+    [RelayCommand]
+    private void OpenCompendium()
+    {
+
+        CompendiumLaunchResult result = _compendiumLauncher.TryLaunch();
+
+        _whispers.Show(
+            result.Launched ? WhisperSeverity.Success : WhisperSeverity.Warning,
+            result.Message);
 
     }
 

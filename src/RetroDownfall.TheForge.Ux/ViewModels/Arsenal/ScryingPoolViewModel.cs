@@ -11,7 +11,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
 /// <summary>
 /// The Scrying Pool tab of The Arsenal: lists built-in (native) tools exposed by
 /// <c>POST /api/intelligence/arsenal</c> and invokes them via <c>POST /api/tools/invoke</c>.
-/// External MCP direct invocation is not exposed by Arcanum yet.
+/// External MCP direct invocation lives in the Diagnostic MCP Invocation tab.
 /// </summary>
 public sealed partial class ScryingPoolViewModel : ViewModelBase
 {
@@ -51,7 +51,7 @@ public sealed partial class ScryingPoolViewModel : ViewModelBase
 
     }
 
-    public string InvocationNote => "Built-in Tool Invocation — external MCP direct invocation is not exposed by Arcanum yet.";
+    public string InvocationNote => "Built-in Tool Invocation — for external MCP tools use the Diagnostic MCP Invocation tab.";
 
     [RelayCommand(CanExecute = nameof(CanRefresh))]
     public async Task RefreshAsync(CancellationToken cancellationToken)

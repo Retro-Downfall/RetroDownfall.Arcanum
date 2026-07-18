@@ -23,6 +23,9 @@ public interface INavigationService
     /// </summary>
     event Func<ProvingGroundsPrefill?, bool>? ProvingGroundsOpenRequested;
 
+    /// <summary>Opens or focuses the singleton Comparison Workbench tab.</summary>
+    event Action? ComparisonWorkbenchOpenRequested;
+
     void OpenDocument(DocumentKind kind, string id, string? workspace = null);
 
     void CloseDocument(DocumentKind kind, string id, string? workspace = null);
@@ -31,6 +34,9 @@ public interface INavigationService
 
     /// <summary>Opens or focuses Proving Grounds; optionally prefills when the draft is clean.</summary>
     bool OpenOrFocusProvingGrounds(ProvingGroundsPrefill? prefill = null);
+
+    /// <summary>Opens or focuses Comparison Workbench.</summary>
+    void OpenOrFocusComparisonWorkbench();
 
 }
 
@@ -45,6 +51,8 @@ public sealed class NavigationService : INavigationService
 
     public event Func<ProvingGroundsPrefill?, bool>? ProvingGroundsOpenRequested;
 
+    public event Action? ComparisonWorkbenchOpenRequested;
+
     public void OpenDocument(DocumentKind kind, string id, string? workspace = null) =>
         DocumentOpenRequested?.Invoke(kind, id, WorkspacePathHelper.ForApi(workspace));
 
@@ -55,5 +63,7 @@ public sealed class NavigationService : INavigationService
 
     public bool OpenOrFocusProvingGrounds(ProvingGroundsPrefill? prefill = null) =>
         ProvingGroundsOpenRequested?.Invoke(prefill) ?? false;
+
+    public void OpenOrFocusComparisonWorkbench() => ComparisonWorkbenchOpenRequested?.Invoke();
 
 }

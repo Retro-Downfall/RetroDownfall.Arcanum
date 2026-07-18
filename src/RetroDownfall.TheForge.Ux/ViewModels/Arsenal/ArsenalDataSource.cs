@@ -158,4 +158,20 @@ public sealed class ArsenalDataSource : IArsenalDataSource
 
     }
 
+    public async Task<(McpToolInvokeResponse? Response, string? Error)> InvokeDiagnosticMcpAsync(McpToolInvokeRequest request, CancellationToken cancellationToken)
+    {
+
+        ApiResponse<McpToolInvokeResponse>? response = await _mcpService.InvokeDiagnosticMcpAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (response is { IsSuccess: true, Data: { } result })
+        {
+
+            return (result, null);
+
+        }
+
+        return (null, ForgeApiError.From(response, "Diagnostic MCP invocation failed."));
+
+    }
+
 }

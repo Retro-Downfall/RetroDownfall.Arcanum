@@ -3,6 +3,7 @@
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
              xmlns:forge="using:RetroDownfall.Arcanum.Core.TheForge"
              xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
+             xmlns:views="using:RetroDownfall.TheForge.Ux.Views.Workbench"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.ScriptoriumView"
              x:DataType="vm:ScriptoriumViewModel">
   <Grid RowDefinitions="Auto,*">
@@ -115,6 +116,48 @@
                     HorizontalAlignment="Left" />
           </Grid>
         </TabItem>
+        <TabItem Header="The Mirror">
+          <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="4">
+            <TextBlock Grid.Row="0"
+                       Text="Unsaved editor changes are not included in this comparison"
+                       Foreground="{DynamicResource ForgeWarningBrush}"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,8"
+                       IsVisible="{Binding ShowDirtyComparisonWarning}" />
+            <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+              <ListBox Grid.Column="0" ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate DataType="forge:PromptVersionDto">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="{Binding Version}" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding UpdatedAt}" Opacity="0.72" />
+                    </StackPanel>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+              <ListBox Grid.Column="2" ItemsSource="{Binding MirrorDiffLines}" FontFamily="Cascadia Mono, Consolas, monospace">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding UnifiedDisplay}" />
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6" Margin="0,8,0,0">
+              <Button Content="Refresh Mirror" Command="{Binding RefreshMirrorDiffCommand}" />
+              <Button Content="Clone" Command="{Binding CloneCommand}" />
+              <Button Content="Export" Command="{Binding ExportCommand}" />
+              <Button Content="Import" Command="{Binding ImportCommand}" />
+              <Button Content="Open version" Command="{Binding OpenVersionCommand}" CommandParameter="{Binding SelectedVersion}" />
+            </StackPanel>
+            <TextBlock Grid.Row="3"
+                       Text="{Binding MirrorStatusText}"
+                       Opacity="0.72"
+                       TextWrapping="Wrap"
+                       Margin="0,8,0,0" />
+          </Grid>
+        </TabItem>
         <TabItem Header="Parameters">
           <StackPanel Spacing="4" Margin="4">
             <TextBlock Text="Parameters, one per line: key=value" Opacity="0.72" />
@@ -189,6 +232,9 @@
                 </ScrollViewer>
               </Border>
               <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" />
+              <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4" MinHeight="140">
+                <views:InferenceTraceView DataContext="{Binding Trace}" />
+              </Border>
             </StackPanel>
           </ScrollViewer>
         </TabItem>

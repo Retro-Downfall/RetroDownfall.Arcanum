@@ -18,6 +18,10 @@ using RetroDownfall.Arcanum.Core.TheForge;
 
 using RetroDownfall.TheForge.Ux.Models;
 
+using RetroDownfall.TheForge.Core.Models.Trials;
+
+using RetroDownfall.TheForge.Core.Services;
+
 using RetroDownfall.TheForge.Ux.Services;
 
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -97,7 +101,9 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         ITrialDataSource dataSource,
         FoundryFloorViewModel foundryFloor,
         IWhispersService whispers,
-        IConfirmationDialogService confirmationDialog)
+        IConfirmationDialogService confirmationDialog,
+        ITrialSuiteStore suiteStore,
+        IArtifactFileDialogService fileDialog)
     {
 
         _dataSource = dataSource;
@@ -108,11 +114,21 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         _confirmationDialog = confirmationDialog;
 
+        _suiteStore = suiteStore;
+
+        _fileDialog = fileDialog;
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _suiteDocument = new TrialSuiteStoreDocument(TrialSuiteStore.CurrentSchemaVersion, now, now, []);
+
         Title = "Proving Grounds";
 
         Variables.CollectionChanged += OnDraftCollectionChanged;
 
         Inquisitors.CollectionChanged += OnDraftCollectionChanged;
+
+        _ = LoadSuitesCommand.ExecuteAsync(null);
 
     }
 

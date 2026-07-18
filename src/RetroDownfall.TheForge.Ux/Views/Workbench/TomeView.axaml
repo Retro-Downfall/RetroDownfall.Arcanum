@@ -2,9 +2,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
              xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
+             xmlns:views="using:RetroDownfall.TheForge.Ux.Views.Workbench"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.TomeView"
              x:DataType="vm:TomeViewModel">
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto">
 
     <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Spacing="2">
@@ -100,7 +101,11 @@
       </ItemsControl>
     </ScrollViewer>
 
-    <StackPanel Grid.Row="4" Spacing="8" Margin="0,8,0,4">
+    <Expander Grid.Row="4" Header="Inference Trace" Margin="0,4,0,4">
+      <views:InferenceTraceView DataContext="{Binding Trace}" Height="180" />
+    </Expander>
+
+    <StackPanel Grid.Row="5" Spacing="8" Margin="0,8,0,4">
       <StackPanel Orientation="Horizontal" Spacing="12">
         <TextBlock Text="{Binding ManaPercent, StringFormat=Mana: {0:0}%}" Opacity="0.72" />
         <TextBlock Text="{Binding LastUsage.TotalTokens, StringFormat=Tokens: {0}}" Opacity="0.72" />
@@ -115,7 +120,7 @@
                MinHeight="36" />
     </StackPanel>
 
-    <TextBox Grid.Row="5"
+    <TextBox Grid.Row="6"
              Text="{Binding InputText}"
              AcceptsReturn="True"
              TextWrapping="Wrap"

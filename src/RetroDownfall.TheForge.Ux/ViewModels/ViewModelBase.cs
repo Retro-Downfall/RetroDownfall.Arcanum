@@ -4,7 +4,7 @@ using RetroDownfall.TheForge.Ux.Models;
 namespace RetroDownfall.TheForge.Ux.ViewModels;
 
 /// <summary>
-/// Base type for every Forge ViewModel. <see cref="Kind"/> identifies a document-hosting ViewModel's
+/// Base type for every ViewModel in The Forge. <see cref="Kind"/> identifies a document-hosting ViewModel's
 /// <see cref="DocumentKind"/> for Workbench tab tracking (<c>null</c> for non-document ViewModels,
 /// e.g. panel roots like <c>AtelierViewModel</c>); <see cref="Title"/> is the Workbench tab label.
 /// </summary>

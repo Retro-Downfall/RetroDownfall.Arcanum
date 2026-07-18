@@ -194,6 +194,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
         DocumentTooltip = Workspace;
 
+        Trace = new InferenceTraceViewModel(
+            openSpellCastPreview: () => StatusText = "Use Cast for assembled-context preview (no general dry-run API).");
+
     }
 
     public override DocumentKind? Kind => DocumentKind.Spell;
@@ -201,6 +204,8 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
     public string SpellName { get; }
 
     public string? Workspace { get; }
+
+    public InferenceTraceViewModel Trace { get; }
 
     public bool IsBuiltIn => Spell?.Source == SpellSource.Builtin;
 
@@ -1047,6 +1052,8 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
 
         LastError = null;
 
+        Trace.BeginCapture("spell", SpellName);
+
         bool hadError = false;
 
         _executeCts?.Cancel();
@@ -1066,6 +1073,8 @@ public sealed partial class SpellEditorViewModel : ViewModelBase
             {
 
                 ExecutionEvents.Add(ev);
+
+                Trace.Capture(ev);
 
                 if (ev.Type == IntelligenceEventType.Error)
                 {

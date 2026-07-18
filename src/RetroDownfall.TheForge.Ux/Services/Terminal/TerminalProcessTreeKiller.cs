@@ -5,7 +5,7 @@ namespace RetroDownfall.TheForge.Ux.Services.Terminal;
 
 /// <summary>
 /// Best-effort process-tree kill for Hearth Stop/dispose. Swallows expected races where the
-/// process already exited. Forge-local copy of Arcanum's internal ProcessTreeKiller pattern.
+/// process already exited. The Forge-local copy of Arcanum's internal ProcessTreeKiller pattern.
 /// </summary>
 internal static class TerminalProcessTreeKiller
 {

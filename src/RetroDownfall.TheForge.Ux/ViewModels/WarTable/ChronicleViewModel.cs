@@ -7,7 +7,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 
 /// <summary>
 /// Live Chronicle stream for one apprentice. Owns a CTS started on activation and cancelled on
-/// deactivation. Frames are Forge-local <see cref="ChronicleFrame"/> records (raw-string Type).
+/// deactivation. Frames are The Forge-local <see cref="ChronicleFrame"/> records (raw-string Type).
 /// </summary>
 public sealed partial class ChronicleViewModel : ObservableObject, IDisposable
 {

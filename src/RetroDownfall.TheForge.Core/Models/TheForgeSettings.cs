@@ -1,7 +1,7 @@
 namespace RetroDownfall.TheForge.Core.Models;
 
 /// <summary>
-/// Persisted Forge settings, round-tripped to <c>~/.config/arcanum/forge.json</c>
+/// Persisted The Forge settings, round-tripped to <c>~/.config/arcanum/forge.json</c>
 /// (<see cref="RetroDownfall.Arcanum.Core.Storage.ArcanumPaths.GrimoireDirectory"/>).
 ///
 /// Property-style (not positional) to match Arcanum's own <c>ArcanumSettings</c> convention: a real
@@ -28,5 +28,17 @@ public sealed record TheForgeSettings
     public bool AutoConnect { get; init; } = true;
 
     public Guid? ActiveSessionId { get; init; }
+
+    /// <summary>Max retained suite run history entries per suite (default 100).</summary>
+    public int MaxTrialSuiteRunHistory { get; init; } = 100;
+
+    /// <summary>Max retained Comparison Workbench runs (default 100).</summary>
+    public int MaxComparisonRunHistory { get; init; } = 100;
+
+    /// <summary>Max retained local inference traces (default 100).</summary>
+    public int MaxInferenceTraceHistory { get; init; } = 100;
+
+    /// <summary>Max retained Diagnostic MCP Invocation fixtures (default 100; user-managed by name).</summary>
+    public int MaxDiagnosticMcpFixtures { get; init; } = 100;
 
 }

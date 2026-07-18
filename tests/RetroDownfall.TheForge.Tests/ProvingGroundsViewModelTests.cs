@@ -1,3 +1,4 @@
+using RetroDownfall.TheForge.Core.Services;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -399,7 +400,9 @@ public sealed class ProvingGroundsViewModelTests
             dataSource ?? new FakeTrialDataSource(),
             new FoundryFloorViewModel(new NullLogService()),
             whispers ?? new FakeWhispersService(),
-            confirmation ?? new NullConfirmationDialogService());
+            confirmation ?? new NullConfirmationDialogService(),
+            new InMemoryTrialSuiteStore(),
+            new NullArtifactFileDialogService());
 
     }
 

@@ -173,6 +173,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         _navigation.ProvingGroundsOpenRequested += OnProvingGroundsOpenRequested;
 
+        _navigation.ComparisonWorkbenchOpenRequested += OnComparisonWorkbenchOpenRequested;
+
     }
 
     [RelayCommand]
@@ -219,6 +221,9 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void OpenProvingGrounds() => _navigation.OpenOrFocusProvingGrounds();
+
+    [RelayCommand]
+    private void OpenComparisonWorkbench() => _navigation.OpenOrFocusComparisonWorkbench();
 
     [RelayCommand]
     private void Connect()
@@ -271,6 +276,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         _navigation.PanelFocusRequested -= OnPanelFocusRequested;
 
         _navigation.ProvingGroundsOpenRequested -= OnProvingGroundsOpenRequested;
+
+        _navigation.ComparisonWorkbenchOpenRequested -= OnComparisonWorkbenchOpenRequested;
 
         foreach (ViewModelBase document in OpenDocuments.ToArray())
         {
@@ -485,6 +492,9 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             prefill.Variables);
 
     }
+
+    private void OnComparisonWorkbenchOpenRequested() =>
+        OnDocumentOpenRequested(DocumentKind.Comparison, ComparisonWorkbenchViewModel.SingletonDocumentId, null);
 
     private void OnDocumentCloseRequested(DocumentKind kind, string id, string? workspace)
     {

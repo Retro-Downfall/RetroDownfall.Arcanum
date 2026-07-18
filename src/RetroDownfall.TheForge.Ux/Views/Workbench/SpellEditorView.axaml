@@ -3,6 +3,7 @@
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
              xmlns:md="using:RetroDownfall.TheForge.Ux.Markdown"
              xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
+             xmlns:views="using:RetroDownfall.TheForge.Ux.Views.Workbench"
              xmlns:avaloniaEdit="https://github.com/avaloniaui/avaloniaedit"
              x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.SpellEditorView"
              x:DataType="vm:SpellEditorViewModel">
@@ -224,6 +225,9 @@
               <TextBlock Text="{Binding ManaCount}" />
             </StackPanel>
           </ScrollViewer>
+        </TabItem>
+        <TabItem Header="Inference Trace">
+          <views:InferenceTraceView DataContext="{Binding Trace}" />
         </TabItem>
       </TabControl>
     </Grid>

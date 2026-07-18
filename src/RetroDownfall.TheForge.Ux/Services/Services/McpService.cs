@@ -53,4 +53,10 @@ public sealed class McpService
             TheForgeJsonContext.Default.OptionalWorkspaceRequest,
             TheForgeJsonContext.Default.ApiResponseWorkspaceArsenalDto, cancellationToken);
 
+    public Task<ApiResponse<McpToolInvokeResponse>?> InvokeDiagnosticMcpAsync(McpToolInvokeRequest request, CancellationToken cancellationToken) =>
+        _apiClient.PostAsync("/api/mcp/tools/invoke",
+            request,
+            TheForgeJsonContext.Default.McpToolInvokeRequest,
+            TheForgeJsonContext.Default.ApiResponseMcpToolInvokeResponse, cancellationToken);
+
 }

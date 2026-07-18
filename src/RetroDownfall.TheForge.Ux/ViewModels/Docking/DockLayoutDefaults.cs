@@ -1,6 +1,6 @@
 namespace RetroDownfall.TheForge.Ux.ViewModels.Docking;
 
-/// <summary>Default Forge shell layout matching the pre-docking fixed regions.</summary>
+/// <summary>Default The Forge shell layout matching the pre-docking fixed regions.</summary>
 public static class DockLayoutDefaults
 {
 

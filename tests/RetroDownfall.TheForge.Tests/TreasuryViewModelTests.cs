@@ -118,7 +118,13 @@ public class TreasuryViewModelTests
     private static TreasuryViewModel NewViewModel(
         FakeTreasuryDataSource dataSource,
         FakeClipboardService? clipboard = null) =>
-        new(new FakeConnection(), dataSource, new FoundryFloorViewModel(new NullLogService()), clipboard ?? new FakeClipboardService());
+        new(
+            new FakeConnection(),
+            dataSource,
+            new FoundryFloorViewModel(new NullLogService()),
+            clipboard ?? new FakeClipboardService(),
+            new FakeCompendiumLauncher(),
+            new FakeWhispersService());
 
     private sealed class FakeTreasuryDataSource : ITreasuryDataSource
     {

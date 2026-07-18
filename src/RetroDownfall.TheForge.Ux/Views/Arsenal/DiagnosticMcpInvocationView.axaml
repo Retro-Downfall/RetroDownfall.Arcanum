@@ -1,0 +1,89 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Arsenal.DiagnosticMcpInvocationView"
+             x:DataType="vm:DiagnosticMcpInvocationViewModel">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="8">
+
+    <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,8">
+      <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding PolicyText}" Opacity="0.7" TextWrapping="Wrap" MaxWidth="560"
+                 FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="{Binding StatusText}" Opacity="0.72" />
+      <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" MaxWidth="560" />
+      <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,4,0,0">
+        <Button Content="Refresh" Command="{Binding RefreshCommand}" IsEnabled="{Binding !IsBusy}" />
+        <Button Content="Invoke" Command="{Binding InvokeCommand}" />
+        <Button Content="Save fixture" Command="{Binding SaveFixtureCommand}" />
+        <Button Content="Export result" Command="{Binding ExportResultCommand}" />
+      </StackPanel>
+    </StackPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,5,*">
+
+      <ScrollViewer Grid.Column="0" Margin="0,0,4,0">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Workspace (optional)" Opacity="0.72" />
+          <TextBox Text="{Binding WorkingDirectory}" Watermark="Workspace path to scope MCP surface" />
+          <TextBlock Text="External MCP servers (running)" FontWeight="SemiBold" Margin="0,4,0,0" />
+          <ListBox ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}" MinHeight="100" MaxHeight="200">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:McpServerEntryViewModel">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                  <TextBlock Text="{Binding ToolSummary}" Opacity="0.7" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <TextBlock Text="Tools" FontWeight="SemiBold" Margin="0,4,0,0" />
+          <ListBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool}" MinHeight="80" MaxHeight="160" />
+        </StackPanel>
+      </ScrollViewer>
+
+      <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+
+      <ScrollViewer Grid.Column="2" Margin="4,0,0,0">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Arguments (JSON)" FontWeight="SemiBold" />
+          <TextBox Text="{Binding ArgumentsText}" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono, Consolas, monospace" MinHeight="100" />
+          <TextBlock Text="Result" FontWeight="SemiBold" />
+          <Border BorderBrush="{DynamicResource ForgeBorderBrush}" BorderThickness="1" Padding="6" MinHeight="120">
+            <ScrollViewer>
+              <StackPanel Spacing="4">
+                <TextBlock Text="{Binding ResultText}" TextWrapping="Wrap" FontFamily="Cascadia Mono, Consolas, monospace" />
+                <TextBlock Text="{Binding LastDurationMs, StringFormat='Duration: {0} ms'}" Opacity="0.7" />
+                <TextBlock Text="Output was truncated (hit ToolOutputCapBytes)."
+                           Foreground="{DynamicResource ForgeWarningBrush}"
+                           IsVisible="{Binding LastTruncated}" />
+                <TextBlock Text="{Binding ResolvedServerName, StringFormat='Resolved server: {0}'}" Opacity="0.7" />
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+
+    <Expander Grid.Row="2" Header="Fixtures (local)" Margin="0,8,0,0">
+      <StackPanel Spacing="6">
+        <TextBlock Text="{Binding SensitiveWarning}" Opacity="0.6" TextWrapping="Wrap"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <ListBox Grid.Column="0" ItemsSource="{Binding Fixtures}" SelectedItem="{Binding SelectedFixture}" MaxHeight="140">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Name}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <StackPanel Grid.Column="1" Orientation="Vertical" Spacing="6" VerticalAlignment="Top">
+            <Button Content="Load fixtures" Command="{Binding LoadFixturesCommand}" />
+            <Button Content="Load into editor" Command="{Binding LoadFixtureIntoEditorCommand}" />
+            <Button Content="Delete" Command="{Binding DeleteFixtureCommand}" />
+            <Button Content="Clear all" Command="{Binding ClearFixturesCommand}" />
+          </StackPanel>
+        </Grid>
+      </StackPanel>
+    </Expander>
+  </Grid>
+</UserControl>

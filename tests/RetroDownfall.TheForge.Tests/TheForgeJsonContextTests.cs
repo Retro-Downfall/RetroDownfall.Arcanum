@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Core.Models.DiagnosticMcp;
 using RetroDownfall.TheForge.Core.Serialization;
 using Xunit;
 
@@ -359,6 +360,117 @@ public class TheForgeJsonContextTests
         Assert.Equal(JsonValueKind.Object, roundTripped.Data!.Result.ValueKind);
 
         Assert.True(roundTripped.Data.Result.GetProperty("ok").GetBoolean());
+
+    }
+
+    [Fact]
+    public void McpToolInvokeRequest_RoundTrips_WithServerAndWorkspace()
+    {
+
+        McpToolInvokeRequest request = new()
+        {
+            ToolName = "echo",
+            Arguments = JsonDocument.Parse("""{"path":"/tmp"}""").RootElement.Clone(),
+            ServerName = "srv-a",
+            WorkingDirectory = "/ws",
+        };
+
+        string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.McpToolInvokeRequest);
+
+        Assert.Contains("\"serverName\":\"srv-a\"", json);
+        Assert.Contains("\"workingDirectory\":\"/ws\"", json);
+
+        McpToolInvokeRequest? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.McpToolInvokeRequest);
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal("echo", roundTripped!.ToolName);
+        Assert.Equal("srv-a", roundTripped.ServerName);
+        Assert.Equal("/ws", roundTripped.WorkingDirectory);
+        Assert.Equal("/tmp", roundTripped.Arguments.GetProperty("path").GetString());
+
+    }
+
+    [Fact]
+    public void McpToolInvokeRequest_OmitsNullServerAndWorkspace()
+    {
+
+        McpToolInvokeRequest request = new()
+        {
+            ToolName = "echo",
+            Arguments = JsonDocument.Parse("{}").RootElement.Clone(),
+        };
+
+        string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.McpToolInvokeRequest);
+
+        Assert.DoesNotContain("serverName", json);
+        Assert.DoesNotContain("workingDirectory", json);
+
+    }
+
+    [Fact]
+    public void ApiResponse_McpToolInvokeResponse_RoundTrips()
+    {
+
+        McpToolInvokeResponse result = new()
+        {
+            Result = JsonDocument.Parse("""{"ok":true}""").RootElement.Clone(),
+            ServerName = "srv-a",
+            ToolName = "echo",
+            DurationMs = 42,
+            Truncated = true,
+        };
+
+        ApiResponse<McpToolInvokeResponse> original = new(result, true, null, "trace-mcp");
+
+        string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.ApiResponseMcpToolInvokeResponse);
+
+        ApiResponse<McpToolInvokeResponse>? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.ApiResponseMcpToolInvokeResponse);
+
+        Assert.NotNull(roundTripped);
+        Assert.True(roundTripped!.IsSuccess);
+        Assert.NotNull(roundTripped.Data);
+        Assert.Equal("srv-a", roundTripped.Data!.ServerName);
+        Assert.Equal("echo", roundTripped.Data.ToolName);
+        Assert.Equal(42, roundTripped.Data.DurationMs);
+        Assert.True(roundTripped.Data.Truncated);
+        Assert.True(roundTripped.Data.Result.GetProperty("ok").GetBoolean());
+
+    }
+
+    [Fact]
+    public void DiagnosticMcpFixtureStoreDocument_RoundTrips_WithCamelCase()
+    {
+
+        DiagnosticMcpFixtureRecord fixture = new(
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            "echo-fixture",
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch,
+            "echo",
+            "srv-a",
+            "/ws",
+            "{}",
+            null,
+            null);
+
+        DiagnosticMcpFixtureStoreDocument original = new(1, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, [fixture]);
+
+        string json = JsonSerializer.Serialize(original, TheForgeDiagnosticMcpFixturesJsonContext.Default.DiagnosticMcpFixtureStoreDocument);
+
+        Assert.Contains("\"schemaVersion\"", json);
+        Assert.Contains("\"createdAt\"", json);
+        Assert.Contains("\"updatedAt\"", json);
+        Assert.Contains("\"fixtures\"", json);
+        Assert.Contains("\"toolName\":\"echo\"", json);
+        Assert.Contains("\"serverName\":\"srv-a\"", json);
+
+        DiagnosticMcpFixtureStoreDocument? roundTripped = JsonSerializer.Deserialize(json, TheForgeDiagnosticMcpFixturesJsonContext.Default.DiagnosticMcpFixtureStoreDocument);
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal(1, roundTripped!.SchemaVersion);
+        Assert.Single(roundTripped.Fixtures);
+        Assert.Equal("echo-fixture", roundTripped.Fixtures[0].Name);
+        Assert.Equal("echo", roundTripped.Fixtures[0].ToolName);
 
     }
 

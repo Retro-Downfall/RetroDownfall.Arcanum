@@ -1,0 +1,139 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.ComparisonWorkbenchView"
+             x:DataType="vm:ComparisonWorkbenchViewModel">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="8">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <StackPanel DockPanel.Dock="Left" Spacing="2" MaxWidth="720">
+        <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding StatusText}" Opacity="0.68" />
+        <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding SensitiveWarning}" Opacity="0.6" TextWrapping="Wrap"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      </StackPanel>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+        <Button Content="Load history" Command="{Binding LoadHistoryCommand}" />
+        <Button Content="Clear history" Command="{Binding ClearHistoryCommand}" />
+        <Button Content="Run" Command="{Binding RunCommand}" IsEnabled="{Binding !IsBusy}" />
+        <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsBusy}" />
+        <Button Content="Export JSON" Command="{Binding ExportJsonCommand}" />
+        <Button Content="Export MD" Command="{Binding ExportMarkdownCommand}" />
+        <Button Content="Export CSV" Command="{Binding ExportCsvCommand}" />
+      </StackPanel>
+    </DockPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="280,*,320">
+
+      <ScrollViewer Grid.Column="0" Margin="0,0,8,0">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Shared input" FontWeight="SemiBold" />
+          <TextBox Text="{Binding SharedInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100" />
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Button Content="Add variant" Command="{Binding AddVariantCommand}" />
+            <Button Content="Remove" Command="{Binding RemoveSelectedVariantCommand}" />
+          </StackPanel>
+          <ListBox ItemsSource="{Binding Variants}" SelectedItem="{Binding SelectedVariant}" MinHeight="80">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ComparisonVariantDraftViewModel">
+                <TextBlock Text="{Binding Label}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <StackPanel Spacing="4" IsVisible="{Binding SelectedVariant, Converter={x:Static ObjectConverters.IsNotNull}}">
+            <TextBlock Text="Variant settings" FontWeight="SemiBold" />
+            <ComboBox ItemsSource="{Binding SourceKinds}"
+                      SelectedItem="{Binding SelectedVariant.SourceKind}"
+                      Width="200" />
+            <TextBox Text="{Binding SelectedVariant.PromptIdText}" Watermark="Prompt id (GUID)" />
+            <TextBox Text="{Binding SelectedVariant.SpellName}" Watermark="Spell name" />
+            <TextBox Text="{Binding SelectedVariant.Model}" Watermark="Model" />
+            <TextBox Text="{Binding SelectedVariant.Provider}" Watermark="Provider (display)" />
+            <TextBox Text="{Binding SelectedVariant.Workspace}" Watermark="Workspace" />
+            <TextBox Text="{Binding SelectedVariant.TemperatureText}" Watermark="Temperature" />
+            <TextBox Text="{Binding SelectedVariant.TopPText}" Watermark="TopP" />
+            <TextBox Text="{Binding SelectedVariant.MaxOutputTokensText}" Watermark="MaxOutputTokens" />
+          </StackPanel>
+          <TextBlock Text="History" FontWeight="SemiBold" Margin="0,8,0,0" />
+          <ListBox ItemsSource="{Binding History}" SelectedItem="{Binding SelectedHistoryRun}" MaxHeight="160">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding StartedAt}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </StackPanel>
+      </ScrollViewer>
+
+      <Grid Grid.Column="1" RowDefinitions="*,5,*" Margin="0,0,8,0">
+        <Grid Grid.Row="0" ColumnDefinitions="*,5,*">
+          <Border Grid.Column="0" BorderBrush="{DynamicResource ForgeBorderBrush}" BorderThickness="1" Padding="6">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Spacing="2">
+                <TextBlock Text="{Binding LeftResult.Label, FallbackValue=Left}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding LeftResult.MetricsSummary}" Opacity="0.72" TextWrapping="Wrap" />
+                <Button Content="Open in editor" Command="{Binding PromoteLeftToEditorCommand}" HorizontalAlignment="Left" />
+              </StackPanel>
+              <TextBox Text="{Binding LeftResult.Output}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" />
+            </DockPanel>
+          </Border>
+          <GridSplitter Grid.Column="1" Width="5" ResizeDirection="Columns" />
+          <Border Grid.Column="2" BorderBrush="{DynamicResource ForgeBorderBrush}" BorderThickness="1" Padding="6">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Spacing="2">
+                <TextBlock Text="{Binding RightResult.Label, FallbackValue=Right}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding RightResult.MetricsSummary}" Opacity="0.72" TextWrapping="Wrap" />
+                <Button Content="Open in editor" Command="{Binding PromoteRightToEditorCommand}" HorizontalAlignment="Left" />
+              </StackPanel>
+              <TextBox Text="{Binding RightResult.Output}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" />
+            </DockPanel>
+          </Border>
+        </Grid>
+        <GridSplitter Grid.Row="1" Height="5" ResizeDirection="Rows" />
+        <Border Grid.Row="2" BorderBrush="{DynamicResource ForgeBorderBrush}" BorderThickness="1" Padding="6">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="Diff (left vs right)" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <ListBox ItemsSource="{Binding DiffLines}" FontFamily="Cascadia Mono, Consolas, monospace">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding UnifiedDisplay}" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </Border>
+      </Grid>
+
+      <Border Grid.Column="2" BorderBrush="{DynamicResource ForgeBorderBrush}" BorderThickness="1" Padding="6">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,6">
+            <TextBlock Text="Inference trace" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding Trace.LimitationsBanner}" Opacity="0.6" TextWrapping="Wrap"
+                       FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Clear" Command="{Binding Trace.ClearCommand}" />
+              <Button Content="Export" Command="{Binding Trace.ExportCommand}" />
+              <Button Content="Save local" Command="{Binding Trace.PersistCommand}" />
+            </StackPanel>
+          </StackPanel>
+          <ListBox ItemsSource="{Binding Trace.Entries}" FontFamily="Cascadia Mono, Consolas, monospace">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding DisplayLine}" TextWrapping="Wrap" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+    </Grid>
+
+    <ListBox Grid.Row="2" ItemsSource="{Binding Results}" SelectedItem="{Binding LeftResult}" MaxHeight="120" Margin="0,8,0,0">
+      <ListBox.ItemTemplate>
+        <DataTemplate x:DataType="vm:ComparisonVariantResultViewModel">
+          <TextBlock Text="{Binding MetricsSummary}" />
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </Grid>
+</UserControl>

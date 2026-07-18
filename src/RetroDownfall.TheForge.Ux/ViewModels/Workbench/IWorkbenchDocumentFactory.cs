@@ -2,6 +2,8 @@ using RetroDownfall.TheForge.Ux.Markdown;
 
 using RetroDownfall.TheForge.Ux.Models;
 
+using RetroDownfall.TheForge.Core.Services;
+
 using RetroDownfall.TheForge.Ux.Services;
 
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -37,6 +39,14 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
     private readonly ITrialDataSource _trialDataSource;
 
+    private readonly ITrialSuiteStore _trialSuiteStore;
+
+    private readonly IComparisonRunStore _comparisonRunStore;
+
+    private readonly IComparisonWorkbenchDataSource _comparisonDataSource;
+
+    private readonly IInferenceTraceStore _inferenceTraceStore;
+
     private readonly IMarkdownDocumentContentStore _markdownContentStore;
 
     private readonly INavigationService _navigation;
@@ -59,6 +69,10 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         ITomeDataSource tomeDataSource,
         ICodexDataSource codexDataSource,
         ITrialDataSource trialDataSource,
+        ITrialSuiteStore trialSuiteStore,
+        IComparisonRunStore comparisonRunStore,
+        IComparisonWorkbenchDataSource comparisonDataSource,
+        IInferenceTraceStore inferenceTraceStore,
         IMarkdownDocumentContentStore markdownContentStore,
         INavigationService navigation,
         FoundryFloorViewModel foundryFloor,
@@ -78,6 +92,14 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         _codexDataSource = codexDataSource;
 
         _trialDataSource = trialDataSource;
+
+        _trialSuiteStore = trialSuiteStore;
+
+        _comparisonRunStore = comparisonRunStore;
+
+        _comparisonDataSource = comparisonDataSource;
+
+        _inferenceTraceStore = inferenceTraceStore;
 
         _markdownContentStore = markdownContentStore;
 
@@ -205,11 +227,32 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _trialDataSource,
                 _foundryFloor,
                 _whispers,
-                _confirmationDialog);
+                _confirmationDialog,
+                _trialSuiteStore,
+                _fileDialog);
 
             _ = provingGrounds.LoadPickersCommand.ExecuteAsync(null);
 
             return provingGrounds;
+
+        }
+
+        if (kind == DocumentKind.Comparison)
+        {
+
+            ComparisonWorkbenchViewModel comparison = new(
+                _comparisonDataSource,
+                _comparisonRunStore,
+                _foundryFloor,
+                _whispers,
+                _confirmationDialog,
+                _fileDialog,
+                _navigation,
+                _inferenceTraceStore);
+
+            _ = comparison.LoadHistoryCommand.ExecuteAsync(null);
+
+            return comparison;
 
         }
 

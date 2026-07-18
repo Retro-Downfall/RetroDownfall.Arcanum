@@ -30,6 +30,9 @@
     <DataTemplate DataType="workbench:ProvingGroundsViewModel">
       <workbenchViews:ProvingGroundsView />
     </DataTemplate>
+    <DataTemplate DataType="workbench:ComparisonWorkbenchViewModel">
+      <workbenchViews:ComparisonWorkbenchView />
+    </DataTemplate>
     <DataTemplate DataType="workbench:WorkbenchDocumentPlaceholderViewModel">
       <Border Padding="24">
         <StackPanel Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -65,12 +68,15 @@
           <Separator />
           <MenuItem Header="Connect to Arcanum" Command="{Binding ConnectCommand}" />
           <MenuItem Header="Disconnect" Command="{Binding DisconnectCommand}" />
+          <MenuItem Header="Setup wizard…" Command="{Binding Anvil.OpenSetupWizardCommand}" />
+          <MenuItem Header="Open Compendium" Command="{Binding Anvil.OpenCompendiumCommand}" />
         </MenuItem>
         <MenuItem Header="_Campaign" />
         <MenuItem Header="_Spell" />
         <MenuItem Header="_Apprentice" />
         <MenuItem Header="_Trial">
           <MenuItem Header="Proving Grounds" Command="{Binding OpenProvingGroundsCommand}" />
+          <MenuItem Header="Comparison Workbench" Command="{Binding OpenComparisonWorkbenchCommand}" />
         </MenuItem>
         <MenuItem Header="_Tools" />
         <MenuItem Header="_Help" />

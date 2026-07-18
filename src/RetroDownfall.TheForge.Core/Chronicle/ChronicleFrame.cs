@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace RetroDownfall.TheForge.Core.Chronicle;
 
 /// <summary>
-/// A tolerant, Forge-local parse of one <c>GET /api/apprentices/{id}/chronicle</c> SSE frame.
+/// A tolerant, The Forge-local parse of one <c>GET /api/apprentices/{id}/chronicle</c> SSE frame.
 ///
 /// Deliberately NOT a deserialization of <c>RetroDownfall.Arcanum.Core.TheForge.ApprenticeEvent</c>:
 /// <c>ChronicleSseWriter.WritePassThroughEvent</c> flattens pass-through Wizard

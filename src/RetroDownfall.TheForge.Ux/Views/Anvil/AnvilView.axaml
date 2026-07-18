@@ -30,6 +30,22 @@
               FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
               IsVisible="{Binding ShowEnterApiKey}"
               ToolTip.Tip="Re-prompt for the master API key after a previous decline" />
+      <Button Classes="anvil-chip"
+              Content="Setup…"
+              Command="{Binding OpenSetupWizardCommand}"
+              Padding="4,0"
+              Background="Transparent"
+              BorderThickness="0"
+              FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+              ToolTip.Tip="Open The Forge connection setup wizard" />
+      <Button Classes="anvil-chip"
+              Content="Compendium"
+              Command="{Binding OpenCompendiumCommand}"
+              Padding="4,0"
+              Background="Transparent"
+              BorderThickness="0"
+              FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+              ToolTip.Tip="Open Compendium for full arcanum.json configuration" />
       <TextBlock Text="|" Opacity="0.35" VerticalAlignment="Center" />
       <Button Classes="anvil-chip" Command="{Binding FocusCampaignCommand}" Padding="4,0" Background="Transparent" BorderThickness="0"
               Content="{Binding ActiveCampaignName}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />

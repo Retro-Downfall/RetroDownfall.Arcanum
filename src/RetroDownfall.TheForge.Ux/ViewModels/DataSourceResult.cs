@@ -3,7 +3,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.TheForge.Ux.ViewModels;
 
 /// <summary>
-/// Forge-local result of a data-source API call. Carries the unwrapped payload plus the server
+/// The Forge-local result of a data-source API call. Carries the unwrapped payload plus the server
 /// <see cref="Error.Code"/>/<see cref="Error.Message"/> on failure, so ViewModels can render honest
 /// disabled / feature-off / not-found states without ever touching the <see cref="ApiResponse{T}"/>
 /// envelope or <see cref="System.Net.Http.HttpClient"/>. Data sources map responses via

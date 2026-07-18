@@ -348,6 +348,8 @@ public static class ApiBootstrapper
 
         services.AddScoped<ToolExecutionPipeline>();
 
+        services.AddScoped<DiagnosticMcpInvocationService>();
+
         services.AddScoped<SemanticSpellRouter>();
 
         services.AddSingleton<GuardrailsPipeline>();
@@ -552,6 +554,8 @@ public static class ApiBootstrapper
         apiGroup.MapGuardrailsAuditEndpoints();
 
         apiGroup.MapMcpEndpoints();
+
+        apiGroup.MapDiagnosticMcpInvocationEndpoints();
 
         apiGroup.MapPerceptionEndpoints();
 

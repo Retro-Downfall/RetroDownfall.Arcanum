@@ -20,4 +20,6 @@ public enum DocumentKind
 
     Markdown,
 
+    Comparison,
+
 }

@@ -183,6 +183,24 @@ public class WorkbenchDocumentFactoryTests
 
     }
 
+    [Fact]
+    public void Create_Comparison_ReturnsComparisonWorkbench()
+    {
+
+        WorkbenchDocumentFactory factory = NewFactory();
+
+        ViewModelBase doc = factory.Create(DocumentKind.Comparison, ComparisonWorkbenchViewModel.SingletonDocumentId);
+
+        ComparisonWorkbenchViewModel comparison = Assert.IsType<ComparisonWorkbenchViewModel>(doc);
+
+        Assert.Equal(DocumentKind.Comparison, comparison.Kind);
+
+        Assert.Equal("Comparison Workbench", comparison.Title);
+
+        comparison.Dispose();
+
+    }
+
     private static WorkbenchDocumentFactory NewFactory(IMarkdownDocumentContentStore? store = null)
     {
 
@@ -196,6 +214,10 @@ public class WorkbenchDocumentFactoryTests
             new NullTomeDataSource(),
             new NullCodexDataSource(),
             new NullTrialDataSource(),
+            new InMemoryTrialSuiteStore(),
+            new InMemoryComparisonRunStore(),
+            new NullComparisonWorkbenchDataSource(),
+            new InMemoryInferenceTraceStore(),
             store ?? new MarkdownDocumentContentStore(),
             navigation,
             foundryFloor,

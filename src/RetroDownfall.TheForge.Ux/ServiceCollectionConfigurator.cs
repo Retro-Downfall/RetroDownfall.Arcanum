@@ -7,6 +7,7 @@ using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.TheForge.Ux.Services.Compendium;
 using RetroDownfall.TheForge.Ux.Services.Services;
 using RetroDownfall.TheForge.Ux.Services.Terminal;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -17,6 +18,7 @@ using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
+using RetroDownfall.TheForge.Ux.ViewModels.Setup;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -54,11 +56,61 @@ internal static class ServiceCollectionConfigurator
             forgeJsonPath,
             sp.GetService<ILogger<TheForgeSettingsStore>>()));
 
+        string trialSuitesPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "the-forge-trial-suites.json");
+
+        services.AddSingleton<ITrialSuiteStore>(sp =>
+        {
+            TheForgeSettings settings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>().CurrentValue;
+
+            return new TrialSuiteStore(
+                trialSuitesPath,
+                settings.MaxTrialSuiteRunHistory <= 0 ? TrialSuiteStore.DefaultMaxRunsPerSuite : settings.MaxTrialSuiteRunHistory,
+                sp.GetService<ILogger<TrialSuiteStore>>());
+        });
+
+        string comparisonsPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "the-forge-comparisons.json");
+
+        services.AddSingleton<IComparisonRunStore>(sp =>
+        {
+            TheForgeSettings settings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>().CurrentValue;
+
+            return new ComparisonRunStore(
+                comparisonsPath,
+                settings.MaxComparisonRunHistory <= 0 ? ComparisonRunStore.DefaultMaxRuns : settings.MaxComparisonRunHistory,
+                sp.GetService<ILogger<ComparisonRunStore>>());
+        });
+
+        string inferenceTracesPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "the-forge-inference-traces.json");
+
+        services.AddSingleton<IInferenceTraceStore>(sp =>
+        {
+            TheForgeSettings settings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>().CurrentValue;
+
+            return new InferenceTraceStore(
+                inferenceTracesPath,
+                settings.MaxInferenceTraceHistory <= 0 ? InferenceTraceStore.DefaultMaxTraces : settings.MaxInferenceTraceHistory,
+                sp.GetService<ILogger<InferenceTraceStore>>());
+        });
+
+        services.AddSingleton<IComparisonWorkbenchDataSource, ComparisonWorkbenchDataSource>();
+
+        string diagnosticMcpFixturesPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "the-forge-diagnostic-mcp-fixtures.json");
+
+        services.AddSingleton<IDiagnosticMcpFixtureStore>(sp =>
+        {
+            TheForgeSettings settings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TheForgeSettings>>().CurrentValue;
+
+            return new DiagnosticMcpFixtureStore(
+                diagnosticMcpFixturesPath,
+                settings.MaxDiagnosticMcpFixtures <= 0 ? DiagnosticMcpFixtureStore.DefaultMaxFixtures : settings.MaxDiagnosticMcpFixtures,
+                sp.GetService<ILogger<DiagnosticMcpFixtureStore>>());
+        });
+
         services.AddLogging(builder => builder.AddDebug());
 
         services.AddHttpClient(ArcanumApiClient.HttpClientName, static client =>
         {
-            // Unary Forge ↔ Arcanum API calls — keep a finite budget (HttpClient default is 100s).
+            // Unary The Forge ↔ Arcanum API calls — keep a finite budget (HttpClient default is 100s).
             // Do not use InfiniteTimeSpan here; inference/streaming uses separate clients on the API side.
             client.Timeout = TimeSpan.FromSeconds(100);
         });
@@ -119,6 +171,14 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<ITextInputDialogService, AvaloniaTextInputDialogService>();
 
         services.AddSingleton<IClipboardService, AvaloniaClipboardService>();
+
+        services.AddSingleton<ICompendiumLauncher, CompendiumLauncher>();
+
+        services.AddSingleton<ISetupWizardDataSource, SetupWizardDataSource>();
+
+        services.AddTransient<SetupWizardViewModel>();
+
+        services.AddSingleton<ISetupWizardDialogService, AvaloniaSetupWizardDialogService>();
 
         services.AddSingleton<IGatehouseDataSource, GatehouseDataSource>();
 
@@ -186,6 +246,8 @@ internal static class ServiceCollectionConfigurator
         services.AddTransient<McpServersViewModel>();
 
         services.AddTransient<ScryingPoolViewModel>();
+
+        services.AddTransient<DiagnosticMcpInvocationViewModel>();
 
         services.AddTransient<ModelsProvidersViewModel>();
 

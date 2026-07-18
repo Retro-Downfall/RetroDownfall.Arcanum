@@ -454,6 +454,7 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/mcp/{name}/restart` | Restart one MCP server (`ApiResponse<bool>`); optional `workingDirectory` query. |
 | POST | `/api/mcp/trust-workspace` | Approve a workspace-local `mcp.json` for auto-start (`ApiResponse<bool>`; body `{ "workingDirectory": "..." }`; §5.6). |
 | POST | `/api/mcp/reload` | Reload MCP connections (global nuclear reload — §5.6). |
+| POST | `/api/mcp/tools/invoke` | **Diagnostic MCP Invocation** — policy-constrained direct invoke of an **external** MCP tool by an operator (`ApiResponse<McpToolInvokeResponse>`; body `McpToolInvokeRequest` { `toolName`, `arguments` (JSON), optional `serverName`, optional `workingDirectory` }; §11.28). External MCP tools only; the internal `arcanum-internal` server and all Forbidden Arts are blocked. **403** `Mcp.DiagnosticBlocked`; **404** `Mcp.ServerNotFound` / `Mcp.ToolNotFound`; **400** `Mcp.ServerNotRunning` / `Mcp.AmbiguousTool` / `Mcp.ToolError`; **504** `Mcp.DiagnosticTimeout`. |
 | GET | `/api/sessions` | Search/list Grimoire sessions (`ApiResponse<SessionQueryResult>`; §11.16). |
 | POST | `/api/sessions` | Create session (`ApiResponse<SessionDetailDto>`; **201**). |
 | GET | `/api/sessions/analytics` | Session analytics (`ApiResponse<SessionAnalytics>`; §11.16). |
@@ -1448,6 +1449,13 @@ The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` an
 | `Mcp.AmbiguousServer` | 400 | Server name matches more than one connection without a disambiguating `workingDirectory`. |
 | `Mcp.MissingWorkspace` | 400 | Server lookup requires a `workingDirectory` that was not supplied. |
 | `Mcp.ServerNotFound` | 404 | Named MCP server not found. |
+| `Mcp.ServerNotRunning` | 400 | Diagnostic MCP Invocation: the named server exists but is not in the `running` state. |
+| `Mcp.WorkspaceNotTrusted` | 403 | Diagnostic MCP Invocation: the workspace-local MCP surface is not trusted (reserved; the manager hides untrusted servers before they reach the diagnostic service). |
+| `Mcp.ToolNotFound` | 404 | Diagnostic MCP Invocation: the requested tool name was not found on any visible running external server. |
+| `Mcp.AmbiguousTool` | 400 | Diagnostic MCP Invocation: the tool name is provided by more than one visible running external server; supply `serverName` to disambiguate. |
+| `Mcp.DiagnosticBlocked` | 403 | Diagnostic MCP Invocation: the requested tool belongs to the internal `arcanum-internal` server or is a Forbidden Art (`execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `run_spell_script`) and cannot be invoked from the diagnostic endpoint. |
+| `Mcp.ToolError` | 400 | Diagnostic MCP Invocation: the tool returned an `isError: true` result. |
+| `Mcp.DiagnosticTimeout` | 504 | Diagnostic MCP Invocation: the request exceeded `Arcanum:Mcp:RequestTimeoutSeconds`. |
 | `Daemon.NotFound` | 404 | Daemon job id not found. |
 | `CommLink.Suppressed` | 502 | Outbound webhook dispatch failed or was suppressed by policy. |
 | `Api.TooManyConnections` | 503 | A global or per-event-type SSE connection cap (`MaxSseConnections`/`MaxSseConnectionsPerType`) was reached. |
@@ -2125,6 +2133,40 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 **DI registration:** `AddHttpClient(ArcanumBrowseWebConstants.HttpClientName, ...)` in `ServiceCollectionExtensions.AddArcanumInfrastructure`, configured with the clamped timeout and `OutboundUrlGuard.CreateUntrustedEgressHandler()` as the primary handler. `IBuiltInToolRegistry` (default `BuiltInToolRegistry`) is registered `AddScoped` and resolves `browse_web` only when `WebBrowsing.Enabled` is true.
 
 **Key types:** `WebBrowsingSettings`, `ArcanumBrowseWebTool` (`Api/Intelligence/Tools/`), `ArcanumBrowseWebConstants` (`Infrastructure/Intelligence/`), `BrowseWebResult` (`Api/Models/`), `IBuiltInToolRegistry` / `BuiltInToolRegistry` (`Api/Intelligence/Tools/`), `ToolInvokeRequest` / `ToolInvokeResponse` (`Api/Models/`), `ToolInvokeEndpoints` (`Api/Intelligence/Tools/`), `BrowseCommand` (`Cli/Commands/`).
+
+---
+
+### 11.28 Diagnostic MCP Invocation (`POST /api/mcp/tools/invoke`)
+
+**Purpose:** an operator-facing diagnostic endpoint to directly invoke **external** MCP tools by name, outside of an inference turn — for verifying that a configured MCP server actually responds, that tool arguments serialize correctly, and that output formatting/capping behaves as expected. It is **not** model execution and **not** an unrestricted tool bypass: it is policy-constrained, authenticated, and limited to external MCP servers.
+
+**Policy (fallback — external MCP only):** routing internal-tool diagnostics through `ToolExecutionPipeline` (the preferred policy in the original plan) was assessed and deferred: `EnforceSanctumAsync` short-circuits when `turnContext.Campaign is null`, and `RequiresWardForTool` only wards `write_file`/`replace_text_block`/`delete_lexicon`/`run_spell_script` when `campaignRequiresWard=true`. A campaign-less diagnostic invoke would therefore get **no Sanctum path/network validation** and would **not** ward four of the five Forbidden Arts — closing those gaps means synthesizing a diagnostic `TurnContext` that forces `SanctumEnabled=true` + `CampaignRequiresWard=true` without a real campaign, which is new behavioral surface (a diagnostic invoke triggering Sanctum validation and Ward prompts against a workspace with no campaign). The fallback is materially lower-risk and matches the existing `ScryingPoolViewModel` direction ("external MCP direct invocation is not exposed by Arcanum yet").
+
+**What is blocked:**
+
+- The internal in-process server `arcanum-internal` (the clean discriminator — its tools are the high-risk internal handlers `execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `read_file_chunk`, `list_directory`, etc.).
+- All five Forbidden Art names (`execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `run_spell_script`) are blocked **by name** before any server lookup, so a third-party MCP server that happens to expose a colliding name is still rejected with `Mcp.DiagnosticBlocked`.
+- The blocked-tool error message is fixed: *"This tool cannot be invoked from the diagnostic endpoint because it is a Forbidden Art or requires the Wizard tool execution pipeline."*
+
+**What is allowed:**
+
+- Any tool exposed by a **running**, **visible**, **external** MCP server (i.e. not `arcanum-internal`). Workspace-local external servers must be trusted — `IMcpConnectionManager.GetServerStatusesAsync` already hides untrusted workspace-local servers, so they never reach the diagnostic service.
+- Optional `workingDirectory` scopes the visible surface; optional `serverName` disambiguates when the same tool name is provided by more than one running external server (else **400** `Mcp.AmbiguousTool` listing the candidates).
+
+**Inherited caps (no new knobs):**
+
+- **Output cap:** `Arcanum:Intelligence:ToolOutputCapBytes` (default 1 MiB; clamp 64 KiB – 64 MiB) is enforced inside `McpBridgeTool` via `McpSecurityLimits.TruncateUtf8` (UTF-8-boundary-safe truncation with a `[truncated: exceeded N bytes]` marker). The diagnostic service detects that marker in the result text and sets `truncated: true` on the response.
+- **Timeout:** `Arcanum:Mcp:RequestTimeoutSeconds` (default 60) is enforced as a linked `CancellationTokenSource` around `AIFunction.InvokeAsync`; on expiry the service returns **504** `Mcp.DiagnosticTimeout` (the MCP SDK's own per-request timeout still applies underneath).
+- **Auth:** inherits `X-Arcanum-Key` from the `/api` group filter — no unauthenticated access.
+- **Secrets:** exception messages are length-capped (512 chars) before being returned to the caller, as a defensive last step on the rare exception path. The MCP bridge already formats tool output, so this is not a substitute for the bridge's own handling.
+
+**Invoke path:** the service resolves the merged `IMcpConnectionManager.GetAvailableToolsAsync(workingDirectory)` surface (the same surface the Wizard uses), finds the `AIFunction` by name, and calls `InvokeAsync`. `McpBridgeTool` is `internal` to Infrastructure, so the API project treats every tool as `AIFunction` and never references the bridge by type — the public surface is all that is needed. The result text is parsed as JSON when possible (else wrapped as a JSON string) and returned as `McpToolInvokeResponse` { `result`, `serverName`, `toolName`, `durationMs`, `truncated` }. A tool that returns `isError: true` makes `McpBridgeTool` throw `InvalidOperationException`, which the service maps to **400** `Mcp.ToolError`.
+
+**Built-ins unchanged:** `POST /api/tools/invoke` (§11.27) continues to expose only the low-risk built-in tools (`get_local_system_time`, `get_system_info`, `browse_web` when enabled) and does **not** go through Ward/Sanctum — acceptable only because that registry is deliberately limited. The two endpoints are complementary: `/api/tools/invoke` for built-ins, `/api/mcp/tools/invoke` for external MCP.
+
+**Key types:** `McpToolInvokeRequest` / `McpToolInvokeResponse` (`Api/Models/`), `DiagnosticMcpInvocationService` / `DiagnosticMcpInvocationOutcome` (`Api/Mcp/`), `DiagnosticMcpInvocationEndpoints` (`Api/Mcp/`), mirrored The Forge DTOs `McpToolInvokeRequest` / `McpToolInvokeResponse` (`TheForge.Core/Models/`) + `TheForgeJsonContext` registrations.
+
+**Tests:** `tests/RetroDownfall.Arcanum.Tests/Mcp/DiagnosticMcpInvocationServiceTests.cs` covers every Forbidden Art block, empty tool name, stopped server, internal-server filter, untrusted-workspace hiding, ambiguous tool, tool-not-found (named and unnamed), happy path, truncation marker, tool error (`isError: true`), timeout, and non-JSON output wrapping — all with a fake `IMcpConnectionManager` + fake `AIFunction`, no API host required. Source-generated JSON round-trips for `McpToolInvokeRequest` / `McpToolInvokeResponse` / `DiagnosticMcpFixtureStoreDocument` are in `tests/RetroDownfall.TheForge.Tests/TheForgeJsonContextTests.cs`.
 
 ---
 

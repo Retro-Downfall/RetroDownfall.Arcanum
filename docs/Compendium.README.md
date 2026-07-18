@@ -2,6 +2,10 @@
 
 **Compendium** is the desktop configuration GUI for Arcanum. It is a .NET 10 Avalonia application (`RetroDownfall.Compendium.Ux`) that reads, edits, and writes the `arcanum.json` configuration file.
 
+## Launch from The Forge
+
+**The Forge** can open Compendium via **View → Open Compendium**, The Anvil **Compendium** chip, the setup wizard, or disabled-feature banners. Discovery looks for an installed `RetroDownfall.Compendium.Ux` binary, then a development `dotnet run --project src/RetroDownfall.Compendium.Ux/...` path. If launch fails, The Forge shows the exact `arcanum.json` path (`~/.config/arcanum/arcanum.json`) so operators can edit configuration manually. Compendium itself does not need to change for this deep-link.
+
 ## Purpose and scope
 
 Compendium is strictly a configuration editor. It does **not** run inference, manage the Arcanum daemon, open the Grimoire database, or execute MCP tools. Its only job is to give the operator a friendly, visual way to manage `arcanum.json`.

@@ -1,6 +1,6 @@
 <Styles xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-  <!-- The Illumination inherits Forge fonts/brushes from Application styles. -->
+  <!-- The Illumination inherits The Forge fonts/brushes from Application styles. -->
 
 </Styles>

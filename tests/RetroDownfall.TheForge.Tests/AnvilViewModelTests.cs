@@ -156,6 +156,9 @@ public class AnvilViewModelTests
             dataSource,
             navigation,
             new NoopApiKeyProvider(),
+            new NoopSetupWizardDialogService(),
+            new FakeCompendiumLauncher(),
+            new FakeWhispersService(),
             new StaticOptionsMonitor(new TheForgeSettings()),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AnvilViewModel>.Instance);
 

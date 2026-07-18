@@ -40,4 +40,12 @@ public interface IArsenalDataSource
     /// </summary>
     Task<(ToolInvokeResponse? Response, string? Error)> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Diagnostic MCP Invocation — policy-constrained external MCP tool invoke
+    /// (<c>POST /api/mcp/tools/invoke</c>). On success <paramref name="Response"/> is non-null and
+    /// <c>Error</c> is null; on failure <c>Response</c> is null and <c>Error</c> describes the failure
+    /// (blocked tool, untrusted workspace, stopped server, ambiguous server, timeout, tool error).
+    /// </summary>
+    Task<(McpToolInvokeResponse? Response, string? Error)> InvokeDiagnosticMcpAsync(McpToolInvokeRequest request, CancellationToken cancellationToken);
+
 }

@@ -1,0 +1,31 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Workbench"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Workbench.InferenceTraceView"
+             x:DataType="vm:InferenceTraceViewModel">
+  <DockPanel Margin="4">
+    <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,6">
+      <TextBlock Text="Inference trace" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding LimitationsBanner}" Opacity="0.6" TextWrapping="Wrap"
+                 FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="{Binding SensitiveWarning}" Opacity="0.55" TextWrapping="Wrap"
+                 FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <TextBlock Text="{Binding StatusText}" Opacity="0.72" />
+      <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" />
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <Button Content="Clear" Command="{Binding ClearCommand}" />
+        <Button Content="Export JSON" Command="{Binding ExportCommand}" />
+        <Button Content="Save local" Command="{Binding PersistCommand}" />
+        <Button Content="Spell Cast Preview" Command="{Binding OpenSpellCastPreviewCommand}" />
+        <Button Content="Prompt Test Preview" Command="{Binding OpenPromptTestPreviewCommand}" />
+      </StackPanel>
+    </StackPanel>
+    <ListBox ItemsSource="{Binding Entries}" FontFamily="Cascadia Mono, Consolas, monospace">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <TextBlock Text="{Binding DisplayLine}" TextWrapping="Wrap" />
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </DockPanel>
+</UserControl>

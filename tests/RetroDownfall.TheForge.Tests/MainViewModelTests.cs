@@ -439,6 +439,15 @@ internal static class MainViewModelFactory
 
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ScryingPoolViewModel arsenalScryingPool = new(arsenalDataSource, foundryFloor);
 
+        RetroDownfall.TheForge.Ux.ViewModels.Arsenal.DiagnosticMcpInvocationViewModel arsenalDiagnosticMcp = new(
+            arsenalDataSource,
+            new InMemoryDiagnosticMcpFixtureStore(),
+            foundryFloor,
+            new FakeWhispersService(),
+            new NullConfirmationDialogService(),
+            new NullArtifactFileDialogService(),
+            new NullTextInputDialogService());
+
         RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ModelsProvidersViewModel arsenalModelsProviders = new(modelsProvidersDataSource, foundryFloor);
 
         return new(
@@ -457,11 +466,18 @@ internal static class MainViewModelFactory
                 foundryFloor),
             new RetroDownfall.TheForge.Ux.ViewModels.WarTable.WarTableViewModel(new NullWarTableDataSource()),
             new RetroDownfall.TheForge.Ux.ViewModels.Gatehouse.GatehouseViewModel(new NullGatehouseDataSource(), new FakeWhispersService()),
-            new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(connection, new NullTreasuryDataSource(), foundryFloor, new FakeClipboardService()),
+            new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(
+                connection,
+                new NullTreasuryDataSource(),
+                foundryFloor,
+                new FakeClipboardService(),
+                new FakeCompendiumLauncher(),
+                new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ArsenalViewModel(
                 connection,
                 arsenalMcpServers,
                 arsenalScryingPool,
+                arsenalDiagnosticMcp,
                 arsenalModelsProviders),
             foundryFloor,
             new RetroDownfall.TheForge.Ux.ViewModels.Hearth.HearthViewModel(new NullTerminalCommandRunner()),
@@ -470,6 +486,9 @@ internal static class MainViewModelFactory
                 new NullAnvilDataSource(),
                 navigation,
                 new NoopApiKeyProvider(),
+                new NoopSetupWizardDialogService(),
+                new FakeCompendiumLauncher(),
+                new FakeWhispersService(),
                 new StaticTheForgeSettingsMonitor(),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel>.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor),
@@ -496,6 +515,10 @@ internal static class MainViewModelFactory
                 new NullTomeDataSource(),
                 new NullCodexDataSource(),
                 new NullTrialDataSource(),
+                new InMemoryTrialSuiteStore(),
+                new InMemoryComparisonRunStore(),
+                new NullComparisonWorkbenchDataSource(),
+                new InMemoryInferenceTraceStore(),
                 new RetroDownfall.TheForge.Ux.Markdown.MarkdownDocumentContentStore(),
                 navigation,
                 foundryFloor,
@@ -893,6 +916,9 @@ internal sealed class NullArsenalDataSource : RetroDownfall.TheForge.Ux.ViewMode
 
     public Task<(ToolInvokeResponse? Response, string? Error)> InvokeToolAsync(ToolInvokeRequest request, CancellationToken cancellationToken) =>
         Task.FromResult<(ToolInvokeResponse?, string?)>((null, "Not implemented."));
+
+    public Task<(McpToolInvokeResponse? Response, string? Error)> InvokeDiagnosticMcpAsync(McpToolInvokeRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<(McpToolInvokeResponse?, string?)>((null, "Not implemented."));
 
 }
 

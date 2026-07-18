@@ -37,7 +37,7 @@ arcanum serve
 
 By default Arcanum listens on `http://localhost:5001` (loopback). When the Arcanum host uses
 `ListenAny` / `ARCANUM_HOST_ANY`, it binds **HTTPS-only** on `Arcanum:Host:Https:Port` (default
-5443) — set Forge `BaseUrl` to `https://localhost:5443` (or your host/IP + HTTPS port). The Forge's
+5443) — set The Forge `BaseUrl` to `https://localhost:5443` (or your host/IP + HTTPS port). The Forge's
 `forge.json` (`BaseUrl`) must point at whatever scheme/host/port your instance actually binds to.
 Do not disable TLS certificate validation.
 
@@ -172,8 +172,11 @@ seed, stop sequences, response format, penalties) are on the Run tab and are not
 cancels the run. **Clone**, **Export**, **Import**, and **Delete** use existing Arcanum prompt routes
 (export/import are persisted server artifacts; file-dialog cancel is a silent no-op). Import surfaces
 `Prompt.DuplicateVersion` clearly. **Versions** lists prompt
-versions by name and opens a selected version by its `Id`. Full prompt-version management beyond
-list/open (diff/activate flows) and advanced import conflict wizards are deferred.
+versions by name and opens a selected version by its `Id`. **The Mirror** (Scriptorium tab) compares
+the **persisted** editor snapshot (template, schema, defaults, metadata, tags) to a selected version
+fetched by id via `GET /api/prompts/{id}` — unsaved buffer edits are excluded (dirty warning). There
+is no activate-prompt API; use Open version, Clone, Export, or Import. Advanced import conflict
+wizards remain deferred.
 
 ## Spell editor lifecycle
 
@@ -223,8 +226,26 @@ Build an ephemeral **Trial** against a Spell, Prompt, or Apprentice Goal; add ke
 `POST /api/proving-grounds/trials/run`. Results show pass/fail, output, per-Inquisitor verdicts, and
 usage. Whispers: Success / Warning / Error; Foundry Floor logs start and summary. Shortcuts: Spell
 editor **Create Trial**, Scriptorium **Open in Proving Grounds**. Prefill is refused when the tab
-already has a dirty draft (Reset requires confirmation). There is **no** Trial persistence or library
-UI — that remains deferred.
+already has a dirty draft (Reset requires confirmation). **Suites** persist locally under
+`~/.config/arcanum/the-forge-trial-suites.json` (bounded run history; sensitive-data warning).
+
+## Comparison Workbench
+
+**Comparison Workbench** (menu **Trial → Comparison Workbench**) is a singleton Workbench tab for
+side-by-side variants: free prompt (`ping-stream`), Prompt execute-stream, or Spell execute-stream.
+Results always show tokens (including cached when present), latency, finish reason, model/provider.
+Cost is **estimated** from `GET /api/config` Pricing when rates are non-zero; otherwise **cost
+unavailable** (streams do not expose exact turn cost). History lives in
+`~/.config/arcanum/the-forge-comparisons.json` (default cap 100) with the same sensitive-history
+warning. Diff uses the local LCS helper; promote opens Prompt/Spell editors (no invent activate).
+
+## Inference Trace
+
+Reusable **Inference Trace** panels capture NDJSON `IntelligenceEvent` frames on The Tome, Spell
+Execute, Scriptorium Run, and Comparison runs. The timeline is stream-only — it does not claim full
+provider request messages or assembled system prompts for arbitrary Tome runs. Dry-run helpers point
+at Spell **Cast** / Prompt **Test** only (no general assembled-context API). Optional local save uses
+`~/.config/arcanum/the-forge-inference-traces.json` (default cap 100).
 
 ## The Arsenal
 
@@ -234,8 +255,21 @@ lists configured MCP servers (`GET /api/mcp`: state, transport, exposed tools) a
 Stop / Restart** on the selected server plus **Reload** (`POST /api/mcp/{name}/start|stop|restart`,
 `POST /api/mcp/reload`). The **Scrying Pool** tab lists built-in tools from
 `POST /api/intelligence/arsenal` and invokes the selected one with JSON arguments via
-`POST /api/tools/invoke` — external MCP direct invocation is not exposed by Arcanum yet, and the
-panel says so. The **Models & Providers** tab is described below. Every action
+`POST /api/tools/invoke`; for external MCP tools use the **Diagnostic MCP Invocation** tab. The
+**Diagnostic MCP Invocation** tab (between Scrying Pool and Models & Providers) is an operator-facing
+workbench for directly invoking **external** MCP tools outside of an inference turn via
+`POST /api/mcp/tools/invoke`. It is **policy-constrained, not an unrestricted bypass**: the internal
+`arcanum-internal` server and all Forbidden Arts (`execute_command`, `write_file`,
+`replace_text_block`, `delete_lexicon`, `run_spell_script`) are blocked server-side with a clear
+message. Pick a running external server and one of its tools, edit JSON arguments, and confirm the
+invoke (mutation warning; Cancel is the default). The result panel shows the parsed output, latency,
+and a truncation flag when the server hit `ToolOutputCapBytes`. Fixtures (tool + server + workspace +
+arguments + last result) can be saved locally by name — only on your explicit choice — into
+`~/.config/arcanum/the-forge-diagnostic-mcp-fixtures.json` (atomic, owner-only, 100-cap, deduped by
+name); the panel warns that saved fixtures may contain sensitive tool arguments and outputs. Not
+model execution; not unauthenticated (inherits `X-Arcanum-Key`). See
+[Arcanum.DESIGN.md §11.28](Arcanum.DESIGN.md#1128-diagnostic-mcp-invocation-post-apimcptoolsinvoke)
+for the full security posture. The **Models & Providers** tab is described below. Every action
 requires a running `arcanum serve` and surfaces busy/status/error inline (failures also go to the
 Foundry Floor). Short Whispers toasts cover major success/failure outcomes; they do not replace
 Floor detail.
@@ -341,8 +375,12 @@ and The Treasury — **The Hearth** local terminal, **Milestone H Context and Me
 Browser, The Archive, Divination, Workspace Explorer, Tome session memory controls, The Codex),
 **The Illumination** Markdig-backed markdown preview (Spell editor / The Codex Source·Split·Preview,
 Workspace Explorer Open Preview, standalone markdown tabs), **The Mirror** and **Spell Metadata
-Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Workbench tab. See
-[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.18 and §6.
+Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Workbench tab. The
+**inference IDE expansion** (§5.20 tracker) is implemented through **Phase 6**: **Comparison
+Workbench** (§5.20 phase 3), **Prompt Mirror** (§5.20 phase 4), **Inference Trace** inspector
+(§5.20 phase 5), and **Diagnostic MCP Invocation** (§5.19 — policy-constrained external MCP tool
+invoke in The Arsenal). See
+[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.19 and §6.
 
 ### Markdown preview (The Illumination)
 
@@ -358,7 +396,7 @@ Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Work
 - **Sync scroll** (Spell + standalone markdown; AvaloniaEdit): approximate caret ↔ preview block
   sync in Split. The Codex exposes the same toggle (defaults off) because its TextBox source editor
   only supports best-effort sync.
-- Fenced code uses ColorCode highlighting with Forge theme brushes. Footnotes render. Math and
+- Fenced code uses ColorCode highlighting with The Forge theme brushes. Footnotes render. Math and
   Mermaid appear as labeled source blocks (no equation engine / no Mermaid graphs / no WebView).
 - Links open in the system browser **only on click**, and only for `http` / `https` / `mailto`.
 - Raw HTML is omitted (`[HTML omitted]`), never executed. Large documents may show **Preview
@@ -369,5 +407,5 @@ Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Work
   **Open Preview** to open a Workbench tab (preview-first).
 - The Scriptorium’s **Render** button remains server-side template render — not markdown preview.
 
-**Known gaps (honest UI):** The Arsenal exposes only built-in tool invocation (`POST /api/tools/invoke`); external MCP direct invocation is not exposed by Arcanum yet. No provider/config editing, budget/pricing editing, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for ephemeral Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; no persistent Trial libraries yet. Full prompt-version management beyond list/open, advanced import conflict wizards, full campaign Settings editing, and dedicated Git UI (The Ledger) are not built yet — use The Hearth for `git` commands. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** (Open Compendium deep-link deferred; Guardrails panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet.
+**Known gaps (honest UI):** The Arsenal exposes built-in tool invocation (`POST /api/tools/invoke`, Scrying Pool) and **policy-constrained external MCP** diagnostic invocation (`POST /api/mcp/tools/invoke`, Diagnostic MCP Invocation tab — internal server and Forbidden Arts blocked). Internal-tool diagnostics (e.g. testing `execute_command` capture/truncation) are not available from the diagnostic endpoint — they require the Wizard tool execution pipeline with a real campaign. No provider/config editing, budget/pricing editing, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; persistent suites are stored locally in `~/.config/arcanum/the-forge-trial-suites.json` (not Grimoire). Full prompt-version management beyond list/open, advanced import conflict wizards, full campaign Settings editing, and dedicated Git UI (The Ledger) are not built yet — use The Hearth for `git` commands. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** and **Open Compendium** where wired; use **View → Setup wizard…** / The Anvil for first-run connection guidance (Guardrails settings panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet. Planned inference-developer IDE expansion phases are tracked in [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.19.
 

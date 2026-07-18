@@ -3,7 +3,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.TheForge.Ux.ViewModels;
 
 /// <summary>
-/// Formats <see cref="ApiResponse{T}"/> failures for Forge UI surfaces as <c>[Code] Message</c>,
+/// Formats <see cref="ApiResponse{T}"/> failures for The Forge UI surfaces as <c>[Code] Message</c>,
 /// with curated copy for known transport / auth fault codes (so raw socket text is not shown).
 /// </summary>
 public static class ForgeApiError
