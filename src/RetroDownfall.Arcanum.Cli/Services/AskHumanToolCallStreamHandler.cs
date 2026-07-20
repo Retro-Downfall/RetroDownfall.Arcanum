@@ -1,9 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
-using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -18,11 +16,17 @@ internal enum AskHumanResult
 
     ParseFailed,
 
+    /// <summary>Interactive input race started; stream pump must continue and <see cref="ConsoleAskHumanCoordinator.DrainAsync"/> later.</summary>
+    PendingInput,
+
 }
+
 
 /// <summary>
 /// When NDJSON streaming exposes <see cref="IntelligenceEventType.ToolCall"/> for <c>ask_human</c>,
 /// submits the human answer (or unattended stub) to the API.
+/// Interactive callers that pump the stream should prefer <see cref="ConsoleAskHumanCoordinator"/>
+/// so NDJSON continues while input is pending; this method remains a sync-friendly wrapper.
 /// </summary>
 internal static class AskHumanToolCallStreamHandler
 {
@@ -34,95 +38,19 @@ internal static class AskHumanToolCallStreamHandler
         IThemePalette palette,
         CancellationToken cancellationToken)
     {
-        if (evt.Type != IntelligenceEventType.ToolCall)
+        ConsoleAskHumanCoordinator coordinator = new(apiClient, palette);
+        AskHumanResult begin = await coordinator
+            .TryBeginAsync(evt, unattended, isInteractive, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (begin != AskHumanResult.PendingInput)
         {
-            return AskHumanResult.NotHandled;
+            return begin;
         }
 
-        string toolName = evt.ToolCall?.Name ?? evt.Message;
-
-        if (!string.Equals(toolName, "ask_human", StringComparison.Ordinal))
-        {
-            return AskHumanResult.NotHandled;
-        }
-
-        if (!TryParseAskHumanArgs(evt, out AskHumanParams? args, out string? parseError) || args is null)
-        {
-            if (parseError is not null)
-            {
-                AnsiConsole.MarkupLine(
-                    palette.ErrorMarkup(Markup.Escape(parseError)));
-
-                return AskHumanResult.ParseFailed;
-            }
-
-            return AskHumanResult.NotHandled;
-        }
-
-        Result<bool> submitResult;
-
-        if (unattended || !isInteractive)
-        {
-            string autoReply = unattended
-                ? "System: The user is in unattended mode. Proceed using your best judgment."
-                : "System: No interactive terminal is available. Proceed using your best judgment.";
-
-            submitResult = await apiClient
-                .SubmitHumanResponseAsync(args.PromptId, autoReply, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            Console.Out.Flush();
-
-            Console.Error.Flush();
-
-            string answer;
-
-            try
-            {
-
-                answer = CliLineReader.ReadLine(
-                    $"\n{palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(args.Question)} ",
-                    allowEmpty: false)
-                    ?? string.Empty;
-
-            }
-            catch (InvalidOperationException)
-            {
-
-                AnsiConsole.MarkupLine(
-                    palette.ErrorMarkup(Markup.Escape("ask_human: no interactive input is available to answer the prompt.")));
-
-                return AskHumanResult.SubmitFailed;
-
-            }
-
-            if (string.IsNullOrWhiteSpace(answer))
-            {
-
-                AnsiConsole.MarkupLine(
-                    palette.ErrorMarkup(Markup.Escape("ask_human: no answer was provided; the prompt was left unanswered.")));
-
-                return AskHumanResult.SubmitFailed;
-
-            }
-
-            submitResult = await apiClient
-                .SubmitHumanResponseAsync(args.PromptId, answer, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        if (submitResult.IsFailure)
-        {
-            AnsiConsole.MarkupLine(
-                palette.ErrorMarkup(Markup.Escape(
-                    $"Failed to submit response to Daemon ({submitResult.Error.Code}): {submitResult.Error.Message}")));
-
-            return AskHumanResult.SubmitFailed;
-        }
-
-        return AskHumanResult.Handled;
+        // Legacy blocking path: wait for the interactive race (no concurrent stream pump here).
+        AskHumanResult? drained = await coordinator.DrainAsync(cancellationToken).ConfigureAwait(false);
+        return drained ?? AskHumanResult.Handled;
     }
 
     /// <summary>

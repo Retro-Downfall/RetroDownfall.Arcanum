@@ -24,6 +24,7 @@ internal sealed class CommandCenterHost(
     CommandCenterApp commandCenterApp,
     SessionWorkspaceService sessionWorkspace,
     CommandCenterWardCoordinator wardCoordinator,
+    CommandCenterHardModalArbiter hardModalArbiter,
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterHost> logger) : ICommandCenterHost
 {
@@ -140,8 +141,8 @@ internal sealed class CommandCenterHost(
                     {
                         app.Invoke(() =>
                         {
-                            // HumanPrompt steals focus: deny any pending Ward before mutating overlay.
-                            _ = wardCoordinator.TryResolvePendingWardAsDenied();
+                            // Hard modals are never preempted — arbiter only invokes show when this
+                            // HumanPrompt is the active slot (queued wards keep observing timeout).
                             state.Overlay = CommandCenterOverlayKind.HumanPrompt;
                             state.FocusRegion = CommandCenterFocusRegion.Overlay;
                             state.FooterHint = status;
@@ -153,6 +154,7 @@ internal sealed class CommandCenterHost(
                     {
                         app.Invoke(() =>
                         {
+                            // Stale closes are filtered by PromptId in the coordinator before onHide.
                             if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
                             {
                                 CloseOverlayAndFocusInput(state, window, app);
@@ -223,8 +225,8 @@ internal sealed class CommandCenterHost(
                 void SubmitFromInput()
                 {
                     // Sole entry into HandleSubmitAsync for composer send (see Accepting no-op below).
+                    // ClearComposer runs only after TryBeginTurn admits the turn (#10).
                     string text = window.GetComposerText();
-                    window.ClearComposer();
                     _ = HandleSubmitAsync(text, state, uiChannel.Writer, app, window, linked);
                 }
 
@@ -479,7 +481,8 @@ internal sealed class CommandCenterHost(
                     if (chord.IsEnter && chord.IsCtrl)
                     {
                         e.Handled = true;
-                        _ = SubmitHumanPromptAsync(state, window, app, uiChannel.Writer, linked.Token);
+                        CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
+                        _ = SubmitHumanPromptAsync(state, window, app, uiChannel.Writer, submitToken);
                         return;
                     }
 
@@ -673,7 +676,9 @@ internal sealed class CommandCenterHost(
                 if (humanPromptCoordinator.IsActive
                     || state.Overlay == CommandCenterOverlayKind.HumanPrompt)
                 {
-                    _ = SubmitHumanPromptAsync(state, window, app, ui, linked.Token);
+                    // Bind submit to turn CTS so CancelTurn cancels in-flight submit (#8).
+                    CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
+                    _ = SubmitHumanPromptAsync(state, window, app, ui, submitToken);
                 }
                 else
                 {
@@ -691,9 +696,9 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.CancelTurn:
-                // Cancel only — Host owns TurnCts disposal. HITL modal closes via ChatRunner cancel path.
+                // Cancel only — Host owns TurnCts disposal. Cancelling TurnCts aborts in-flight submit.
                 state.TurnCts?.Cancel();
-                _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Cancelled);
+                _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
                 break;
 
             case CommandCenterAction.ClearComposer:
@@ -714,37 +719,34 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.Quit:
-                _ = wardCoordinator.TryResolvePendingWardAsDenied();
+                wardCoordinator.DenyAllPending();
                 RequestQuit(state, window, app);
                 break;
 
             case CommandCenterAction.Help:
-                if (BlockOverlayStealWhileHumanPrompt(state, window, app))
+                if (BlockAuxiliaryWhileHardModal(state, window, app))
                 {
                     break;
                 }
 
-                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 ShowHelpOverlay(state, window, app);
                 break;
 
             case CommandCenterAction.CommandPalette:
-                if (BlockOverlayStealWhileHumanPrompt(state, window, app))
+                if (BlockAuxiliaryWhileHardModal(state, window, app))
                 {
                     break;
                 }
 
-                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 ShowPalette(state, window, app);
                 break;
 
             case CommandCenterAction.FocusSessions:
-                if (BlockOverlayStealWhileHumanPrompt(state, window, app))
+                if (BlockAuxiliaryWhileHardModal(state, window, app))
                 {
                     break;
                 }
 
-                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 state.FocusRegion = CommandCenterFocusRegion.Sessions;
                 state.FooterHint = null;
                 // Prefer the left Sessions pane when visible (Claude Code–style).
@@ -1161,7 +1163,7 @@ internal sealed class CommandCenterHost(
 
     private void RequestQuit(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        _ = wardCoordinator.TryResolvePendingWardAsDenied();
+        wardCoordinator.DenyAllPending();
 
         if (state.Generating)
         {
@@ -1187,7 +1189,6 @@ internal sealed class CommandCenterHost(
 
     private void ShowDiscardConfirm(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        _ = wardCoordinator.TryResolvePendingWardAsDenied();
         state.Overlay = CommandCenterOverlayKind.DiscardConfirm;
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
@@ -1203,7 +1204,6 @@ internal sealed class CommandCenterHost(
 
     private void ShowHelpOverlay(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        _ = wardCoordinator.TryResolvePendingWardAsDenied();
         state.Overlay = CommandCenterOverlayKind.Help;
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
@@ -1242,7 +1242,6 @@ internal sealed class CommandCenterHost(
 
     private void ShowPalette(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        _ = wardCoordinator.TryResolvePendingWardAsDenied();
         state.Overlay = CommandCenterOverlayKind.CommandPalette;
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
@@ -1509,6 +1508,7 @@ internal sealed class CommandCenterHost(
 
         if (isSlash)
         {
+            app.Invoke(() => window.ClearComposer());
             await RunGatedAsync(
                     state,
                     ui,
@@ -1542,11 +1542,14 @@ internal sealed class CommandCenterHost(
 
         if (!state.TryBeginTurn())
         {
+            // Admission denied — preserve composer text and staged attachments (#10).
             state.Log.Append(SessionLogEntryKind.Status, "Already generating — Ctrl+C to cancel.");
             await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), linked.Token)
                 .ConfigureAwait(false);
             return;
         }
+
+        app.Invoke(() => window.ClearComposer());
 
         CancellationTokenSource? turnCts = null;
         try
@@ -1722,17 +1725,22 @@ internal sealed class CommandCenterHost(
         return false;
     }
 
-    private bool BlockOverlayStealWhileHumanPrompt(
+    private bool BlockAuxiliaryWhileHardModal(
         CommandCenterState state,
         CommandCenterWindow window,
         IApplication app)
     {
-        if (!humanPromptCoordinator.IsActive && state.Overlay != CommandCenterOverlayKind.HumanPrompt)
+        if (!hardModalArbiter.BlocksAuxiliary
+            && !humanPromptCoordinator.IsActive
+            && state.Overlay is not (CommandCenterOverlayKind.HumanPrompt or CommandCenterOverlayKind.WardConfirm))
         {
             return false;
         }
 
-        state.FooterHint = "Answer the Mage prompt first (Ctrl+Enter), or cancel the turn (Ctrl+C).";
+        state.FooterHint = hardModalArbiter.ActiveKind == CommandCenterHardModalKind.WardConfirm
+                || state.Overlay == CommandCenterOverlayKind.WardConfirm
+            ? "Resolve the Ward prompt first, or cancel the turn (Ctrl+C)."
+            : "Answer the Mage prompt first (Ctrl+Enter), or cancel the turn (Ctrl+C).";
         app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
         return true;
     }

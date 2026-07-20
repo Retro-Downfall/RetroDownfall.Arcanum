@@ -33,20 +33,28 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 
 ### 2.2 Remediation architectural gate (deferred policy changes)
 
-The following items from the Arcanum code review require explicit product/architecture sign-off before implementation.
+The following items require explicit product/architecture sign-off before implementation. Completed findings remain documented in owning sections (env scrubbing §11.7 / MCP host; watermarks §5.5.5).
 
 | Finding | Topic | Current decision |
 |---------|-------|------------------|
-| **#50** | Generate runtime `.sql` + `MigrationOrder` from EF migrations (Approach B) | **Deferred.** Schema changes ship in the existing hand-authored SQL scripts; migrator wraps each script + history row in one transaction (Approach A). |
-| **#25** | Child-process environment allowlist for MCP / `execute_command` / `run_spell_script` | **Done.** `execute_command` and `run_spell_script` strip `ARCANUM_*` secret/config vars and loader/runtime hijack variables from the child env before spawn while preserving `PATH`/`HOME`; **all** MCP servers (global + workspace) strip the inherited host env by default (`ShouldStripUserEnvironment`) and run only their scrubbed `cfg.Env`. A per-server **`inheritEnv`** allowlist may re-admit **non-absolutely-denied** host variables (e.g. `["PATH","HOME"]` for `npx`); `ARCANUM_*` and process-hijack variables are always denied even when listed in `inheritEnv` or explicit `cfg.Env`. Operator-provided MCP credentials (e.g. `OPENAI_API_KEY` in `cfg.Env`) are not blanket-banned. A full per-binary/per-var allowlist remains deferred. |
-| **#10** | OpenAI `/v1` default tool policy for workspace-less requests | **Deferred.** Current exposure unchanged until product decides agentic-by-default vs allowlist. |
-| **#45** | Persist Unseen Servant watermarks to the Grimoire | **Done.** Watermarks persist to the Grimoire `UnseenServantWatermarks` table; see §5.5.5. |
-
----
+| **#50** | Generate runtime `.sql` + `MigrationOrder` from EF migrations (Approach B) | **Deferred.** Hand-authored SQL scripts + transactional migrator (Approach A). |
+| **#10** | OpenAI `/v1` default tool policy for workspace-less requests | **Deferred.** Exposure unchanged until product decides agentic-by-default vs allowlist. |
+| **Audit #2** | Windows FS jail for `execute_command` / `run_spell_script` | **Deferred.** Degraded posture; Sanctum path-boundary denies these tools when required. |
+| **Audit #12** | Global concurrency for on-demand daemon runs | **Deferred.** `Daemon:MaxConcurrentJobs` is the scheduled Unseen Servant cap only. |
+| **Audit #20** | Default-deny network in macOS tool-child jail | **Deferred.** Jail is filesystem-only; network intentionally allowed. |
+| **Audit #21** | Full per-binary/per-var child env allowlist | **Deferred.** Partial scrubbing shipped; full allowlist remains open. |
+| **Audit #22** | Filesystem-jail external MCP stdio servers | **Deferred.** External MCP servers remain trusted operator-configured processes. |
+| **Audit #24** | Require non-empty A2A `AllowedRemoteAgents` | **Deferred.** Empty allowlist + SSRF guard still permits public HTTPS. |
+| **Audit #25** | Comm Link webhook HMAC signing | **Deferred.** New secret/config surface; needs Compendium when approved. |
+| **Audit #29** | Bind HITL answers to session/stream identity | **Deferred.** PromptId remains the single-user ownership capability. |
+| **Audit #31** | First-run `serve` key stdout vs stderr | **Deferred.** Explicit onboarding contract; auto-launch already suppresses raw print. |
+| **Audit #33** | Redact CLI tool-result dumps | **Deferred.** Authenticated native clients intentionally receive diagnostics (subject to output caps). |
+| **Audit #34** | Private-network provider probe policy | **Deferred.** Loopback/LAN providers (e.g. Ollama) intentionally supported. |
+| **Audit readiness** | Providers Unhealthy → overall HTTP 503 | **Deferred.** Providers Unhealthy contributes at most overall Degraded (HTTP 200); Grimoire remains the readiness-critical gate for 503. |
 
 ### 2.1 Naming conventions
 
-See [README.md §Naming metaphor](README.md#naming-metaphor) for the complete metaphor. DESIGN.md uses the thematic names throughout.
+See [Arcanum.README.md §Naming metaphor](Arcanum.README.md#naming-metaphor) for the complete metaphor. DESIGN.md uses the thematic names throughout.
 
 ---
 
@@ -58,11 +66,13 @@ Projects live under `src/` rather than the repository root for shorter CI paths,
 
 ### 3.2 `Directory.Build.props`
 
-Shared MSBuild properties: `TargetFramework` (`net10.0`), `Nullable` (`enable`), `ImplicitUsings` (`enable`), `LangVersion` (`latest`), `<Version>0.1.0-beta</Version>`. A solution-wide **`PackageReference`** to **`Microsoft.Bcl.Memory`** (currently **10.0.8**) overrides vulnerable transitive versions (mitigates **CVE-2026-26127**). The vulnerable transitive line is declared by **`Microsoft.ML.Tokenizers.Data.O200kBase`** (netstandard2.0 shim dependencies), not by Native AOT. Individual `.csproj` files focus on what differentiates each project.
+Shared MSBuild: `TargetFramework` `net10.0`, `Nullable`/`ImplicitUsings` enable, `LangVersion` latest, `<Version>0.1.0-beta</Version>`. Solution-wide **`Microsoft.Bcl.Memory`** (**10.0.8**) overrides vulnerable transitive versions (**CVE-2026-26127** via **`Microsoft.ML.Tokenizers.Data.O200kBase`** netstandard2.0 shims — not Native AOT). Per-project `.csproj` files hold what differs.
+
 
 ### 3.3 Package versions
 
-`Microsoft.Bcl.Memory` is pinned once above. All other first-party `Microsoft.*` packages are pinned in individual `.csproj` files, currently **10.0.8**; `Microsoft.Extensions.AI`, `Microsoft.Extensions.AI.Abstractions`, and `Microsoft.Extensions.AI.OpenAI` are **10.6.0**. Ollama is reached through its own OpenAI-compatible `/v1` endpoint using `Microsoft.Extensions.AI.OpenAI`; `OllamaSharp` is not referenced. `Microsoft.ML.Tokenizers` and `Microsoft.ML.Tokenizers.Data.O200kBase` are **2.0.0** (latest stable; still require the Bcl.Memory override until upstream updates its nuspec).
+`Microsoft.Bcl.Memory` pinned once in §3.2. Other first-party `Microsoft.*` packages pin in individual `.csproj` files (currently **10.0.8**; `Microsoft.Extensions.AI*` **10.6.0**). Ollama via OpenAI-compatible `/v1` — no `OllamaSharp`. Tokenizers packages **2.0.0** still need the Bcl.Memory override until upstream updates.
+
 
 ### 3.4 Configuration reference (`ArcanumSettings`)
 
@@ -73,59 +83,59 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | Configuration path | Type | Default | Clamp | Purpose |
 |--------------------|------|---------|-------|---------|
 | `Arcanum:Host:Port` | `int` | `5001` | 1 – 65,535 | Kestrel HTTP listen port. |
-| `Arcanum:Host:Https:Enabled` | `bool` | `false` | — | Loopback: when `true`, Kestrel adds an HTTPS listener alongside HTTP. ListenAny / `ARCANUM_HOST_ANY`: **required** — HTTPS-only any-IP (no plaintext HTTP). |
-| `Arcanum:Host:Https:Port` | `int` | `5443` | 1 – 65,535 | TLS listen port; must differ from `Host:Port`. On ListenAny this is the only bound port. |
-| `Arcanum:Host:Https:CertificatePath` | `string?` | `null` | — | PFX path when `PrivateKeyPath` is empty; PEM certificate path when `PrivateKeyPath` is set. Leading `~` / `~/` / `~\` expand to the user profile. Prefer absolute paths. |
-| `Arcanum:Host:Https:PrivateKeyPath` | `string?` | `null` | — | Optional PEM private key. When set, PEM mode is used and `CertificatePassword` is ignored. Unencrypted PEM only in this pass. |
-| `Arcanum:Host:Https:CertificatePassword` | `string?` | `null` | — | Optional PFX password (passwordless PFX allowed). Encrypted at rest as `dp:v1:`; redacted as `***` on `GET /api/config`. Never logged. |
+| `Arcanum:Host:Https:Enabled` | `bool` | `false` | — | Loopback: when `true`, Kestrel adds an HTTPS listener alongside HTTP. |
+| `Arcanum:Host:Https:Port` | `int` | `5443` | 1 – 65,535 | TLS listen port; must differ from `Host:Port`. |
+| `Arcanum:Host:Https:CertificatePath` | `string?` | `null` | — | PFX path when `PrivateKeyPath` is empty; PEM certificate path when `PrivateKeyPath` is set. |
+| `Arcanum:Host:Https:PrivateKeyPath` | `string?` | `null` | — | Optional PEM private key. |
+| `Arcanum:Host:Https:CertificatePassword` | `string?` | `null` | — | Optional PFX password (passwordless PFX allowed). |
 | `Arcanum:Host:RetainedLogFileCount` | `int` | `7` | 1 – 366 | Serilog rolling file retention (days). |
 | `Arcanum:Host:EnableEnterpriseTelemetry` | `bool` | `false` | — | When `true`, Serilog adds a console sink with `CompactJsonFormatter` (structured JSON for log ingestion). |
-| `Arcanum:Host:CorsAllowedOrigins` | `string[]` | localhost loopback (`5001`, `3000`) | — | Origins allowed by the **`ArcanumCors`** policy. Use `["*"]` to allow any origin (browser-callable; risk = key exfiltration on a compromised page). Empty array falls back to the localhost defaults. |
+| `Arcanum:Host:CorsAllowedOrigins` | `string[]` | localhost loopback (`5001`, `3000`) | — | Origins allowed by the **`ArcanumCors`** policy. |
 | `Arcanum:Host:EnableScalarUi` | `bool` | `false` | — | Mounts **`MapScalarApiReference`** under **`/api/scalar`**. |
 | `Arcanum:Host:SystemFingerprint` | `string?` | `null` | — | Optional override for the **`system_fingerprint`** field returned by `/v1/chat/completions`. |
 | `Arcanum:Host:Workspace` | `string?` | `null` | — | Default workspace root for spell management routes (`/api/spells`) when `?workspace=` is omitted (`SpellWorkspaceResolver`; §8.14). |
-| `Arcanum:Host:ListenAny` | `bool` | `false` | — | When `true` (or `ARCANUM_HOST_ANY`), Kestrel binds **HTTPS-only** via `ListenAnyIP` on `Host:Https:Port`. Requires `Host:Https:Enabled` + loadable cert; plaintext any-IP HTTP is refused. See §11.13. |
+| `Arcanum:Host:ListenAny` | `bool` | `false` | — | When `true` (or `ARCANUM_HOST_ANY`), Kestrel binds **HTTPS-only** via `ListenAnyIP` on `Host:Https:Port`. |
 | `Arcanum:Host:MaxRequestBodyBytes` | `long` | `10485760` (10 MiB) | 256 KiB – 1 GiB | Kestrel `MaxRequestBodySize`. |
-| `Arcanum:Host:RateLimit:Enabled` | `bool` | `false` | — | When `true`, `AddArcanumApiServices` registers `AddRateLimiter` and `ServeCommand`/DevHost call `UseRateLimiter()`. See §11.13. |
+| `Arcanum:Host:RateLimit:Enabled` | `bool` | `false` | — | When `true`, `AddArcanumApiServices` registers `AddRateLimiter` and `ServeCommand`/DevHost call `UseRateLimiter()`. |
 | `Arcanum:Host:RateLimit:PermitLimit` | `int` | `120` | 1 – 1,000,000 | Requests permitted per partition per window. |
 | `Arcanum:Host:RateLimit:WindowSeconds` | `int` | `60` | 1 – 86,400 | Fixed window length (seconds). |
-| `Arcanum:Host:RateLimit:QueueLimit` | `int` | `0` | 0 – 1,000,000 | Maximum queued requests per partition. `0` rejects with HTTP 429 immediately; positive values serve queued requests when the window replenishes. |
-| `Arcanum:Host:AuditLog:Enabled` | `bool` | `false` | — | Master toggle for the persisted inference audit log (§8.26). No file I/O at all when `false`. |
+| `Arcanum:Host:RateLimit:QueueLimit` | `int` | `0` | 0 – 1,000,000 | Maximum queued requests per partition. |
+| `Arcanum:Host:AuditLog:Enabled` | `bool` | `false` | — | Master toggle for the persisted inference audit log. No file I/O when `false`. |
 | `Arcanum:Host:AuditLog:FilePath` | `string` | `~/.config/arcanum/audit.jsonl` | — | Base path; directory + filename stem are combined with a UTC date to produce each day's `{stem}-{yyyyMMdd}.jsonl` file. |
 | `Arcanum:Host:AuditLog:MaxSizeMb` | `int` | `100` | 10 – 1,000 | Soft per-day-file size cap; further writes for that day are dropped (logged once) once reached. |
 | `Arcanum:Host:AuditLog:RetentionDays` | `int` | `7` | 1 – 365 | Dated files older than this are deleted the first time a new UTC day's file is created. |
-| `Arcanum:Host:AuditLog:RedactToolArguments` | `bool` | `true` | — | When `true`, only tool *names* are captured (never arguments). When `false`, raw tool argument JSON is also recorded — at the operator's risk. |
+| `Arcanum:Host:AuditLog:RedactToolArguments` | `bool` | `true` | — | When `true`, only tool *names* are captured (never arguments). |
 | `Arcanum:Server:PidFilePath` | `string?` | `~/.config/arcanum/arcanum.pid` | — | PID file written on host start, removed on graceful shutdown when it still contains this process's PID. |
 | `Arcanum:DefaultModel` | `string?` | `null` | — | When non-empty, must match a `models` entry on some provider (see `ProviderResolver`); used when `PingRequest.Model` is omitted. |
 | `Arcanum:FastModel` | `string?` | `null` | — | When non-empty, must match a `models` entry on some provider. |
-| `Arcanum:Providers` | array | `[]` | element `contextWindowLimit` 256 – 2,097,152 | Multi-provider hub. See §10.2.4. |
-| `Arcanum:Conclave:Enabled` | `bool` | `false` | — | Enables **The Conclave** (§5.7): the cross-Apprentice delegation surface. See §5.7. |
+| `Arcanum:Providers` | array | `[]` | element `contextWindowLimit` 256 – 2,097,152 | Multi-provider hub. |
+| `Arcanum:Conclave:Enabled` | `bool` | `false` | — | Enables **The Conclave**: the cross-Apprentice delegation surface. |
 | `Arcanum:Conclave:MaxDelegationDepth` | `int` | `3` | 0 – 20 | Maximum delegation depth from a Conclave root Apprentice (0 = root only, no children). |
-| `Arcanum:Conclave:MaxDescendantsPerRoot` | `int` | `16` | 1 – 200 | Maximum total descendant Apprentices allowed under one Conclave root (breadth cap). Lineage is resolved via hydrated **`ParentApprenticeId`** (no EF migration) (`Apprentice.ConclaveBreadthExceeded`). |
-| `Arcanum:Conclave:A2A:Enabled` | `bool` | `false` | — | Master toggle for the A2A (Agent-to-Agent) protocol surface (§5.7.1). |
+| `Arcanum:Conclave:MaxDescendantsPerRoot` | `int` | `16` | 1 – 200 | Maximum total descendant Apprentices allowed under one Conclave root (breadth cap). |
+| `Arcanum:Conclave:A2A:Enabled` | `bool` | `false` | — | Master toggle for the A2A (Agent-to-Agent) protocol surface |
 | `Arcanum:Conclave:A2A:ServerEnabled` | `bool` | `false` | — | When `true` (and `A2A:Enabled`), exposes Arcanum Apprentices as an A2A server: external agents send messages that spawn headless Apprentices, mapped under `A2A:ServerPath`. |
 | `Arcanum:Conclave:A2A:ServerPath` | `string` | `/api/conclave/a2a` | — | HTTP path under which the A2A JSON-RPC endpoints and the authenticated Agent Card (`{ServerPath}/agent-card`) are mapped, inside the `/api` route group (`ApiKeyEndpointFilter` applies). |
 | `Arcanum:Conclave:A2A:AgentCardName` | `string?` | `null` | — | Display name advertised on the A2A Agent Card ("Heraldry"). |
 | `Arcanum:Conclave:A2A:AgentCardDescription` | `string?` | `null` | — | Display description advertised on the A2A Agent Card ("Heraldry"). |
 | `Arcanum:Conclave:A2A:ClientEnabled` | `bool` | `false` | — | When `true` (and `A2A:Enabled`), advertises the in-process `dispatch_sending` MCP tool so an Apprentice may delegate a Sending to an external A2A agent (the Archmage Client). |
 | `Arcanum:Conclave:A2A:MaxExternalTasks` | `int` | `50` | 1 – 500 | Maximum concurrently in-flight client-side (`dispatch_sending`) delegations, enforced by an in-memory semaphore (not a persisted counter — external tasks are not written to the Grimoire). |
-| `Arcanum:Conclave:A2A:ExternalTaskTimeoutMinutes` | `int` | `60` | 5 – 1,440 | Per-delegation wall-clock timeout for a blocking `dispatch_sending` call. Expiry releases the concurrency slot and fails with `Sending.TaskTimeout` (504). |
+| `Arcanum:Conclave:A2A:ExternalTaskTimeoutMinutes` | `int` | `60` | 5 – 1,440 | Per-delegation wall-clock timeout for a blocking `dispatch_sending` call. |
 | `Arcanum:Conclave:A2A:AllowedRemoteAgents` | `string[]` | `[]` | — | Optional allowlist of remote Agent Card URLs/origins `dispatch_sending` may target. |
 | `Arcanum:Conclave:A2A:DefaultWorkspace` | `string` | `""` | — | Fallback workspace for inbound A2A tasks (server side) when the request carries no workspace/campaign hint. |
 | `Arcanum:Intelligence:ExecuteCommandTimeoutSeconds` | `int` | `30` | 1 – 600 | Hard wall-clock cap for MCP `execute_command` and `run_spell_script` (runtime-coupled to `Mcp:RequestTimeoutSeconds`); cooperative cancel also terminates spawned process trees immediately, independent of this timeout. |
-| `Arcanum:Intelligence:InferenceTimeoutSeconds` | `int` | `600` | 5 – 3,600 | Wall-clock cap for a single inference turn (buffered or streaming), including tool rounds. Linked to the caller cancellation token; on expiry the hub returns **`Hub.Timeout`**. |
-| `Arcanum:Intelligence:ToolOutputCapBytes` | `long` | `1048576` (1 MiB) | 64 KiB – 64 MiB | Combined byte cap on stdout + stderr captured from `execute_command` and `run_spell_script` (split evenly per stream). Streams are truncated with a `[truncated: …]` marker beyond the cap. |
-| `Arcanum:Intelligence:MaxToolInferenceRounds` | `int` | `100` | 1 – 100 | Hard cap on agentic tool rounds per inference turn. Beyond it the turn fails with `Hub.ToolLoop`. |
-| `Arcanum:Intelligence:TolerateToolFailures` | `bool` | `true` | — | When `true`, an unexpected exception from a single tool invocation during a **buffered** turn is caught and synthesized into a tool result (§10.2.1) instead of failing the whole turn with `Hub.Error`. See §10.2.1. |
+| `Arcanum:Intelligence:InferenceTimeoutSeconds` | `int` | `600` | 5 – 3,600 | Wall-clock cap for a single inference turn (buffered or streaming), including tool rounds. |
+| `Arcanum:Intelligence:ToolOutputCapBytes` | `long` | `1048576` (1 MiB) | 64 KiB – 64 MiB | Combined byte cap on stdout + stderr captured from `execute_command` and `run_spell_script` (split evenly per stream). |
+| `Arcanum:Intelligence:MaxToolInferenceRounds` | `int` | `100` | 1 – 100 | Hard cap on agentic tool rounds per inference turn. |
+| `Arcanum:Intelligence:TolerateToolFailures` | `bool` | `true` | — | When `true`, an unexpected exception from a single tool invocation during a **buffered** turn is caught and synthesized into a tool result instead of failing the whole turn with `Hub.Error`. |
 | `Arcanum:Intelligence:CompressionPreflightMinMessages` | `int` | `6` | 0 – 100 | Minimum assembled-message count before context-compression preflight runs (short threads skip tokenizer cost). |
 | `Arcanum:Intelligence:PerMessageTemplateOverheadTokens` | `int` | `4` | 0 – 32 | Per-message overhead (tokens) added to the pre-flight count to approximate chat-template framing. |
-| `Arcanum:Intelligence:TokenizerEncoding` | `string` | `"o200k_base"` | — | Tiktoken encoding name used by `InferenceTokenizerResolver`. Unknown names log a warning and fall back to `o200k_base`. |
+| `Arcanum:Intelligence:TokenizerEncoding` | `string` | `"o200k_base"` | — | Tiktoken encoding name used by `InferenceTokenizerResolver`. |
 | `Arcanum:Intelligence:SemanticRouterPreflightTimeoutSeconds` | `int` | `15` | 1 – 600 | Max wait for spell-router preflight call. |
-| `Arcanum:Intelligence:SemanticRouterMaxTokens` | `int` | `128` | 1 – 4,096 | Spell-router preflight `MaxOutputTokens`. Bumped from 50 to 128 to cover the `entities` array the router now extracts alongside `spellName`. |
+| `Arcanum:Intelligence:SemanticRouterMaxTokens` | `int` | `128` | 1 – 4,096 | Spell-router preflight `MaxOutputTokens`. |
 | `Arcanum:Intelligence:SemanticRouterTemperature` | `float` | `0` | 0 – 2 | Spell-router preflight temperature. |
 | `Arcanum:Intelligence:ListDirectoryMaxPaths` | `int` | `500` | 1 – 2,000 | Max paths from in-process `list_directory`. |
-| `Arcanum:Intelligence:EnableLoreSystem` | `bool` | `true` | — | **Legacy / operator-only.** No longer gates any MCP tool — the Lore MCP tools are removed. Retained for backward compatibility with operator docs/API; `/api/lore` and `arcanum lore` still manage `MageSettings` as an operator key-value surface. |
-| `Arcanum:Intelligence:EnableLexiconSystem` | `bool` | `true` | — | Gates the `scribe_lexicon` / `delete_lexicon` MCP tools and the Lexicon retrieval / DATA injection path (§10). **Option A behavior change:** operators who previously disabled model-writable memory via `EnableLoreSystem` must now set this to `false`. |
+| `Arcanum:Intelligence:EnableLoreSystem` | `bool` | `true` | — | **Legacy / operator-only.** No longer gates any MCP tool — the Lore MCP tools are removed. |
+| `Arcanum:Intelligence:EnableLexiconSystem` | `bool` | `true` | — | Gates `scribe_lexicon` / `delete_lexicon` and Lexicon DATA injection. Operators who previously set `EnableLoreSystem: false` must set this to `false`. |
 | `Arcanum:Intelligence:LexiconMaxMatchedEntries` | `int` | `16` | 1 – 100 | Max Lexicon entries returned per inference-turn `MatchEntitiesAsync`. |
 | `Arcanum:Intelligence:LexiconMaxInjectedBytes` | `int` | `4096` | 256 – 65,536 | Hard cap (bytes) on the rendered `### Lexicon (Known Context)` DATA block. |
 | `Arcanum:Intelligence:EnableArchiveSearch` | `bool` | `true` | — | Gates `search_archives` MCP tool. |
@@ -133,11 +143,11 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Intelligence:ArchiveSearchMaxQueryLength` | `int` | `512` | 32 – 4,096 | Max query length before FTS sanitization. |
 | `Arcanum:Intelligence:CampaignLogThreshold` | `int` | `25` | 1 – 10,000 | Message-count safety valve for Campaign Log consolidation. |
 | `Arcanum:Intelligence:CampaignLogIdleTimeoutMinutes` | `int` | `240` | 1 – 43,200 | Idle minutes before a session is eligible for consolidation. |
-| `Arcanum:Intelligence:CampaignLogSweepIntervalMinutes` | `int` | `15` | 1 – 1,440 | Background sweep interval for Campaign Log enqueue. Hot-reloads on the next sweep tick (no restart required). |
+| `Arcanum:Intelligence:CampaignLogSweepIntervalMinutes` | `int` | `15` | 1 – 1,440 | Background sweep interval for Campaign Log enqueue. |
 | `Arcanum:Intelligence:ContextWindowCompressionThreshold` | `int` | `85` | 50 – 100 | Percentage of the resolved provider `contextWindowLimit` at which **read-time** context compression is considered. |
 | `Arcanum:Intelligence:EnableContextCompression` | `bool` | `true` | — | When `true`, `WizardIntelligenceProvider` runs pre-flight token counting and may swap older Grimoire entries for `Session.Summary` in the assembled system prompt without deleting rows. |
 | `Arcanum:Intelligence:EnableTokenTracking` | `bool` | `true` | — | When `true`, after each successful buffered or streamed inference turn with a bound `SessionId`, the hub calls **`IGrimoireRepository.IncrementSessionTokensAsync`** so **`Session.TotalTokensUsed`** reflects cumulative reported usage. |
-| `Arcanum:Intelligence:UseFastModelForSpellRouting` | `bool` | `false` | — | When `true`, semantic spell-router preflight uses **`Arcanum:FastModel`** (when configured) instead of the turn's model; falls back to the turn model otherwise. Behavior-affecting; default off. |
+| `Arcanum:Intelligence:UseFastModelForSpellRouting` | `bool` | `false` | — | When `true`, semantic spell-router preflight uses **`Arcanum:FastModel`** (when configured) instead of the turn's model; falls back to the turn model otherwise. |
 | `Arcanum:Intelligence:MaxOpenApiMessages` | `int` | `1000` | 1 – 10,000 | Maximum messages accepted in a single OpenAI `/v1/chat/completions` request before rejection. |
 | `Arcanum:Intelligence:MaxStatelessMessages` | `int` | `100` | 1 – 10,000 | Maximum messages accepted on a stateless (no-session) native inference request. |
 | `Arcanum:Intelligence:MaxContentPartsPerMessage` | `int` | `64` | 1 – 1,024 | Maximum multimodal `content[]` parts per `/v1/chat/completions` message; exceeding it (or an unsupported part `type`) is rejected `400 invalid_value` before mapping. |
@@ -145,170 +155,170 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Intelligence:MaxPlanSteps` | `int` | `30` | 1 – 200 | Maximum steps accepted in a parsed Apprentice plan. |
 | `Arcanum:Mcp:RequestTimeoutSeconds` | `int` | `60` | 1 – 600 | Default per-request timeout for `McpClient` JSON-RPC. |
 | `Arcanum:Mcp:MaxPaginationPages` | `int` | `32` | 1 – 256 | Max `tools/list` pagination iterations. |
-| `Arcanum:Mcp:BootstrapBlocksStartup` | `bool` | `true` | — | When `true` (default), AlwaysOn MCP servers finish bootstrapping before Kestrel accepts requests. When `false`, bootstrap runs in the background and tools attach as servers connect. |
+| `Arcanum:Mcp:BootstrapBlocksStartup` | `bool` | `true` | — | When `true` (default), AlwaysOn MCP servers finish bootstrapping before Kestrel accepts requests. |
 | `Arcanum:Mcp:MaxServers` | `int` | `50` | 1 – 500 | Maximum MCP servers registered across user + workspace `mcp.json`. |
 | `Arcanum:Mcp:MaxToolsPerServer` | `int` | `256` | 1 – 2,048 | Maximum tools accepted from a single MCP server's `tools/list`. |
 | `Arcanum:Mcp:MaxToolsPerListPage` | `int` | `64` | 1 – 256 | Maximum tools accepted per `tools/list` page. |
 | `Arcanum:Mcp:MaxToolsTotalBytes` | `int` | `1048576` (1 MiB) | 64 KiB – 16 MiB | Maximum cumulative bytes of tool schemas held in memory across all servers. |
-| `Arcanum:Mcp:MaxJsonRpcLineBytes` | `int` | `2228224` | 64 KiB – 8 MiB | Maximum length of a single newline-delimited JSON-RPC frame (also caps each Streamable HTTP JSON body / SSE event). Must be ≥ `Intelligence:ToolOutputCapBytes` (enforced at startup). |
+| `Arcanum:Mcp:MaxJsonRpcLineBytes` | `int` | `2228224` | 64 KiB – 8 MiB | Maximum length of a single newline-delimited JSON-RPC frame (also caps each Streamable HTTP JSON body / SSE event). |
 | `Arcanum:Mcp:HttpRequestTimeoutSeconds` | `int` | `120` | 10 – 600 | Timeout for the named `HttpClient("McpHttp")` Streamable HTTP transport (headers phase; the per-request JSON-RPC timeout governs streamed bodies). |
-| `Arcanum:Mcp:AllowedHttpHosts` | `string[]` | `[]` | — | Hosts permitted over plaintext `http` for Streamable HTTP MCP servers (e.g. |
+| `Arcanum:Mcp:AllowedHttpHosts` | `string[]` | `[]` | — | Hosts permitted over plaintext `http` for Streamable HTTP MCP servers. |
 | `Arcanum:Perception:MaxEnumerationSteps` | `int` | `50000` | 1 – 10,000,000 | File walk budget for Eye of the World. |
 | `Arcanum:Perception:MaxTableOfContentsLines` | `int` | `20` | 1 – 500 | TOC line budget for `PatternSnapshot`. |
 | `Arcanum:Perception:AllowedWorkspaceRoots` | `string[]` | `[]` | — | Allowlist of absolute roots that `GET /api/perception/look` may scan. |
-| `Arcanum:Spells:AllowedWorkspaceRoots` | `string[]` | `[]` | — | Allowlist of absolute roots for spell CRUD routes (`/api/spells`). **Empty (default) denies all workspace paths** (`403` `Spell.PathNotAllowed`; §8.14). |
-| `Arcanum:Spells:MaxFileSizeBytes` | `long` | `262144` (256 KiB) | 1 KiB – 1 MiB | Maximum `SPELL.md` / frontmatter read size for spell list, get, search, and execute routes. See §8.14. |
+| `Arcanum:Spells:AllowedWorkspaceRoots` | `string[]` | `[]` | — | Allowlist of absolute roots for spell CRUD routes (`/api/spells`). |
+| `Arcanum:Spells:MaxFileSizeBytes` | `long` | `262144` (256 KiB) | 1 KiB – 1 MiB | Maximum `SPELL.md` / frontmatter read size for spell list, get, search, and execute routes. |
 | `Arcanum:Spells:MetadataScanCacheTtlSeconds` | `int` | `5` | 0 – 300 | TTL for the in-process spell-metadata scan cache used by routing and Arcane Resonance; `0` disables. |
 | `Arcanum:Spells:MaxDependencies` | `int` | `20` | 0 – 100 | Maximum `dependencies` entries accepted in a spell's `SPELL.json` (Arcane Resonance graph). |
 | `Arcanum:Spells:MaxDeclaredTools` | `int` | `50` | 0 – 256 | Maximum `declaredTools` entries in a spell's `SPELL.json` (Artifact Attunement allowlist). |
 | `Arcanum:Spells:MaxResonantDependencies` | `int` | `10` | 0 – 50 | Maximum resonant dependencies resolved into the system prompt at execution. |
 | `Arcanum:Spells:MaxResonantBytes` | `int` | `131072` (128 KiB) | 4 KiB – 1 MiB | Maximum total bytes of concatenated resonant dependency bodies. |
-| `Arcanum:Campaigns:AllowedRoots` | `string[]` | `[]` | — | Allowlist of absolute roots for **`POST /api/campaigns`** and **`POST /api/workspaces`**. See §8.17. |
-| `Arcanum:Campaigns:MaxCampaigns` | `int` | `500` | 10 – 10,000 | Maximum registered campaigns in the Grimoire database (§19). |
+| `Arcanum:Campaigns:AllowedRoots` | `string[]` | `[]` | — | Allowlist of absolute roots for **`POST /api/campaigns`** and **`POST /api/workspaces`**. |
+| `Arcanum:Campaigns:MaxCampaigns` | `int` | `500` | 10 – 10,000 | Maximum registered campaigns in the Grimoire database |
 | `Arcanum:Cli:DoctorHealthTimeoutSeconds` | `int` | `2` | 1 – 60 | Timeout (seconds) for the `arcanum doctor` API health probe (`GET /api/health`). |
-| `Arcanum:Cli:ApiRequestTimeoutSeconds` | `int` | `60` | 1 – 600 | Timeout (seconds) for non-streaming CLI API calls (`lore`, `daemon jobs`, session queries, etc.). Streaming verbs (`ask`, `chat`) use a separate unbounded HTTP client. |
+| `Arcanum:Cli:ApiRequestTimeoutSeconds` | `int` | `60` | 1 – 600 | Timeout (seconds) for non-streaming CLI API calls (`lore`, `daemon jobs`, session queries, etc.). |
 | `Arcanum:Cli:MaxAttachFileSizeBytes` | `long` | `1048576` | 1 KiB – 100 MiB | Per-file staging limit for `chat /attach`. |
 | `Arcanum:Cli:MaxAttachedFilesPerRequest` | `int` | `32` | 1 – 256 | Max attached files per inference request. |
 | `Arcanum:Cli:MaxAttachedFileRelativePathChars` | `int` | `4096` | 256 – 8,192 | Max `RelativePath` length per attachment. |
 | `Arcanum:Cli:Theme` | `ArcanumTheme` | `SystemDefault` | — | CLI appearance: `Light`, `Dark`, or `SystemDefault` (uses `IThemeDetector` once at process start). |
 | `Arcanum:Cli:ThemeColors` | object | Core defaults | — | Nested `Light` / `Dark`, each with `Text`, `Heading`, `Highlight`, `Error`, `Muted` as `#RRGGBB` strings (Spectre palette is built in **Cli**). |
-| `Arcanum:Cli:ShowManaBar` | `bool` | `true` | — | When `true`, the **`chat`** REPL prints the context-window mana bar before each prompt (when a model resolves). Set `false` to suppress it (e.g. scripting / piped input). |
+| `Arcanum:Cli:ShowManaBar` | `bool` | `true` | — | When `true`, the **`chat`** REPL prints the context-window mana bar before each prompt (when a model resolves). |
 | `Arcanum:Security:MaxApiKeyHeaderUtf16Chars` | `int` | `512` | 128 – 8,192 | Rejects oversized API key headers before UTF-8 conversion. |
 | `Arcanum:Security:ApiKeyCacheTtlSeconds` | `int` | `30` | 1 – 3,600 | TTL for the cached **SHA-256 digest** of the expected API key in `ApiKeyEndpointFilter`. |
-| `Arcanum:Daemon:Jobs` | array | `[]` | per-job `intervalMinutes` 1 – 10,080 | Unseen Servant background jobs. See §5.5.2. |
+| `Arcanum:Daemon:Jobs` | array | `[]` | per-job `intervalMinutes` 1 – 10,080 | Unseen Servant background jobs. |
 | `Arcanum:Daemon:MaxConcurrentJobs` | `int` | `8` | 1 – 1,024 | Hard concurrency cap on Unseen Servant jobs the scheduler dispatches per minute; excess jobs defer. |
-| `Arcanum:Daemon:ShutdownDrainTimeoutSeconds` | `int` | `10` | 0 – 600 | Time (seconds) `StopAsync` waits for in-flight Unseen Servant jobs (`Task` registry) to drain after the host begins shutting down. `0` disables waiting. |
+| `Arcanum:Daemon:ShutdownDrainTimeoutSeconds` | `int` | `10` | 0 – 600 | Time (seconds) `StopAsync` waits for in-flight Unseen Servant jobs (`Task` registry) to drain after the host begins shutting down. |
 | `Arcanum:Daemon:ExecutionHistoryLimit` | `int` | `100` | 10 – 10,000 | Maximum in-memory execution records retained per daemon job in `InMemoryDaemonExecutionRepository`. |
-| `Arcanum:CommLink:WebhookUrl` | `string?` | `null` | — | Optional absolute URL for **Comm Link** outbound JSON `POST` alerts (`WebhookCommLinkDispatcher`). When unset, dispatch returns **`Suppressed`** (typed success) without HTTP. |
+| `Arcanum:CommLink:WebhookUrl` | `string?` | `null` | — | Optional absolute URL for **Comm Link** outbound JSON `POST` alerts (`WebhookCommLinkDispatcher`). |
 | `Arcanum:CommLink:WebhookTimeoutSeconds` | `int` | `15` | 1 – 120 | Timeout (seconds) configured on the named `HttpClient("CommLinkWebhook")`. |
-| `Arcanum:CommLink:AllowedSchemes` | `string[]` | `["https"]` | — | URI schemes the webhook dispatcher is allowed to call. Defaults to TLS only; add `"http"` explicitly to opt in to plaintext webhooks. Non-matching URLs are skipped with a warning (no HTTP call). |
-| `Arcanum:CommLink:AllowedHosts` | `string[]` | `[]` | — | Optional allowlist of webhook hosts (e.g. `["hooks.example.com"]`). When non-empty, a configured `WebhookUrl` whose host is not listed is rejected at startup. |
+| `Arcanum:CommLink:AllowedSchemes` | `string[]` | `["https"]` | — | URI schemes the webhook dispatcher is allowed to call. |
+| `Arcanum:CommLink:AllowedHosts` | `string[]` | `[]` | — | Optional allowlist of webhook hosts (e.g. `hooks.example.com`). |
 | `Arcanum:Grimoire:MaxMessagesPerConversationLoad` | `int` | `1000` | 50 – 5,000 | Target size of the most-recent entry window `GetSessionAsync` loads (server-side, chronological order). |
 | `Arcanum:Grimoire:WorkspaceContextRetentionCount` | `int` | `10` | 1 – 1,000 | Number of Chronosync `WorkspaceContext` snapshots retained per workspace path; older rows are purged after each new baseline. |
 | `Arcanum:Grimoire:DefaultLoreListLimit` | `int` | `100` | 1 – 10,000 | Default page size for `GET /api/lore` when `limit` is omitted. |
-| `Arcanum:EventBus:ChannelCapacity` | `int` | `256` | 64 – 65,536 | Per-subscriber bounded channel capacity for the in-memory SSE event bus (`IEventBus`). See §8.16. |
+| `Arcanum:EventBus:ChannelCapacity` | `int` | `256` | 64 – 65,536 | Per-subscriber bounded channel capacity for the in-memory SSE event bus (`IEventBus`). |
 | `Arcanum:EventBus:HeartbeatSeconds` | `int` | `30` | 0 – 300 | SSE keep-alive comment interval for `/api/events/*`, session stream, and Chronicle (`0` disables). |
-| `Arcanum:EventBus:MaxSseConnections` | `int` | `50` | 1 – 100 | Global cap on concurrent SSE connections across all streams; excess returns `503` `Api.TooManyConnections` (§8.16). |
-| `Arcanum:EventBus:MaxSseConnectionsPerType` | `int` | `20` | 1 – 50 | Per-event-type cap (daemon, MCP, logs, session, Chronicle) on concurrent SSE connections, enforced in addition to the global cap; guarantees each stream family a fair share of the pool so one greedy client cannot starve the others. See §8.16. |
-| `Arcanum:Logs:RingBufferCapacity` | `int` | `10000` | 1,000 – 100,000 | In-memory log ring buffer capacity. When full, oldest entries are overwritten (§8.16). |
-| `Arcanum:Logs:MinLevelInBuffer` | `LogLevel` | `information` | — | Minimum Serilog level captured into the ring buffer (`trace`, `debug`, `information`, `warning`, `error`, `critical`). Applied in **`SerilogLogRingBufferSink`** only (§8.16). |
-| `Arcanum:Workspaces:MaxFileReadSizeBytes` | `long` | `1048576` | 1 KiB – 10 MiB | Maximum file size (bytes) for **`GET /api/workspaces/{id}/files/contents`** (§8.17). |
+| `Arcanum:EventBus:MaxSseConnections` | `int` | `50` | 1 – 100 | Global cap on concurrent SSE connections across all streams; excess returns `503` `Api.TooManyConnections` |
+| `Arcanum:EventBus:MaxSseConnectionsPerType` | `int` | `20` | 1 – 50 | Per-event-type cap (daemon, MCP, logs, session, Chronicle) on concurrent SSE connections, enforced in addition to the global cap; guarantees each stream family a fair share of the pool so one greedy client cannot starve the others. |
+| `Arcanum:Logs:RingBufferCapacity` | `int` | `10000` | 1,000 – 100,000 | In-memory log ring buffer capacity. |
+| `Arcanum:Logs:MinLevelInBuffer` | `LogLevel` | `information` | — | Minimum Serilog level captured into the ring buffer (`trace`, `debug`, `information`, `warning`, `error`, `critical`). |
+| `Arcanum:Workspaces:MaxFileReadSizeBytes` | `long` | `1048576` | 1 KiB – 10 MiB | Maximum file size (bytes) for **`GET /api/workspaces/{id}/files/contents`** |
 | `Arcanum:Workspaces:ListDirectoryMaxDepth` | `int` | `64` | 1 – 256 | Maximum directory depth for recursive workspace file listing (`GET /api/workspaces/{id}/files?recursive=true`). |
-| `Arcanum:Workspaces:EnableFileWrite` | `bool` | `false` | — | Master toggle for the workspace file write/modify/delete surface (**`PUT`**/**`PATCH`**/**`DELETE .../files`**, **`POST .../files/directory`**). See §8.17. |
-| `Arcanum:Workspaces:MaxFileWriteSizeBytes` | `long` | `1048576` | 1 KiB – 10 MiB | Maximum content size accepted by **`PUT /api/workspaces/{id}/files/contents`** (and the `newString` on **`PATCH .../files/contents`**) (§8.17). |
-| `Arcanum:Workspaces:MaxReplaceTextBlockBytes` | `long` | `524288` | 1 KiB – 4 MiB | Maximum combined size of `oldString` + `newString` on **`PATCH /api/workspaces/{id}/files/contents`** (§8.17). |
-| `Arcanum:Sessions:DefaultQueryLimit` | `int` | `100` | 1 – 10,000 | Default page size for **`GET /api/sessions`** (§11.16). |
-| `Arcanum:Sessions:MaxStreamReplayEntries` | `int` | `500` | 1 – 10,000 | Maximum entries replayed on **`GET /api/sessions/{id}/stream`** connect (most recent N, ascending) (§11.16). |
-| `Arcanum:Sessions:MaxForkDepth` | `int` | `3` | 0 – 20 | Maximum lineage depth for **`POST /api/sessions/{id}/fork`**; exceeding it returns `Session.ForkDepthExceeded` (§11.16.1). |
+| `Arcanum:Workspaces:EnableFileWrite` | `bool` | `false` | — | Master toggle for the workspace file write/modify/delete surface (**`PUT`**/**`PATCH`**/**`DELETE .../files`**, **`POST .../files/directory`**). |
+| `Arcanum:Workspaces:MaxFileWriteSizeBytes` | `long` | `1048576` | 1 KiB – 10 MiB | Maximum content size accepted by **`PUT /api/workspaces/{id}/files/contents`** (and the `newString` on **`PATCH .../files/contents`**) |
+| `Arcanum:Workspaces:MaxReplaceTextBlockBytes` | `long` | `524288` | 1 KiB – 4 MiB | Maximum combined size of `oldString` + `newString` on **`PATCH /api/workspaces/{id}/files/contents`** |
+| `Arcanum:Sessions:DefaultQueryLimit` | `int` | `100` | 1 – 10,000 | Default page size for **`GET /api/sessions`** |
+| `Arcanum:Sessions:MaxStreamReplayEntries` | `int` | `500` | 1 – 10,000 | Maximum entries replayed on **`GET /api/sessions/{id}/stream`** connect (most recent N, ascending) |
+| `Arcanum:Sessions:MaxForkDepth` | `int` | `3` | 0 – 20 | Maximum lineage depth for **`POST /api/sessions/{id}/fork`**; exceeding it returns `Session.ForkDepthExceeded` |
 | `Arcanum:Sessions:AllowMemoryManagement` | `bool` | `false` | — | Master gate for session memory-management endpoints. |
-| `Arcanum:Sessions:MaxPinnedEntries` | `int` | `10` | 0 – 100 | Maximum pinned entries per session. Pinned entries are always included in inference context even when compression would otherwise drop them. Exceeding it returns **409** `Session.TooManyPinned`. |
-| `Arcanum:Security:IdempotencyTtlHours` | `int` | `24` | 1 – 168 | How long a cached `Idempotency-Key` response is replayed before it is treated as expired (§11.17). |
-| `Arcanum:Security:IdempotencyMaxResponseBytes` | `int` | `10,485,760` (10 MiB) | 1 MiB – 100 MiB | Maximum buffered response size cached for an `Idempotency-Key` request; larger responses still stream fully to the client but are never cached (§11.17). |
-| `Arcanum:Security:AllowUnsandboxedToolChildren` | `bool` | `false` | — | When `false` (default), `execute_command` / `run_spell_script` require an OS filesystem jail where one is active for this beta (**macOS** deprecated `/usr/bin/sandbox-exec` Seatbelt). **Linux Landlock / internal `__sandbox-exec` helper is present in-tree but inactive** for this beta — invocations fail closed unless this escape hatch is true. Public denial: *"Linux filesystem jail is not active in this beta. Set Arcanum:Security:AllowUnsandboxedToolChildren=true to run without FS confinement, or use macOS for sandboxed command tools."* Setup failure refuses the tool rather than running unbounded. When `true`, logs a warning (platform, tool, campaign id) and runs without the FS jail (resource limits still apply where available). **Filesystem-only** — does not isolate network. On Windows there is **no FS jail** (health reports **Degraded**); Sanctum `Enabled` + `EnforcePathBoundary` still denies these tools regardless of this flag (escape hatch does not bypass that denial). Surfaced by `arcanum doctor` (Tool Child Sandbox panel) and `GET /api/health` component `ToolChildSandbox`. |
-| `Arcanum:Moderations:Enabled` | `bool` | `false` | — | Gates **`POST /v1/moderations`**; disabled returns **404** `feature_disabled`, enabled returns a pass-through "always unflagged" result (§11.18). |
-| `Arcanum:Files:MaxUploadSizeBytes` | `long` | `536,870,912` (512 MiB) | 1 MiB – 10 GiB | Maximum upload size for **`POST /v1/files`**; exceeding it returns **413** `Files.TooLarge` (§11.20). |
-| `Arcanum:Files:AllowedMimeTypes` | `string[]` | `[]` (all allowed) | — | Optional operator allow-list of declared upload `Content-Type` values for **`POST /v1/files`** (§11.20). |
-| `Arcanum:Batches:MaxConcurrentBatches` | `int` | `3` | 1 – 20 | Maximum `/v1/batches` processed concurrently across the whole server (§11.21). |
-| `Arcanum:Batches:MaxRequestsPerBatch` | `int` | `50,000` | 1 – 1,000,000 | Maximum JSONL request lines accepted from a single batch input file (§11.21). |
-| `Arcanum:Batches:BatchExpiryHours` | `int` | `24` | 1 – 168 | How long a non-terminal batch is allowed to run before being force-expired (§11.21). |
-| `Arcanum:Batches:MaxConcurrentRequestsPerBatch` | `int` | `1` | 1 – 10 | Maximum chat-completion requests run concurrently within a single batch (§11.21). |
+| `Arcanum:Sessions:MaxPinnedEntries` | `int` | `10` | 0 – 100 | Maximum pinned entries per session. |
+| `Arcanum:Security:IdempotencyTtlHours` | `int` | `24` | 1 – 168 | How long a cached `Idempotency-Key` response is replayed before it is treated as expired |
+| `Arcanum:Security:IdempotencyMaxResponseBytes` | `int` | `10,485,760` (10 MiB) | 1 MiB – 100 MiB | Maximum buffered response size cached for an `Idempotency-Key` request; larger responses still stream fully to the client but are never cached |
+| `Arcanum:Security:AllowUnsandboxedToolChildren` | `bool` | `false` | — | When `false`, tool children require OS FS jail where active (macOS Seatbelt); Linux Landlock inactive this beta (fail-closed unless escape hatch); Windows no FS jail (health Degraded). Sanctum path-boundary still denies these tools. Surfaced by `doctor` / health `ToolChildSandbox`. |
+| `Arcanum:Moderations:Enabled` | `bool` | `false` | — | Gates **`POST /v1/moderations`**; disabled returns **404** `feature_disabled`, enabled returns a pass-through "always unflagged" result |
+| `Arcanum:Files:MaxUploadSizeBytes` | `long` | `536,870,912` (512 MiB) | 1 MiB – 10 GiB | Maximum upload size for **`POST /v1/files`**; exceeding it returns **413** `Files.TooLarge` |
+| `Arcanum:Files:AllowedMimeTypes` | `string[]` | `[]` (all allowed) | — | Optional operator allow-list of declared upload `Content-Type` values for **`POST /v1/files`** |
+| `Arcanum:Batches:MaxConcurrentBatches` | `int` | `3` | 1 – 20 | Maximum `/v1/batches` processed concurrently across the whole server |
+| `Arcanum:Batches:MaxRequestsPerBatch` | `int` | `50,000` | 1 – 1,000,000 | Maximum JSONL request lines accepted from a single batch input file |
+| `Arcanum:Batches:BatchExpiryHours` | `int` | `24` | 1 – 168 | How long a non-terminal batch is allowed to run before being force-expired |
+| `Arcanum:Batches:MaxConcurrentRequestsPerBatch` | `int` | `1` | 1 – 10 | Maximum chat-completion requests run concurrently within a single batch |
 | `Arcanum:Sessions:MaxEntriesPerSession` | `int` | `100000` | 100 – 1,000,000 | Maximum entries appended to one session before rejection. |
-| `Arcanum:Sessions:MaxEntryContentBytes` | `int` | `1048576` (1 MiB) | 1 KiB – 16 MiB | Maximum content bytes per entry; also caps stateless `/v1` and ping message content. |
-| `Arcanum:Ward:Enabled` | `bool` | `true` | — | When `true`, **Forbidden Arts** (high-risk tool calls) are gated behind an operator-resolvable ward before execution (§11.14). |
-| `Arcanum:Ward:ForbiddenArts` | `string[]` | `execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `run_spell_script` | — | Tool names that require ward resolution when `Enabled` is `true`. See §11.14. |
+| `Arcanum:Sessions:MaxEntryContentBytes` | `int` | `1048576` (1 MiB) | 1 KiB – 16 MiB | Maximum content bytes per entry; also caps stateless `/v1` and ping message content, and **`POST /api/intelligence/human-response` answer** UTF-8 size (rejected with `Validation.InvalidBody` before `TrySubmitResponse`). |
+| `Arcanum:Ward:Enabled` | `bool` | `true` | — | When `true`, **Forbidden Arts** (high-risk tool calls) are gated behind an operator-resolvable ward before execution |
+| `Arcanum:Ward:ForbiddenArts` | `string[]` | `execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `run_spell_script` | — | Tool names that require ward resolution when `Enabled` is `true`. |
 | `Arcanum:Ward:TimeoutSeconds` | `int` | `120` | 10 – 600 | Max seconds an active ward waits for operator resolution before auto-denying. |
 | `Arcanum:Ward:MaxActiveWards` | `int` | `50` | 1 – 500 | Maximum simultaneously-pending wards before new Forbidden Art requests are auto-denied. |
 | `Arcanum:Ward:AutoDenyInUnattendedMode` | `bool` | `true` | — | When `true` and `PingRequest.UnattendedMode` is `true`, Forbidden Arts are denied immediately without placing a ward (prevents daemon jobs from hanging). |
-| `Arcanum:Ward:UnattendedMode` | `bool` | `false` | — | Default for operator-facing surfaces (Command Center; `ask`/`chat` without `--unattended`). Headless paths (daemons, apprentices, OpenAI-compat, Campaign Logger, etc.) always force unattended and ignore this setting. |
-| `Arcanum:Apprentices:Enabled` | `bool` | `true` | — | When `false`, **`ApprenticeService`** does not start or resume Apprentices (§5.7). |
-| `Arcanum:Apprentices:MaxConcurrentApprentices` | `int` | `5` | 1 – 50 | Maximum Apprentices executing concurrently. Excess starts queue until a slot frees. |
+| `Arcanum:Ward:UnattendedMode` | `bool` | `false` | — | Default for operator-facing surfaces (Command Center; `ask`/`chat` without `--unattended`). |
+| `Arcanum:Apprentices:Enabled` | `bool` | `true` | — | When `false`, **`ApprenticeService`** does not start or resume Apprentices |
+| `Arcanum:Apprentices:MaxConcurrentApprentices` | `int` | `5` | 1 – 50 | Maximum Apprentices executing concurrently. |
 | `Arcanum:Apprentices:StepTimeoutMinutes` | `int` | `30` | 5 – 120 | Per-step execution timeout for **`StreamPromptAsync`**. |
-| `Arcanum:Apprentices:ChronicleChannelCapacity` | `int` | `1000` | 100 – 10,000 | Bounded **`ChronicleHub`** channel capacity per Apprentice. Overflow drops oldest. |
+| `Arcanum:Apprentices:ChronicleChannelCapacity` | `int` | `1000` | 100 – 10,000 | Bounded **`ChronicleHub`** channel capacity per Apprentice. |
 | `Arcanum:Apprentices:MaxStepRetries` | `int` | `2` | 0 – 10 | **Second Wind:** maximum retry attempts per step before escalation or failure. |
 | `Arcanum:Apprentices:RetryBackoffSeconds` | `int` | `5` | 1 – 300 | Base delay (seconds) for exponential backoff between step retries. |
 | `Arcanum:Apprentices:RetryBackoffMaxSeconds` | `int` | `60` | 1 – 3,600 | Maximum backoff delay (seconds) between step retries. |
 | `Arcanum:Apprentices:EnableShiftingFate` | `bool` | `true` | — | When `true`, the **Wizard** evaluates each completed step and may rewrite the pending plan tail (**Shifting Fate**; §5.7). |
-| `Arcanum:Apprentices:EnableDivineIntervention` | `bool` | `true` | — | When `true`, exhausted retries or `petition_dungeon_master` transition the Apprentice to **`Escalated`** instead of **`Failed`** (§5.7). |
-| `Arcanum:Apprentices:MaxSimulacra` | `int` | `3` | 1 – 10 | **Simulacrum:** maximum plan steps flagged `isParallel` executed concurrently within one Apprentice. See §5.7. |
+| `Arcanum:Apprentices:EnableDivineIntervention` | `bool` | `true` | — | When `true`, exhausted retries or `petition_dungeon_master` transition the Apprentice to **`Escalated`** instead of **`Failed`** |
+| `Arcanum:Apprentices:MaxSimulacra` | `int` | `3` | 1 – 10 | **Simulacrum:** maximum plan steps flagged `isParallel` executed concurrently within one Apprentice. |
 | `Arcanum:Apprentices:MaxRunSteps` | `int` | `100` | 1 – 500 | Per-run cap on steps executed in a single **`RunApprenticeAsync`** invocation (counts completed steps in that invocation, including Simulacrum groups). |
 | `Arcanum:Apprentices:MaxRunDurationMinutes` | `int` | `480` | 5 – 10,080 | Per-run wall-clock budget (minutes) for a single execution invocation. |
 | `Arcanum:Apprentices:MaxReweavesPerRun` | `int` | `10` | 0 – 100 | Maximum **Shifting Fate** re-weaves allowed per run invocation (`0` disables further automatic re-weaves after the budget is exhausted). |
 | `Arcanum:Apprentices:MaxPendingStarts` | `int` | `100` | 1 – 1,000 | Bounded queue for Apprentices waiting on a concurrency slot when **`MaxConcurrentApprentices`** is saturated (`Apprentice.PendingQueueFull` when full). |
-| `Arcanum:Codex:MaxSizeBytes` | `long` | `262144` (256 KiB) | 1 KiB – 1 MiB | Maximum `CODEX.md` content size for `PUT /api/codex` and `PUT /api/campaigns/{id}/codex`. Further capped by `Arcanum:Workspaces:MaxFileReadSizeBytes`. |
-| `Arcanum:ProvingGrounds:MaxInquisitorsPerTrial` | `int` | `20` | 1 – 200 | Maximum **Inquisitors** on a single **Trial** submitted to **The Proving Grounds** (§20). |
-| `Arcanum:ProvingGrounds:SemanticJudgeMaxTokens` | `int` | `8` | 1 – 256 | Maximum completion tokens for a **Semantic Inquisitor** FastModel judge call (§20). |
-| `Arcanum:ProvingGrounds:SemanticJudgeTimeoutSeconds` | `int` | `60` | 1 – 600 | Wall-clock timeout (seconds) for a Semantic Inquisitor judge inference call (§20). |
+| `Arcanum:Codex:MaxSizeBytes` | `long` | `262144` (256 KiB) | 1 KiB – 1 MiB | Maximum `CODEX.md` content size for `PUT /api/codex` and `PUT /api/campaigns/{id}/codex`. |
+| `Arcanum:ProvingGrounds:MaxInquisitorsPerTrial` | `int` | `20` | 1 – 200 | Maximum **Inquisitors** on a single **Trial** submitted to **The Proving Grounds** |
+| `Arcanum:ProvingGrounds:SemanticJudgeMaxTokens` | `int` | `8` | 1 – 256 | Maximum completion tokens for a **Semantic Inquisitor** FastModel judge call |
+| `Arcanum:ProvingGrounds:SemanticJudgeTimeoutSeconds` | `int` | `60` | 1 – 600 | Wall-clock timeout (seconds) for a Semantic Inquisitor judge inference call |
 | `Arcanum:Prompts:MaxParameterValueChars` | `int` | `4096` | 256 – 65,536 | Maximum length (chars) of a single prompt parameter value on render/execute. |
-| `Arcanum:Resilience:Enabled` | `bool` | `false` | — | When `true`, `ProviderHealthProbeService` starts periodic provider probing and `ProviderResolver.ResolveCandidates` / the hub's fallback loop become active. See §10.1. |
+| `Arcanum:Resilience:Enabled` | `bool` | `false` | — | When `true`, `ProviderHealthProbeService` starts periodic provider probing and `ProviderResolver.ResolveCandidates` / the hub's fallback loop become active. |
 | `Arcanum:Resilience:HealthProbeIntervalSeconds` | `int` | `30` | 5 – 600 | Interval between health probes for providers currently considered healthy. |
 | `Arcanum:Resilience:HealthRecoveryProbeIntervalSeconds` | `int` | `60` | 5 – 3,600 | Slower interval between health probes for providers currently marked unhealthy, to avoid hammering a down provider. |
 | `Arcanum:Resilience:HealthFailureThreshold` | `int` | `3` | 1 – 100 | Consecutive probe or inference failures before a provider is marked Unhealthy and excluded from fallback candidates. |
 | `Arcanum:Resilience:MaxFallbackAttempts` | `int` | `3` | 1 – 10 | Maximum candidate providers tried per inference turn before giving up. |
 | `Arcanum:Resilience:HealthProbeTimeoutSeconds` | `int` | `5` | 1 – 30 | HTTP timeout for each individual health probe call (`GET /models` for OpenAI-compatible providers). |
-| `Arcanum:Metrics:Enabled` | `bool` | `true` | — | When `true`, `GET /metrics` renders Prometheus text format; when `false`, the endpoint returns `404` (§8.22). |
-| `Arcanum:Metrics:RequireApiKey` | `bool` | `true` | — | When `true` (default), `GET /metrics` is registered with `ApiKeyEndpointFilter` (`X-Arcanum-Key` or `Authorization: Bearer`). Explicit `false` is honored only on a loopback bind; all-interfaces bind forces auth. See §8.22 / §11.3. |
-| `Arcanum:Embeddings:Enabled` | `bool` | `false` | — | Master toggle for RAG (**The Weave** and **Divination**; §21). When `false`, every RAG code path is unchanged from pre-RAG behavior. |
-| `Arcanum:Embeddings:Provider` | `string?` | `null` | — | Provider name (from `Arcanum:Providers`) used to imprint text into The Weave. Required when `Enabled` is `true` (validated at startup). |
-| `Arcanum:Embeddings:Model` | `string?` | `null` | — | Embedding model advertised by the configured provider (e.g. `nomic-embed-text`, `text-embedding-3-small`). Required when `Enabled` is `true`. |
-| `Arcanum:Embeddings:Dimensions` | `int` | `768` | 64 – 4,096 | Expected imprinted vector dimension; must match the model's output. Sizes the vec0 acceleration table schema. Changing this after data exists requires an operator-triggered re-index (§21.2). |
+| `Arcanum:Metrics:Enabled` | `bool` | `true` | — | When `true`, `GET /metrics` renders Prometheus text format; when `false`, the endpoint returns `404` |
+| `Arcanum:Metrics:RequireApiKey` | `bool` | `true` | — | When `true` (default), `GET /metrics` is registered with `ApiKeyEndpointFilter` (`X-Arcanum-Key` or `Authorization: Bearer`). |
+| `Arcanum:Embeddings:Enabled` | `bool` | `false` | — | Master toggle for RAG (**The Weave** and **Divination**; §21). |
+| `Arcanum:Embeddings:Provider` | `string?` | `null` | — | Provider name (from `Arcanum:Providers`) used to imprint text into The Weave. |
+| `Arcanum:Embeddings:Model` | `string?` | `null` | — | Embedding model advertised by the configured provider (e.g. `nomic-embed-text`). |
+| `Arcanum:Embeddings:Dimensions` | `int` | `768` | 64 – 4,096 | Expected imprinted vector dimension; must match the model's output. |
 | `Arcanum:Embeddings:BatchSize` | `int` | `32` | 1 – 256 | Maximum texts imprinted per embedding API call; batches are sent sequentially, not in parallel. |
 | `Arcanum:Embeddings:ChunkSizeChars` | `int` | `1000` | 128 – 8,192 | Maximum characters per chunk when imprinting long documents (naive sliding window; §21.5). |
 | `Arcanum:Embeddings:ChunkOverlapChars` | `int` | `100` | 0 – 1,024 | Overlap in characters between adjacent chunks. |
 | `Arcanum:Embeddings:SimilarityThreshold` | `float` | `0.70` | 0.0 – 1.0 | Minimum cosine similarity for a Divination result to be included. |
 | `Arcanum:Embeddings:MaxResults` | `int` | `5` | 1 – 50 | Default maximum results per Divination call; individual features may override. |
 | `Arcanum:Embeddings:RequestTimeoutSeconds` | `int` | `30` | 5 – 300 | Timeout for a single embedding API call (enforced via a linked `CancellationTokenSource`, independent of provider-native timeout support). |
-| `Arcanum:Embeddings:MaxEmbeddingInputChars` | `int` | `1,000,000` | 1,000 – 10,000,000 | Maximum total UTF-16 character count across all inputs in a single `POST /v1/embeddings` request; exceeding it returns **400** `invalid_request_error`/`invalid_value`. See §8.24. |
-| `Arcanum:Embeddings:SessionSearchEnabled` | `bool` | `false` | — | Phase 2 feature flag: session semantic search (`EntryWeavingService` + `POST /api/sessions/divine`; §21.6). Requires `Enabled` to also be `true` (validated at startup). |
-| `Arcanum:Embeddings:EmbeddingQueueIntervalSeconds` | `int` | `10` | 1 – 300 | Phase 2: interval between `EntryWeavingService` embedding queue processing ticks. Only relevant when `SessionSearchEnabled` is `true`. |
-| `Arcanum:Embeddings:CodebaseRetrievalEnabled` | `bool` | `false` | — | Phase 3 feature flag: semantic codebase retrieval (`WorkspaceIndexingService` + `POST /api/workspaces/{id}/files/divine`; §21.7). Requires `Enabled` to also be `true`. |
+| `Arcanum:Embeddings:MaxEmbeddingInputChars` | `int` | `1,000,000` | 1,000 – 10,000,000 | Maximum total UTF-16 character count across all inputs in a single `POST /v1/embeddings` request; exceeding it returns **400** `invalid_request_error`/`invalid_value`. |
+| `Arcanum:Embeddings:SessionSearchEnabled` | `bool` | `false` | — | Phase 2 feature flag: session semantic search (`EntryWeavingService` + `POST /api/sessions/divine`; §21.6). |
+| `Arcanum:Embeddings:EmbeddingQueueIntervalSeconds` | `int` | `10` | 1 – 300 | Phase 2: interval between `EntryWeavingService` embedding queue processing ticks. |
+| `Arcanum:Embeddings:CodebaseRetrievalEnabled` | `bool` | `false` | — | Phase 3 feature flag: semantic codebase retrieval (`WorkspaceIndexingService` + `POST /api/workspaces/{id}/files/divine`; §21.7). |
 | `Arcanum:Embeddings:Codebase:MaxFilesToIndex` | `int` | `500` | 1 – 10,000 | Phase 3: maximum files embedded per workspace during a single indexing tick. |
 | `Arcanum:Embeddings:Codebase:MaxFileSizeChars` | `int` | `50000` | 1,000 – 500,000 | Phase 3: files larger than this (characters) are skipped during indexing. |
-| `Arcanum:Embeddings:Codebase:FileExtensions` | `string[]` | `[".cs", ".py", ".js", ".ts", ".go", ".rs", ".java", ".md", ".txt", ".json", ".yaml", ".yml"]` | — | Phase 3: file extensions eligible for indexing (case-insensitive). An empty array indexes nothing. |
+| `Arcanum:Embeddings:Codebase:FileExtensions` | `string[]` | `[".cs", ".py", ".js", ".ts", ".go", ".rs", ".java", ".md", ".txt", ".json", ".yaml", ".yml"]` | — | Phase 3: file extensions eligible for indexing (case-insensitive). |
 | `Arcanum:Embeddings:Codebase:IndexingIntervalMinutes` | `int` | `60` | 5 – 1,440 | Phase 3: background re-indexing interval for workspaces with active inference. |
 | `Arcanum:Embeddings:Codebase:MaxRetrievedChunks` | `int` | `5` | 1 – 50 | Phase 3: maximum file chunks injected into the system prompt per inference turn. |
-| `Arcanum:Embeddings:SagaEnabled` | `bool` | `false` | — | Phase 4 feature flag: **Saga**, Arcanum's long-term associative memory (`SagaExtractionService` + `/api/saga/*` + `read_saga`; §21.8). Requires `Enabled` to also be `true`. |
+| `Arcanum:Embeddings:SagaEnabled` | `bool` | `false` | — | Phase 4 feature flag: **Saga**, Arcanum's long-term associative memory (`SagaExtractionService` + `/api/saga/*` + `read_saga`; §21.8). |
 | `Arcanum:Embeddings:Saga:ExtractionEnabled` | `bool` | `true` | — | Phase 4: when `SagaEnabled` is `true`, controls whether the background `SagaExtractionService` runs. |
-| `Arcanum:Embeddings:Saga:MaxMemoriesPerSession` | `int` | `50` | 1 – 1,000 | Phase 4: maximum Saga memories associated with a single session. New extractions for a session at this cap are rejected (logged as a warning). |
-| `Arcanum:Embeddings:Saga:MaxMemoriesTotal` | `int` | `10000` | 100 – 1,000,000 | Phase 4: maximum total Saga memories across all sessions. New extractions are rejected once this cap is reached. |
-| `Arcanum:Embeddings:Saga:ExtractionModel` | `string?` | `null` | — | Phase 4: model used for memory extraction. Falls back to `Arcanum:FastModel`, then `Arcanum:DefaultModel`, when empty. |
+| `Arcanum:Embeddings:Saga:MaxMemoriesPerSession` | `int` | `50` | 1 – 1,000 | Phase 4: maximum Saga memories associated with a single session. |
+| `Arcanum:Embeddings:Saga:MaxMemoriesTotal` | `int` | `10000` | 100 – 1,000,000 | Phase 4: maximum total Saga memories across all sessions. |
+| `Arcanum:Embeddings:Saga:ExtractionModel` | `string?` | `null` | — | Phase 4: model used for memory extraction. |
 | `Arcanum:Embeddings:Saga:ExtractionMaxTokens` | `int` | `500` | 100 – 4,096 | Phase 4: maximum output tokens for the extraction LLM call. |
 | `Arcanum:Embeddings:Saga:ExtractionIntervalMinutes` | `int` | `15` | 1 – 1,440 | Phase 4: interval, in minutes, `SagaExtractionService` is expected to process its extraction queue against — informational; the service itself is event-driven (enqueued after successful inference turns), not polling. |
 | `Arcanum:Embeddings:Saga:ExtractionWindowEntries` | `int` | `10` | 2 – 50 | Phase 4: number of recent Grimoire entries reviewed per extraction call. |
-| `Arcanum:Embeddings:SemanticSpellRoutingEnabled` | `bool` | `false` | — | Phase 5 feature flag: embedding-based spell routing pre-filter (`SemanticSpellRouter`; §21.9); when `false`, the existing LLM-based `SemanticRouter` is unchanged. Requires `Enabled` to also be `true`. |
-| `Arcanum:Embeddings:SpellRoutingHybridMode` | `bool` | `false` | — | Phase 5: when `true` and `SemanticSpellRoutingEnabled` is also `true`, embedding similarity pre-filters the spell catalog to the top `SpellRoutingHybridTopK` candidates before the LLM-based `SemanticRouter` picks from that reduced set (hybrid mode). |
+| `Arcanum:Embeddings:SemanticSpellRoutingEnabled` | `bool` | `false` | — | Phase 5 feature flag: embedding-based spell routing pre-filter (`SemanticSpellRouter`; §21.9); when `false`, the existing LLM-based `SemanticRouter` is unchanged. |
+| `Arcanum:Embeddings:SpellRoutingHybridMode` | `bool` | `false` | — | Phase 5: when `true` and `SemanticSpellRoutingEnabled` is also `true`, embedding similarity pre-filters the spell catalog to the top `SpellRoutingHybridTopK` candidates before the LLM-based `SemanticRouter` picks from. |
 | `Arcanum:Embeddings:SpellRoutingHybridTopK` | `int` | `3` | 1 – 20 | Phase 5: number of top candidates passed to the LLM-based `SemanticRouter` in hybrid mode. |
-| `Arcanum:Scrying:Enabled` | `bool` | `true` | — | **Scrying** (vision/multimodality) master kill-switch (§10.2.4). |
+| `Arcanum:Scrying:Enabled` | `bool` | `true` | — | **Scrying** (vision/multimodality) master kill-switch |
 | `Arcanum:Scrying:MaxImageBytes` | `long` | `1048576` (1 MiB) | 1 KiB – 20 MiB | Maximum bytes per image, measured against the decoded `data:` URI payload (CLI Scrying foci and any inline base64 `image_url`). |
-| `Arcanum:Scrying:MaxImagesPerRequest` | `int` | `10` | 1 – 100 | Maximum images per inference request (native `ScryingFoci` and `/v1` `image_url` parts combined). Exceeding it fails `400` `Scrying.TooManyImages`. |
-| `Arcanum:Scrying:AllowedMimeTypes` | `string[]` | `["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]` | — | Allowed image MIME types. Only enforced for `data:`-URI images (MIME comes from the URI header); not enforced for `http(s)` URLs. Non-matching types fail `400` `Scrying.UnsupportedMimeType`. |
-| `Arcanum:Attachments:Enabled` | `bool` | `true` | — | Master switch for session attachment persistence (host `ISessionAttachmentStore`; §10.2.5). When `false`, new uploads and references are not persisted and the model attach tool is not advertised. |
+| `Arcanum:Scrying:MaxImagesPerRequest` | `int` | `10` | 1 – 100 | Maximum images per inference request (native `ScryingFoci` and `/v1` `image_url` parts combined). |
+| `Arcanum:Scrying:AllowedMimeTypes` | `string[]` | `["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]` | — | Allowed image MIME types. |
+| `Arcanum:Attachments:Enabled` | `bool` | `true` | — | Master switch for session attachment persistence (host `ISessionAttachmentStore`; §10.2.5). |
 | `Arcanum:Attachments:MaxReferencesPerTurn` | `int` | `8` | 1 – 32 | Combined per-turn budget for user `AttachmentReferences` + model `attach_session_file` injections. |
 | `Arcanum:Attachments:MaxVersionsPerLogicalKey` | `int` | `20` | 1 – 100 | Soft version cap per `(session, logicalKey)`; further distinct-byte versions are rejected. |
 | `Arcanum:Attachments:MaxBytesPerSession` | `long` | `268435456` (256 MiB) | 1 MiB – 10 GiB | Soft per-session byte budget across bound attachment files; exceeding it rejects the turn before inference. |
 | `Arcanum:Attachments:PendingRetentionHours` | `int` | `24` | 1 – 168 | Startup GC age for stale `Pending` rows and matching `_pending/{turnId}` directories. |
 | `Arcanum:Attachments:MaxIndexItemsInPrompt` | `int` | `40` | 1 – 200 | Cap on Session Attachments Index lines injected into the system prompt (metadata only). |
 | `Arcanum:Attachments:MaxIndexBytesInPrompt` | `int` | `4096` | 256 – 64,000 | Cap on Session Attachments Index UTF-16 size in the system prompt. |
-| `Arcanum:Attachments:EnableModelAttachTool` | `bool` | `true` | — | When `true` (and `Enabled` + a current session), advertise/run the internal MCP tool `attach_session_file` (§10.2.5). |
-| `Arcanum:WebBrowsing:Enabled` | `bool` | `false` | — | Master toggle for the built-in **`browse_web`** tool (§11.27). |
+| `Arcanum:Attachments:EnableModelAttachTool` | `bool` | `true` | — | When `true` (and `Enabled` + a current session), advertise/run the internal MCP tool `attach_session_file` |
+| `Arcanum:WebBrowsing:Enabled` | `bool` | `false` | — | Master toggle for the built-in **`browse_web`** tool |
 | `Arcanum:WebBrowsing:MaxContentBytes` | `int` | `50000` | 1,000 – 1,000,000 | Hard byte cap on a fetched page's response body read by `browse_web`. |
 | `Arcanum:WebBrowsing:RequestTimeoutSeconds` | `int` | `10` | 1 – 60 | Wall-clock timeout for the named `HttpClient(ArcanumBrowseWeb)` used by `browse_web`. |
 | `Arcanum:WebBrowsing:MaxLinks` | `int` | `10` | 0 – 100 | Maximum absolute `http(s)` links extracted and returned by `browse_web`. |
 | `Arcanum:ClientToolForwarding:Enabled` | `bool` | `false` | — | When `true`, client-supplied `tools` and `tool_choice` on `POST /v1/chat/completions` are forwarded to the resolved provider instead of rejected. |
 | `Arcanum:ClientToolForwarding:MaxClientTools` | `int` | `20` | 1 – 100 | Maximum number of client-supplied tools accepted per `POST /v1/chat/completions` request. |
-| `Arcanum:Guardrails:Enabled` | `bool` | `false` | — | Master toggle for the content guardrails pipeline (§8.27). |
+| `Arcanum:Guardrails:Enabled` | `bool` | `false` | — | Master toggle for the content guardrails pipeline |
 | `Arcanum:Guardrails:DetectPii` | `bool` | `true` | — | When `true` (default), email / phone / SSN / credit-card patterns in input messages are detected via `[GeneratedRegex]` source generators (AOT-clean) and the turn is rejected with `Guardrails.PiiDetected` (HTTP 400) before inference runs. |
-| `Arcanum:Guardrails:BlockToxicity` | `bool` | `false` | — | When `true`, input or output containing any `ToxicityBlocklist` keyword is rejected with `Guardrails.Blocked`. Default `false`; an empty blocklist is a no-op even when this is `true`. |
-| `Arcanum:Guardrails:ToxicityBlocklist` | `string[]` | `[]` | — | Case-insensitive substring blocklist matched against input and output text. Only consulted when `BlockToxicity` is `true`. |
-| `Arcanum:Guardrails:AllowedTopics` | `string[]` | `[]` | — | Optional allow-list of regex patterns. |
-| `Arcanum:Guardrails:BlockedTopics` | `string[]` | `[]` | — | Optional block-list of regex patterns. Input or output matching any pattern is rejected with `Guardrails.Blocked`. Default empty — no topics blocked. |
-| `Arcanum:Guardrails:StreamingMode` | `string` | `"passthrough"` | — | Streaming output-filter mode: `passthrough` (default; real-time tokens, post-hoc filter) or `buffered` (holds tokens until the filter passes, blocking toxic content at the cost of real-time streaming). Ineffective when `Guardrails:Enabled` is `false`. |
-| `Arcanum:Guardrails:AuditLog:Enabled` | `bool` | `false` | — | Master toggle for the persisted guardrails audit log (§8.27). |
+| `Arcanum:Guardrails:BlockToxicity` | `bool` | `false` | — | When `true`, input or output containing any `ToxicityBlocklist` keyword is rejected with `Guardrails.Blocked`. |
+| `Arcanum:Guardrails:ToxicityBlocklist` | `string[]` | `[]` | — | Case-insensitive substring blocklist matched against input and output text. |
+| `Arcanum:Guardrails:AllowedTopics` | `string[]` | `[]` | — | Optional allow-list of regex patterns; non-empty requires input match before inference. |
+| `Arcanum:Guardrails:BlockedTopics` | `string[]` | `[]` | — | Optional block-list of regex patterns. |
+| `Arcanum:Guardrails:StreamingMode` | `string` | `"passthrough"` | — | Streaming output-filter mode: `passthrough` (default; real-time tokens, post-hoc filter) or `buffered` (holds tokens until the filter passes, blocking toxic content at the cost of real-time streaming). |
+| `Arcanum:Guardrails:AuditLog:Enabled` | `bool` | `false` | — | Master toggle for the persisted guardrails audit log |
 | `Arcanum:Guardrails:AuditLog:FilePath` | `string` | `~/.config/arcanum/guardrails.jsonl` | — | Base path; the directory is where dated `guardrails-YYYYMMDD.jsonl` files are written (one per UTC day). |
-| `Arcanum:Guardrails:AuditLog:MaxSizeMb` | `int` | `100` | 10 – 1,000 | Soft per-day-file size cap; further writes for that day are dropped once reached. Reuses the `HostAuditLogMaxSizeMb` clamp bounds. |
-| `Arcanum:Guardrails:AuditLog:RetentionDays` | `int` | `7` | 1 – 365 | Dated log files older than this are deleted automatically. Reuses the `HostAuditLogRetentionDays` clamp bounds. |
+| `Arcanum:Guardrails:AuditLog:MaxSizeMb` | `int` | `100` | 10 – 1,000 | Soft per-day-file size cap; further writes for that day are dropped once reached. |
+| `Arcanum:Guardrails:AuditLog:RetentionDays` | `int` | `7` | 1 – 365 | Dated log files older than this are deleted automatically. |
 | `Arcanum:Pricing:ModelPricing` | `object` | `{}` | — | Dictionary of model-name → `ModelPricingEntry` (`InputPer1M`, `OutputPer1M` in USD per 1M tokens). |
 | `Arcanum:Pricing:DefaultPricing` | `object` | `{ InputPer1M: 0, OutputPer1M: 0 }` | — | Fallback pricing for unmapped models (default free). |
-| `Arcanum:Budget:Enabled` | `bool` | `false` | — | Master toggle for daily budget enforcement. When `false`, no budget checks run and `GET /api/budget` reports `TodaySpendUsd: 0`. |
+| `Arcanum:Budget:Enabled` | `bool` | `false` | — | Master toggle for daily budget enforcement. |
 | `Arcanum:Budget:DailyLimitUsd` | `decimal` | `0` | 0 – 1,000,000 | Maximum daily spend before inference is rejected (HTTP 429). |
 | `Arcanum:Budget:AlertThresholdPercent` | `int` | `80` | 1 – 100 | Percentage of `DailyLimitUsd` at which a Comm Link warning is dispatched (once per threshold per UTC day). |
 | `Arcanum:StructuredOutput:Enabled` | `bool` | `true` | — | Master toggle for JSON Schema validation and retry. |
@@ -316,6 +326,7 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:StructuredOutput:UseProviderConstrainedDecoding` | `bool` | `true` | — | When `true`, injects provider-side constrained decoding (`strict: true` via `OpenAiRequestAugmentingHandler` for OpenAI-compatible providers). |
 | `Arcanum:StructuredOutput:StrictMode` | `bool` | `false` | — | When `true`, schema validation failure returns HTTP 400 instead of best-effort with warning. |
 | `Arcanum:StructuredOutput:SchemaMaxDepth` | `int` | `10` | 1 – 50 | Maximum nesting depth allowed in JSON Schema (prevents pathological schemas). |
+
 **Campaign `SanctumConfigJson` (Grimoire column, not `ArcanumSettings`):** each `Campaign` row stores a JSON `SanctumConfig` blob. When enabled (`Enabled` default `false` for backward compatibility), `SanctumGuard` enforces path boundaries (`AllowedPaths`), network policy (`AllowAll`/`AllowList`/`DenyAll`), and `DisabledTools` at tool-invocation time (§11.15). `ResourceLimits` is split across two enforcement layers:
 
 - **In-process:** `MaxFileWriteMb` enforced on `write_file`/`replace_text_block`; `read_file_chunk` line range capped at 2,000 lines.
@@ -360,74 +371,29 @@ Single-host failure behavior referenced from the settings above:
 
 **Role:** Domain primitives, shared contracts, configuration, security abstractions, and cross-cutting types with **no** ASP.NET Core hosting dependency.
 
-**Namespace areas:**
-
-- **`Primitives/`** — `Error` (readonly record struct), `Result` / `Result<T>` (success/failure with implicit conversions), `ApiResponse<T>` (sealed record wire envelope).
-- **`CommLink/`** — `ICommLinkDispatcher`, `CommLinkMessage` (readonly record struct), `CommLinkSeverity` (string-enum JSON via `[JsonConverter(typeof(JsonStringEnumConverter<CommLinkSeverity>))]`).
-- **`Events/`** — `IEventBus` (`Publish` / `Subscribe`), `ArcanumEvent` (abstract marker; not registered on `ArcanumJsonContext`), `DaemonEvent` / `DaemonEventType` (Unseen Servant lifecycle frames for SSE; `RunId` correlates Started → Completed/Failed; `DurationMilliseconds` on terminal frames).
-- **`Daemons/`** — `DaemonJobStatus`, `DaemonJobInfo`, `DaemonExecutionSummary`, `DaemonExecutionDetail` (registry and execution-history wire types for `/api/daemons` and `/api/executions`).
-- **`Configuration/`** — `ArcanumSettings` (root options; `Providers`, `DefaultModel`, `FastModel`), `ProviderSettings`, `AiProviderKind`, `ProviderResolver`, `CommLinkSettings`, `DaemonSettings` / `UnseenServantJob`, `EventBusSettings`, `ConfigurationBootstrapper` (loads `arcanum.json` + `ARCANUM_` env vars), `ConfigurationValidator`.
-- **`Security/`** — `ISecretStore` (API key read/write contract; concrete implementation in Infrastructure).
-- **`Intelligence/`** — `IArcanumIntelligenceProvider` (`ExecutePromptAsync` returns **`Result<PromptTurnResult>`** with text, optional **`ChatCompletionUsage`**, optional `List<PromptToolCall>`, and `FinishReason`; `StreamPromptAsync`), `PingRequest` (sealed record carrying `Prompt`, optional `StatelessMessages` as `List<CoreChatMessage>` for stateless multi-turn without Grimoire history, model, workspace path, context snapshot, session id, attached files, optional `ChronosyncDelta`, optional `OverrideSpellName` to load a specific spell without semantic routing, optional `SkipSpellRouting` to bypass `SpellScanner` and `SemanticRouter` entirely for internal headless tasks, behavioral flags, **and OpenAI-shaped inference parameters: `Temperature`, `TopP`, `MaxOutputTokens`, `Stop`, `Seed`, `ResponseFormat`, `PresencePenalty`, `FrequencyPenalty`, `User`, `ParallelToolCalls`** — applied by `WizardIntelligenceProvider.ApplyInferenceParameters`), `CoreChatMessage` (`Role`, `Content`, optional `Name`, `ToolCallId`, `ToolCalls` (`CoreToolCall[]`), `ContentParts` (`CoreContentPart[]` for multimodal)), `IntelligenceEvent` / `IntelligenceEventType` (terminal **`result`** includes optional structured **`usage`**; **`toolCall`** and **`toolResult`** carry structured `IntelligenceToolCallEvent` payloads for OpenAI bridges), `IntelligenceStatusMessages` (shared NDJSON **`status`** string literals such as memory compression notice), `AttachedFileDto`, `PromptResponseDto` (envelope payload for `/api/intelligence/ping`).
-- **`Storage/`** — `ArcanumPaths`, POCO entities (`Session`, `Entry`, `MageSetting`, `WorkspaceContext`), `IGrimoireRepository`, `ICampaignLoggerQueue`.
-- **`Chronosync/`** — `ChronosyncReport`, `IChronosyncEngine` (temporal workspace delta vs Grimoire baseline).
-- **`Serialization/`** — Core source-generated JSON contexts: `GrimoireJsonContext` (`PatternSnapshot` and Grimoire column blobs), `ConfigurationJsonContext` (`arcanum.json`), `TheForgeJsonContext` (campaign/spell metadata), All contexts are distinct from the Api `ArcanumJsonContext`.
-- **`Pattern/`** — `IEyeOfTheWorld`, `DomainType`, `PatternSnapshot`.
-- **`Workspace/`** — `IWorkspaceScanner`.
+**Ownership boundaries (namespaces):** `Primitives/` (`Error`, `Result`, `ApiResponse<T>`), `CommLink/`, `Events/` (`IEventBus`, daemon SSE types), `Daemons/` (wire DTOs for `/api/daemons`), `Configuration/` (`ArcanumSettings`, providers, validators, bootstrapper), `Security/` (`ISecretStore` contract), `Intelligence/` (`IArcanumIntelligenceProvider`, `PingRequest`, NDJSON event types), `Storage/` (Grimoire POCOs + `IGrimoireRepository`), `Chronosync/`, `Serialization/` (Core JSON contexts distinct from Api `ArcanumJsonContext`), `Pattern/` (Eye of the World), `Workspace/`.
 
 **MSBuild:** `<IsAotCompatible>true</IsAotCompatible>`.
 
-**Non-goals for Core:** Web types, DI registration extensions that pull in hosting, or HTTP-specific middleware.
+**Non-goals:** Web types, hosting DI extensions, HTTP middleware.
 
 ### 4.2 `RetroDownfall.Arcanum.Infrastructure` (class library)
 
-**Role:** OS-adjacent services — Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, PBKDF2-derived passphrase with a unique per-database salt, compiled model), workspace scanning, Eye of the World, and the **MCP client layer**.
+**Role:** OS-adjacent implementations of Core contracts — Serilog, Data Protection, SQLCipher Grimoire (EF Core 10 + compiled model), workspace scanning, Eye of the World, MCP client layer, Comm Link, Unseen Servant, RAG storage/background writers.
 
-**Project boundary:** This project contains *implementations* of contracts defined in `Core`. Interfaces live in `Core` unless explicitly noted below (e.g., `IUnseenServantPacer`, `IThemeDetector`).
+**Project boundary:** Implementations of Core contracts live here. Interfaces stay in Core unless noted (`IUnseenServantPacer`, `IThemeDetector`).
 
-**MCP architecture (official SDK on the wire, hand-rolled server unchanged):** the client/transport/protocol layer is the **`ModelContextProtocol.Core`** NuGet SDK (v1.4.0) — Arcanum no longer hand-rolls JSON-RPC framing, the `initialize` handshake, or transport plumbing. Arcanum's own code is a thin seam plus the in-process tool server: **`IMcpClient`** (session contract: `InitializeAsync`, `GetToolsAsync`, `CallToolAsync`) has a single implementation, **`SdkMcpClientWrapper`**, which owns an SDK `ModelContextProtocol.Client.McpClient` over a caller-supplied `IClientTransport` — the SDK's own `StdioClientTransport` (subprocess), the SDK's own `HttpClientTransport` (Streamable HTTP), or Arcanum's **`ChannelClientTransport`** (in-process, implementing the SDK's `IClientTransport`/`ITransport` over the existing `Channel<string>` pair). `SdkMcpClientWrapper.GetToolsAsync` manually pages `tools/list` via the SDK's cursor-based `ListToolsAsync(ListToolsRequestParams, ct)` (not the SDK's auto-paginating convenience overload) so Arcanum's `MaxPaginationPages`/`MaxToolsPerServer`/`MaxToolsPerListPage`/`MaxToolsTotalBytes` caps still apply exactly as before, every accepted tool description/schema still bounded by `McpSecurityLimits.BoundToolDescription`/`BoundToolInputSchema`. `McpBridgeTool` is unchanged in shape — it still wraps a tool as an `AIFunction` over `IMcpClient`, still enforces `Arcanum:Intelligence:ToolOutputCapBytes` via `McpToolResultFormatter` (now walking the SDK's typed `CallToolResult`/`ContentBlock` instead of raw `JsonElement`), and still restricts the global fallback to transport/connectivity failures (`IOException`, `ObjectDisposedException`, `HttpRequestException`, `TimeoutException`, `McpTransportUnavailableException` — never a tool-execution error). `ArcanumInternalToolServer` itself — every tool handler, its `initialize`/`tools/list`/`tools/call` dispatch, and its newline-delimited JSON-RPC wire framing via Arcanum's own `McpJsonSerializerContext` — is **unmodified** by the SDK migration (see the cancellation note below for its one net-new addition); the SDK-produced JSON on the wire matches the same JSON-RPC/MCP shape the server already parsed, so no server-side change was needed for the handshake or tool dispatch itself. **`IMcpConnectionManager`** → **`McpConnectionManager`** (singleton) is otherwise unchanged: it loads global `~/.config/arcanum/mcp.json`, tracks per-server lifecycle (§5.6), starts per-partition in-process servers (including a no-workspace sentinel for `ask_human`), merges profile and optional workspace `mcp.json` servers, and returns deduped `McpBridgeTool` instances (local wins on duplicate names). It remains the **transport factory**: `InferTransport` resolves each entry's transport from an explicit `type` (`stdio`/`http`/`sse`), else a configured `url` ⇒ `http`, else `stdio`; `Stdio` builds an SDK `StdioClientTransport`, `Http` builds an SDK `HttpClientTransport` over the SSRF-guarded named `HttpClient("McpHttp")`, and legacy `Sse` remains unsupported (`Mcp.SseNotSupported`). Per-workspace state is stored as **`ConcurrentDictionary<string, Lazy<T>>`** with `LazyThreadSafetyMode.ExecutionAndPublication`, so racing `GetOrAdd` calls never produce an extra `SemaphoreSlim` or partition record that escapes disposal. A shared **`McpClientOptions`** (`McpConnectionManager.BuildMcpClientOptions`) wires one `ElicitationHandler` — bridging any server's standard MCP `elicitation/create` request to **`IHumanPromptRegistry`** (the same channel as `ask_human`) — across every transport, superseding the pre-SDK HTTP-only bespoke "multi-round tool response" extension (`IMcpInputElicitor`), which is removed.
+**MCP (SDK on the wire):** Client/transport uses **`ModelContextProtocol.Core`**; Arcanum owns `IMcpClient` → `SdkMcpClientWrapper`, in-process `ArcanumInternalToolServer` (unchanged handlers/framing), and `IMcpConnectionManager` → `McpConnectionManager` (global + workspace `mcp.json`, caps, trust gate, transport factory). Caps (`MaxPaginationPages` / tools / bytes) and `McpBridgeTool` output/fallback semantics are unchanged. Streamable HTTP via SDK `HttpClientTransport` + SSRF-guarded `HttpClient("McpHttp")`; legacy SSE → `Mcp.SseNotSupported`. Stdio env: strip by default; `inheritEnv` allowlist cannot override absolute denials (`ARCANUM_*`, loader hijacks). Per-request cancel: SDK `notifications/cancelled`; internal server tracks in-flight calls concurrently.
 
-**Streamable HTTP transport (SDK `HttpClientTransport`, stateful):** replaces the pre-SDK bespoke stateless-POST client. The SDK's Streamable HTTP transport tracks an `Mcp-Session-Id` server-side; `SdkMcpClientWrapper` wires `OnTransportEnded` off the SDK client's `Completion` task so a dropped or expired HTTP session reactively flips the entry to `Error` and publishes an `McpServerEvent` — a capability the old stateless implementation never had (each `tools/call` was an independent POST with no persistent session to lose). Multi-round tool responses (the pre-SDK `inputRequired: true` extension) are superseded by the SDK's standard `elicitation/create` support (see above); this is an intentional, sanctioned break from the bespoke protocol in favor of the standards-based one. HTTP 4xx/5xx, connection failures, and per-request timeouts still surface as `McpTransportUnavailableException` (or a raw `IOException`/`HttpRequestException`/`TimeoutException` the SDK itself throws) so `McpBridgeTool` can fall back; JSON-RPC protocol errors (the SDK's `McpProtocolException`) and outbound payload-cap violations propagate unwrapped. Endpoints are still validated before connect (absolute `http`/`https`; plaintext `http` only for hosts in `Arcanum:Mcp:AllowedHttpHosts`) and pinned against loopback/private/link-local egress by `OutboundUrlGuard` (DNS-rebind protection at connect time) via the same SSRF-guarded named `HttpClient("McpHttp")` handed to the SDK transport.
+**In-process MCP tools (canonical list):** `read_file_chunk`, `replace_text_block`, `write_file`, `list_directory`, `execute_command` (no shell; `ArgumentList` only), `ask_human` (streaming attended only), `scribe_lexicon`/`delete_lexicon` (`EnableLexiconSystem`; delete is Forbidden Art), `search_archives`, `send_commlink_alert` (legacy call alias `use_commlink`), `petition_dungeon_master`, `adjust_initiative`, `cast_sending` / `dispatch_sending` (Conclave/A2A gates), `read_saga` (Saga flags), `attach_session_file` (Attachments flags; post-tool content injection). Relative paths only; lexical + symlink-resolved containment.
 
-**Per-server environment inherit:** stdio MCP servers strip the inherited host environment by default (`ShouldStripUserEnvironment`); a per-server **`inheritEnv`** allowlist (e.g. `["PATH","HOME"]`) re-admits named host variables that are **not** on the absolute deny-list (`IsAbsolutelyDeniedEnvironmentVariable` — `ARCANUM_*`, `LD_*`/`DYLD_*`, `DOTNET_STARTUP_HOOKS`, `NODE_OPTIONS`, and other loader/runtime hijacks). Absolute denials cannot be overridden by `inheritEnv` or explicit `cfg.Env`. Soft-blocked variables such as `PATH` may be re-admitted via `inheritEnv` so an `npx`-launched server can locate Node.js and the npm cache. Values explicitly set in the server's `env` win over inherited host values (after absolute-deny filtering). The fully-resolved environment dictionary is handed to the SDK's `StdioClientTransportOptions` with `InheritEnvironmentVariables = false` (the SDK's own env-inherit switch is bypassed entirely; Arcanum's own scrub/allowlist logic is the single source of truth for the child's environment, exactly matching the pre-SDK behavior).
+**Other DI surfaces:** `AddArcanumInfrastructure`, `AddArcanumDaemonServices`, `AddArcanumEyeOfTheWorld`, `AddArcanumThemeDetection`, Grimoire/`Chronosync`/`CampaignLoggerQueue`/`Loremaster`, `InMemoryEventBus`, Comm Link multiplex/webhook.
 
-**Per-request cancellation:** the SDK client dispatches the wire `notifications/cancelled` frame itself when a `CallToolAsync` call's `CancellationToken` fires (for stdio, in-process, and Streamable HTTP alike) — replacing the pre-SDK `McpRequestCancellationBroker`, which correlated ids on the client side before the request was even written. On the receiving end, `ArcanumInternalToolServer` — previously silent on any inbound line with no `id` — now parses `notifications/cancelled` directly off the wire: it tracks each in-flight `tools/call` request id against its own linked `CancellationTokenSource` (`_inFlightToolCalls`), resolves `params.requestId` on a matching notification, and cancels that specific call. This required one structural change to `RunAsync`: inbound lines are now dispatched concurrently (not awaited sequentially) so a `notifications/cancelled` for an in-flight call can be read and processed while that call is still running — a sequential per-line loop could never do this, since it would still be blocked awaiting the very call the notification is meant to cancel. A cancelled call returns a normal tool-error response (not an unhandled `OperationCanceledException`), so the server keeps servicing subsequent requests. **Known limitation, unchanged:** killing a subprocess or channel transport does not send JSON-RPC cancel semantics to an arbitrary third-party server already mid-`tools/call`; only the SDK's own cooperative wire cancellation is exercised, same ceiling as before.
+**RAG ownership:** Weave/Divination schema + managed/vec0 search in Infrastructure (`DivinationService`, `WeaveSchemaInitializer`, `SqliteVecExtensionLoader`); `EmbeddingBlobCodec` in **Core**; `IWeaveService` implemented in **Api** (§21.1). Background: `EntryWeavingService`, `WorkspaceIndexingService`, `SagaExtractionService`/`SagaMemoryStore`. Phase 5: `SpellWeaveCache`.
 
-**In-process MCP tools:**
+**MSBuild:** `IsTrimmable`, `PublishAot` (analysis signal), `EnableConfigurationBindingGenerator`; `FrameworkReference` AspNetCore for hosting abstractions.
 
-| Tool | Purpose |
-|------|---------|
-| `read_file_chunk` | Read a line range from a file under the workspace root. |
-| `replace_text_block` | Replace a verbatim text block in a workspace file. |
-| `write_file` | Create or overwrite a workspace file. |
-| `list_directory` | List filesystem entries (recursive with skip rules; capped by `ListDirectoryMaxPaths`). |
-| `execute_command` | Spawn a process without a shell. Required `command`; arguments accepted as either pre-tokenized `argumentList: string[]` (preferred) or a single `arguments` string the host tokenizes (quoted substrings stay together; whitespace separates tokens). Both forms append to `ProcessStartInfo.ArgumentList` — `ProcessStartInfo.Arguments` is never used. Configurable timeout, `Kill(entireProcessTree: true)` on timeout or cooperative cancel; `CancellationToken.Register` for immediate kill when the linked inference token fires. stdout/stderr capped via `Arcanum:Intelligence:ToolOutputCapBytes`. |
-| `ask_human` | Ask the active operator a question and wait for their response. **Only advertised into the Wizard toolset on streaming attended turns** (`HumanInteractionAvailable`); buffered, unattended, OpenAI `/v1`, Apprentice, and daemon turns strip it. Host reserves a `promptId` before emitting `ToolCall` (model-supplied ids are overwritten). Shares `IHumanPromptRegistry` / reservation ownership with MCP `elicitation/create`. Soft cap: 64 concurrent waiters; 30-minute hard ceiling. Timeout text: *"No operator response was received before the human prompt timed out."* (tool-level failure, not `Hub.Error`). |
-| `scribe_lexicon` / `delete_lexicon` | The **Lexicon** — structured agent-directed entity memory (`lexicon_entries` + FTS5 `lexicon_fts`; §10.6). `scribe_lexicon` upserts a named entity (Name + Type + Facts, case-insensitive, appending non-duplicate facts); `delete_lexicon` removes an entity. Gated by `EnableLexiconSystem`. `delete_lexicon` is a Forbidden Art (Ward confirmation); `scribe_lexicon` is un-gated by default. |
-| `search_archives` | FTS5 `MATCH` over `Entry` rows (gated by `EnableArchiveSearch`). |
-| `send_commlink_alert` | Send a one-way external notification through the configured Comm Link (`title`, `body`, `severity`, optional `source`). Does not wait for or receive a reply. Returns `delivered` / `suppressed` / `failed` (`IsError` only for `failed`). Legacy tools/call alias `use_commlink` is accepted when no advertised tool of that name exists; never listed in `tools/list`. |
-| `petition_dungeon_master` | Escalate autonomous Apprentice work that cannot safely continue (`reason`, optional `source`). Returns immediately with `{ escalationRequested, notificationStatus }` (delivery is informational; never sets `IsError`). Does **not** register a human-prompt waiter. Intended for Apprentice execution — ordinary interactive chat should use `ask_human`. |
-| `adjust_initiative` | Unseen Servant adaptive pacing: a daemon job adjusts its own polling interval at runtime via `IUnseenServantPacer` (§5.5.2). |
-| `cast_sending` | **The Conclave** delegation: an Apprentice mints a child Apprentice. Advertised only when `Arcanum:Conclave:Enabled`; depth/breadth capped by `ConclaveLineage` (§5.7). |
-| `dispatch_sending` | The **Archmage Client**: an Apprentice delegates a Sending to an external A2A agent (`goal`, `agent_url`, optional `name`); blocks until the remote agent responds. Advertised only when `Arcanum:Conclave:Enabled && A2A:Enabled && A2A:ClientEnabled` (§5.7.1). |
-| `read_saga` | RAG Phase 4 — semantic search over **Saga** (long-term associative memory), gated by `Embeddings:Enabled && Embeddings:SagaEnabled`. Read-only: no `scribe_saga`/`delete_saga` counterpart (§21.8). |
-| `attach_session_file` | Re-attach a **bound** session attachment into the next inference round (`logicalName`, optional `version`). Internal MCP (not a hub-native built-in — **honors Artifact Attunement**). Advertised only when `Arcanum:Attachments:Enabled` + `EnableModelAttachTool` and a current session exists. Successful calls inject `TextContent` / `DataContent` via a dedicated post-tool path — not a text-only tool result (§10.2.5). |
-
-All file/directory tools require **relative paths** under the partition workspace root; rooted paths and escapes are rejected. Containment is checked **both lexically** (case-insensitive on Windows) **and after symlink resolution** via `File.ResolveLinkTarget` / `Directory.ResolveLinkTarget` (`returnFinalTarget: true`) — a symlink planted inside the workspace whose final target leaves the workspace is rejected. `ArcanumSpellScriptTool` applies the same check before invoking a spell script. Lexicon, archive, and Saga tools resolve their scoped services (`ILexiconService`, `IGrimoireRepository`, `ISagaMemoryStore`) via `IServiceScopeFactory` per call.
-
-**Other key types:** `AddArcanumInfrastructure` (DI extension wiring all infrastructure services). Interfaces defined in this project: **`IUnseenServantPacer`** (Unseen Servant interval overrides), **`IThemeDetector`**, plus the Core contracts **`IEventBus`** and **`ICommLinkDispatcher`** are implemented here as **`InMemoryEventBus`** (per-type **`ScryingPool<T>`** bounded fan-out, `DropOldest`) and **`CommLinkMultiplexer`** over **`WebhookCommLinkDispatcher`**, named **`HttpClient("CommLinkWebhook")`** with timeout from `Arcanum:CommLink:WebhookTimeoutSeconds` and a `ConfigurePrimaryHttpMessageHandler` that disables `AllowAutoRedirect`, and Infrastructure-local **`CommLinkInfrastructureJsonContext`** for outbound webhook JSON. `AddArcanumDaemonServices` (`UnseenServantService` — §5.5), `AddArcanumEyeOfTheWorld` (narrow registration for perception only), `AddArcanumThemeDetection` (registers `IThemeDetector` → `ThemeDetector`: Windows `AppsUseLightTheme` registry read with `[UnconditionalSuppressMessage("AOT","IL3050")]`, macOS CoreFoundation `CFPreferencesCopyAppValue` for `AppleInterfaceStyle` with `IntPtr`/`CFRelease` string marshalling, Linux `GTK_THEME` / `COLORFGBG` heuristics, dark fallback on failure), `LoggingBootstrapper`, `DataProtectionSecretStore`, `ArcanumMasterKeyBootstrapper`, `GrimoireKeyDerivation`, `ArcanumDbContext` (compiled model), `GrimoireRepository`, `ChronosyncEngine`, `GrimoireDatabaseHostedService`, `CampaignLoggerQueue` / `Loremaster` (formerly `CampaignLoggerBackgroundService`), `PhysicalWorkspaceScanner`, `EyeOfTheWorldService`, `CodexReader` (cascades global + local `CODEX.md`), `SpellScanner` (discovers `SPELL.md` files with YAML frontmatter, no YamlDotNet).
-
-**MSBuild:** `IsTrimmable`, `PublishAot` (library signal for IL analysis), `EnableConfigurationBindingGenerator`. Also carries `<FrameworkReference Include="Microsoft.AspNetCore.App" />` for hosting abstractions used by DI, hosted services, and HTTP client configuration.
-
-**RAG Phase 1 — The Weave (§21):** `IDivinationService` → `DivinationService` (scoped; semantic search over The Weave, with a managed cosine fallback when sqlite-vec is unavailable), `WeaveIndexAvailability` (singleton flag), `SqliteVecExtensionLoader`, and `WeaveSchemaInitializer` (idempotent bootstrap schema creation), all under `RetroDownfall.Arcanum.Infrastructure.Weave`. **`EmbeddingBlobCodec`** (little-endian `float32[]` BLOB codec + SIMD cosine similarity) lives in **Core** (`RetroDownfall.Arcanum.Core.Primitives`, `public`) rather than Infrastructure — it is a pure, dependency-free numeric utility shared by Infrastructure (Weave/Divination storage), Api (`SemanticSpellRouter`, and `POST /v1/embeddings`'s `base64` `encoding_format`, §8.24), with no `InternalsVisibleTo` needed. `IWeaveService` (imprinting) is defined in Core but implemented in **Api** — see §21.1 for why.
-
-**RAG Phase 2/3 — background writers (`RetroDownfall.Arcanum.Infrastructure.Hosting`):** `EntryWeavingService` (Phase 2; `BackgroundService`, idle-when-disabled, imprints not-yet-embedded Grimoire entries into `entry_embeddings`/`entry_embeddings_vec` on a `Arcanum:Embeddings:EmbeddingQueueIntervalSeconds` interval — §21.6) and `WorkspaceIndexingService` (Phase 3; `BackgroundService` + `IWorkspaceIndexingService`, idle-when-disabled, chunks/embeds/persists changed workspace files into `workspace_file_chunks`/`workspace_file_embeddings`/`workspace_file_embeddings_vec` on a `Arcanum:Embeddings:Codebase:IndexingIntervalMinutes` interval, plus an on-demand `IndexNowAsync` used by the manual re-index endpoint — §21.7).
-
-**RAG Phase 4 — Saga (§21.8):** `ISagaMemoryStore` → `SagaMemoryStore` (`RetroDownfall.Arcanum.Infrastructure.Data`, scoped raw-SQL persistence for `saga_memories`/`saga_memory_embeddings`/`saga_memory_embeddings_vec`/`saga_extraction_watermarks`, mirroring `UnseenServantWatermarkStore`/`SanctumBreachRepository`) and `SagaExtractionService` (`RetroDownfall.Arcanum.Infrastructure.Hosting`, singleton + `BackgroundService`, registered singleton-plus-hosted-factory like `WorkspaceIndexingService` so the hub can inject it and call `EnqueueExtraction`; event-driven bounded-channel consumer, not polling).
-
-**RAG Phase 5 — semantic spell routing (§21.9, `RetroDownfall.Arcanum.Infrastructure.Weave`):** `SpellWeaveCache` (singleton; caches spell description imprints keyed by spell name, re-embedding the catalog only on change, under a lock to prevent concurrent double-embeds).
-
-**Non-goals for Infrastructure:** Minimal API route mapping or OpenAPI.
+**Non-goals:** Minimal API route mapping or OpenAPI.
 
 ### 4.3 `RetroDownfall.Arcanum.Api` (class library, not executable)
 
@@ -439,9 +405,9 @@ All file/directory tools require **relative paths** under the partition workspac
 
 **API surface (`MapArcanumEndpoints`):**
 
-| Verb | Path | Purpose |
-|------|------|---------|
-| GET | `/metrics` | Prometheus text-format metrics (§8.22). Canonical path outside `/api`/`/v1`; API key required by default (`X-Arcanum-Key` or `Authorization: Bearer`); gated by `Arcanum:Metrics:Enabled`/`RequireApiKey`. |
+| Method | Path | Contract/purpose |
+|--------|------|-----------------|
+| GET | `/metrics` | Prometheus text-format metrics. |
 | GET | `/api/health` | Health check. |
 | GET | `/api/meta` | Instance metadata and feature flags for sidecar discovery (`ApiResponse<InstanceMetadataDto>`). |
 | GET | `/api/budget` | Daily budget snapshot (`ApiResponse<BudgetSummaryDto>`: enabled, daily limit, today's spend, remaining, spent percent, alert threshold; §22.2). |
@@ -452,8 +418,8 @@ All file/directory tools require **relative paths** under the partition workspac
 | GET | `/api/models` | Flatten configured models across all providers (`ApiResponse<ModelInfoDto[]>`; endpoint redacted as `"***"`; read-only, no connectivity checks; §8.12). |
 | GET | `/api/providers` | List configured providers with `apiKey`/`endpoint` redacted (`ApiResponse<ProviderInfoDto[]>`; read-only; §8.12). |
 | GET | `/api/perception/look` | Eye of the World snapshot (optional `directory` query; requires `Arcanum:Perception:AllowedWorkspaceRoots`; **403** when unset). |
-| POST | `/api/intelligence/ping` | Buffered inference. See §11.17. |
-| POST | `/api/intelligence/ping-stream` | NDJSON streaming inference (same `PingRequest` extensions as buffered ping). Supports optional `Idempotency-Key` replay (§11.17). |
+| POST | `/api/intelligence/ping` | Buffered inference. |
+| POST | `/api/intelligence/ping-stream` | NDJSON streaming inference (same `PingRequest` extensions as buffered ping). |
 | POST | `/api/intelligence/human-response` | Submit human-in-the-loop answer. |
 | POST | `/api/intelligence/arsenal` | Spell names, metadata-only `SpellSummary[]`, native tools, and MCP server status. |
 | POST | `/api/intelligence/mana` | Read-only diagnostic Mana (token) counter (`ApiResponse<ManaCountResult>`; body `ManaCountRequest` { `messages`, `prompt`, `model`, `tools` }). |
@@ -464,32 +430,32 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/mcp/{name}/restart` | Restart one MCP server (`ApiResponse<bool>`); optional `workingDirectory` query. |
 | POST | `/api/mcp/trust-workspace` | Approve a workspace-local `mcp.json` for auto-start (`ApiResponse<bool>`; body `{ "workingDirectory": "..." }`; §5.6). |
 | POST | `/api/mcp/reload` | Reload MCP connections (global nuclear reload — §5.6). |
-| POST | `/api/mcp/tools/invoke` | **Diagnostic MCP Invocation** — policy-constrained direct invoke of an **external** MCP tool by an operator (`ApiResponse<McpToolInvokeResponse>`; body `McpToolInvokeRequest` { `toolName`, `arguments` (JSON), optional `serverName`, optional `workingDirectory` }; §11.28). External MCP tools only; the internal `arcanum-internal` server and all Forbidden Arts are blocked. **403** `Mcp.DiagnosticBlocked`; **404** `Mcp.ServerNotFound` / `Mcp.ToolNotFound`; **400** `Mcp.ServerNotRunning` / `Mcp.AmbiguousTool` / `Mcp.ToolError`; **504** `Mcp.DiagnosticTimeout`. |
+| POST | `/api/mcp/tools/invoke` | **Diagnostic MCP Invocation** — policy-constrained direct invoke of an **external** MCP tool by an operator (`ApiResponse<McpToolInvokeResponse>`. |
 | GET | `/api/sessions` | Search/list Grimoire sessions (`ApiResponse<SessionQueryResult>`; §11.16). |
 | POST | `/api/sessions` | Create session (`ApiResponse<SessionDetailDto>`; **201**). |
 | GET | `/api/sessions/analytics` | Session analytics (`ApiResponse<SessionAnalytics>`; §11.16). |
 | GET | `/api/sessions/{id}` | Session metadata (`ApiResponse<SessionDetailDto>`; **404** when missing). |
-| GET | `/api/sessions/{id}/entries` | Entry history (`ApiResponse<EntryDto[]>`; optional `offset`, `limit`, keyset cursor params `beforeCreatedAt`, `beforeId`, and `?countOnly=true` to return `ApiResponse<SessionEntryCountDto>` instead of entries). |
+| GET | `/api/sessions/{id}/entries` | Entry history (`ApiResponse<EntryDto[]>`; optional `offset`, `limit`, keyset cursor params `beforeCreatedAt`, `beforeId`, and `?countOnly=true` to. |
 | POST | `/api/sessions/{id}/entries` | Append entry manually (**404** / **400**; publishes live SSE). |
 | PATCH | `/api/sessions/{id}` | Update title or status. |
 | DELETE | `/api/sessions/{id}` | Archive session (**204**; soft delete). |
 | GET | `/api/sessions/{id}/export` | Export JSON or Markdown (`ApiResponse<SessionExportResult>`). |
 | POST | `/api/sessions/{id}/rest` | Enqueue Campaign Log consolidation (**202** + `ApiResponse<bool>` when accepted; **503** + `Session.RestQueueFull` when the bounded queue rejects). |
-| GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream (§11.16). Optional `?since={entryId}` skips bounded replay and resumes after that entry. |
+| GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream. |
 | GET | `/api/sessions/{id}/attachments` | List **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes `RelativePath` for Reveal; §10.2.5). |
 | POST | `/api/sessions/{id}/fork` | Create an independent branch of a session, optionally truncated at `upToEntryId` (**201**; §11.16.1). |
-| POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga`, default `all`; `ApiResponse<EmbeddingsResetResult>`; §21.5). Unknown `scope` values are rejected with **400** `Validation.InvalidBody` instead of silently defaulting to `all`. |
-| DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry from a session (**204**). Gated by `Arcanum:Sessions:AllowMemoryManagement` (**400** `Session.MemoryManagementDisabled` when `false`). **404** `Session.EntryNotFound` when the entry is missing. |
-| POST | `/api/sessions/{id}/entries/{entryId}/pin` | Pin an entry so it is always included in inference context, even when compression would otherwise drop it. Gated by `Arcanum:Sessions:AllowMemoryManagement` (**400** `Session.MemoryManagementDisabled` when `false`). **409** `Session.TooManyPinned` when pinning would exceed `Arcanum:Sessions:MaxPinnedEntries`. **404** `Session.EntryNotFound` when the entry is missing. |
-| DELETE | `/api/sessions/{id}/entries/{entryId}/pin` | Unpin a previously pinned entry. Gated by `Arcanum:Sessions:AllowMemoryManagement` (**400** `Session.MemoryManagementDisabled` when `false`). **404** `Session.EntryNotFound` when the entry is missing. |
-| POST | `/api/sessions/{id}/compact` | Manually compress session context by deleting the oldest non-pinned entries until the token count is below the effective threshold. Returns `ApiResponse<CompactResult>` { `tokensBefore`, `tokensAfter`, `entriesRemoved` }. Gated by `Arcanum:Sessions:AllowMemoryManagement` (**400** `Session.MemoryManagementDisabled` when `false`). **404** `Session.NotFound` when the session is missing. |
-| POST | `/api/sessions/divine` | RAG Phase 2 — semantic search over Grimoire entries embedded by `EntryWeavingService` (`ApiResponse<SemanticSearchResult>`; body `SemanticSearchRequest` { `query`, `campaignId`, `status`, `limit` }; **503** `Embeddings.FeatureDisabled` when `Arcanum:Embeddings:Enabled`/`SessionSearchEnabled` are not both `true`; **400** `Validation.InvalidBody` on empty query; **503** `Embeddings.ProviderUnavailable`; §21.6). |
+| POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga`, default. |
+| DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry from a session (**204**). |
+| POST | `/api/sessions/{id}/entries/{entryId}/pin` | Pin an entry so it is always included in inference context, even when compression would otherwise drop it. |
+| DELETE | `/api/sessions/{id}/entries/{entryId}/pin` | Unpin a previously pinned entry. |
+| POST | `/api/sessions/{id}/compact` | Manually compress session context by deleting the oldest non-pinned entries until the token count is below the effective threshold. |
+| POST | `/api/sessions/divine` | RAG Phase 2 — semantic search over Grimoire entries embedded by `EntryWeavingService` (`ApiResponse<SemanticSearchResult>`; body. |
 | GET | `/api/lore` | List lore entries (`ApiResponse<ListPageResult<LoreDto>>`; paginated — optional `?limit=` (default `Arcanum:Grimoire:DefaultLoreListLimit`), `?offset=`). |
 | GET | `/api/lore/{key}` | Get lore by key. |
 | POST | `/api/lore` | Upsert lore entry. |
 | DELETE | `/api/lore/{key}` | Delete lore entry. |
-| GET | `/api/saga` | RAG Phase 4 — paginated listing of Saga memories (`ApiResponse<SagaMemoryDto[]>`; optional `?q=` substring, `?sessionId=`, `?limit=` [1–10,000, default 100], `?offset=`; not gated on `SagaEnabled` — always reflects existing memories; §21.8). |
-| POST | `/api/saga/divine` | RAG Phase 4 — semantic search over Saga memories (`ApiResponse<SagaSearchResult>`; body `SagaSearchRequest` { `query`, `limit` }; **503** `Embeddings.FeatureDisabled`; **400** `Validation.InvalidBody`; **503** `Embeddings.ProviderUnavailable`; **500** `Saga.SearchFailed`; §21.8). |
+| GET | `/api/saga` | RAG Phase 4 — paginated listing of Saga memories (`ApiResponse<SagaMemoryDto[]>`; optional `?q=` substring, `?sessionId=`, `?limit=` [1–10,000. |
+| POST | `/api/saga/divine` | RAG Phase 4 — semantic search over Saga memories (`ApiResponse<SagaSearchResult>`; body `SagaSearchRequest` { `query`, `limit` }; **503**. |
 | DELETE | `/api/saga/{id}` | RAG Phase 4 — delete a single Saga memory (**204**; **404** `Saga.NotFound`; §21.8). |
 | DELETE | `/api/saga` | RAG Phase 4 — delete every Saga memory, embedding, and extraction watermark (**204**; requires `?confirm=true`, else **400** `Saga.NotEmpty`; §21.8). |
 | GET | `/api/saga/stats` | RAG Phase 4 — aggregate Saga memory summary (`ApiResponse<SagaStats>`: total count, session count, oldest/newest `CreatedAt`; §21.8). |
@@ -504,13 +470,13 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/spells/import` | Import spell into workspace (`ApiResponse<SpellSummary>`; **400** `Spell.NameCollision`; §8.14). |
 | POST | `/api/spells/{name}/execute` | Forced-spell buffered inference (`ApiResponse<PromptResponseDto>`; body `SpellExecuteRequest`; optional `?workspace=`, `?version=` (string label); **404** `Spell.NotFound`; §19). |
 | POST | `/api/spells/{name}/execute-stream` | Forced-spell NDJSON streaming inference (same request/query as execute; §19). |
-| GET | `/api/spells/{name}/versions` | List `SPELL.md` (active row) and `SPELL.v{label}.md` files (`ApiResponse<SpellVersionDto[]>`; **string** `version` label, `isActive` flag; optional `?workspace=`, `?campaignId=`; §8.14, §19). See §8.14. |
-| GET | `/api/spells/{name}/versions/{version}` | Read a spell version's editable body (`ApiResponse<SpellVersionDetailDto>`; optional `?workspace=`, `?campaignId=`; use version `(active)` for `SPELL.md`; **404** when the version does not exist; §8.14). |
-| POST | `/api/spells/{name}/versions` | Create a new spell version file (`ApiResponse<SpellVersionDto>`; body `CreateSpellVersionRequest` { `version`, `body`, `workspace` }; **201**; **400** `Spell.InvalidVersion` / `Spell.DuplicateVersion` / `Spell.BuiltinReadOnly`; §8.14). |
+| GET | `/api/spells/{name}/versions` | List `SPELL.md` (active row) and `SPELL.v{label}.md` files (`ApiResponse<SpellVersionDto[]>`; **string** `version` label, `isActive` flag; optional. |
+| GET | `/api/spells/{name}/versions/{version}` | Read a spell version's editable body (`ApiResponse<SpellVersionDetailDto>`; optional `?workspace=`, `?campaignId=`; use version `(active)` for. |
+| POST | `/api/spells/{name}/versions` | Create a new spell version file (`ApiResponse<SpellVersionDto>`; body `CreateSpellVersionRequest` { `version`, `body`, `workspace` }; **201**. |
 | PUT | `/api/spells/{name}/versions/{version}` | Overwrite an existing version's body, preserving frontmatter (`ApiResponse<SpellVersionDto>`; body `UpdateSpellVersionRequest`; **404** when the version does not exist; §8.14). |
-| POST | `/api/spells/{name}/versions/{version}/activate` | Activate a version, swapping its content into `SPELL.md` and preserving the prior active content as `SPELL.v{previousLabel}.md` (`ApiResponse<SpellVersionDto>` with `previousVersion` set; §8.14). |
-| POST | `/api/spells/{name}/clone` | Clone a spell (built-in or workspace) into a new workspace spell (`ApiResponse<SpellSummary>`; body `CloneSpellRequest` { `newName`, `workspace` }; **201** + `Location`; **400** `Spell.NameCollision` / `Spell.InvalidName` / `Spell.BuiltinReadOnly`; **404** when source missing; §8.14). |
-| POST | `/api/spells/{name}/cast` | Dry-run cast preview: assembled system prompt, resonant dependencies, attuned tools, and spell scripts, **without** LLM inference (`ApiResponse<SpellCastResult>`; body `SpellCastRequest` { `workspace`, `sessionId`, `campaignId` }; **404** `Spell.NotFound`; **400** `Spell.NoWorkspace`; §8.14, §10.2.2). See §8.14. |
+| POST | `/api/spells/{name}/versions/{version}/activate` | Activate a version, swapping its content into `SPELL.md` and preserving the prior active content as `SPELL.v{previousLabel}.md`. |
+| POST | `/api/spells/{name}/clone` | Clone a spell (built-in or workspace) into a new workspace spell (`ApiResponse<SpellSummary>`; body `CloneSpellRequest` { `newName`, `workspace` }. |
+| POST | `/api/spells/{name}/cast` | Dry-run cast preview: assembled system prompt, resonant dependencies, attuned tools, and spell scripts, **without** LLM inference. |
 | GET | `/api/campaigns` | List Grimoire-backed campaigns (`ApiResponse<ListPageResult<CampaignDto>>`; optional `?type=`; §19). |
 | GET | `/api/campaigns/by-path` | Lookup campaign by filesystem path (`ApiResponse<CampaignDto>`; required `?path=`; **404** `Campaign.NotFound`; §19). |
 | GET | `/api/campaigns/{id}` | Campaign detail (`ApiResponse<CampaignDto>`; **404** when missing; §19). |
@@ -528,12 +494,12 @@ All file/directory tools require **relative paths** under the partition workspac
 | GET | `/api/codex` | Read global `~/.config/arcanum/CODEX.md` (`ApiResponse<CodexContentDto>`; §19). |
 | PUT | `/api/codex` | Create or overwrite global CODEX (`ApiResponse<CodexContentDto>`; §19). |
 | DELETE | `/api/codex` | Delete global CODEX (**204**; §19). |
-| GET | `/api/campaigns/{campaignId}/sanctum` | Campaign Sanctum config (`ApiResponse<SanctumConfig>`; default `Enabled: false`; §11.15). **404** `Campaign.NotFound`. |
-| PUT | `/api/campaigns/{campaignId}/sanctum` | Update Sanctum config (`ApiResponse<SanctumConfig>`; body `SanctumConfig`). **400** `Sanctum.InvalidConfig`. **404** `Campaign.NotFound`. |
-| GET | `/api/campaigns/{campaignId}/sanctum/breaches` | Paginated Sanctum breach history (`ApiResponse<SanctumBreachQueryResult>`; `?limit=` default 100 clamp 1–1,000, `?before=` ISO 8601 cursor, `?tool=` filter). See §11.15. |
+| GET | `/api/campaigns/{campaignId}/sanctum` | Campaign Sanctum config (`ApiResponse<SanctumConfig>`; default `Enabled: false`; §11.15). |
+| PUT | `/api/campaigns/{campaignId}/sanctum` | Update Sanctum config (`ApiResponse<SanctumConfig>`; body `SanctumConfig`). |
+| GET | `/api/campaigns/{campaignId}/sanctum/breaches` | Paginated Sanctum breach history (`ApiResponse<SanctumBreachQueryResult>`; `?limit=` default 100 clamp 1–1,000, `?before=` ISO 8601 cursor, `?tool=` filter). |
 | GET | `/api/wards` | List active wards (`ApiResponse<WardDto[]>`; §11.14). |
 | GET | `/api/wards/{id}` | Active ward detail (`ApiResponse<WardDto>`; **404** `Ward.NotFound`). |
-| POST | `/api/wards/{id}` | Resolve a ward (`ResolveWardRequest`: `allow`, optional `reason`); returns `ApiResponse<WardResolutionDto>`. **404** `Ward.NotFound`. **409** `Ward.AlreadyResolved` (§11.14). |
+| POST | `/api/wards/{id}` | Resolve a ward (`ResolveWardRequest`: `allow`, optional `reason`); returns `ApiResponse<WardResolutionDto>`. |
 | GET | `/api/prompts` | List/search prompts (`ApiResponse<ListPageResult<PromptSummaryDto>>`; `?campaignId=`, `?q=`, `?tag=`; §19). |
 | GET | `/api/prompts/{id}` | Prompt detail (`ApiResponse<PromptDetailDto>`; **404** `Prompt.NotFound`; §19). |
 | GET | `/api/prompts/by-name/{name}/versions` | List versions for a prompt name (`ApiResponse<PromptVersionDto[]>`; optional `?campaignId=`; §19). |
@@ -543,10 +509,10 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/prompts/{id}/render` | Render template with parameters (`ApiResponse<PromptRenderResultDto>`; **400** `Prompt.MissingParameter` / `Prompt.UnknownParameter`; §19). |
 | POST | `/api/prompts/{id}/test` | Assemble system prompt without LLM (`ApiResponse<PromptTestResultDto>`; §19). |
 | POST | `/api/prompts/{id}/execute` | Render template and run session-backed inference (`ApiResponse<PromptResponseDto>`; body `PromptExecuteRequest`; honors `sessionId`; §19). |
-| POST | `/api/prompts/{id}/execute-stream` | Same as execute with NDJSON `IntelligenceEvent` stream (§19). |
+| POST | `/api/prompts/{id}/execute-stream` | Same as execute with NDJSON `IntelligenceEvent` stream. |
 | POST | `/api/prompts/{id}/export` | Portable prompt JSON (`ApiResponse<PromptExportDto>`; §19). |
 | POST | `/api/prompts/import` | Import prompt (`ApiResponse<PromptSummaryDto>`; §19). |
-| POST | `/api/prompts/{id}/clone` | Clone a prompt to a new name/version, optionally overriding the campaign scope (`ApiResponse<PromptDetailDto>`; body `ClonePromptRequest` { `newName`, `newVersion`, `campaignId` }; **201** + `Location`; **400** `Prompt.DuplicateVersion`; **404** `Prompt.NotFound`; §19). |
+| POST | `/api/prompts/{id}/clone` | Clone a prompt to a new name/version, optionally overriding the campaign scope (`ApiResponse<PromptDetailDto>`; body `ClonePromptRequest` {. |
 | GET | `/api/apprentices` | List Apprentices (`ApiResponse<ListPageResult<ApprenticeSummaryDto>>`; optional `?campaignId=`, `?status=`, `?limit=`, `?beforeUpdatedAt=`; §19.6). |
 | GET | `/api/apprentices/{id}` | Apprentice detail (`ApiResponse<ApprenticeDetailDto>`; **404** `Apprentice.NotFound`; §19.6). |
 | POST | `/api/apprentices` | Create Apprentice (`ApiResponse<ApprenticeDetailDto>`; **201** + `Location`; §19.6). |
@@ -557,10 +523,10 @@ All file/directory tools require **relative paths** under the partition workspac
 | POST | `/api/apprentices/{id}/cancel` | Cancel execution (**202**; §5.7). |
 | POST | `/api/apprentices/{id}/reweave` | Replace pending plan steps (`ApiResponse<ApprenticeDetailDto>`; **400** `Apprentice.InvalidPlan`; **409** `Apprentice.CannotReweave`; §5.7). |
 | POST | `/api/apprentices/{id}/intervene` | Resolve **Escalated** Apprentice with DM guidance (**202**; **409** `Apprentice.NotEscalated`; §5.7). |
-| POST | `/api/apprentices/{id}/cast` | **The Conclave** cross-Apprentice delegation: mint a child Apprentice from a parent (`ApiResponse<ApprenticeDetailDto>`; **201**; gated by `Arcanum:Conclave:Enabled`, else **403** `Apprentice.ConclaveDisabled`; depth/breadth caps via `ConclaveLineage`; §5.7, §19.6). See §5.7. |
+| POST | `/api/apprentices/{id}/cast` | **The Conclave** cross-Apprentice delegation: mint a child Apprentice from a parent (`ApiResponse<ApprenticeDetailDto>`; **201**; gated by. |
 | GET | `/api/apprentices/{id}/chronicle` | Chronicle SSE stream (`text/event-stream`; §5.7, §19.6). |
-| — | `/api/conclave/a2a/*` | A2A (Agent-to-Agent) JSON-RPC surface (`MapA2A`), mapped only when `Arcanum:Conclave:Enabled && A2A:Enabled && A2A:ServerEnabled`; `ApiKeyEndpointFilter` applies like every route above (§5.7.1). |
-| GET | `/api/conclave/a2a/agent-card` | Authenticated A2A Agent Card ("Heraldry") — not the public, unauthenticated `/.well-known/agent-card.json` convention (§5.7.1). |
+| — | `/api/conclave/a2a/*` | A2A (Agent-to-Agent) JSON-RPC surface (`MapA2A`), mapped only when `Arcanum:Conclave:Enabled && A2A:Enabled && A2A:ServerEnabled`. |
+| GET | `/api/conclave/a2a/agent-card` | Authenticated A2A Agent Card ("Heraldry") — not the public, unauthenticated `/.well-known/agent-card.json` convention. |
 | GET | `/api/workspaces` | List registered workspaces (`ApiResponse<WorkspaceInfo[]>`; §8.17). |
 | GET | `/api/workspaces/{id}` | Workspace metadata (`ApiResponse<WorkspaceInfo>`; **404** when missing). |
 | POST | `/api/workspaces` | Register a workspace directory (`ApiResponse<WorkspaceInfo>`; **201** with `Location`; **400** validation). |
@@ -569,15 +535,15 @@ All file/directory tools require **relative paths** under the partition workspac
 | GET | `/api/workspaces/{id}/files` | List files in a registered workspace (`ApiResponse<FileListResult>`; optional `relativePath`, `recursive`, `searchPattern`; §8.17). |
 | GET | `/api/workspaces/{id}/files/info` | File or directory metadata (`ApiResponse<FileEntry>`; optional `relativePath`; §8.17). |
 | GET | `/api/workspaces/{id}/files/contents` | Read file contents as UTF-8 text (`ApiResponse<FileReadResult>`; required `relativePath`; §8.17). |
-| HEAD | `/api/workspaces/{id}/files/contents` | Size/freshness check for a file. Sets `Content-Length` (size in bytes) and `Last-Modified` headers; **200** with empty body on success, **404** when workspace or file is missing, **400** for directory/disallowed paths. |
-| PUT | `/api/workspaces/{id}/files/contents` | Create or overwrite a file (`ApiResponse<FileWriteResult>`; **200**; required `relativePath`; gated by `Arcanum:Workspaces:EnableFileWrite`, else **403** `Workspace.FileWriteDisabled`; §8.17). |
+| HEAD | `/api/workspaces/{id}/files/contents` | Size/freshness check for a file. |
+| PUT | `/api/workspaces/{id}/files/contents` | Create or overwrite a file (`ApiResponse<FileWriteResult>`; **200**; required `relativePath`; gated by `Arcanum:Workspaces:EnableFileWrite`, else. |
 | PATCH | `/api/workspaces/{id}/files/contents` | Replace a verbatim text block in an existing file (`ApiResponse<TextBlockReplaceResult>`; **200**; required `relativePath`; §8.17). |
 | DELETE | `/api/workspaces/{id}/files` | Delete a file or directory (`ApiResponse<FileDeleteResult>`; **200**; required `relativePath`; optional `recursive`; §8.17). |
 | POST | `/api/workspaces/{id}/files/directory` | Create a directory, including parents (`ApiResponse<DirectoryCreateResult>`; **201**; required `relativePath`; §8.17). |
-| POST | `/api/workspaces/{id}/files/divine` | RAG Phase 3 — semantic search over a workspace's indexed files (`ApiResponse<WorkspaceSearchResult[]>`; body `WorkspaceSemanticSearchRequest` { `query`, `limit` }; **503** `Embeddings.FeatureDisabled`; **404** `Workspace.NotFound`; **400** `Validation.InvalidBody`; **503** `Embeddings.ProviderUnavailable`; §21.7). |
-| POST | `/api/workspaces/{id}/files/index` | RAG Phase 3 — kick off an immediate background re-index of the workspace via `WorkspaceIndexingService.IndexNowAsync` (`ApiResponse<bool>`; **202** on acceptance, not awaited inline; **503** `Embeddings.FeatureDisabled`; **404** `Workspace.NotFound`; §21.7). |
-| GET | `/api/workspaces/{id}/files/index/status` | RAG Phase 7 — read-only indexing status for a workspace (`ApiResponse<WorkspaceIndexStatusDto>`: vector mode/diagnostic, `IndexingEnabled`, total indexed files/chunks, oldest/newest `IndexedAt`, stored embedding dimensions, honest skipped-files note; **404** `Workspace.NotFound`; never triggers indexing; §21.7). |
-| GET | `/api/workspaces/{id}/files/chunks` | RAG Phase 7 — bounded, paginated chunk previews for a workspace (`ApiResponse<WorkspaceFileChunkPage>`; optional `relativePath` filter, clamped `limit` (1–200, default 50) / `offset`; `ContentPreview` hard-capped to 500 chars, full chunk text never returned; **404** `Workspace.NotFound`; **400** `Workspace.PathTraversal` for rooted/`..` `relativePath`; §21.7). |
+| POST | `/api/workspaces/{id}/files/divine` | RAG Phase 3 — semantic search over a workspace's indexed files (`ApiResponse<WorkspaceSearchResult[]>`; body `WorkspaceSemanticSearchRequest` {. |
+| POST | `/api/workspaces/{id}/files/index` | RAG Phase 3 — kick off an immediate background re-index of the workspace via `WorkspaceIndexingService.IndexNowAsync` (`ApiResponse<bool>`; **202**. |
+| GET | `/api/workspaces/{id}/files/index/status` | RAG Phase 7 — read-only indexing status for a workspace (`ApiResponse<WorkspaceIndexStatusDto>`: vector mode/diagnostic, `IndexingEnabled`, total. |
+| GET | `/api/workspaces/{id}/files/chunks` | RAG Phase 7 — bounded, paginated chunk previews for a workspace (`ApiResponse<WorkspaceFileChunkPage>`; optional `relativePath` filter, clamped. |
 | GET | `/api/unseen-servant/jobs` | List Unseen Servant jobs with base and effective polling intervals (**canonical** Unseen Servant pacer API; §8.15). |
 | POST | `/api/unseen-servant/jobs/{name}/initiative` | Set adaptive initiative (dynamic interval) for a job by name; returns updated status. |
 | GET | `/api/daemon/jobs` | **Deprecated alias** of `GET /api/unseen-servant/jobs` (singular `daemon` retained for compatibility). |
@@ -591,30 +557,29 @@ All file/directory tools require **relative paths** under the partition workspac
 | GET | `/api/logs` | Paginated in-memory log query (`ApiResponse<LogQueryResult>`; optional `minLevel`, `category`, `from`, `to`, `search`, `limit`, `beforeSequence`; §8.16). |
 | GET | `/api/audit` | Persisted inference audit log query (`ApiResponse<InferenceAuditRecord[]>`; optional `from`, `to`, `model`, `sessionId`, `limit`; §8.26). |
 | GET | `/api/guardrails/audit` | Persisted guardrails violation audit log query (`ApiResponse<GuardrailAuditRecord[]>`; optional `from`, `to`, `stage`, `violationType`, `sessionId`, `limit`; §8.27). |
-| GET | `/api/events/daemon` | SSE stream of `DaemonEvent` frames (daemon job lifecycle for scheduled and on-demand runs); **not** wrapped in `ApiResponse<T>` (§8.11). |
-| GET | `/api/events/mcp` | SSE stream of `McpServerEvent` frames (MCP server lifecycle); **not** wrapped in `ApiResponse<T>` (§8.13). |
-| GET | `/api/events/logs` | SSE stream of `LogEntry` frames (live log tail from ring buffer); **not** wrapped in `ApiResponse<T>` (§8.16). |
+| GET | `/api/events/daemon` | SSE stream of `DaemonEvent` frames (daemon job lifecycle for scheduled and on-demand runs); **not** wrapped in `ApiResponse<T>`. |
+| GET | `/api/events/mcp` | SSE stream of `McpServerEvent` frames (MCP server lifecycle); **not** wrapped in `ApiResponse<T>`. |
+| GET | `/api/events/logs` | SSE stream of `LogEntry` frames (live log tail from ring buffer); **not** wrapped in `ApiResponse<T>`. |
 | POST | `/api/commlink/send` | Dispatch a **Comm Link** alert (`CommLinkMessageRequestDto`); **200** + `ApiResponse<bool>`; **400** validation; **502** + envelope on webhook HTTP failure. |
 | POST | `/api/tools/invoke` | Diagnostic built-in tool invocation (`ApiResponse<ToolInvokeResponse>`; §11.27). |
 | POST | `/api/providers/test` | Read-only provider connectivity probe (`ApiResponse<ProviderTestResult>`; body `endpoint`, optional `apiKey`, `type` = `OpenAICompatible`; does not write `arcanum.json`; §19). |
 | POST | `/api/proving-grounds/trials/run` | Run an ephemeral **Trial** through **The Proving Grounds** (`Trial` body → `ApiResponse<TrialResult>`; §20). |
-| POST | `/v1/chat/completions` | OpenAI-compatible chat (JSON or SSE); **not** wrapped in `ApiResponse<T>`. See §8.8. |
-| POST | `/v1/embeddings` | OpenAI-compatible embeddings (§8.24); **not** wrapped in `ApiResponse<T>`. See §8.24. |
-| POST | `/v1/moderations` | OpenAI-compatible moderation (§11.18); pass-through stub, always unflagged. **404** `feature_disabled` unless `Arcanum:Moderations:Enabled` is `true`. |
-| POST | `/v1/images/{generations,edits,variations}` | Always **501** `not_supported` — not implemented yet (§11.19). |
-| POST | `/v1/audio/{transcriptions,translations,speech}` | Always **501** `not_supported` — not implemented yet (§11.19). |
-| POST | `/v1/files` | Upload standalone file storage, `multipart/form-data` (§11.20); **201** + `OpenAiFileObject`. |
-| GET | `/v1/files` | List uploaded files, optional `?purpose=` filter (§11.20). |
-| GET | `/v1/files/{id}` | File metadata; **404** for unknown/malformed id (§11.20). |
-| DELETE | `/v1/files/{id}` | Deletes metadata row + on-disk bytes (§11.20). |
-| GET | `/v1/files/{id}/content` | Raw bytes; always `Content-Disposition: attachment` (§11.20). |
-| POST | `/v1/batches` | Create an async bulk chat-completion job over an uploaded JSONL file (§11.21); **200** + `OpenAiBatchObject`, `status: "validating"`. |
-| GET | `/v1/batches` | List batches, optional `?status=` filter (§11.21). |
-| GET | `/v1/batches/{id}` | Batch status + `request_counts`; **404** for unknown/malformed id (§11.21). |
-| POST | `/v1/batches/{id}/cancel` | Idempotent cancel; stops in-flight processing within ~2s (§11.21). |
+| POST | `/v1/chat/completions` | OpenAI-compatible chat (JSON or SSE); **not** wrapped in `ApiResponse<T>`. |
+| POST | `/v1/embeddings` | OpenAI-compatible embeddings; **not** wrapped in `ApiResponse<T>`. |
+| POST | `/v1/moderations` | OpenAI-compatible moderation; pass-through stub, always unflagged. |
+| POST | `/v1/images/{generations,edits,variations}` | Always **501** `not_supported` — not implemented yet. |
+| POST | `/v1/audio/{transcriptions,translations,speech}` | Always **501** `not_supported` — not implemented yet. |
+| POST | `/v1/files` | Upload standalone file storage, `multipart/form-data`; **201** + `OpenAiFileObject`. |
+| GET | `/v1/files` | List uploaded files, optional `?purpose=` filter. |
+| GET | `/v1/files/{id}` | File metadata; **404** for unknown/malformed id. |
+| DELETE | `/v1/files/{id}` | Deletes metadata row + on-disk bytes. |
+| GET | `/v1/files/{id}/content` | Raw bytes; always `Content-Disposition: attachment`. |
+| POST | `/v1/batches` | Create an async bulk chat-completion job over an uploaded JSONL file; **200** + `OpenAiBatchObject`, `status: "validating"`. |
+| GET | `/v1/batches` | List batches, optional `?status=` filter. |
+| GET | `/v1/batches/{id}` | Batch status + `request_counts`; **404** for unknown/malformed id. |
+| POST | `/v1/batches/{id}/cancel` | Idempotent cancel; stops in-flight processing within ~2s. |
 | POST | `/v1/batches/{id}/reset` | Reset a stuck `in_progress` batch back to `validating` (input file must still exist on disk; **409** if currently in-flight; **200** `OpenAiBatchObject`; §11.21). |
 | GET | `/v1/models` | OpenAI-compatible models list (flattened configured models across providers via the same `ModelInfoBuilder` that backs `GET /api/models`); **not** wrapped in `ApiResponse<T>`. |
-
 **JSON wire shape (`/api` and shared primitives):** JSON endpoints under `/api` use the `ApiResponse<T>` envelope (`Data`, `IsSuccess`, `Error`, `TraceId`) except for these non-envelope routes:
 
 | Route | Wire format | Section |
@@ -642,7 +607,8 @@ Envelope-payload specifics:
 
 The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (section 11), including the OpenAPI document and Scalar reference UI on `/api` (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need a valid API key like any other `/api` caller).
 
-**Key types:** `ApiBootstrapper` (`AddArcanumApiServices` / `MapArcanumEndpoints`), `WizardIntelligenceProvider` (§10), `IChatClientFactory` / `ChatClientFactory` (§10), `ProviderResolver` (`Core.Configuration`), `SemanticRouter` (§10.2.2), `ArcanumLocalTimeTool` / `ArcanumSystemInfoTool` / `ArcanumSpellScriptTool` (sealed `AIFunction` subclasses with static `JsonDocument` schemas; `ArcanumLocalTimeTool`, `ArcanumSystemInfoTool`, and `ArcanumSpellScriptTool` expose `public const string ToolName`; tool ids use snake_case — `get_local_system_time`, `get_arcanum_system_info`, `run_spell_script`), `ApiKeyEndpointFilter` (§11), `ConfigurationRedactor` (§3.5), `InferenceTokenizerResolver` (§10.4), `SystemPromptBuilder` (§10.5), `ManaPreflight` / `IManaMeter` / `ManaMeter` (§10.4), `IContextCompressionService` / `ContextCompressionService` / `CompactResult` (§10.2.3), `ArcanumJsonContext` (§8.2). **RAG Phase 1 — The Weave (§21):** `IEmbeddingGeneratorFactory` / `EmbeddingGeneratorFactory` / `EmbeddingGeneratorLease` (mirrors `IChatClientFactory` / `ChatClientFactory` / `ChatClientLease`) and `WeaveService` (implements the Core `IWeaveService` contract; lives here rather than Infrastructure because it depends on `IEmbeddingGeneratorFactory` — see §21.1). **RAG Phase 5 — semantic spell routing (§21.9):** `SemanticSpellRouter` (scoped; `ResolveAsync` — the sole call site `WizardIntelligenceProvider.ResolveRoutedSpellAsync` now uses instead of calling `SemanticRouter` directly) and `SpellRoutingDecision`/`SpellRoutingDecisionMode`.
+**Composition roots:** `ApiBootstrapper`, `WizardIntelligenceProvider`, `ChatClientFactory`, filters/endpoints under `MapArcanumEndpoints`; Weave/`SemanticSpellRouter` live here (§10, §21).
+
 
 **MSBuild:** `IsAotCompatible`, `EnableRequestDelegateGenerator` (essential for Minimal API endpoints in a referenced class library), `EnableConfigurationBindingGenerator`.
 
@@ -691,7 +657,8 @@ The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (section 11)
 
 **CLI exit codes:** `ask` returns `0` on success, `1` on empty prompt / flag-parse / stream / API error, and **`130`** when an in-flight turn is cancelled (Ctrl+C). `chat` returns `0` normally and `1` if any turn failed during the session; an in-turn Ctrl+C cancels the current turn and returns to the `Mage >` prompt (it does **not** exit `130`). **Command Center** returns `0` on clean `/exit`/`/quit`, bare non-interactive usage, or `ARCANUM_NO_COMMAND_CENTER=1`; returns `1` when the terminal is too small after TG Init or TG bootstrap fails. `apprentice chronicle` returns `130` on Ctrl+C. `trial run` returns `1` when the Trial fails (`TrialResult.Passed == false`), separate from HTTP/validation failures. Other non-streaming verbs return `0` on success and `1` on failure.
 
-**Key types:** `ArcanumApiClient` (wraps `IHttpClientFactory` + `ISecretStore`; handles NDJSON streaming, session management, lore, MCP list/reload / arsenal, **Unseen Servant daemon HTTP** (`GetDaemonJobsAsync`, `AdjustDaemonJobInitiativeAsync`), **Comm Link** (`SendCommLinkAlertAsync`), **The Forge** (campaign/spell/prompt/apprentice CRUD + execute), **Ward** (`GetWardsAsync`, `ResolveWardAsync`), **The Proving Grounds** (`RunTrialAsync`), the Apprentice **Chronicle** SSE consumer (`StreamApprenticeChronicleAsync`, yielding `ChronicleFrame`), and other `/api` operations via `ArcanumJsonContext`; inference-backed calls (`spell execute`, `prompt execute`, `trial run`) route through the unbounded streaming `HttpClient` rather than the 60s-bounded request client), `CliArgReader` (shared `@filename`-or-inline and `key=value` parsing helpers), `CliSessionManager` (writes `cli-session.txt` via temp-file + atomic rename; warns once if the on-disk content is not a parseable GUID), `IThemePalette` / `ConfiguredThemePalette` (Spectre colors from `Arcanum:Cli:ThemeColors`; `IThemePalette` extension methods for markup), `MarkdigSpectreRenderer` (AOT-safe AST walker — no reflection, no `Markdig.Renderers.*`), `CliApplicationFactory` (builds the ConsoleAppFramework command tree and DI container; `RunAsync` is the shared entrypoint for both `Program.Main` and the CLI test harness; empty interactive argv opens `ICommandCenterHost`, not `chat`), `RepeatableOptionMerger` (rewrites repeated occurrences of a repeatable flag, e.g. `--tag a --tag b`, into ConsoleAppFramework's native JSON-array argument syntax before parsing, since CAF's own array binding otherwise overwrites rather than accumulates repeats and mis-splits any single value containing a comma), **`ICliEnvironment`** / `CliEnvironment` (TTY + NO_COLOR detection used to gate mana bar, interactive prompts, Spectre ANSI, and Command Center **theme** — not whether the TUI starts), **`InferenceFlagBinder`** (parses `--temperature` / `--top-p` / `--max-tokens` / `--seed` / `--stop` / `--response-format` / `--presence-penalty` / `--frequency-penalty` from `ask` + `chat` method parameters into nullable `PingRequest` values), **`IArcanumServeLauncher`** / `ArcanumServeLauncher` (CLI-local auto-start of `arcanum serve` for interactive sessions; authenticated health probe via `ArcanumHealthProbe`; spawn seam `IServeProcessLauncher`; never auto-acks ListenAny; never deletes the canonical PID file on health failure), **`ArcanumBannerRenderer`** / **`ChatLayoutRenderer`** / **`StatusBarRenderer`** / **`McpReadoutPanel`** (Spectre.Console UX for the chat REPL), **`ICommandCenterHost`** / **`CommandCenterHost`** / **`CommandCenterApp`** / **`CommandCenterWindow`** / **`SessionLogBuffer`** / **`ShellCommandParser`** / **`ShellCommandDispatcher`** / **`CommandCenterChatRunner`** (Terminal.Gui Command Center; sole allowed TG AOT suppressions live on `CommandCenterApp.CreateAndInit`, verified by `./scripts/verify-aot-il-warnings.sh`).
+**Composition:** `ArcanumApiClient`, CAF command tree (`CliApplicationFactory`), theme/Spectre UX, Command Center (`Cli/CommandCenter/`), `IArcanumServeLauncher`. Discover verbs in `Cli/Commands/`.
+
 
 ### 4.4.1 Auto-launch serve lifecycle
 
@@ -713,13 +680,8 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 
 ### 4.6 `RetroDownfall.Compendium.Ux` (.NET 10 Avalonia desktop configuration editor)
 
-**Compendium** is an Avalonia desktop GUI that reads, edits, and writes `arcanum.json` — the visual editor for the §3.4 configuration table. It is strictly a configuration editor: it does **not** run inference, manage the daemon, open the Grimoire, or execute MCP tools.
+Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only; local Data Protection mirror for `dp:v1:` secrets + HTTPS cert password. `SettingDescriptor` table drives controls/clamps; parity + coverage tests guard drift. See [`Compendium.README.md`](Compendium.README.md).
 
-**Project references:** `RetroDownfall.Arcanum.Core` only. It reuses `ArcanumSettings` + every nested record, `ConfigurationJsonContext` (source-gen), `ArcanumPaths`, `ArcanumSettingClamps`, and `ConfigurationValidator` verbatim — no duplicated domain models. A thin `ArcanumDataProtectionSecretProtector` re-implements the provider-secret interop locally (so Compendium does not reference Infrastructure/Serilog/EF Core/SQLCipher): `SetApplicationName("ArcanumCore")` + purpose `Arcanum.Configuration.ProviderSecrets` + key ring at `ArcanumPaths.GrimoireDirectory/keys`, matching `src/RetroDownfall.Arcanum.Infrastructure/Security/ConfigurationSecretProtector.cs` and `DataProtectionKeyPaths.cs`. Compendium decrypts `dp:v1:` provider API keys and **`Host.Https.CertificatePassword`** on read and re-encrypts on write, so the file stays usable by both Arcanum and Compendium. The Host section can **Generate local certificate** — a self-signed localhost PFX under `~/.config/arcanum/certs/` (loopback SANs only; not installed into the OS trust store).
-
-**Metadata-driven UI.** A single `SettingDescriptor` table (`src/RetroDownfall.Compendium.Ux/Models/SettingDescriptors.cs`) pairs every setting with a label, description, kind (string/int/long/float/bool/enum/string-array/path/secret/color/dictionary), clamp bounds (copied from `ArcanumSettingClamps`), and enum type. Reusable controls (`LabeledEntry`, `LabeledStepper`, `LabeledToggle`, `ChipsEditor`, `LabeledPicker`, `LabeledColorEntry`) bind to descriptors so every field gets a description, a validated range, and the correct control (dropdown for enums, live swatch for CLI theme colors). Validation errors from `ConfigurationValidator` (keyed by their dot-path `Pointer`, e.g. `mcp.requestTimeoutSeconds`) are routed back to the offending field via `ConfigurationViewModel.ValidationErrorsByPointer`. Dynamic theming uses Avalonia FluentTheme plus VS Fluent Dark/Light brushes in `ThemeDictionaries`, with `RequestedThemeVariant=Default` so the chrome follows the OS light/dark preference (best-effort on Linux). Fourteen polished section views are hand-authored; remaining domains use a grouped `GenericSettingsSectionView` driven by `SettingDescriptors`.
-
-**Tests.** `SettingDescriptorParityTests` asserts every numeric descriptor's `Min`/`Max` match the corresponding `ArcanumSettingClamps.*` method (drift guard). `SettingDescriptorCoverageTests` reflects over `ArcanumSettings` and asserts every leaf `init` property has a descriptor (coverage guard). Both live in `tests/RetroDownfall.Compendium.Tests/` (assembly name `RetroDownfall.Compendium.Ux.Tests`). See [`docs/Compendium.README.md`](Compendium.README.md) for build/run instructions and the path-resolution discipline that keeps the `Services/` layer Avalonia/Linux-portable.
 
 ---
 
@@ -737,11 +699,7 @@ One binary; the CLI verb selects the process role (per-command detail in §4.4).
 
 ### 5.2 Why ConsoleAppFramework
 
-**Decision:** Use ConsoleAppFramework v5 for command parsing and dispatch; Spectre.Console remains for all rendering (tables, panels, trees, bar charts, markup, `AnsiConsole`) and is untouched.
-
-**Reasons:** Source-generated at compile time (Rust-macro style — the generator analyzes each command method and emits the actual parsing/dispatch code body, not a runtime interpreter), so there is zero reflection and zero runtime type discovery. This gives the fastest possible cold start for short-lived verbs (`ask`, `look`, `doctor`) and, critically, makes the CLI layer genuinely Native-AOT-clean: no `[DynamicDependency]`, no `<TrimmerRootAssembly>`, no `IL3050`/trim-warning suppression anywhere in the parsing path. Command classes use plain constructor injection (public methods become commands via `app.Add<T>("path")`), and `--help`/aliases/defaults are derived from method signatures and XML doc comments rather than attribute-decorated `Settings` classes — a smaller, more direct mapping from CLI surface to C# code. Deliberately keeps parsing (ConsoleAppFramework) and rendering (Spectre.Console) as two independent concerns: this migration changed only the former.
-
-**Tradeoff:** ConsoleAppFramework's array-option binding treats a repeated flag (`--tag a --tag b`) by overwriting rather than accumulating, and falls back to naive comma-splitting for any non-JSON-bracketed value — which would silently corrupt a single-occurrence value containing a comma (e.g. inline JSON passed to `trial run --inquisitor`). `RepeatableOptionMerger` (§4.4) rewrites every occurrence of a known repeatable flag into CAF's native JSON-array syntax before parsing, so every pre-migration invocation continues to work unchanged. Some option names that were hand-authored with a differing camelCase spelling under Spectre.Console.Cli (e.g. `--campaignId`, `--sessionId`) are preserved via an explicit XML-doc-comment alias alongside ConsoleAppFramework's auto-kebab-case default (e.g. `--campaign-id`); both spellings work.
+Source-generated parsing (AOT-clean, no reflection). Spectre remains for rendering. `RepeatableOptionMerger` rewrites repeated flags into CAF JSON-array syntax; XML-doc aliases preserve legacy camelCase option spellings.
 
 ### 5.3 `ServeCommand` lifecycle
 
@@ -795,51 +753,25 @@ The **Unseen Servant** is a proactive background scheduler for headless inferenc
 
 #### 5.5.1 Schedule and execution
 
-**Schedule:** A **`PeriodicTimer`** ticks every **one minute**. For each configured **`UnseenServantJob`** under `Arcanum:Daemon:Jobs`, the service checks the effective interval in minutes (see §5.5.2; clamped via **`ArcanumSettingClamps.UnseenServantIntervalMinutes`**) against an in-memory **`ConcurrentDictionary`** of last completion times, held by **`IUnseenServantJobTracker`**. Watermarks are persisted to the Grimoire and hydrated on scheduler startup (see §5.5.5) — cold starts no longer treat every enabled job as immediately due.
-
-**Execution:** Due jobs are dispatched with **`Task.Run`** so long inference does not block the timer loop. A per-key **`_runningJobs`** guard prevents overlapping runs for the same job. Each run creates a **new DI scope** (`IServiceScopeFactory.CreateAsyncScope`), resolves **`IArcanumIntelligenceProvider`**, and calls **`ExecutePromptAsync`** with **`UnattendedMode: true`**, **`OverrideSpellName`** set from `targetSpell`, and **`WorkingDirectory`** empty so **`SpellScanner`** discovers global spells under `~/.config/arcanum/spells/`. The kickoff is **either** a stateless multiline prompt (effective interval plus **`use_commlink`** escalation instructions; §5.5.4) **when** **`Intelligence.EnableLoreSystem`** is **`false`**, **or** a lore-aware prompt built with a **raw interpolated string literal** (**`$"""`**): job name, interval, injected **Previous State** from Grimoire, instructions to use **`scribe_lore`** on **`daemon_state_{job.Name}`**, and the same **`use_commlink`** escalation block when lore is enabled. When lore is enabled, the same scope resolves **`IGrimoireRepository`** and **`GetLoreAsync`** is wrapped in **`try`/`catch`** — failures log a warning and run with null prior state so scheduling is not skipped. The host **`stoppingToken`** is passed through to **`ExecutePromptAsync`** so shutdown cancels in-flight work. A **`finally`** block always records **`lastRun`** and clears the running guard so a failing job (for example Ollama unreachable) does not tight-loop every minute.
-
-**Shutdown:** Each dispatched `Task.Run` is registered in a process-wide `_activeJobTasks` `ConcurrentDictionary<Guid, Task>` and removed in its own `finally`. `UnseenServantService.StopAsync` snapshots that dictionary and awaits `Task.WhenAll` with a bounded `CancellationTokenSource` set from **`Arcanum:Daemon:ShutdownDrainTimeoutSeconds`** (default 10 s; `0` disables waiting); jobs that exceed the window are logged but not force-killed beyond the `stoppingToken` cooperative cancel already plumbed into `ExecutePromptAsync`. `RunJobAsync` retains its comprehensive `catch`/`finally` so unobserved exceptions do not leak. The outer scheduler loop is wrapped in try/catch — a single tick exception is logged and the loop continues to the next minute instead of faulting the hosted service.
-
-**Concurrency cap:** **`Arcanum:Daemon:MaxConcurrentJobs`** (default `8`; clamp 1–1024) caps the count of jobs in flight at any moment. When the cap is reached on a tick, additional due jobs are deferred (logged at Debug level) and re-evaluated on the next tick — so a configuration with twenty enabled jobs that all become due simultaneously will not overwhelm the LLM backend.
-
-**Spell selection:** When **`PingRequest.OverrideSpellName`** is set, **`WizardIntelligenceProvider`** resolves the spell by frontmatter **`name`** or parent folder name (same convention as spell discovery) and **skips** the **`SemanticRouter`** preflight; otherwise routing behaves as before.
-
-When **`PingRequest.SkipSpellRouting`** is **`true`**, **`WizardIntelligenceProvider`** bypasses **`SpellScanner`**, **`OverrideSpellName`**, and **`SemanticRouter`** entirely — **`activeSpell`** is **`null`** and no spell disk IO occurs. Used by Campaign Logger summarization and other internal headless tasks.
+`PeriodicTimer` every minute; due jobs via effective interval + tracker (watermarks hydrated §5.5.5). `Task.Run` + per-key overlap guard; new DI scope; `ExecutePromptAsync` with `UnattendedMode`, `OverrideSpellName`, empty `WorkingDirectory` (global spells). Lexicon previous-state injection when `EnableLexiconSystem` (§5.5.3). Shutdown drains `_activeJobTasks` for `ShutdownDrainTimeoutSeconds`. Concurrency: `MaxConcurrentJobs` (excess deferred). `OverrideSpellName` skips SemanticRouter; `SkipSpellRouting` skips all spell IO (Campaign Logger / internal).
 
 #### 5.5.2 Adaptive initiative (dynamic polling)
 
-**`IUnseenServantPacer`** (singleton, registered in **`AddArcanumInfrastructure`**) holds process-local interval overrides in a **`ConcurrentDictionary<string, int>`** (`StringComparer.Ordinal`), keyed by the same composite **`UnseenServantJobTracker.JobTrackingKey`** (**`$"{job.Name}\0{job.TargetSpell}"`**) the scheduler uses for last-run tracking. **`SetDynamicInterval(jobName, intervalMinutes)`** trims `jobName`, looks it up against **`Arcanum:Daemon:Jobs`**, and clamps **`intervalMinutes`** with **`ArcanumSettingClamps.UnseenServantIntervalMinutes`** before storing under the composite key. Pacer overrides are now keyed by composite **`{Name}\0{TargetSpell}`**; setting initiative for a name not present in **`Arcanum:Daemon:Jobs`** is a no-op (no composite can be built without a configured **`TargetSpell`**). **`GetEffectiveInterval(job)`** looks up the same composite key, falling back to **`job.IntervalMinutes`** when no override exists, and returns a clamped value. **`UnseenServantService`** applies the clamp again when computing the wait so scheduling and prompts stay consistent.
+`IUnseenServantPacer` holds interval overrides keyed by `{Name}\0{TargetSpell}` (same composite as tracker) — **runtime cache with Grimoire write-through** on `adjust_initiative` / `POST /api/unseen-servant/jobs/{name}/initiative` (deprecated `/api/daemon/*` aliases). Hydrated from `UnseenServantWatermarks.EffectiveIntervalMinutes` at startup (§5.5.5). CLI: `arcanum daemon jobs|initiative|alert`. SSE: `DaemonEvent` started/completed/failed/intervalChanged on `GET /api/events/daemon`.
 
-**MCP:** The in-process server (**`ArcanumInternalToolServer`**) exposes **`adjust_initiative`** (`job_name`, `interval_minutes`). The server receives **`IUnseenServantPacer`** at construction (singleton, threaded through **`InProcessMcpTransport.CreatePair`** and **`McpConnectionManager`**) and calls **`SetDynamicInterval`** synchronously. Tool arguments deserialize through **`McpJsonSerializerContext`** (**`AdjustInitiativeArgs`**) for Native AOT safety.
+#### 5.5.3 Stateful memory (Lexicon auto-injection)
 
-**HTTP:** External clients use the same pacer via **`GET /api/unseen-servant/jobs`** (returns **`ApiResponse<UnseenServantJobStatusDto[]>`** on the wire; **`Data`** holds **`UnseenServantJobStatusDto[]`**) and **`POST /api/unseen-servant/jobs/{name}/initiative`** with body **`AdjustInitiativeRequestDto`** (`intervalMinutes`); success returns **`ApiResponse<UnseenServantJobStatusDto>`**. Legacy **`/api/daemon/*`** aliases remain for compatibility. Both route families use **`ArcanumJsonContext`** for JSON and **`ApiKeyEndpointFilter`** on `/api`.
-
-**CLI (first-party operator):** **`DaemonCommands.Jobs`** (`arcanum daemon jobs`) calls **`ArcanumApiClient.GetDaemonJobsAsync`**, deserializes the envelope with **`ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDtoArray`** (source-generated name for **`ApiResponse<UnseenServantJobStatusDto[]>`**), and renders a Spectre **`Table`** using **`IThemePalette`** (including **`HeadingTableColumn`** for headers); when **`EffectiveIntervalMinutes`** differs from **`BaseIntervalMinutes`**, the effective column uses **`HighlightMarkup`** so overrides are visible without hard-coded colors. **`DaemonCommands.Initiative`** (`arcanum daemon initiative …`) calls **`AdjustDaemonJobInitiativeAsync`**; the job name is **`Uri.EscapeDataString`**-encoded in the path segment. **`DaemonCommands.Alert`** uses **`SendCommLinkAlertAsync`**. Public C# API on the client follows the same pattern as **`lore`** / **`sessions`**: methods return **`Result<T>`** after interpreting **`IsSuccess`** / **`Error`** on the wire envelope. **`Program`** registers all three commands under the **`daemon`** branch with **`AddTransient`** plus **`[DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(DaemonJobsCommand))]`**, **`[DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonInitiativeCommand))]`**, and **`[DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DaemonAlertCommand))]`** ( **`All`** preserves **`CommandArgument`** / **`CommandOption`** properties Spectre discovers under trimming).
-
-**Live observability (SSE event bus):** **`UnseenServantService`** publishes **`DaemonEvent`** frames (`started`, `completed`, `failed`) on **`IEventBus`** with a per-run **`RunId`** for correlation. **`UnseenServantPacer.SetDynamicInterval`** publishes **`intervalChanged`** only when the clamped value actually changes (duplicate initiative POSTs are suppressed). External clients subscribe via **`GET /api/events/daemon`** (§8.11). Shutdown cancellation emits no terminal frame; non-shutdown cancellation emits **`failed`**.
-
-#### 5.5.3 Stateful memory (lore auto-injection)
-
-**Auto-injection** avoids an extra LLM round-trip that would read memory first: **`UnseenServantService`** loads the **Lexicon** daemon-state entity for **`daemon_state:{job.Name}:{shortHash(targetSpell)}`** (type **`DaemonState`**) via **`ILexiconService.GetByNameAsync`** before **`ExecutePromptAsync`** and embeds its facts in the kickoff under **`### Previous State`**. This runs **only** when **`Arcanum:Intelligence:EnableLexiconSystem`** is **`true`** (same flag that gates **`scribe_lexicon`** / **`delete_lexicon`** in MCP — see §4.2). When the flag is **`false`**, previous-state injection is skipped and the model is **not** told to call **`scribe_lexicon`** because those tools are absent. **`GetByNameAsync`** is **try**/**catch**-wrapped: on failure or when no entry exists, **`ILogger`** records a warning and the job proceeds with empty prior state so the minute scheduler does not throw away the interval. Headless **`PingRequest`** still uses an empty **`WorkingDirectory`** so spells come from the global tree; internal Lexicon tools remain available for unattended runs as documented for **`ArcanumInternalToolServer`**.
+**Auto-injection** avoids an extra LLM round-trip that would read memory first: **`UnseenServantDaemonJob`** loads the **Lexicon** daemon-state entity for **`daemon_state:{job.Name}:{shortHash(targetSpell)}`** (type **`DaemonState`**) via **`ILexiconService.GetByNameAsync`** before **`ExecutePromptAsync`** and embeds its facts in the kickoff under **`### Previous State`**. This runs **only** when **`Arcanum:Intelligence:EnableLexiconSystem`** is **`true`** (same flag that gates **`scribe_lexicon`** / **`delete_lexicon`** in MCP). When the flag is **`false`**, previous-state injection is skipped and the model is **not** told to call **`scribe_lexicon`** because those tools are absent. Load failures or missing entries log a warning and proceed with empty prior state so the minute scheduler is not skipped. Headless **`PingRequest`** still uses an empty **`WorkingDirectory`** so spells come from the global tree; internal Lexicon tools remain available for unattended runs when enabled.
 
 #### 5.5.4 Comm Link escalation (kickoff + MCP)
 
-**Kickoff:** Both lore-disabled and lore-enabled Unseen Servant kickoffs append an explicit instruction: if the model detects a **high-alpha** or **critical** condition requiring immediate human attention, it **MUST** call in-process MCP **`send_commlink_alert`** with an appropriate **`severity`** (`Info`, `Warning`, or `Critical`).
+**Kickoff:** Every Unseen Servant kickoff appends an explicit instruction: if the model detects a **high-alpha** or **critical** condition requiring immediate human attention, it **MUST** call in-process MCP **`send_commlink_alert`** with an appropriate **`severity`** (`Info`, `Warning`, or `Critical`).
 
 **Runtime:** **`send_commlink_alert`** is advertised in the fixed internal **`tools/list`** catalog (not feature-flagged). The handler resolves **`ICommLinkDispatcher`** per call via **`IServiceScopeFactory`**. Dispatch returns typed **`CommLinkDeliveryResult`**: **`Delivered`**, **`Suppressed`** (no webhook / policy skip), or a failed **`Result`** (transport/HTTP error). **`CommLinkMultiplexer`** aggregates sinks (any delivery wins; partial delivery + failure → Delivered with logged failure). **`WebhookCommLinkDispatcher`** **`POST`**s generic JSON (`title`, `body`, `severity`, `source`, `timestampUtc`) — Telegram/WhatsApp need an automation relay. Webhook URLs are secrets (log host only). Legacy **`use_commlink`** remains a tools/call-only alias.
 
 #### 5.5.5 Watermark persistence
 
-**Table:** The Grimoire's `UnseenServantWatermarks` table (created by the embedded `InitialCreate.sql` schema baseline — see §16.2) stores one row per job — `JobKey TEXT PRIMARY KEY` (the same composite `{Name}\0{TargetSpell}` used in memory), `LastRunAt TEXT` (ISO 8601 UTC), and `EffectiveIntervalMinutes INTEGER` (`0` = no override). The table is not part of the compiled EF model — access is raw SQL via **`UnseenServantWatermarkStore`** (Infrastructure), reusing the scoped **`ArcanumDbContext`**'s connection (`db.Database.GetDbConnection()`, opened if not already open, never disposed by the caller) rather than a second connection to the encrypted database, following the same pattern as **`SessionRepository.ResolveFtsSessionIdsAsync`** and **`GrimoireRepository.SearchArchivesAsync`**. Writes are wrapped in **`SqliteBusyRetry`**. `IUnseenServantWatermarkStore` (Core contract: `GetAsync`, `SaveAsync`, `GetAllAsync`, `DeleteAsync`) is registered scoped in `AddArcanumInfrastructure`.
-
-**Write-through:** `UnseenServantService` calls `store.SaveAsync` synchronously after every successful job completion (in `RunJobAsync`, right after `jobTracker.RecordCompletion`). `UnseenServantPacer.SetDynamicInterval` fires a background `PersistIntervalAsync` after updating its in-memory override, reading the existing watermark via `store.GetAsync` to preserve `LastRunAt` (falling back to `DateTimeOffset.UtcNow` if no watermark exists yet) before calling `SaveAsync`. Both paths wrap the persistence call in `try`/`catch` with `logger.LogWarning` — a failed watermark write never crashes the scheduler or the pacer; only the in-memory state changes for that cycle.
-
-**Hydration (startup):** `UnseenServantService.ExecuteAsync` calls a private `HydrateWatermarksAsync` once, immediately after `Task.Yield()` and before the tick loop starts. It creates a DI scope, resolves `IUnseenServantWatermarkStore`, calls `GetAllAsync()`, then calls `IUnseenServantJobTracker.HydrateAsync` and `IUnseenServantPacer.HydrateAsync` with the results. A hydration failure is logged as a warning and the scheduler falls back to today's fully-in-memory behavior (every job runs with startup jitter) rather than failing host startup.
-
-**Cooldown window (warm-start):** On hydration, overdue jobs (persisted `LastRunAt + EffectiveIntervalMinutes < now` — i.e. the host was down longer than the job's interval) are seeded with `DateTimeOffset.UtcNow` and `LastResult = "Skipped (host was down)"` instead of the stale persisted timestamp, so they wait one full interval before firing rather than triggering a restart-storm of duplicate scheduled runs. Non-overdue jobs are seeded with the persisted `LastRunAt` as-is (`LastResult = "Restored from Grimoire"`).
-
-**Not persisted:** `_firstDispatchAfterUtc` startup jitter remains process-local by design — it is regenerated fresh on every start to spread first-tick load among newly-configured jobs (which have no watermark yet). See docs/Arcanum.PERSISTENCE.md for the full design rationale, retention policy, and what remains deferred (daemon execution history, Apprentice Chronicle). Sanctum breaches are now Grimoire-backed (§11.15) — no longer deferred.
+Grimoire `UnseenServantWatermarks` (raw SQL store; schema in PERSISTENCE). Write-through on job completion and initiative change (failures warn; in-memory still updates). Startup hydration before first tick keeps real `LastRunAt` (overdue jobs stay due — see PERSISTENCE §6); `LastResult` is process-local. Startup jitter not persisted. Sanctum breaches are Grimoire-backed (§11.15).
 
 ### 5.6 MCP host lifecycle
 
@@ -849,7 +781,7 @@ When **`PingRequest.SkipSpellRouting`** is **`true`**, **`WizardIntelligenceProv
 
 **`mcp.json` extensions:** Each server entry supports **`alwaysOn`** (default `true`), optional **`cwd`** (subprocess working directory for stdio servers), an optional **`type`** transport selector (`"stdio"` | `"http"` | `"sse"`), optional **`url`** (a URL infers the **Streamable HTTP** transport when `type` is omitted; an explicit `type: "sse"` selects the legacy SSE transport, still unsupported → **`Mcp.SseNotSupported`**), and an optional **`inheritEnv`** string array naming host environment variables an stdio server may inherit despite the default env-strip (e.g. `["PATH","HOME"]` for `npx`). HTTP endpoints must be `https` unless their host is listed in `Arcanum:Mcp:AllowedHttpHosts`, and are SSRF-validated via `OutboundUrlGuard` before connect.
 
-**Workspace-local trust gate:** Workspace `mcp.json` servers are **not registered** until the operator approves the workspace via **`POST /api/mcp/trust-workspace`** (`{ "workingDirectory": "<root>" }`). Approvals persist at `~/.config/arcanum/trusted-mcp-workspaces.json` as workspace path → SHA-256 of the current `mcp.json` bytes. **`TrustedMcpWorkspaceStore`** memoizes file hashes in a bounded LRU keyed by path and file metadata so repeated trust checks avoid re-reading unchanged files. **`alwaysOn` is ignored** for workspace-local entries until trusted. **`POST /api/mcp/{name}/start`** with `?workingDirectory=` also requires trust (`Mcp.WorkspaceNotTrusted`).
+**Workspace-local trust gate:** Workspace `mcp.json` servers are **not registered** until the operator approves the workspace via **`POST /api/mcp/trust-workspace`** (`{ "workingDirectory": "<root>" }`). Approvals persist at `~/.config/arcanum/trusted-mcp-workspaces.json` as workspace path → SHA-256 of the current `mcp.json` bytes. **`TrustedMcpWorkspaceStore.IsTrustedAsync` / `TrustAsync` always open and hash the current bounded file bytes** — path, length, timestamp, or a previously computed digest alone never authorize execution. **`alwaysOn` is ignored** for workspace-local entries until trusted. **`POST /api/mcp/{name}/start`** and **`RestartAsync`** (including Running/Error respawn) with a workspace scope also require trust (`Mcp.WorkspaceNotTrusted`). Global MCP servers (`ScopeWorkingDirectory == null`) are unaffected by this gate.
 
 **Auto-start:** **`McpServerBootstrapHostedService`** calls **`IMcpConnectionManager.InitializeAsync`** on host start to load the global registry and start all **`alwaysOn`** global servers. **`StopAsync`** calls **`StopAllAsync`** for graceful shutdown. Unaffected by the ModelContextProtocol SDK migration — its calls into `IMcpConnectionManager` are unchanged in signature and behavior.
 
@@ -893,36 +825,12 @@ When **`PingRequest.SkipSpellRouting`** is **`true`**, **`WizardIntelligenceProv
 
 ### 5.7.1 A2A and The Conclave
 
-**Purpose:** The A2A (Agent-to-Agent) protocol is a second, external door into the same Conclave: an **A2A server** exposes Arcanum Apprentices to third-party A2A-compatible agents, and an **A2A client** (the **Archmage Client**) lets an Apprentice delegate a "Sending" to a remote A2A agent via the in-process MCP tool **`dispatch_sending`**. Both are additive — `cast_sending`, `ConclaveArchmage`, `ConclaveLineage`, and every existing internal-delegation code path are unchanged.
+External door into The Conclave: A2A **server** (inbound → Apprentices) and **client** (`dispatch_sending`). Layered gates: `Conclave:Enabled` + `A2A:Enabled` + Server/Client flags; per-call `IOptionsMonitor` (route mapped at boot). Packages AOT-clean (`verify-aot-il-warnings.sh`).
 
-**Disabled by default, layered gate:** `Arcanum:Conclave:Enabled` **and** `Arcanum:Conclave:A2A:Enabled` must both be `true` before either surface activates; the server additionally requires `A2A:ServerEnabled`, the client `A2A:ClientEnabled`. Every gate is re-checked per call against `IOptionsMonitor<ArcanumSettings>.CurrentValue` (not cached at startup), matching `ConclaveArchmage.CastAsync`'s own pattern — except the *route* for the A2A server, which is mapped once at boot from the settings snapshot in effect at startup (like `IsRateLimitEnabled`/`/metrics` gating in `ApiBootstrapper`); toggling `ServerEnabled` at runtime still flips the handler's own per-call gate (`Sending.Disabled`) but does not add/remove the route without a restart.
+**Server:** mapped under `A2A:ServerPath` on `/api` (API key required) — **no** unauthenticated `/.well-known/agent-card.json`. Handler mints Apprentice via `ConclaveArchmage`, relays Chronicle to A2A task states. Workspace: `A2A:DefaultWorkspace` → `Host:Workspace` → CWD; empty `Campaigns:AllowedRoots` still denies.
 
-**SDK reality check (Native AOT):** The `A2A`/`A2A.AspNetCore` NuGet packages (`1.0.0-preview2`) do **not** use Protocol Buffers — they ship their own `System.Text.Json` source-generated context (`A2AJsonUtilities`) and were built with explicit Native AOT support. `./scripts/verify-aot-il-warnings.sh` (Cli project, which pulls in both Api and Infrastructure) shows **zero** first-party (`RetroDownfall.Arcanum`) IL warnings introduced by these packages — every emitted warning is pre-existing and transitive (`Microsoft.EntityFrameworkCore`, `Serilog`, `Microsoft.AspNetCore.Mvc`). `A2A` is referenced from **Infrastructure** (`A2AClientService`, `ArcanumA2AAgentHandler`); `A2A.AspNetCore` (route-mapping extensions only) is referenced from **Api**.
+**Client:** `dispatch_sending` validates URL via allowlist (if non-empty) **and** `OutboundUrlGuard`; `MaxExternalTasks` semaphore (non-blocking reject); depth not enforced at MCP layer (same limitation as `cast_sending`). Chronicle: `sendingDispatched`/`Completed`/`Failed` on caller stream. Agent Card ("Heraldry") built per-request from settings.
 
-**A2A server (external agents drive Apprentices):** `A2AServerEndpoints.MapA2AServer` maps the SDK's `MapA2A(A2AServer, path)` plus a custom, authenticated `GET {ServerPath}/agent-card` onto the `apiGroup` (`ApiKeyEndpointFilter` + rate limiting apply exactly like every other `/api` route). Arcanum intentionally does **not** expose the conventional unauthenticated `/.well-known/agent-card.json` — a documented deviation from typical A2A discovery, required by "security boundaries apply" (constraint 5). `A2AServer` (singleton, `InMemoryTaskStore`, `AutoAppendHistory = true`) delegates to **`ArcanumA2AAgentHandler : IAgentHandler`**:
-
-- `ExecuteAsync(RequestContext, AgentEventQueue, CancellationToken)` — resolves a workspace (below), calls `IConclaveArchmage.CastAsync` (the same shared service `cast_sending` and `POST .../cast` use) to mint a headless Apprentice, `IApprenticeRuntime.StartAsync`s it, then relays `IApprenticeRuntime.SubscribeChronicleAsync` onto the A2A task via a `TaskUpdater`: `ApprenticeCompleted` → one `AddArtifactAsync` (final assistant Session entry, via `SessionId`) + `CompleteAsync`; `ApprenticeFailed` → `FailAsync`; `ApprenticeCancelled` → `CancelAsync`; `ApprenticeEscalated` (Divine Intervention) → `RequireInputAsync` (A2A's `INPUT_REQUIRED`). Step-level events (`stepStarted`, `toolCall`, …) have no A2A state equivalent beyond `Working` and are not individually forwarded.
-- `CancelAsync(RequestContext, AgentEventQueue, CancellationToken)` — looks up the A2A task id in an in-memory map to the Apprentice id, calls `IApprenticeRuntime.CancelAsync`; the still-running `ExecuteAsync` background task observes the resulting `ApprenticeCancelled` Chronicle event and performs the actual `TaskUpdater.CancelAsync` terminal transition itself (avoids two call paths racing a terminal transition on the same task).
-- Message/task history relies on the SDK's own `A2AServerOptions.AutoAppendHistory = true` (`AgentTask.History`) rather than copying Arcanum's internal Session transcript — A2A history models user↔agent dialogue turns, not internal tool-call chatter.
-- The A2A task id ↔ Apprentice id map is in-memory only; A2A tasks are never persisted (no Grimoire migration — see persistence.md). A2A tasks map to **Apprentices**, not Sessions: the task lifecycle *is* the Apprentice lifecycle, reusing plan generation, retries, escalation, and Chronicle SSE unchanged.
-
-**Workspace resolution for inbound tasks:** `A2A:DefaultWorkspace` → `Host:Workspace` → the process's current directory, validated with the same `CampaignPathPolicy.ValidateAndNormalizePath` every other Apprentice workspace uses. **Operationally significant:** `Arcanum:Campaigns:AllowedRoots` is secure-by-default (empty **denies** every path, including this fallback chain's own current-directory tail) — an operator enabling `A2A:ServerEnabled` must also configure `AllowedRoots` (or point `A2A:DefaultWorkspace` at an already-allowed root), or every inbound A2A task will be rejected with "no usable workspace is configured." A2A messages do not currently carry a campaign/workspace metadata hint (out of scope for this pass; the fallback chain above is the full resolution order).
-
-**A2A client (Apprentices delegate outward — the Archmage Client):** `dispatch_sending` (`goal`, `agent_url`, optional `name`) is a sibling of `cast_sending` in `ArcanumInternalToolServer`, gated by a `bool a2aClientEnabled` threaded through `InProcessMcpTransport`/`McpConnectionManager` the same way `conclaveEnabled`/`sagaEnabled` are. **`A2AClientService`** (`IA2AClientService`, Infrastructure, singleton):
-
-- Validates `agent_url` (and, again, the remote Agent Card's own advertised interface URL — untrusted, remote-controlled data) against the optional `AllowedRemoteAgents` allowlist (exact match or same-origin) and, regardless of allowlist result, `OutboundUrlGuard.ValidateUntrustedUrlAsync` (SSRF hardening always applies, per constraint 5) before ever connecting, via a named `HttpClient("A2AOutbound")` pinned to `OutboundUrlGuard.CreateUntrustedEgressHandler()`.
-- Caches the resolved `AgentCard` per discovery URL for 5 minutes.
-- Sends a blocking (`ReturnImmediately = false`) `SendMessageRequest` via `A2AClientFactory.Create(card, httpClient)`; handles **both** SDK response shapes — an immediate `Message` reply, or an `AgentTask` that is polled via `GetTaskAsync` until `TaskStateExtensions.IsTerminal` (defensive: blocking mode should already return terminal).
-- Concurrency is governed by an in-memory `SemaphoreSlim(MaxExternalTasks)` (sized once at first use — a running instance needs a restart to pick up a new `MaxExternalTasks`, mirroring `ChronicleHub`'s hub-capacity pattern) acquired non-blockingly (`WaitAsync(0, ct)`; immediate `Sending.MaxTasksReached` rather than queueing) and released in a `finally` covering success, remote failure, *and* timeout — a slow or hung remote agent can never leak a concurrency slot.
-- **Depth is not enforced for `dispatch_sending`.** `ConclaveLineage`'s depth/breadth checks require the *calling* Apprentice's id, but the in-process MCP server is scoped per-workspace, not per-Apprentice (multiple concurrent Apprentices in the same workspace share one tool-server instance) — there is no reliable "current caller" to check depth against at this layer, the same limitation `cast_sending` already has today (its MCP path bypasses `ConclaveLineage` at creation; only `POST .../cast` enforces it). `MaxExternalTasks` (concurrency) plus the SSRF guard and allowlist are `dispatch_sending`'s governance for this pass.
-- Explicit remote-task cancellation on Apprentice-cancel is **deferred**: today the calling Apprentice's own `CancellationToken` only trips `dispatch_sending`'s timeout path (which reliably releases the concurrency slot); it does not yet call `A2AClient.CancelTaskAsync` on the remote agent. Remote agents should configure their own timeouts in the interim.
-- Returns a structured JSON payload (`{ agentUrl, taskId, succeeded, response, error }`) rather than a plain-text tool error whenever a dispatch was genuinely attempted — including a *remote-side* failure — so both the LLM tool loop and `ApprenticeService`'s Chronicle interception (below) can parse the same outcome. Pre-flight rejections that never reached a remote agent (`Sending.Disabled`, `Sending.AgentNotAllowed`, `Sending.MaxTasksReached`, an empty goal) remain plain MCP tool errors, matching `cast_sending`'s convention.
-
-**Chronicle events for external delegations:** `dispatch_sending` is blocking, so by the time its `ToolResult` frame reaches `ApprenticeService`'s existing step-streaming loop (the same place that already detects `cast_sending` results), the remote exchange has already fully completed or failed — there is no separate live channel to relay interim `sendingProgress`. `ApprenticeService` parses the tool result and publishes **`sendingDispatched`** immediately followed by **`sendingCompleted`** or **`sendingFailed`** on the *calling* Apprentice's own Chronicle (the currently-running Apprentice id, which is exactly the context `dispatch_sending` itself cannot see — see above). No separate A2A event stream; these ride the existing `GET /api/apprentices/{id}/chronicle` SSE stream. `sendingProgress` is reserved for a future streaming/push-notification mode.
-
-**Naming ("Heraldry"):** the Agent Card is built per-request in `A2AServerEndpoints.BuildAgentCard` (name/description from `AgentCardName`/`AgentCardDescription`, or Arcanum-branded defaults; a single `SupportedInterfaces` entry with `ProtocolBinding: "JSONRPC"` derived from the live request's scheme/host so it works behind a reverse proxy without a separate "public URL" setting; `Capabilities { Streaming: true, PushNotifications: false }`; an `arcanumApiKey` `ApiKeySecurityScheme` documenting the existing `X-Arcanum-Key` header).
-
----
 
 ## 6. `WebApplication.CreateSlimBuilder` vs `CreateBuilder`
 
@@ -967,41 +875,11 @@ public sealed record ApiResponse<T>(T? Data, bool IsSuccess, Error? Error, strin
 
 ### 8.2 `ArcanumJsonContext` — source-generated, public
 
-`ArcanumJsonContext` is the source-generated `JsonSerializerContext` with `CamelCase` naming for all HTTP wire types. It is registered at index 0 of `TypeInfoResolverChain` so Minimal API responses use source-generated `JsonTypeInfo`.
-
-**Rule:** Every wire payload type `T` used in an `ApiResponse<T>` must have a `[JsonSerializable]` registration on this context. OpenAI-shaped **`/v1`** payloads (`OpenAiChatRequest`, `OpenAiModelListResponse`, error bodies, and related nested types) must also be registered for `Results.Json` and streaming serialization. When adding a new endpoint with a new payload type, extend the context in the same change set.
-
-**Grimoire blobs:** `WorkspaceContext.SerializedSnapshot` is **not** serialized through this class. Core defines **`GrimoireJsonContext`** (`RetroDownfall.Arcanum.Core.Serialization`) with the same CamelCase options for `PatternSnapshot` + `DomainType` so Infrastructure (`ChronosyncEngine`) stays AOT-safe without referencing the Api assembly.
-
-**Configuration file I/O:** Core defines **`ConfigurationJsonContext`** (`RetroDownfall.Arcanum.Core.Serialization`) for `ArcanumConfigurationFile` + all nested `ArcanumSettings` types. **`ConfigurationWriter`** (Infrastructure) serializes through this context when persisting `arcanum.json`; **`ArcanumJsonContext`** registers the same settings types for HTTP request/response binding on `/api/config` (§8.12).
-
-**MCP JSON-RPC:** `McpJsonSerializerContext` (Infrastructure) is a separate context for JSON-RPC 2.0 over stdio/in-process channels. It uses explicit `[JsonPropertyName]` for spec-correct member names. `McpConfigJsonSerializerContext` handles `mcp.json` deserialization. Neither is registered on `HttpJsonOptions`.
-
-**`[JsonPropertyName]` policy (exceptions):** First-party `/api` and Core wire types use **camelCase from `[JsonSourceGenerationOptions]` only** — no per-property `[JsonPropertyName]` (§12). **Explicit exceptions** use dedicated source-generated contexts with snake_case or spec-mandated names:
-
-| Area | Context | Why |
-|------|---------|-----|
-| OpenAI `/v1` request/response DTOs | `ArcanumJsonContext` (`OpenAiChatRequest`, `OpenAiChatResponse`, nested types) | OpenAI Chat Completions wire format is **snake_case** (`finish_reason`, `tool_calls`, `max_tokens`, …). |
-| MCP JSON-RPC 2.0 | `McpJsonSerializerContext` | JSON-RPC and MCP tool schemas use spec member names (`jsonrpc`, `method`, `params`, …). |
-| NDJSON `IntelligenceEvent` ward/tool payloads | `ArcanumJsonContext` (`IntelligenceToolCallEvent`, …) | Selected nested event fields mirror OpenAI-shaped tool-call keys (`wardId`, `toolName`, …) where clients expect them. |
-
-Do not add `[JsonPropertyName]` to arbitrary `/api` DTOs; add a row to this table when a new external wire spec requires it.
+CamelCase source-gen context for HTTP wire types (index 0 of resolver chain). Every `ApiResponse<T>` payload and `/v1` DTO needs `[JsonSerializable]`. Separate contexts: `GrimoireJsonContext`, `ConfigurationJsonContext` (Core), `McpJsonSerializerContext` / `McpConfigJsonSerializerContext` (Infrastructure). `[JsonPropertyName]` only for external snake_case/spec wires (OpenAI `/v1`, MCP JSON-RPC, selected NDJSON tool fields) — not arbitrary `/api` DTOs.
 
 ### 8.3 Service registration in `AddArcanumApiServices`
 
-`ApiBootstrapper.AddArcanumApiServices(IServiceCollection, IConfiguration)` registers:
-
-- `AddArcanumInfrastructure` (Serilog, options, Data Protection, secrets, Grimoire, workspace, Eye of the World, Chronosync engine, MCP, Comm Link dispatchers + **`HttpClient("CommLinkWebhook")`**).
-- `AddArcanumDaemonServices` (`UnseenServantService` hosted scheduler; §5.5).
-- `ApiKeyEndpointFilter` (singleton; reads `IOptionsMonitor<ArcanumSettings>.CurrentValue` when clamping header limits so `arcanum.json` reload applies).
-- OpenAPI + JSON options (ArcanumJsonContext at head of resolver chain).
-- Named `HttpClient("OpenAiCompatibleProvider")` with `Timeout = InfiniteTimeSpan` (endpoint is passed per request via `OpenAIClientOptions.Endpoint`; the factory does not mutate `BaseAddress` on the pooled client).
-- Singleton `IChatClientFactory` / `ChatClientFactory` (reads `IOptionsMonitor<ArcanumSettings>.CurrentValue` only inside `ResolveClientAsync` for hot-reload). **`OpenAICompatible`** (including Ollama via its `/v1` endpoint) uses the named `IHttpClientFactory` client with `OpenAiRequestAugmentingHandler`.
-- Singleton **`InferenceTokenizerResolver`** (process-cached **`Microsoft.ML.Tokenizers`** Tiktoken `o200k_base` via **`TiktokenTokenizer.CreateForEncoding`** and companion package **`Microsoft.ML.Tokenizers.Data.O200kBase`**; used only for pre-flight counting).
-- Scoped `IArcanumIntelligenceProvider` / `WizardIntelligenceProvider` (uses `IOptionsSnapshot<ArcanumSettings>.Value` so each request sees one consistent settings snapshot).
-- Minimal API handlers under **`/v1`** (`OpenAiV1Endpoints`) take `IOptionsSnapshot<ArcanumSettings>` for the same per-request snapshot semantics.
-
-**Infrastructure (via `AddArcanumInfrastructure`):** singleton **`McpConnectionManager`** uses **`IOptionsMonitor<ArcanumSettings>.CurrentValue`** when reading intelligence timeouts and related clamps. Scoped **`GrimoireRepository`** uses **`IOptionsSnapshot<ArcanumSettings>.Value`**. Singleton **`EyeOfTheWorldService`** uses **`IOptionsMonitor<ArcanumSettings>.CurrentValue`** (via lazy clamped properties) because singletons must not capture a single `IOptionsSnapshot` for the process lifetime.
+Registers Infrastructure + daemon services, `ApiKeyEndpointFilter`, OpenAPI/JSON (`ArcanumJsonContext` head of chain), named OpenAI `HttpClient`, `IChatClientFactory`, tokenizer, scoped `WizardIntelligenceProvider`. Singletons use `IOptionsMonitor`; scoped/request use `IOptionsSnapshot`.
 
 ### 8.4 Returning the envelope from a Minimal API handler
 
@@ -1011,7 +889,7 @@ Successful endpoints use `Results.Ok(ApiResponse<T>.FromResult(result, traceId))
 
 - **`POST /api/intelligence/ping`** — **400** + `ApiResponse<string>` for validation (missing prompt / messages); **200** + `ApiResponse<string>` on success; **500** + `ApiResponse<string>` when inference returns `Result` failure (model/provider error — intentional, not a generic server crash).
 
-- **`POST /api/intelligence/human-response`** — **400** validation; **404** + `ApiResponse<bool>` failure when no waiter exists for `promptId` (`Intelligence.HumanPromptNotFound`); **200** + `ApiResponse<bool>` with `Data: true` when the answer is accepted.
+- **`POST /api/intelligence/human-response`** — **400** validation (including answer UTF-8 byte length above `Arcanum:Sessions:MaxEntryContentBytes`); **404** + `ApiResponse<bool>` failure when no waiter exists for `promptId` (`Intelligence.HumanPromptNotFound`); **200** + `ApiResponse<bool>` with `Data: true` when the answer is accepted.
 
 - **`POST /api/mcp/reload`** and **`POST /api/intelligence/arsenal`** — Optional JSON body **`OptionalWorkspaceRequest`** (`{ "workingDirectory": "..." }` only). Responses remain `ApiResponse<T>` as today.
 
@@ -1042,85 +920,23 @@ Under the same **Session-Based Consolidation model of AI memory**, **Chronosync 
 
 ### 8.8 OpenAI `/v1` parity surface
 
-`OpenAiV1Endpoints` accepts and parses the maximum-parity OpenAI Chat Completions surface:
+`OpenAiV1Endpoints` accepts maximum-parity Chat Completions fields. Polymorphic `content` (string | parts) is AOT-safe; unsupported part types / over `MaxContentPartsPerMessage` → **400** `invalid_value` before mapping. Vision parts map to MEAI `TextContent`/`UriContent`/`DataContent` (§10.2.4).
 
-**Request body** (`OpenAiChatRequest`): `model` (required, validated), `messages` (required, non-empty; each `role` validated against `system|user|assistant|tool|developer`), `stream`, `temperature`, `top_p`, `max_tokens` and `max_completion_tokens` (newer alias preferred), `presence_penalty`, `frequency_penalty`, `seed`, `n`, `user`, `stop` (string or string[]), `response_format` (`text` | `json_object` | `json_schema` with optional `json_schema`), `stream_options { include_usage }`, `tools` (function array, `OpenAiToolDefinition`), `tool_choice` (kept as `JsonElement` for pass-through), `parallel_tool_calls`, `logprobs`, `top_logprobs`.
+**Parameters applied** (`ApplyInferenceParameters`): temperature, top_p, max tokens, penalties, seed, stop, response_format. `n` must be `1` when present. Client `tools`/`tool_choice` rejected **400** `unsupported_parameter` unless `ClientToolForwarding:Enabled` (then schema/count validation; §8.8.3).
 
-**Polymorphic message content**: `messages[].content` can be `null`, a `string`, or an array of `OpenAiContentPart` (`{type: "text", text}` or `{type: "image_url", image_url: { url, detail }}`). Parsing is AOT-safe through a custom `JsonConverter<OpenAiMessageContent>` that dispatches on `Utf8JsonReader.TokenType` and delegates array reads to the source-generated `ArcanumJsonContext.Default.OpenAiContentPartArray` `JsonTypeInfo`. The mapper concatenates text parts (separated by `\n`) into a flat string for storage/logging while preserving an `IReadOnlyList<CoreContentPart>` on `CoreChatMessage.ContentParts`. The hub composes `Microsoft.Extensions.AI` multi-part messages: text parts become `TextContent`, `http(s)://` image URLs become `UriContent(uri, "image/*")` so vision-capable providers (for example OpenAI proper via `Microsoft.Extensions.AI.OpenAI`) see them. **Validation:** the `content[]` array is bounded by `Arcanum:Intelligence:MaxContentPartsPerMessage` and any part whose `type` is not `text`/`image_url` is rejected **400** `invalid_value` (with the offending `messages[i].content[j].type` param) *before* mapping — unsupported parts are no longer silently dropped.
-
-**Tool messages**: `role = "tool"` messages with `tool_call_id` map to `FunctionResultContent` for the hub. `role = "assistant"` messages with `tool_calls` map to `FunctionCallContent` entries with arguments JSON parsed into `Dictionary<string, object?>` (object values are `JsonElement` clones for downstream serialization). The bridge is symmetric so OpenAI clients can replay full transcripts including assistant tool calls and tool results.
-
-**Inference-side application** of parameters happens in `WizardIntelligenceProvider.ApplyInferenceParameters`:
-
-- `temperature` → `ChatOptions.Temperature` (clamp 0–2)
-- `top_p` → `ChatOptions.TopP` (clamp 0–1)
-- `max_(completion_)?tokens` → `ChatOptions.MaxOutputTokens` (positive only)
-- `presence_penalty` / `frequency_penalty` → corresponding `ChatOptions` fields (clamp −2..2)
-- `seed` → `ChatOptions.Seed`
-- `stop` → `ChatOptions.StopSequences`
-- `response_format` → `ChatOptions.ResponseFormat` (`json_object`/`json_schema` → `ChatResponseFormat.Json`; `text` → `ChatResponseFormat.Text`)
-
-`n`, `user`, `parallel_tool_calls`, `logprobs`, and `top_logprobs` are parsed for forward-compat / API completeness but are not yet enforced beyond validation: **`n` must be `1` when present** (otherwise **400** `invalid_value` on `n`). Client-supplied **`tools`** and **`tool_choice`** return **400** `unsupported_parameter` by default because Arcanum executes its own server-side MCP toolset. When **`Arcanum:ClientToolForwarding:Enabled`** is `true`, the same fields are validated and forwarded to the resolved provider: each tool must be `type: "function"` with a non-empty `function.name` and a JSON Schema object for `function.parameters`, and `tool_choice` must be `"auto"`, `"none"`, `"required"`, or a function object. Exceeding **`MaxClientTools`** returns **400** `too_many_tools`; malformed tools or `tool_choice` return **400** `invalid_schema`. `logprobs` on responses is always `null`.
-
-**Non-streaming response** (`OpenAiChatResponse`): includes `choices[]` with `index`, `message: {role, content, tool_calls, refusal: null}`, `finish_reason`, `logprobs: null`. **`message.tool_calls`** (§8.8.1) surfaces the assistant-issued calls Arcanum already executed server-side during the turn, when any occurred — `null` (not an empty array) when the turn made no tool calls, matching OpenAI's own wire shape. Top level includes `system_fingerprint` (configurable; see §3.4) and `service_tier: null`. `finish_reason` is mapped from the provider's `ChatResponse.FinishReason` (`stop`, `length`, `content_filter`, …) so SDK clients can detect truncation and safety stops.
-
-**Streaming SSE** (`OpenAiChatChunk` over `text/event-stream`):
-
-- Frame 0: `delta: {role: "assistant"}` (per OpenAI convention).
-- Token frames: `delta: {content: "..."}` for each `IntelligenceEventType.Token`.
-- Tool call frames: `delta: {tool_calls: [...]}` for each `IntelligenceEventType.ToolCall` — see §8.8.1 for the exact chunking shape.
-- Terminal frame(s):
-  - When `stream_options.include_usage = true`: a content-empty final chunk with mapped `finish_reason`, then a `choices: []` chunk with the `usage` payload, then `data: [DONE]`.
-  - Otherwise: a content-empty final chunk with mapped `finish_reason`, then `data: [DONE]`.
-- During idle gaps (slow provider, multi-round tool loops) the stream interleaves `: keep-alive` SSE comments (every 15s, via `SseStreamWriter`) so reverse proxies / load balancers do not idle-timeout an otherwise-healthy stream. The hub enumerator is pumped with a single in-flight `MoveNextAsync` raced against the keep-alive delay (the delay is cancelled the moment an event arrives).
-- `Cache-Control: no-cache` and `X-Accel-Buffering: no` headers set up front.
-
-**Streaming errors** are emitted as a single SSE chunk in the OpenAI error shape — `{"error":{"message":"...","type":"api_error","code":"inference_failed","param":null}}` — followed by `data: [DONE]`. This is **not** sent as `delta.content`, so clients can branch on the `error` key without mistaking it for assistant output. The earlier behaviour of leaking `IntelligenceEvent` error messages as model output is gone.
-
-**Cancellation** (`OperationCanceledException`) inside the stream is caught and the terminal frames (`finish_reason: "stop"` + `[DONE]`) are best-effort emitted with `CancellationToken.None` so clients that are still listening see a clean termination. Writes that fail (because the connection is gone) are caught and logged at warning.
-
-**Error envelope** (`OpenAiErrorResponse`): includes `message`, `type`, `param`, and `code`. Buffered error responses populate `code` from `Result.Error.Code` (mapped to OpenAI-style codes such as `model_not_found`, `server_error`, `inference_failed`) so OpenAI-style clients can branch programmatically. Validation errors emit `code = "missing_required_parameter"` / `"invalid_value"` / `"model_not_found"` / `"invalid_json"` / `"missing_body"` as appropriate. Unknown or unconfigured `model` values return **HTTP 404** with `code: "model_not_found"` (not **400**). Tool-loop and timeout failures return **HTTP 503** with `code: "server_error"` (same status-code mapping used by native `/api` spell/prompt execute endpoints via `ArcanumErrorMapper.ResolveStatusCode` — see §8.23). Pre-inference failures (model resolution) and unhandled `/v1` exceptions also return the OpenAI error envelope — not the internal `ApiResponse<T>` shape.
+**Responses:** buffered `OpenAiChatResponse` + `message.tool_calls` when server executed tools (§8.8.1); streaming SSE with keep-alives, usage optional via `stream_options`, errors as OpenAI error chunks (not `delta.content`). Unknown model → **404** `model_not_found`; tool-loop/timeout → **503** `server_error`.
 
 #### 8.8.1 Server-executed tools on `/v1` (buffered + streaming tool_calls)
 
-**Design (reversed from the original text-only surface):** Arcanum executes MCP tools **server-side** during a turn — the model never waits on a client round-trip to invoke a tool. The `/v1` surface now **surfaces** those calls for observability and transcript replay, matching what OpenAI SDK clients expect from `message.tool_calls` / `delta.tool_calls`, while still never handing control back to the client for execution (Arcanum already ran the tool and fed the result back to the model before the HTTP response completes).
-
-**Buffered (`POST /v1/chat/completions`, `stream: false`):** `PromptTurnResult.ToolCalls` (`List<PromptToolCall>`, already populated by the hub) is mapped 1:1, in order, to `OpenAiToolCall[]` on `message.tool_calls`: `id` (freshly minted, see below), `type: "function"`, `function: {name, arguments}` (the exact JSON string the hub recorded). `finish_reason` is unchanged from the pre-existing hub mapping (`WizardIntelligenceProvider.MapChatFinishReasonToOpenAi`) — in practice this is `"stop"` whenever the turn produced final text after its tool rounds (the normal case, since the tool loop only stops once the model has no more actionable tool calls) and would be `"tool_calls"` only if a provider's terminal response itself reported a tool-calls finish reason with no further text.
-
-**Streaming (`POST /v1/chat/completions`, `stream: true`):** each `IntelligenceEventType.ToolCall` event (`IntelligenceToolCallEvent`) becomes one or more `delta.tool_calls` chunks:
-
-- **First chunk** for a call carries `index`, `id`, `type: "function"`, and `function: {name, arguments: "<first fragment>"}`.
-- **Subsequent chunks** carry only `index` and `function: {arguments: "<next fragment>"}`, re-chunked into 40-char fragments (`ToolCallArgumentChunkChars`) to match OpenAI's streaming wire shape. Content is unaffected — Arcanum has the complete `ArgumentsJson` upfront since tools execute to completion before the next event.
-- **`index`** is a per-HTTP-response monotonically increasing counter (`nextToolCallDeltaIndex` in `HandleStreamingAsync`) — **not** `IntelligenceToolCallEvent.Index`, which the hub resets every tool round. A multi-round Arcanum tool loop can therefore call more tools than a single OpenAI streaming response ever would; resetting the index per round would let two unrelated calls collide on the same `index`, which is ambiguous for an OpenAI SDK's index-keyed delta accumulator. Each call still gets a fresh minted `id`.
-- **Parallel tool calls** are emitted as one complete chunk-burst per call (the hub executes and awaits each call before yielding the next). Each call gets its own stable `index`.
-- **`toolResult` events are never surfaced** on `/v1` — matching OpenAI's own client-side tool-calling model, where the caller (not the server) would normally feed a tool's result back to the model; since Arcanum already did that internally, exposing the raw result would be redundant and is intentionally omitted.
-
-**Tool call ids:** minted fresh per call (`"call_" + Guid.NewGuid():N[..24]`, ~29 chars, matching OpenAI's id length) rather than reusing Arcanum's internal `PromptToolCall.CallId` / `IntelligenceToolCallEvent.CallId`, which are not guaranteed to be in OpenAI's `call_...` shape for every provider (some fall back to the tool name — `ToolExecutionPipeline.ResolveCallId`). This is safe for client replay (below) because the client only needs the id to correlate its own echoed `tool_calls[].id` with a subsequent `role: "tool"` message's `tool_call_id` in the *next* stateless request; Arcanum does not need to recognize the id as one it minted internally.
-
-**Client-supplied tool forwarding:** when `Arcanum:ClientToolForwarding:Enabled` is `true`, `WizardIntelligenceProvider` builds `ChatOptions.Tools` from the client's `tools` via `ClientForwardedFunction` (a schema-only `AIFunction` surrogate) and maps `tool_choice` to `ChatOptions.ToolMode`. The provider sees the forwarded schemas and may return `FunctionCallContent` for them; Arcanum's tool loop **breaks** immediately on the first set of calls, surfaces them as `message.tool_calls` / `delta.tool_calls`, and returns `finish_reason: "tool_calls"`. The provider-minted call ids are preserved verbatim in this mode (rather than re-minted) so the client can correlate the forwarded calls with its own echoed `role: "tool"` replies on the next round-trip.
-
-**Client-supplied tool replay in message history:** unchanged and pre-existing — `role: "tool"` messages with `tool_call_id` map to `FunctionResultContent`; `role: "assistant"` messages with `tool_calls` map to `FunctionCallContent` entries (`OpenAiChatCompletionMapper`). A client can therefore round-trip a full transcript: send a prompt, receive `message.tool_calls`, echo the assistant message plus a `tool` result message back on the next call, and Arcanum threads it into the model's context exactly like a native OpenAI multi-turn tool conversation.
-
-**Where else to observe tool activity:** native `/api/intelligence/ping-stream` NDJSON (`toolCall` / `toolResult` events, including the hidden result payloads) and buffered `PromptResponseDto.toolCalls` on `/api/intelligence/ping` and Forge execute routes remain unchanged and still the richer surface (they include `toolResult`, which `/v1` intentionally omits).
+Arcanum executes MCP tools server-side; `/v1` surfaces calls for observability/replay. Buffered: `PromptTurnResult.ToolCalls` → `message.tool_calls`. Streaming: `ToolCall` events → `delta.tool_calls` (40-char argument fragments; monotonic per-response `index`; fresh `call_…` ids). **`toolResult` never surfaced** on `/v1`. Forwarding mode preserves provider-minted ids and returns `finish_reason: "tool_calls"` without executing client tools. Richer native surface: `/api/intelligence/ping(-stream)`.
 
 #### 8.8.2 `GET /v1/models` capability enrichment
 
-**Purpose:** let OpenAI SDK clients auto-detect model capabilities (context window, vision, provider identity) from the models list alone, instead of a second round-trip to a native endpoint.
-
-**`ModelInfoBuilder.BuildModelInfoList`** (`Api/Intelligence/`) is the single source of truth for flattening `ArcanumSettings.Providers` into `ModelInfoDto[]`. Both **`GET /api/models`** and **`GET /v1/models`** call it, so the two surfaces never drift. `ModelInfoDto` carries `SupportsVision` from `ModelEntry.SupportsVision` (§10.2.4).
-
-**`OpenAiModel` additive fields** (beyond the original `id`/`object`/`created`/`owned_by`): `context_window` (← `ModelInfoDto.ContextWindowLimit`), `supports_vision` (← `ModelInfoDto.SupportsVision`), `provider_name` (← `ModelInfoDto.ProviderName`; `owned_by` mirrors this or falls back to `"system"`), `provider_type` (`ModelInfoDto.ProviderType`, an `AiProviderKind.ToString()` PascalCase value, normalized to the OpenAI-community snake_case convention via `ModelInfoBuilder.ToSnakeCaseProviderType` — `"openai_compatible"`), `supports_tools` (always `true` — Arcanum runs its own server-side MCP tool layer regardless of the resolved model), `supports_streaming` (always `true`). Deduplication (first provider wins for a given model id, case-insensitive) is unchanged.
+`ModelInfoBuilder` is shared with `GET /api/models`. Additive OpenAI fields: `context_window`, `supports_vision`, `provider_name`/`provider_type`, `supports_tools`/`supports_streaming` (always true).
 
 #### 8.8.3 Client tool security (forwarding mode)
 
-When **`Arcanum:ClientToolForwarding:Enabled`** is `true`, the operator is explicitly opting out of Arcanum's server-side tool controls for client-supplied `tools`/`tool_choice` on `POST /v1/chat/completions`. In this mode:
-
-- **Sanctum network policy does not apply** — the provider decides whether and how to call the forwarded URLs/functions; Arcanum never sees the arguments.
-- **Ward / Forbidden Arts gating does not apply** — there is no server-side execution to approve or deny.
-- **Tool audit logging does not capture** client tool calls or their arguments, because Arcanum does not execute them.
-- **Provider-minted tool-call ids are preserved** verbatim on the wire so the client can correlate `role: "tool"` replies on subsequent requests (see §8.8.1).
-
-The default (`Enabled: false`) keeps the existing secure behavior: client `tools`/`tool_choice` are rejected with **400** `unsupported_parameter` and Arcanum executes only its own MCP/built-in toolset. Enable forwarding only when the client is trusted and the provider is expected to handle tool execution and any resulting security implications.
+When `ClientToolForwarding:Enabled`, Sanctum/Ward/tool audit do **not** apply to client-supplied tools (provider executes). Default remains reject.
 
 ### 8.9 NDJSON anti-buffering headers (`/api/intelligence/ping-stream`)
 
@@ -1132,186 +948,35 @@ The buffered ping endpoint wraps a **`PromptResponseDto`** (Core) inside `ApiRes
 
 ### 8.10.1 Mana counter (`POST /api/intelligence/mana`)
 
-**Purpose:** a read-only diagnostic that reports how much **Mana** (Arcanum's name for the token budget an inference turn consumes — see the CLI Mana bar, `ManaMeter`, `ManaPreflight`) a prompt or message transcript would cost, without spending any (no Grimoire writes, no inference).
-
-**Request (`ManaCountRequest`):** `messages` (`CoreChatMessage[]`, optional — OpenAI-shaped content parts supported), `prompt` (`string`, optional — alternative to `messages`; when both are supplied, `messages` takes precedence), `model` (`string`, optional — accepted for forward-compatibility only; Arcanum counts Mana using a single process-wide encoding for all models today, the same approximation the pre-flight context-compression counter uses, §10.2.3), `tools` (`bool`, default `false` — include a tool-schema Mana estimate).
-
-**Response (`ApiResponse<ManaCountResult>`):** `manaCount` (total), `encoding` (the tokenizer encoding actually used, for example `o200k_base`), `perMessage` (`int[]?`, per-message breakdown, present only when `messages` was supplied), `toolManaEstimate` (`int?`, present only when `tools: true`).
-
-**Tool Mana estimate:** `ToolSchemaManaEstimator` tokenizes the name, description, and JSON schema of every currently registered native tool (`ArcanumLocalTimeTool`, `ArcanumSystemInfoTool`) plus connected MCP tools (`IMcpConnectionManager.GetAvailableToolsAsync`), adding `Arcanum:Intelligence:PerMessageTemplateOverheadTokens` per tool. This is an **approximation** — it does not reproduce any single provider's exact function/tool wire format, and it excludes workspace/spell-scoped tools (for example the spell-script tool) that only exist during a live inference turn with a resolved spell.
-
-**Errors:** **400** `Validation.InvalidBody` when neither `messages` nor `prompt` is supplied.
+Read-only token estimate (`ManaCountRequest` → `ManaCountResult`); no inference/Grimoire writes. Optional tool-schema estimate. **400** when neither `messages` nor `prompt` supplied.
 
 ### 8.11 Daemon event SSE bus (`GET /api/events/daemon`)
 
-**Purpose:** Push Unseen Servant lifecycle updates to external clients (for example the MAUI Studio sidecar) without SignalR. The host uses an in-process **`IEventBus`** → **`InMemoryEventBus`** → per-type **`ScryingPool<T>`** with bounded **`Channel<T>`** fan-out.
-
-**Wire format:** `text/event-stream; charset=utf-8`. Each frame is `data: {DaemonEvent JSON}\n\n` serialized through **`ArcanumJsonContext.Default.DaemonEvent`**. On client disconnect, the handler best-effort emits `data: [DONE]\n\n` (parity with §8.8).
-
-**`DaemonEvent` fields:** `timestamp`, `runId` (correlates `started` → `completed`/`failed` within one job run; `Guid.Empty` for `intervalChanged`), `jobName`, `targetSpell`, `eventType` (`started` \| `completed` \| `failed` \| `intervalChanged`), optional `message`, optional `durationMilliseconds`.
-
-**Back-pressure:** Each subscriber gets an independent bounded channel (`Arcanum:EventBus:ChannelCapacity`, default 256, clamp 64–65,536). **`FullMode = DropOldest`** — publishers never block; slow subscribers lose the oldest frames. This is intentional for live dashboards.
-
-**Capacity hot-reload:** Channel capacity is read when a per-event-type hub is first created. If `arcanum.json` reloads, existing hubs retain their original capacity; only newly introduced event types pick up the updated value.
-
-**Anti-buffering headers:** `Cache-Control: no-cache` and `X-Accel-Buffering: no` (parity with §8.8/§8.9).
-
-**Connection caps (starvation prevention):** Every SSE route (`/events/daemon`, `/events/mcp`, `/events/logs`, session stream, Chronicle) acquires a lease from the shared **`SseConnectionGate`**, which enforces two caps in order: the global **`Arcanum:EventBus:MaxSseConnections`** cap (default 50, unchanged behavior), then a per-event-type cap **`Arcanum:EventBus:MaxSseConnectionsPerType`** (default 20, clamp 1–50) tracked by a shared **`SseConnectionCounter`** (`ConcurrentDictionary<string,int>` keyed by `SseEventTypes` constant). This prevents a single greedy client — for example a log ring-buffer watcher — from consuming the entire global pool and starving daemon, MCP, session, or Chronicle subscribers. Exceeding the per-type cap returns **503** `Api.TooManyConnections` with the message `Too many connections for event type '{EventTypeName}' (limit: {limit})`; exceeding the global cap keeps the existing generic message. On disposal, the lease decrements the per-type counter **before** releasing the global slot, closing a race where another connection could acquire the freed global slot and observe a stale, inflated per-type count.
-
-**Rate limiting:** When `Arcanum:Host:RateLimit:Enabled` is `true`, the route inherits `RequireRateLimiting("ArcanumRateLimit")` from the `/api` group. Rate limiting applies to **HTTP request admission**, not the duration of the open SSE stream.
-
-**Auth:** Protected by **`ApiKeyEndpointFilter`** on the `/api` group (§11). A 401 is returned before the stream starts if the key is missing or invalid.
+In-process `IEventBus` → bounded per-subscriber channels (`EventBus:ChannelCapacity`, `DropOldest`). Wire: `text/event-stream` `DaemonEvent` frames + best-effort `[DONE]`. Caps: global `MaxSseConnections` + per-type `MaxSseConnectionsPerType` via `SseConnectionGate` → **503** `Api.TooManyConnections`. Anti-buffering headers; API-key on `/api` group. Rate limit admits HTTP request only, not open-stream duration.
 
 ### 8.12 Configuration API (`GET` / `PUT` / `POST /api/config`)
 
-**Purpose:** Let first-party clients read and edit live operator settings without hand-editing `arcanum.json`.
-
-**Read (`GET /api/config`):** Returns the current **`ArcanumSettings`** snapshot from **`IOptionsSnapshot<ArcanumSettings>`** (file + `ARCANUM_` env overlay). Provider **`apiKey`**, provider **`endpoint`**, **`CommLink.WebhookUrl`**, and **`Host.Https.CertificatePassword`** are never returned in plaintext when non-empty — **`ConfigurationRedactor`** masks them as `"***"`.
-
-**Write (`PUT /api/config`):** Accepts a full **`ArcanumSettings`** body. **`ConfigurationRedactor.MergeRedactedSecrets`** replaces any redacted placeholder (`"***"`) with the value from the current snapshot (matched by provider `name`, case-insensitive) for provider **`apiKey`**, provider **`endpoint`**, **`CommLink.WebhookUrl`**, and **`Host.Https.CertificatePassword`** so clients can round-trip redacted reads without corrupting untouched secrets or URLs. **`ConfigurationValidator`** checks provider models and `DefaultModel` / `FastModel` resolution before write. **`ConfigurationWriter`** persists compact JSON (no pretty-print) as `{ "Arcanum": { ... } }` under **`ArcanumPaths.GrimoireDirectory/arcanum.json`** using a same-directory temp file and atomic `File.Move` replace. Provider **`apiKey`** values and **`Host.Https.CertificatePassword`** are encrypted at rest via **`ConfigurationSecretProtector`** (`dp:v1:` prefix) before serialization; **`ChatClientFactory`** decrypts API keys on use and **`HttpsCertificateLoader`** decrypts the certificate password at bind time. The protector uses **`SetApplicationName("ArcanumCore")`** and purpose **`Arcanum.Configuration.ProviderSecrets`** with keys persisted at `ArcanumPaths.GrimoireDirectory/keys` (see `src/RetroDownfall.Arcanum.Infrastructure/Security/ConfigurationSecretProtector.cs` and `DataProtectionKeyPaths.cs`). The `ArcanumCore` application name is shared with the master-API-key protector (which uses a distinct purpose, `Arcanum.Core.ApiKey`); the provider-secret purpose string is distinct so the two protected payloads cannot be cross-decrypted. **Compendium** (§4.6) re-implements the same protector locally to interoperate. A **`SemaphoreSlim(1,1)`** serializes concurrent writes.
-
-**Validate (`POST /api/config/validate`):** Runs the same validator without writing; returns **200** with **`ApiResponse<bool>`** (`data: true`) on success, **400** with **`ApiResponse<bool>`** (`Configuration.ValidationFailed`) on failure.
-
-**Hot reload:** **`ConfigurationBootstrapper`** loads `arcanum.json` with **`reloadOnChange: true`**, so **`IOptionsMonitor`** / **`IOptionsSnapshot`** consumers see updates after PUT without restarting the host.
-
-**Environment overrides:** `ARCANUM_*` variables continue to override file values at runtime. PUT only changes the on-disk file; env wins on the next bind. Document this for Studio operators who mix file and env configuration.
-
-**Status codes:** Validation failures return **400** + **`ApiResponse<bool>`** (`Configuration.ValidationFailed`). Write failures return **500** + **`ApiResponse<bool>`** (`Configuration.WriteFailed`). Success returns **200** + **`ApiResponse<bool>`** with `data: true`.
+Read: redacted secrets/URLs (`***`). Write: merge redacted placeholders from current snapshot; validate; atomic temp+rename to `arcanum.json`; encrypt provider keys + HTTPS cert password (`dp:v1:`). Validate-only: no write. Hot-reload via `reloadOnChange`; `ARCANUM_*` env still wins over file. Status: **400** `Configuration.ValidationFailed`, **500** `Configuration.WriteFailed`.
 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
-**Purpose:** Push managed MCP server lifecycle updates to external clients without polling **`GET /api/mcp`**.
+`McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11.
 
-**Publisher:** **`McpConnectionManager`** publishes **`McpServerEvent`** on **`IEventBus`** whenever a managed server's state changes (`starting`, `running`, `stopped`, `error`, `restarting`).
+### 8.14 Spell Management API (`/api/spells`)
 
-**Wire format:** `text/event-stream; charset=utf-8`. Each frame is `data: {McpServerEvent JSON}\n\n` serialized through **`ArcanumJsonContext.Default.McpServerEvent`**. On client disconnect, the handler best-effort emits `data: [DONE]\n\n` (parity with §8.11).
+Workspace resolution: `?workspace=` → `Host:Workspace` → CWD. CRUD needs resolvable workspace; empty `Spells:AllowedWorkspaceRoots` denies all (**403** `Spell.PathNotAllowed`). Built-ins under `~/.config/arcanum/spells/` are read-only (`Spell.BuiltinReadOnly`). Format: `SPELL.md` frontmatter + body; optional `SPELL.json` (legacy `SKILL.json` read fallback; writes always `SPELL.json`). Search shadow order: campaign > workspace > builtin. Versions: string labels `SPELL.v{label}.md` (`^[A-Za-z0-9.]+$`); activate swaps into `SPELL.md` and records `activeVersion`. Clone/cast/import quirks and status codes: §4.3. Per-workspace locks; delete only under `{workspace}/spells/{name}`.
 
-**`McpServerEvent` fields:** `timestamp`, `serverName`, `state` (`stopped` \| `starting` \| `running` \| `error` \| `restarting`), optional `message`, `tools` (tool name list when `state` is `running`).
+### 8.15 Daemon job management (`/api/daemons`, `/api/executions`)
 
-**Back-pressure / headers / rate limiting / auth:** Same as §8.11.
-
-### 8.14 Spell Management API (`GET` / `POST` / `PUT` / `DELETE` `/api/spells`)
-
-**Purpose:** Let first-party clients browse, create, update, and delete workspace spell catalogs without hand-editing `SPELL.md` files. Spell **execution** (semantic routing, system-prompt injection) is unchanged — see §10.2.2.
-
-**Paths:**
-
-| Concept | Location |
-|---------|----------|
-| Built-in spells root | `ArcanumPaths.GlobalSpellsDirectory` → `~/.config/arcanum/spells/` |
-| Grimoire config/DB root | `ArcanumPaths.GrimoireDirectory` → `~/.config/arcanum/` (distinct from spells root) |
-| Workspace spells | Any `SPELL.md` under the resolved workspace root (recursive); API-created spells use `{workspace}/spells/{name}/SPELL.md` |
-
-**Workspace resolution:** All spell routes accept optional **`?workspace=`**. `SpellWorkspaceResolver` resolves in order: query parameter (must exist on disk) → `IHostWorkspaceContext` / `Arcanum:Host:Workspace` → process `CurrentDirectory`. **CRUD** requires a resolvable workspace (**400** `Spell.NoWorkspace` otherwise). When **`Arcanum:Spells:AllowedWorkspaceRoots`** is non-empty, the resolved workspace must fall under one of those absolute roots — otherwise spell routes return **403** `Spell.PathNotAllowed`. Relative `Host.Workspace` values are normalized with `Path.GetFullPath` against the process CWD — prefer absolute paths in `arcanum.json`.
-
-**Read-only built-ins:** Spells under `GlobalSpellsDirectory` have `source: "builtin"` and cannot be created, updated, or deleted via the API. Workspace spells that **shadow** a built-in name (same `name`, workspace wins in list/get) can still be updated or deleted; update/delete without a workspace shadow returns **400** `Spell.BuiltinReadOnly`.
-
-**`SPELL.md` format:** YAML frontmatter (`---` … `---`) plus markdown body. Parsed keys: `name`, `description`, `tags`, `systemPrompt`, `template`, `model`, `provider`, `tools`, `requiredMcpServers`. Execution still injects the raw file (`FullContent`) into the system prompt — API `body` is the markdown after frontmatter only.
-
-**Optional `SPELL.json`:** Canonical structured sidecar next to `SPELL.md` (`{spellDir}/SPELL.json`). Read during the same directory walk as `SPELL.md` (no second scan). When present, structured fields (`version`, `inputSchema`, `outputSchema`, `declaredTools`, `dependencies`, `activeVersion`) surface on `SpellSummary` / `SpellDetail` and merge with frontmatter tags. At **inference** time, `dependencies` drive **Arcane Resonance** (§10.2.2) and `declaredTools` drive **Artifact Attunement** (§10.2.1). **`POST /api/spells`** with structured fields writes both `SPELL.json` and auto-generated `SPELL.md`; body-only create writes `SPELL.md` only. **Legacy read fallback:** if `SPELL.json` is absent, the scanner/repository still reads `SKILL.json` when present. When both exist, **`SPELL.json` wins**. All creates, updates, version activation, clone, and import **write `SPELL.json` only** (they never create a new `SKILL.json`).
-
-**Multi-source search (`GET /api/spells/search`):** Scans built-in (`ArcanumPaths.GlobalSpellsDirectory`), optional `?workspace=`, and all registered campaigns (or `?campaignId=`). Shadow order: **campaign > workspace > builtin**. Filters: `?q=` (regex meta-chars stripped), `?tag=`, `?tool=`, `?source=builtin|workspace|campaign`. Results sorted by name; capped at 1,000 in memory.
-
-**Validate / export / import:** `POST /api/spells/{name}/validate` returns `SpellValidationResultDto` (`IsValid`, `Errors[]`, `Warnings[]`); declared-tools mismatches are **warnings** only. `POST /api/spells/{name}/export` returns portable `SpellExportDto` (metadata + full content + base64 scripts). `POST /api/spells/import` imports into a resolved workspace; duplicate names return **400** `Spell.NameCollision`.
-
-**PUT merge semantics (`UpdateSpellRequest`):** Omitted or `null` field → keep existing value; provided value (including empty string or `[]`) → replace. **`UpdateSpellRequest` has no `body` field** — markdown body is always preserved from the existing file on update.
-
-**Status codes:** **400** + `ApiResponse<bool>` for validation (`Spell.InvalidName`, `Spell.InvalidFrontmatter`, `Spell.DuplicateName`, `Spell.BuiltinReadOnly`, `Spell.NoWorkspace`, `Spell.InvalidWorkspace`, `Spell.UnsafeDelete`, `Spell.WriteFailed`). **403** + envelope when `Spell.PathNotAllowed`. **GET** by unknown name returns bare **404**. **DELETE** success returns **204** with no body.
-
-**Delete safety:** `DELETE` only removes a spell directory under `{workspace}/spells/{name}` or a subdirectory whose leaf folder name matches the spell name. Spells discovered at the workspace root (`SPELL.md` directly under the workspace) cannot be deleted via the API (`Spell.UnsafeDelete`).
-
-**Concurrency:** Per-workspace `SemaphoreSlim` locks serialize create/update/delete within one workspace root; different workspaces do not block each other.
-
-**Spell versions (`GET`/`POST` `/api/spells/{name}/versions`, `GET`/`PUT`/`POST .../versions/{version}[/activate]`):** Named version sidecar files live alongside the active `SPELL.md`: `SPELL.v{label}.md`. **`SpellVersionPathPolicy`** (`Infrastructure/Workspaces`) is the single authority for label validation (`^[A-Za-z0-9.]+$` — alphanumeric and dots only) and label↔filename mapping; it replaces the earlier ad-hoc integer `VersionFileRegex`. **Breaking change:** `SpellVersionDto.Version` was `int` (file index); it is now a **string label** with an `isActive` flag, and the execute endpoint's `?version=` query is now a string label instead of an integer. Existing `SPELL.v1.md`-style files remain valid labels since integers are a subset of the label charset.
-- `GET .../versions/{version}` returns `SpellVersionDetailDto` with the parsed markdown **body** only (no frontmatter or filesystem paths). Use version label `(active)` to read the current `SPELL.md` content; sidecar labels read `SPELL.v{label}.md`. **404** when the spell or version file is missing.
-- `POST .../versions` (`CreateSpellVersionRequest` { `version`, `body`, `workspace` }) writes a new `SPELL.v{label}.md`, reusing the active spell's frontmatter with the given body. **400** `Spell.InvalidVersion` (bad label) or `Spell.DuplicateVersion` (label already exists); **400** `Spell.BuiltinReadOnly` for built-in spells.
-- `PUT .../versions/{version}` (`UpdateSpellVersionRequest` { `body`, `workspace` }) overwrites an existing version file's body, preserving frontmatter. **404** when the version does not exist.
-- `POST .../versions/{version}/activate` swaps the version file's content into `SPELL.md` and preserves the previously active content as `SPELL.v{previousLabel}.md`. The previous label comes from `SPELL.json`'s `activeVersion` field (see below); when absent (never activated), the previous content is preserved as `SPELL.v0.md`, or — if `SPELL.v0.md` already exists — a `yyyyMMddHHmmss` UTC timestamp label, so no content is ever silently overwritten. Response is `SpellVersionDto` with `previousVersion` set.
-
-**`SPELL.json` `activeVersion` field:** `SkillMetadata` (Core) carries an optional `string? ActiveVersion`, defaulting to `null` (never activated / predates this feature). **Only `ActivateVersionAsync` writes this field** (set to the newly activated label); `CreateVersionAsync`/`UpdateVersionAsync` never touch it. The spell-versions **list** endpoint reads it to mark the `SPELL.md` row's label and `isActive: true`.
-
-**Spell clone (`POST /api/spells/{name}/clone`):** Copies a spell (built-in or workspace) into `{workspace}/spells/{newName}/`, rewriting `name` in the `SPELL.md` frontmatter and copying `SPELL.json` if present (with `activeVersion` reset to `null` on the clone). Uses the same per-workspace lock as create/update/delete. **201** + `Location` on success; **400** `Spell.NameCollision` (target name taken), `Spell.InvalidName`, or `Spell.BuiltinReadOnly` (cloning into the built-in spells directory); **404** when the source spell is missing.
-
-**Spell cast — dry-run preview (`POST /api/spells/{name}/cast`):** Assembles exactly what a live execution would send to the model — system prompt (`SystemPromptBuilder.Build`, now in `Infrastructure/Intelligence/` alongside `SpellDependencyResolver`/`CodexReader`/`SpellScanner`), resonant dependencies (§10.2.2), Artifact Attunement-filtered tool names (§10.2.1), and available spell scripts (primary + resonant, deduplicated) — **without** any LLM call: no `SemanticRouter` invocation, no chat client, no tokens consumed. Implemented by **`ISpellCastPreviewService`** (Infrastructure), composing the same pieces `WizardIntelligenceProvider` uses for live inference, mirroring the `POST /api/prompts/{id}/test` dry-run pattern. **404** `Spell.NotFound`; **400** `Spell.NoWorkspace`.
-
-### 8.15 Daemon job management (`GET` / `POST` `/api/daemons`, `/api/executions`)
-
-**Purpose:** Let first-party clients browse registered daemon jobs, trigger on-demand runs, inspect execution history, and cancel in-flight work. Scheduled Unseen Servant runs and on-demand runs share the same **`DaemonRunner`** pipeline and publish lifecycle frames on **`GET /api/events/daemon`** (§8.11).
-
-**Route families:** **`/api/unseen-servant/*`** (canonical) and deprecated **`/api/daemon/*`** — Unseen Servant job **configuration** and runtime scheduling intervals. **`/api/daemons/*`** and **`/api/executions/*`** (plural) — daemon job **registry** and **execution history** for all registered **`IDaemonJob`** implementations.
-
-**Unseen Servant watermarks (persisted):** `UnseenServantJobTracker` records `lastRunAt`, `nextDueAt`, and `lastResult` in memory during process lifetime, and `lastRunAt` plus the effective interval are write-through persisted to the Grimoire `UnseenServantWatermarks` table (§5.5.5). On restart, the scheduler hydrates from the Grimoire before its first tick, applying a cooldown window so a job that missed its window while the host was down waits one interval rather than firing immediately.
-
-**Registry:** `DaemonJobRegistry` aggregates DI-registered **`IDaemonJob`** singletons. At startup, `AddArcanumDaemonServices` registers one **`UnseenServantDaemonJob`** per `Arcanum:Daemon:Jobs` entry with id `unseen-servant:{name}`. New config jobs require a host restart to appear in **`GET /api/daemons`**.
-
-**Execution history:** **`InMemoryDaemonExecutionRepository`** stores bounded per-daemon history (`Arcanum:Daemon:ExecutionHistoryLimit`, default 100). Thread-safe via per-daemon locks. History is process-local (not persisted across restarts). **`GET /api/executions/{id}`** includes correlated **`LogEntry[]`** logs from the in-memory ring buffer (§8.16): entries whose **`CorrelationId`** matches the execution id, ordered by **`Sequence`** ascending. **`DaemonRunner`** pushes the execution id into Serilog **`LogContext`** for the duration of **`IDaemonJob.RunAsync`**.
-
-**On-demand run (`POST /api/daemons/{id}/run`):** **`DaemonRunner.RunAsync(id, force: true)`** checks `CanRunOnDemand`, rejects when the same daemon already has a **`Running`** execution (`Daemon.AlreadyRunning`), starts an execution record, publishes **`DaemonEvent`** `started`, runs **`IDaemonJob.RunAsync`**, then marks completed/failed/cancelled and publishes the terminal frame. Returns **`ApiResponse<DaemonExecutionSummary>`** including the execution id (synchronous — waits for job completion).
-
-**Scheduled runs:** **`UnseenServantService`** calls **`DaemonRunner.RunScheduledAsync`**, which skips `CanRunOnDemand` but still enforces **per-daemon** single-flight (`TryStartAsync` / `Daemon.AlreadyRunning` when the same daemon already has a Running execution). Distinct daemon jobs remain concurrent subject to **`MaxConcurrentJobs`**. The minute scheduler retains per-key overlap guards as a second line of defense.
-
-**Cancel (`POST /api/executions/{id}/cancel`):** Cancels the linked **`CancellationTokenSource`**, marks the execution **`cancelled`**, returns updated **`DaemonExecutionSummary`**; **400** `Daemon.NotRunning` when not running.
-
-**SSE mapping:** `DaemonJobStatus` maps to existing **`DaemonEventType`** wire values (`running` → `started`, `completed` → `completed`, `failed`/`cancelled` → `failed` with message). No breaking changes to SSE consumers.
-
-**Key types:** `IDaemonJob`, `IDaemonRegistry`, `IDaemonExecutionRepository`, `IDaemonRunner`, `DaemonRunner`, `UnseenServantDaemonJob`, `InMemoryDaemonExecutionRepository`.
+**Route families:** `/api/unseen-servant/*` (+ deprecated `/api/daemon/*`) = Unseen Servant interval control; `/api/daemons/*` + `/api/executions/*` = job registry + execution history. Watermarks: §5.5.5. On-demand `POST .../run` waits for completion; scheduled path shares `DaemonRunner` single-flight per daemon. History process-local (`ExecutionHistoryLimit`); detail includes correlated ring-buffer logs.
 
 ### 8.16 Log ring buffer (`GET /api/logs`, `GET /api/events/logs`)
 
-**Purpose:** Bounded, in-memory observability for operators and first-party clients. Structured log events from the existing Serilog pipeline are captured by **`SerilogLogRingBufferSink`** into **`InMemoryLogRingBuffer`**, then exposed via paginated query and live SSE tail. Not persisted across process restarts.
+Serilog → `SerilogLogRingBufferSink` → in-memory ring (`Logs:RingBufferCapacity`, overwrite oldest). Query filters + `beforeSequence` cursor. Live SSE same caps as §8.11. Not persisted across restarts. Deferred sink registration avoids Build()-time logging DI deadlock.
 
-**Capture path:** Serilog → **`SerilogLogRingBufferSink`** (`ILogEventSink`) → **`ILogRingBuffer`**. The sink maps Serilog levels to wire **`LogLevel`**, extracts **`SourceContext`** as **`Category`**, copies structured properties (excluding **`SourceContext`** and **`CorrelationId`**), and reads **`CorrelationId`** from **`LogContext`** (pushed by **`DaemonLogAttacher`** during daemon runs — see §8.15). **`MinLevelInBuffer`** is enforced in the sink only; the ring buffer stores any entry it receives. The sink swallows all exceptions so logging failures cannot break the host.
+### 8.17 Workspace registry and file browser/writer (`/api/workspaces`)
 
-**Host Build / DI:** `AddArcanumSerilog` wires a **deferred** ring-buffer sink (resolve on first emit) and reads file/console settings from **`IConfiguration`** string keys — not `IOptions<ArcanumSettings>` — inside the `AddSerilog` callback. Resolving options or the concrete sink while the host is still in `Build()` re-enters logging DI and deadlocks (WebApplicationFactory HostFactoryResolver timeout). Under **`Testing`**, the rolling file sink is skipped.
-
-**Ring buffer:** Fixed-capacity circular overwrite (`Arcanum:Logs:RingBufferCapacity`, default 10,000, clamp 1,000–100,000). Monotonic **`Sequence`** assigned in **`InMemoryLogRingBuffer.Write`**. Thread-safe via **`Lock`**.
-
-**Query (`GET /api/logs`):** Returns **`ApiResponse<LogQueryResult>`** with optional filters: **`minLevel`** (inclusive), exact **`category`** (case-insensitive), **`from`** / **`to`** timestamps, **`search`** (case-insensitive substring on **`Message`** + **`Category`**). Results ordered by **`Sequence`** descending. Default **`limit`** 100 (clamp 1–10,000). Cursor paging: pass **`beforeSequence`** from a prior response's **`nextBeforeSequence`**; **`hasMore`** indicates additional pages.
-
-**Live stream (`GET /api/events/logs`):** `text/event-stream; charset=utf-8`. Initial frame `data: {"connected":true}\n\n`, then one **`LogEntry`** JSON object per frame (`data: {...}\n\n`), then `data: [DONE]\n\n` on disconnect. Fan-out uses per-subscriber bounded channels with **`DropOldest`** — same back-pressure model as §8.11. **Connection cap:** `SseConnectionGate` lease keyed as `LogEntry`; same global + per-type caps as §8.11. Subscriber channel capacity reuses `Arcanum:EventBus:ChannelCapacity`.
-
-**Key types:** `LogEntry`, `LogQueryRequest`, `LogQueryResult`, `ILogRingBuffer`, `InMemoryLogRingBuffer`, `SerilogLogRingBufferSink`, `ILogQueryService`, `LogQueryService`, `IDaemonLogAttacher`, `DaemonLogAttacher`.
-
-### 8.17 Workspace registry and file browser/writer (`/api/workspaces`, `/api/workspaces/{id}/files`)
-
-**Purpose:** Let first-party clients register named project directories and browse — and, when enabled, create, modify, and delete — their contents over the HTTP API. When the Grimoire database is migrated and ready (`IGrimoireDbReadiness.IsReady`), **`CampaignBackedWorkspaceRegistry`** serves **`GET /api/workspaces`** from persisted **campaign** rows (each campaign path is auto-registered with `persisted: true`). Before Grimoire is ready, or for ephemeral **`POST /api/workspaces`** registrations, **`InMemoryWorkspaceRegistry`** is used (`persisted: false`). Spell CRUD (§8.14) continues to use ephemeral `?workspace=` resolution; the registry is the explicit catalog for UI file browsing and campaign discovery.
-
-**Campaign-backed bridge:** `POST /api/campaigns` validates path allowlist (`Arcanum:Campaigns:AllowedRoots`), creates `{path}/.arcanum/`, persists the campaign in Grimoire, and exposes it via **`GET /api/workspaces`** with `WorkspaceType.campaign` and **`persisted: true`**. `arcanum look` and `arcanum doctor` work without Grimoire (in-memory fallback).
-
-**Workspace model:** `WorkspaceInfo` carries `Id` (32-char hex GUID), `Name`, normalized absolute `Path`, `WorkspaceType` (`spell`, `campaign`, `data`, `custom`), `RegisteredAt`, and **`Persisted`** (Grimoire-backed vs ephemeral). Registration validates that `Path` exists and is a directory; names must be non-empty and unique (case-insensitive); paths must be unique (normalized comparison via `WorkspaceRootPolicy.IsSamePath`).
-
-**File browser (read):** `IFileSystemBrowser` → `PhysicalFileSystemBrowser` lists directories, returns metadata, and reads UTF-8 text. **`Arcanum:Workspaces:MaxFileReadSizeBytes`** (default 1 MiB, clamp 1 KiB–10 MiB) caps read size.
-
-**File writer (write/modify/delete):** `IFileSystemWriter` → `PhysicalFileSystemWriter` (scoped; reads settings via `IOptionsSnapshot<ArcanumSettings>`) backs four endpoints:
-
-| Verb | Path | Purpose |
-|---|---|---|
-| `PUT` | `/api/workspaces/{id}/files/contents` | Create or overwrite a file (full content); creates parent directories. |
-| `PATCH` | `/api/workspaces/{id}/files/contents` | Replace a verbatim text block (`oldString` → `newString`) in an existing file. |
-| `DELETE` | `/api/workspaces/{id}/files` | Delete a file, or an empty directory; `?recursive=true` deletes a non-empty directory tree. |
-| `POST` | `/api/workspaces/{id}/files/directory` | Create a directory, including parents. |
-
-All four require `?relativePath=<path>`, gated behind the same `ApiKeyEndpointFilter` as the rest of `/api`, and behind **`Arcanum:Workspaces:EnableFileWrite`** (default `false`) — when disabled, every write/modify/delete request returns **403** `Workspace.FileWriteDisabled` before any I/O runs. `PUT`/`PATCH` read and validate the JSON request body **before** checking whether the workspace exists, matching the pattern in `UpdateWorkspace` (`PUT /api/workspaces/{id}`): returning early without draining an unconsumed request body corrupts the HTTP response.
-
-**Path traversal protection:** `WorkspacePathResolver.ResolveRelativePath` rejects absolute paths and `..` segments, normalizes with `Path.GetFullPath`, and verifies the result stays under the workspace root (OS-aware prefix check via `WorkspacePathPolicy.IsPathUnderWorkspace`). Direct requests to paths that escape via symlinks return **`Workspace.SymbolicLinkEscape`**. **`PhysicalFileSystemBrowser.ReadAsync`**, **`GetInfoAsync`**, and every `PhysicalFileSystemWriter` method call **`WorkspacePathPolicy.RevalidatePathBeforeIo`** immediately before I/O to close the TOCTOU window between resolution and use (parity with MCP sandboxed file tools; §11.15). Recursive listings and recursive deletes validate **each enumerated entry** with `WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck`; escaping entries are **skipped, not followed** — one bad symlink does not fail the whole operation, and a symlink whose target stays inside the workspace is removed as a link (never traversed into).
-
-**Atomic writes:** `PUT` and `PATCH` write to a same-directory temp file (`.arcanum-{guid}.tmp`), flush, then atomically rename via `AtomicFile.ReplaceAsync` — the same crash-safe primitive used for spell writes (§8.14). `PhysicalFileSystemWriter` additionally captures the temp file's handle identity before the rename and re-validates the moved destination's identity after, mirroring `SandboxedFileIo`'s tier-2 TOCTOU closure for the MCP `write_file` tool (§11.15). The temp file is removed automatically on any failure before the rename completes; the original file is left untouched.
-
-**Size limits:** **`Arcanum:Workspaces:MaxFileWriteSizeBytes`** (default 1 MiB, clamp 1 KiB–10 MiB) caps `PUT` content and the `PATCH` `newString`; **`Arcanum:Workspaces:MaxReplaceTextBlockBytes`** (default 512 KiB, clamp 1 KiB–4 MiB) caps the combined `oldString` + `newString` on `PATCH`. Both checks run before any I/O.
-
-**`PATCH` replacement semantics:** the file is read as UTF-8 text (preserving a leading BOM if present) and `oldString` occurrences are counted with `StringComparison.Ordinal`. Zero matches returns **`Workspace.ReplacementNotFound`**; when the actual count doesn't match `expectedReplacements` (or more than one match exists and `expectedReplacements` is omitted), it returns **`Workspace.ReplacementAmbiguous`**. Otherwise every occurrence is replaced in one atomic write.
-
-**Permission errors:** `UnauthorizedAccessException` / `SecurityException` during enumerate, read, write, or delete map to **`Workspace.AccessDenied`** (not `FileNotFound`).
-
-**Type-mismatch guards:** `PUT`/`PATCH`/`DELETE` against an existing directory (where a file was expected) return **`Workspace.PathIsDirectory`** or **`Workspace.FileNotFound`**; `POST .../files/directory` against an existing file returns **`Workspace.PathIsFile`**.
-
-**Search patterns:** Wildcards (e.g. `*.txt`) are allowed; patterns containing `/` or `\` return **`Workspace.InvalidSearchPattern`**.
-
-**`HEAD` checks:** `HEAD /api/workspaces/{id}/files/contents?relativePath=...` returns **200** with an empty body and sets `Content-Length` (file size in bytes) and `Last-Modified` (file mtime). **404** is returned when the workspace or file is missing; directory or disallowed paths return **400** through the normal error envelope. This avoids reading the full file body for freshness and size probes.
-
-**Out of scope:** Filesystem watchers, full-text search indexing, remote sync, automatic registration from startup paths.
-
-**Key types:** `IWorkspaceRegistry`, `InMemoryWorkspaceRegistry`, `IFileSystemBrowser`, `PhysicalFileSystemBrowser`, `IFileSystemWriter`, `PhysicalFileSystemWriter`, `WorkspacePathResolver`, `WorkspaceInfo`, `FileEntry`, `FileListResult`, `FileReadResult`, `FileWriteRequest`, `FileWriteResult`, `TextBlockReplaceRequest`, `TextBlockReplaceResult`, `FileDeleteResult`, `DirectoryCreateResult`, `WorkspaceSettings`.
+Campaign-backed when Grimoire ready (`persisted: true`); else in-memory. Writes gated by `Workspaces:EnableFileWrite` (default off) → **403** `Workspace.FileWriteDisabled`. Path policy: reject `..`/absolute; symlink escape → `Workspace.SymbolicLinkEscape`; revalidate before I/O. Atomic temp+rename for PUT/PATCH. Size clamps: §3.4. PATCH ordinal replace with ambiguous/not-found codes. HEAD contents returns size/`Last-Modified` only.
 
 ### 8.18 Session API (superseded — see §11.16)
 
@@ -1319,309 +984,66 @@ The former bounded **in-memory** conversation layer (`InMemoryConversationReposi
 
 ### 8.19 Server lifecycle (PID file)
 
-**Purpose:** Let external scripts and operators detect a running Arcanum HTTP host, send signals to the recorded process ID, and implement health checks without polling HTTP.
-
-**Default path:** `Arcanum:Server:PidFilePath` defaults to `arcanum.pid` under `ArcanumPaths.GrimoireDirectory` (`~/.config/arcanum/` on Unix, `%USERPROFILE%\.config\arcanum\` on Windows). Set to `null`, empty, or whitespace to disable PID file management entirely.
-
-**Startup (`PidFileService.StartAsync`):** Creates parent directories when needed. If the file exists, reads the PID; when `Process.GetProcessById` reports a live process, startup fails with `InvalidOperationException` (host exits non-zero). Stale files (missing or exited PID) are logged and overwritten with `Environment.ProcessId`.
-
-**Shutdown (`PidFileService.StopAsync`):** Deletes the PID file **only** when it still contains this process's PID. If another PID is present (for example after a race), the file is left in place and a warning is logged. Removal failures are logged but never throw.
-
-> **DevHost collision:** Running `arcanum serve` and `Api.DevHost` at the same time will conflict on the default PID file unless one of them sets `Arcanum:Server:PidFilePath` to a different path (or `null`).
-
-**Out of scope:** OS-level file locking (`flock`), custom PID file formats, permission/ownership management, signal handling beyond normal host shutdown, port-based duplicate detection.
-
-**Key types:** `PidFileService`, `ServerSettings`.
+Default `~/.config/arcanum/arcanum.pid`; disable with null/empty. Startup fails if live PID present; stale overwritten. Shutdown deletes only if still this PID. DevHost vs serve collide on default path unless overridden.
 
 ### 8.21 The Proving Grounds (`POST /api/proving-grounds/trials/run`)
 
-**Purpose:** In-memory validation of spell outcomes, prompt accuracy, and Apprentice plan structure. Operators submit a **`Trial`** (target + input variables + **Inquisitors**) and receive a **`TrialResult`** with per-Inquisitor verdicts. Phase 1 is ephemeral — no Grimoire persistence for Trials.
-
-**Terminology:** The subsystem is **The Proving Grounds**; a test configuration is a **Trial**; a pass/fail criterion is an **Inquisitor**. The legacy industry term for LLM testing is **prohibited** in all code, API identifiers, and documentation.
-
-**`POST /api/proving-grounds/trials/run`:** Body **`Trial`** (`targetKind`, `target`, `inquisitors[]`, optional `variables`, `model`, `workspace`, `name`). Returns **`ApiResponse<TrialResult>`** (`passed`, `output`, `verdicts[]`, usage). **400** `ProvingGrounds.InvalidTrial` / `ProvingGrounds.TooManyInquisitors`; **404** `ProvingGrounds.SpellNotFound` / `ProvingGrounds.PromptNotFound`; **500** `ProvingGrounds.InferenceFailed`.
-
-**Target resolution:**
-
-| `targetKind` | `target` | Execution |
-|--------------|----------|-----------|
-| `spell` | Spell name | `ISpellRepository.GetAsync` → `ExecutePromptAsync` with `OverrideSpellName`, `SkipSpellRouting: false`; user message from `variables.input` (optional). |
-| `prompt` | Prompt GUID | `IPromptRepository` + `PromptRenderer.Render` → `AdditionalSystemPrompt`; user message from `variables.input` (optional). |
-| `apprenticeGoal` | Goal string | Transient `Apprentice` + `ApprenticePromptBuilder.BuildPlanGenerationPrompt` (single-shot plan generation; no DB rows). Optional `{{key}}` substitution from `variables`. |
-
-**Inquisitors (polymorphic `kind` discriminator via `[JsonDerivedType]` — first source-gen polymorphism in the repo):**
-
-| `kind` | Type | Behaviour |
-|--------|------|-----------|
-| `regex` | `RegexInquisitor` | `Regex.IsMatch` with 1s timeout; `shouldMatch` (default `true`), `ignoreCase`. |
-| `jsonSchema` | `JsonSchemaInquisitor` | Lightweight subset: valid JSON + `required` presence + `properties.*.type` primitive checks (mirrors `PromptRenderer` — not full draft 2020-12). |
-| `semantic` | `SemanticInquisitor` | FastModel (`Arcanum:FastModel` → `DefaultModel`) yes/no judge via stateless `ExecutePromptAsync`; `question`, `expectedAnswer` (default `true`). |
-
-**Key types:** `Trial`, `TrialResult`, `InquisitorVerdict`, `Inquisitor` (+ derived), `IProvingGroundsArbiter`, `ProvingGroundsArbiter` (Core), `ProvingGroundsRunner`, `ProvingGroundsEndpoints` (Api), `ProvingGroundsSettings`.
+Ephemeral Trial + Inquisitors (`regex` / `jsonSchema` / `semantic` FastModel judge). Targets: spell / prompt / apprenticeGoal. Terminology strict — industry LLM-test jargon prohibited. Errors §8.23.
 
 ### 8.22 Metrics endpoint (`GET /metrics`)
 
-**Purpose:** Prometheus text-format (`0.0.4`) exporter giving operators request volume, inference latency/tokens, tool outcomes, SSE connection saturation, Sanctum breaches, and .NET runtime health — the only observability surface before this was the binary `GET /api/health` check (§4.3).
-
-**AOT constraint:** No OpenTelemetry SDK, no `prometheus-net` — both carry reflection/dynamic-assembly patterns incompatible with `PublishAot` (§9). The implementation uses only `System.Diagnostics.Metrics` (in-box, AOT-safe) plus a hand-rolled `StringBuilder` exporter; no new NuGet packages.
-
-**Metric catalog** (`ArcanumMetrics`, Core `Telemetry` namespace):
-
-| Metric | Type | Labels | Source |
-|--------|------|--------|--------|
-| `arcanum_http_requests_total` | Counter | `endpoint` (route pattern, not raw URL), `method`, `status_code` | `ApiBootstrapper.UseArcanumMetrics` middleware |
-| `arcanum_inference_duration_seconds` | Histogram | `provider`, `model` | `WizardIntelligenceProvider` after each completed turn (buffered and streamed) |
-| `arcanum_inference_tokens_total` | Counter | `provider`, `model`, `direction` (`prompt` \| `completion`) | `WizardIntelligenceProvider`, from `ChatCompletionUsage` |
-| `arcanum_tool_invocations_total` | Counter | `tool_name`, `outcome` (`success` \| `denied` \| `error`) | `ToolExecutionPipeline.ProcessSingleToolCallAsync` |
-| `arcanum_sse_connections_current` | Gauge (`UpDownCounter`) | `event_type` (`SseEventTypes`) | `SseConnectionGate` on admit/release |
-| `arcanum_sessions_active` | Gauge | — | Queried on every scrape from the Grimoire (`Sessions` where `Status = "active"`) via the endpoint's own scoped `ArcanumDbContext` — not cached, not instrumented on the write path |
-| `arcanum_sanctum_breaches_total` | Counter | `breach_type` | `SanctumBreachRepository.RecordAsync`, after the breach insert commits (§11.15) |
-
-Histogram bucket boundaries (seconds), shared by every histogram the exporter renders: `0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300`. `arcanum_grimoire_operation_duration_seconds` is cataloged but **not implemented** — a comment on `SqliteBusyRetry.ExecuteAsync` marks the intended instrumentation point; low priority for the initial implementation.
-
-**Exporter (`PrometheusMetricsExporter`, Infrastructure singleton):** `System.Diagnostics.Metrics.Histogram<T>` does not expose Prometheus-compatible bucket boundaries or its own readable aggregate state, so the exporter attaches a `MeterListener` to every published meter in the process — not just the Arcanum meter — which is what lets it also render the built-in `System.Runtime`, `Microsoft.AspNetCore.Hosting`, and `Microsoft.AspNetCore.Server.Kestrel` meters (GC, memory, thread pool, active connections) with zero manual instrumentation. Each raw measurement is rebucketed into the fixed boundaries above; the instrument's native aggregation is never read. A render-time name-prefix allowlist (`arcanum_`, `process_`, `dotnet_`, `http_server_`, `kestrel_`) keeps an unrelated meter loaded into the same process from leaking unbounded metric noise into the scrape. The listener starts **eagerly at construction** (not lazily on first scrape) — `MeterListener` only observes measurements recorded after it starts and never replays history, so a lazy start would silently drop every metric update between process boot and the first Prometheus scrape.
-
-**Endpoint and auth:** `GET /metrics` is always mapped at the canonical path outside `/api` and `/v1` (`ApiBootstrapper.MapArcanumEndpoints`) — not relocated under `/api/metrics`. `Arcanum:Metrics:Enabled` (`bool`, default `true`) gates the handler with a `404` when `false`. `Arcanum:Metrics:RequireApiKey` (`bool`, default `true`) attaches `ApiKeyEndpointFilter` (and any active rate limiter) to that same `/metrics` route; scrapers authenticate with **`X-Arcanum-Key`** or **`Authorization: Bearer <key>`** (§11.3). Explicit `RequireApiKey=false` is honored **only** on a loopback bind (unauthenticated scrape for local Prometheus). **When the effective host bind is all-interfaces** (`Arcanum:Host:ListenAny` / `ARCANUM_HOST_ANY`), `RequireApiKey` is forced to `true` regardless of configuration — the same zero-trust downgrade pattern CORS wildcards get in §11.4 — since an unauthenticated `/metrics` on a non-loopback bind would otherwise leak operational data to the network.
-
-**Content type:** `text/plain; version=0.0.4; charset=utf-8`. Plain `StringBuilder` output — no JSON, no OpenMetrics protobuf.
-
-**Key types:** `ArcanumMetrics` (Core), `MetricsSettings` (Core), `PrometheusMetricsExporter` (Infrastructure), `MetricsEndpoints` (Api).
+Prometheus text `0.0.4` via `System.Diagnostics.Metrics` + hand-rolled exporter (no OTel/prometheus-net — AOT). Catalog: HTTP requests, inference duration/tokens, tool outcomes, SSE gauge, active sessions (scrape-time query), Sanctum breaches (+ runtime meters via `MeterListener`). Path outside `/api`/`/v1`. `Metrics:Enabled` → **404** when false. `RequireApiKey` default true; forced true on ListenAny. Auth: `X-Arcanum-Key` or Bearer.
 
 ### 8.23 Error code catalog and HTTP status mapping
 
-Every wire-stable error code is a `public const string` on `RetroDownfall.Arcanum.Core.Primitives.ErrorCodes`, grouped into nested classes by domain. The single authority for turning a code into an HTTP status is `ArcanumErrorMapper.ResolveStatusCode` (Api, `TheForge`); `ResolveStatusCodeDefaultBadRequest` wraps it for endpoints that historically treated any unmapped code as **400** (Apprentice, Campaign, Spell, Prompt, ProvingGrounds routes) while still honoring every explicit **500** mapping (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`) unchanged. Any string not recognized by the `switch` — including `Hub.Error` itself — falls through to the default arm: **HTTP 500**.
+Wire-stable codes live on `ErrorCodes` (Core). HTTP mapping authority: `ArcanumErrorMapper.ResolveStatusCode` (Api). `ResolveStatusCodeDefaultBadRequest` treats unmapped codes as **400** on Apprentice/Campaign/Spell/Prompt/ProvingGrounds routes while still honoring explicit **500** mappings (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`). Unrecognized strings (including `Hub.Error` via default arm) → **500**. Keep in sync with `ErrorCodes.cs` / `ArcanumErrorMapper.cs` (`ArcanumErrorMapperTests`).
 
-The table below is generated from `ErrorCodes.cs` and `ArcanumErrorMapper.cs` and must be kept in sync with both; `ArcanumErrorMapperTests` unit-tests the mappings for full theory coverage.
+**Default / unmapped:** unlisted codes → **500**; `ResolveStatusCodeDefaultBadRequest` downgrades unmapped → **400** except the explicit **500** set above.
 
-| Code | HTTP | Notes |
-|------|------|-------|
-| `Validation.InvalidPrompt` | 400 | Empty/whitespace prompt on a native `/api` inference route. |
-| `Validation.AttachedFiles` | 400 | Malformed or oversized CLI-attached file payload. |
-| `Validation.InvalidBody` | 400 | Request body failed shape/required-field validation. |
-| `Validation.InvalidQuery` | 400 | Query-parameter validation failure (e.g. guardrails audit endpoint date/range checks). |
-| `Validation.InvalidProviderType` | 400 | Provider `Kind` failed validation. |
-| `Hub.ToolLoop` | 503 | Exceeded `Arcanum:Intelligence:MaxToolInferenceRounds`. |
-| `Hub.Timeout` | 503 | Inference turn exceeded `Arcanum:Intelligence:InferenceTimeoutSeconds`. |
-| `Hub.Model` | 404 | Requested/default model does not match any provider's `models` entry. |
-| `Hub.Error` | 500 | Generic inference failure; resolved via the mapper's default fallback, not an explicit `switch` arm. |
-| `Campaign.NotFound` | 404 | Campaign id/path not registered in the Grimoire. |
-| `Campaign.InvalidPath` | 400 | Campaign root path missing, not a directory, or otherwise invalid. |
-| `Campaign.PathNotAllowed` | 403 | Campaign path outside configured allowed roots. |
-| `Campaign.MaxReached` | 400 | `Arcanum:Campaigns:MaxCampaigns` reached. |
-| `Session.NotFound` | 404 | Session id not found. |
-| `Session.Archived` | 400 | Mutation attempted on an archived (soft-deleted) session. |
-| `Session.InvalidStatus` | 400 | Session status update supplied an unrecognized value (must be `active` or `archived`). |
-| `Session.TooManyEntries` | 400 | `Arcanum:Sessions:MaxEntriesPerSession` reached. |
-| `Session.EntryTooLarge` | 400 | Entry content exceeds `Arcanum:Sessions:MaxEntryContentBytes`. |
-| `Session.EntryNotFound` | 404 | Entry id not found in the requested session. |
-| `Session.MemoryManagementDisabled` | 400 | `Arcanum:Sessions:AllowMemoryManagement` is `false`; memory-management endpoints are gated off. |
-| `Session.TooManyPinned` | 409 | Pinning would exceed `Arcanum:Sessions:MaxPinnedEntries`. |
-| `Session.EmptyContent` | 400 | Manual entry append with empty/whitespace content. |
-| `Grimoire.LoreNotFound` | 404 | Lore key not found. |
-| `Apprentice.NotFound` | 404 | Apprentice id not found. |
-| `Apprentice.Disabled` | 400 | `Arcanum:Apprentices:Enabled` is false. |
-| `Apprentice.AlreadyRunning` | 409 | Start requested while already `Running`. |
-| `Apprentice.Running` | 409 | Delete requested while still `Running`. |
-| `Apprentice.NotPaused` | 409 | Resume requested while not `Paused`. |
-| `Apprentice.CannotReweave` | 409 | Reweave requested outside a valid plan-revision state. |
-| `Apprentice.InvalidGuidance` | 400 | Divine Intervention guidance failed validation. |
-| `Apprentice.NotEscalated` | 409 | Intervene requested while not `Escalated`. |
-| `Apprentice.PendingQueueFull` | 400 | `Arcanum:Apprentices:MaxPendingStarts` reached. |
-| `Apprentice.MaxReached` | 409 | `Arcanum:Apprentices:MaxConcurrentApprentices` reached. |
-| `Apprentice.InvalidPlan` | 400 | Reweave plan failed structural validation. |
-| `Apprentice.InvalidGoal` | 400 | Create request goal failed validation. |
-| `Apprentice.InvalidWorkspace` | 400 | Create request workspace failed validation. |
-| `Apprentice.ConclaveDisabled` | 409 | `Arcanum:Conclave:Enabled` is false; `cast` rejected. |
-| `Apprentice.ConclaveDepthExceeded` | 409 | `Arcanum:Conclave:MaxDelegationDepth` exceeded. |
-| `Apprentice.ConclaveBreadthExceeded` | 409 | `Arcanum:Conclave:MaxDescendantsPerRoot` exceeded. |
-| `Sending.Disabled` | 403 | `Arcanum:Conclave:Enabled` and/or `Arcanum:Conclave:A2A:Enabled` is false; A2A surface refused. |
-| `Sending.AgentNotAllowed` | 403 | `dispatch_sending` target URL is not in a non-empty `Arcanum:Conclave:A2A:AllowedRemoteAgents`. |
-| `Sending.TaskRejected` | 400 | Remote A2A agent rejected the task, or the inbound A2A request was malformed. |
-| `Sending.AgentUnreachable` | 502 | Could not connect to, or discover the Agent Card of, the remote A2A agent. |
-| `Sending.AgentCardInvalid` | 502 | Remote Agent Card was malformed or advertised no usable interface. |
-| `Sending.MaxTasksReached` | 429 | `Arcanum:Conclave:A2A:MaxExternalTasks` concurrency limit reached (in-memory semaphore, not persisted). |
-| `Sending.TaskTimeout` | 504 | `Arcanum:Conclave:A2A:ExternalTaskTimeoutMinutes` exceeded waiting on a delegated Sending. |
-| `Workspace.NotFound` | 404 | Workspace id not registered. |
-| `Workspace.NameEmpty` | 400 | Workspace registration with empty/whitespace name. |
-| `Workspace.PathNotAllowed` | 403 | Workspace root outside configured allowed paths. |
-| `Workspace.AccessDenied` | 403 | Filesystem access denied (OS-level permissions) beneath an otherwise-allowed root. |
-| `Workspace.FileNotFound` | 404 | Requested relative path does not exist. |
-| `Workspace.FileTooLarge` | 413 | File exceeds `Arcanum:Workspaces:MaxFileReadSizeBytes`/`MaxFileWriteSizeBytes`. |
-| `Workspace.SymbolicLinkEscape` | 400 | Symlink resolves outside the workspace root. |
-| `Workspace.PathTraversal` | 400 | Relative path attempts to escape the workspace root (`..`). |
-| `Workspace.FileWriteDisabled` | 403 | `Arcanum:Workspaces:EnableFileWrite` is false. |
-| `Workspace.WriteFailed` | 500 | OS-level write failure (disk full, race, etc.). |
-| `Workspace.DeleteFailed` | 500 | OS-level delete failure. |
-| `Workspace.DirectoryNotEmpty` | 400 | Non-recursive delete of a non-empty directory. |
-| `Workspace.ReplacementNotFound` | 404 | Verbatim text block for `PATCH .../files/contents` not found in the target file. |
-| `Workspace.ReplacementAmbiguous` | 400 | Verbatim text block matched more than once. |
-| `Workspace.PathIsDirectory` | 400 | File operation targeted a directory. |
-| `Workspace.PathIsFile` | 400 | Directory operation targeted a file. |
-| `Spell.NotFound` | 404 | Spell name not found (built-in or workspace). |
-| `Spell.PathNotAllowed` | 403 | Spell workspace path outside configured allowed roots. |
-| `Spell.NoWorkspace` | 400 | Workspace-scoped spell operation missing a `workspace` query/campaign context. |
-| `Spell.InvalidWorkspace` | 400 | Supplied workspace path failed validation. |
-| `Spell.InvalidName` | 400 | Spell name failed the naming pattern. |
-| `Spell.NameCollision` | 400 | Target name already exists in the workspace. |
-| `Spell.BuiltinReadOnly` | 400 | Mutation attempted on a built-in (read-only) spell. |
-| `Spell.DuplicateVersion` | 400 | Version label already exists for the spell. |
-| `Spell.InvalidVersion` | 400 | Version label failed the `^[A-Za-z0-9.]+$` pattern. |
-| `Prompt.NotFound` | 404 | Prompt id not found. |
-| `Prompt.CodexPathNotContained` | 400 | Codex reference path escapes the campaign/global containment root. |
-| `Prompt.DuplicateVersion` | 400 | Prompt name + version already exists. |
-| `Prompt.InvalidName` | 400 | Prompt name failed validation. |
-| `Prompt.InvalidVersion` | 400 | Prompt version label failed validation. |
-| `Prompt.InvalidRequest` | 400 | Prompt create/update request missing required name and version fields. |
-| `Intelligence.HumanPromptNotFound` | 404 | Human-in-the-loop prompt id not found (already answered or expired). |
-| `Mcp.AmbiguousServer` | 400 | Server name matches more than one connection without a disambiguating `workingDirectory`. |
-| `Mcp.MissingWorkspace` | 400 | Server lookup requires a `workingDirectory` that was not supplied. |
-| `Mcp.ServerNotFound` | 404 | Named MCP server not found. |
-| `Mcp.ServerNotRunning` | 400 | Diagnostic MCP Invocation: the named server exists but is not in the `running` state. |
-| `Mcp.WorkspaceNotTrusted` | 403 | Diagnostic MCP Invocation: the workspace-local MCP surface is not trusted (reserved; the manager hides untrusted servers before they reach the diagnostic service). |
-| `Mcp.ToolNotFound` | 404 | Diagnostic MCP Invocation: the requested tool name was not found on any visible running external server. |
-| `Mcp.AmbiguousTool` | 400 | Diagnostic MCP Invocation: the tool name is provided by more than one visible running external server; supply `serverName` to disambiguate. |
-| `Mcp.DiagnosticBlocked` | 403 | Diagnostic MCP Invocation: the requested tool belongs to the internal `arcanum-internal` server or is a Forbidden Art (`execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`, `run_spell_script`) and cannot be invoked from the diagnostic endpoint. |
-| `Mcp.ToolError` | 400 | Diagnostic MCP Invocation: the tool returned an `isError: true` result. |
-| `Mcp.DiagnosticTimeout` | 504 | Diagnostic MCP Invocation: the request exceeded `Arcanum:Mcp:RequestTimeoutSeconds`. |
-| `Daemon.NotFound` | 404 | Daemon job id not found. |
-| `CommLink.Suppressed` | 502 | Outbound webhook dispatch failed or was suppressed by policy. |
-| `Api.TooManyConnections` | 503 | A global or per-event-type SSE connection cap (`MaxSseConnections`/`MaxSseConnectionsPerType`) was reached. |
-| `RateLimit.TooManyRequests` | 429 | `Arcanum:Host:RateLimit` fixed-window limiter rejected the request. |
-| `Connection.Timeout` | 504 | Downstream provider connection timed out. |
-| `Connection.Unreachable` | 503 | Downstream provider (or, from the CLI, the local Arcanum API) could not be reached. |
-| `Security.MissingApiKey` | 401 | `X-Api-Key` (or equivalent) header missing or invalid. |
-| `Security.BlockedOutboundUrl` | 400 | Outbound URL guard (SSRF hardening, §11.11) rejected the target host. |
-| `Security.IdempotencyKeyTooLong` | 400 | `Idempotency-Key` header exceeds 256 characters (§11.17). |
-| `Files.NotFound` | 404 | `/v1/files/{id}` id unknown or malformed (§11.20). |
-| `Files.TooLarge` | 413 | Upload exceeds `Arcanum:Files:MaxUploadSizeBytes` (§11.20). |
-| `Files.InvalidMimeType` | 400 | Extension/declared-MIME-type mismatch, or type not in `Arcanum:Files:AllowedMimeTypes` (§11.20). |
-| `Batches.NotFound` | 404 | `/v1/batches/{id}` id unknown or malformed (§11.21). |
-| `Batches.InvalidEndpoint` | 400 | `POST /v1/batches` `endpoint` is not `/v1/chat/completions` (§11.21). |
-| `Batches.InputFileNotFound` | 404 | `POST /v1/batches` `input_file_id` does not resolve to an uploaded file (§11.21). |
-| `Embeddings.ProviderUnavailable` | 503 | Embedding provider call failed (network, 4xx/5xx, or shape mismatch). |
-| `Embeddings.FeatureDisabled` | 503 | `Arcanum:Embeddings:Enabled` and/or the specific phase flag (`SessionSearchEnabled`, `CodebaseRetrievalEnabled`, `SagaEnabled`) is false. |
-| `Embeddings.ConfirmationRequired` | 400 | `POST /api/embeddings/reset` called without `?confirm=true`; the endpoint is destructive and requires explicit acknowledgement. |
-| `ProvingGrounds.InvalidTrial` | 400 | Missing/invalid target, empty Inquisitors array, or malformed prompt GUID. |
-| `ProvingGrounds.TooManyInquisitors` | 400 | Exceeds `Arcanum:ProvingGrounds:MaxInquisitorsPerTrial`. |
-| `ProvingGrounds.WorkspaceNotAllowed` | 400 | Trial target's workspace is outside configured allowed roots. |
-| `ProvingGrounds.SpellNotFound` | 404 | Spell name not found in the workspace targeted by the Trial. |
-| `ProvingGrounds.PromptNotFound` | 404 | Prompt GUID not found in the Grimoire. |
-| `ProvingGrounds.InferenceFailed` | 500 | `ExecutePromptAsync` returned failure for the Trial target; never downgraded by `ResolveStatusCodeDefaultBadRequest`. |
-| `Saga.NotFound` | 404 | Saga memory id not found. |
-| `Saga.NotEmpty` | 400 | `DELETE /api/saga` called without `?confirm=true`. |
-| `Saga.SearchFailed` | 500 | `SagaMemoryStore` search query failed unexpectedly. |
-| `Scrying.VisionNotSupported` | 400 | Request carries image content but the resolved model's `ModelEntry.SupportsVision` is `false` (§10.2.4). |
-| `Scrying.ImageTooLarge` | 413 | A `data:`-URI image's decoded size exceeds `Arcanum:Scrying:MaxImageBytes`. |
-| `Scrying.TooManyImages` | 400 | Request image count exceeds `Arcanum:Scrying:MaxImagesPerRequest`. |
-| `Scrying.UnsupportedMimeType` | 400 | A `data:`-URI image's MIME type is not in `Arcanum:Scrying:AllowedMimeTypes`. |
-| `Scrying.FeatureDisabled` | 403 | Request carries image content but `Arcanum:Scrying:Enabled` is `false`. |
-| `WebBrowsing.SsrfBlocked` | 403 | `browse_web` URL failed the `OutboundUrlGuard` SSRF check (loopback / private / link-local / CGNAT host) or the Sanctum campaign network policy (§11.27). |
-| `WebBrowsing.TooLarge` | 400 | Reserved for a future hard-reject path when a fetched response exceeds `Arcanum:WebBrowsing:MaxContentBytes`; today the tool truncates and returns partial content instead of failing. |
-| `WebBrowsing.Timeout` | 504 | `browse_web` outbound HTTP request exceeded `Arcanum:WebBrowsing:RequestTimeoutSeconds`. |
-| `WebBrowsing.InvalidUrl` | 400 | `browse_web` was invoked with a missing or malformed URL, or a non-`http(s)` scheme. |
-| `ClientTools.Disabled` | 400 | Client-supplied `tools`/`tool_choice` were sent while `Arcanum:ClientToolForwarding:Enabled` is `false`; public OpenAI code remains `unsupported_parameter` to match the default behavior. |
-| `ClientTools.TooMany` | 400 | Client-supplied `tools` exceed `Arcanum:ClientToolForwarding:MaxClientTools`; public OpenAI code `too_many_tools`. |
-| `ClientTools.InvalidSchema` | 400 | A client-supplied tool is not `type: "function"`, lacks `function.name`, has non-object `function.parameters`, or `tool_choice` is not a recognized shape; public OpenAI code `invalid_schema`. |
-| `Guardrails.PiiDetected` | 400 | Personally-identifiable information (email/phone/SSN/credit-card) was detected in the input and the turn was rejected before inference ran (§8.27). |
-| `Guardrails.Blocked` | 400 | A toxicity-blocklist hit or an allowed/blocked-topic rule matched, rejecting the input or the model's output (§8.27). |
-| `StructuredOutput.ValidationFailed` | 400 | The model's response did not match the requested JSON Schema after all structured-output retries (strict mode); on the OpenAI-compatible `/v1` surface, maps to `code: "validation_failed"`. |
-| `StructuredOutput.SchemaInvalid` | 400 | The supplied JSON Schema for structured output could not be parsed (strict mode); on the OpenAI-compatible `/v1` surface, maps to `code: "invalid_schema"`. |
+**/api vs /v1:** native `/api` uses `ApiResponse<T>` + codes below. OpenAI `/v1` uses the OpenAI error envelope (`message`/`type`/`code`/`param`); hub failures map similarly (e.g. tool-loop/timeout → **503** `server_error`; unknown model → **404** `model_not_found`). Client-tool forwarding surfaces OpenAI codes `unsupported_parameter` / `too_many_tools` / `invalid_schema` while Core codes remain `ClientTools.*`.
 
-**Unmapped codes:** any string not listed above (including a caller-supplied literal that never went through `ErrorCodes`) resolves to **500** via the mapper's default arm; `ResolveStatusCodeDefaultBadRequest` downgrades that case to **400** unless the code is explicitly mapped to **500** in `ResolveStatusCode` (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`).
+| Codes (grouped) | HTTP | Semantics |
+|-----------------|------|-----------|
+| `Validation.InvalidPrompt`, `InvalidBody`, `InvalidQuery`, `InvalidProviderType`, `AttachedFiles` | 400 | Request shape / bounds validation |
+| `Hub.ToolLoop`, `Hub.Timeout` | 503 | Inference tool-round or wall-clock timeout |
+| `Hub.Model` | 404 | Model not in any provider `models` |
+| `Hub.Error` | 500 | Generic inference failure (mapper default arm) |
+| `Campaign.NotFound`; `Session.NotFound` / `EntryNotFound`; `Grimoire.LoreNotFound`; `Apprentice.NotFound`; `Workspace.NotFound` / `FileNotFound`; `Spell.NotFound`; `Prompt.NotFound`; `Intelligence.HumanPromptNotFound`; `Mcp.ServerNotFound` / `ToolNotFound`; `Daemon.NotFound`; `Files.NotFound`; `Batches.NotFound` / `InputFileNotFound`; `Saga.NotFound`; `ProvingGrounds.SpellNotFound` / `PromptNotFound`; `Workspace.ReplacementNotFound` | 404 | Missing resource |
+| `Campaign.InvalidPath` / `MaxReached`; `Session.Archived` / `InvalidStatus` / `TooManyEntries` / `EntryTooLarge` / `MemoryManagementDisabled` / `EmptyContent`; `Apprentice.Disabled` / `PendingQueueFull` / `InvalidGuidance` / `InvalidPlan` / `InvalidGoal` / `InvalidWorkspace`; `Workspace.NameEmpty` / `SymbolicLinkEscape` / `PathTraversal` / `DirectoryNotEmpty` / `ReplacementAmbiguous` / `PathIsDirectory` / `PathIsFile`; `Spell.NoWorkspace` / `InvalidWorkspace` / `InvalidName` / `NameCollision` / `BuiltinReadOnly` / `DuplicateVersion` / `InvalidVersion`; `Prompt.CodexPathNotContained` / `DuplicateVersion` / `InvalidName` / `InvalidVersion` / `InvalidRequest`; `Mcp.AmbiguousServer` / `MissingWorkspace` / `ServerNotRunning` / `AmbiguousTool` / `ToolError`; `Sending.TaskRejected`; `Security.BlockedOutboundUrl` / `IdempotencyKeyTooLong`; `Files.InvalidMimeType`; `Batches.InvalidEndpoint`; `Embeddings.ConfirmationRequired`; `ProvingGrounds.InvalidTrial` / `TooManyInquisitors` / `WorkspaceNotAllowed`; `Saga.NotEmpty`; `Scrying.VisionNotSupported` / `TooManyImages` / `UnsupportedMimeType`; `WebBrowsing.TooLarge` (reserved; today truncates) / `InvalidUrl`; `ClientTools.Disabled` / `TooMany` / `InvalidSchema`; `Guardrails.PiiDetected` / `Blocked`; `StructuredOutput.ValidationFailed` / `SchemaInvalid` | 400 | Domain validation / policy refusal (non-auth) |
+| `Campaign.PathNotAllowed`; `Workspace.PathNotAllowed` / `AccessDenied` / `FileWriteDisabled`; `Spell.PathNotAllowed`; `Sending.Disabled` / `AgentNotAllowed`; `Mcp.WorkspaceNotTrusted` / `DiagnosticBlocked`; `Scrying.FeatureDisabled`; `WebBrowsing.SsrfBlocked` | 403 | Path/network/feature deny |
+| `Security.MissingApiKey` | 401 | Missing/invalid API key |
+| `Session.TooManyPinned`; `Apprentice.AlreadyRunning` / `Running` / `NotPaused` / `CannotReweave` / `NotEscalated` / `MaxReached` / `ConclaveDisabled` / `ConclaveDepthExceeded` / `ConclaveBreadthExceeded` | 409 | State conflict |
+| `Sending.MaxTasksReached`; `RateLimit.TooManyRequests` | 429 | Concurrency / rate limit |
+| `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge` | 413 | Payload too large |
+| `Sending.AgentUnreachable` / `AgentCardInvalid`; `CommLink.Suppressed` | 502 | Downstream / webhook failure |
+| `Api.TooManyConnections`; `Connection.Unreachable`; `Embeddings.ProviderUnavailable` / `FeatureDisabled` | 503 | Capacity / provider unavailable |
+| `Sending.TaskTimeout`; `Mcp.DiagnosticTimeout`; `Connection.Timeout`; `WebBrowsing.Timeout` | 504 | Downstream timeout |
+| `Workspace.WriteFailed` / `DeleteFailed`; `ProvingGrounds.InferenceFailed`; `Saga.SearchFailed` | 500 | Explicit infra/search failures (never downgraded by DefaultBadRequest) |
 
-**Ollama note:** the legacy `Ollama.Error` / `Ollama.Pull` / `Ollama.ListModels` codes were removed with `OllamaSharp` (§4.1). Inference failures against an Ollama provider now surface as `Hub.Error` like any other `OpenAICompatible` provider — Ollama has no bespoke error codes.
+**Ollama:** legacy `Ollama.*` codes removed with `OllamaSharp`; Ollama providers surface as `Hub.Error` like other `OpenAICompatible` providers.
 
 ### 8.24 OpenAI embeddings (`POST /v1/embeddings`)
 
-**Purpose:** OpenAI-compatible embeddings endpoint over the existing RAG Phase 1 foundation (§21) — no new embedding infrastructure, purely composition over `IWeaveService` and `InferenceTokenizerResolver`.
-
-**Request (`OpenAiEmbeddingRequest`):** `model` (string, optional), `input` (required — string \| string[] \| int[] \| int[][], via the hand-authored `OpenAiEmbeddingInputConverter`), `encoding_format` (`"float"` default \| `"base64"`), `dimensions` (accepted, logged and ignored — Arcanum does not support provider-side dimension truncation), `user` (accepted, not enforced).
-
-**Model resolution:** `model` matches `Arcanum:Embeddings:Model` case-insensitively, or is omitted/blank (uses the configured model as default) — otherwise **404** `model_not_found`. This mirrors OpenAI's own behavior for clients that default to `text-embedding-3-small`/`text-embedding-ada-002`: a clear 404 instead of a silent mismatch.
-
-**Pre-tokenized input:** `int[]`/`int[][]` inputs are decoded back to text via `InferenceTokenizerResolver`'s configured encoding (`Tokenizer.Decode`) before being sent to the configured provider — Arcanum always forwards text to an embedding provider, never raw token ids, so this is the closest reproduction of a pre-tokenizing caller's intent achievable without knowing which vocabulary originally produced the ids.
-
-**Long inputs:** inputs at or under `Arcanum:Embeddings:ChunkSizeChars` are embedded together via `IWeaveService.EmbedBatchAsync` (sequential internal batching, `Arcanum:Embeddings:BatchSize`). Inputs **exceeding** `ChunkSizeChars` are split via `IWeaveService.ChunkAsync`, each chunk is embedded, and the chunk vectors are **mean-pooled and L2-renormalized** into a single vector — preserving OpenAI's one-embedding-per-input contract while still imprinting the whole document, rather than silently truncating it.
-
-**Idempotency:** supports optional `Idempotency-Key` replay (§11.17), same as the inference endpoints.
-
-**`encoding_format: "base64"`:** each embedding is packed as little-endian `float32` bytes via `EmbeddingBlobCodec.Encode` (Core `Primitives` — the same codec The Weave's storage tables and `SemanticSpellRouter` use) and base64-encoded. `"float"` (default) returns a plain JSON number array.
-
-**Response (`OpenAiEmbeddingResponse`):** `object: "list"`, `data[]` (`OpenAiEmbeddingData`: `object: "embedding"`, `index`, `embedding`), `model` (echoes the resolved model), `usage` (`OpenAiEmbeddingUsage`: `prompt_tokens`, `total_tokens` — **no** `completion_tokens`, a dedicated type rather than reusing `ChatCompletionUsage` with a hardcoded zero, to stay byte-for-byte OpenAI-embeddings-spec compliant). Token counts use `InferenceTokenizerResolver` (same tokenizer as pre-flight counting, §10.2.3 / §8.10.1) over the original (pre-chunking) input texts.
-
-**Errors (OpenAI envelope):** **400** `invalid_request_error` for a missing `input`, an empty `input`/empty string entries, an `input` exceeding `Arcanum:Embeddings:MaxEmbeddingInputChars`, or an invalid `encoding_format`; **404** `model_not_found` for a `model` that does not match the configured embedding model; **503** `embedding_provider_unavailable` (`type: "server_error"`) when embeddings are disabled/misconfigured (`IWeaveService.IsAvailable` is `false`) or the provider call fails/times out.
-
-**Key types:** `OpenAiEmbeddingRequest`, `OpenAiEmbeddingInput` / `OpenAiEmbeddingInputConverter`, `OpenAiEmbeddingResponse`, `OpenAiEmbeddingData`, `OpenAiEmbeddingUsage`, `OpenAiEmbeddingVector` / `OpenAiEmbeddingVectorConverter` (`Api/Intelligence/OpenAi/`); handler lives in `OpenAiV1EmbeddingsEndpoints.cs` as a `partial` extension of `OpenAiV1Endpoints`.
+Composes `IWeaveService` + tokenizer. `model` must match `Embeddings:Model` or omit → else **404** `model_not_found`. Long inputs: chunk + mean-pool/L2. `encoding_format` float|base64 (`EmbeddingBlobCodec`). Idempotency-Key supported. Errors: OpenAI envelope (**400** invalid input/chars; **503** when Weave unavailable).
 
 ### 8.25 HTTP response compression
 
-**Purpose:** Gzip + Brotli compression for large JSON responses — a Kestrel/ASP.NET Core built-in (`Microsoft.AspNetCore.ResponseCompression`), no new NuGet dependency, fully AOT-safe.
-
-**Wiring:** `ApiBootstrapper.RegisterResponseCompression` (called from `AddArcanumApiServices`) registers `BrotliCompressionProvider` and `GzipCompressionProvider`. `UseArcanumResponseCompression` (both `ServeCommand` and `Api.DevHost/Program.cs`) activates the middleware **early** in the pipeline — immediately after `UseArcanumExceptionHandler`, before `UseArcanumCors`/`UseArcanumRateLimiter`/`UseArcanumMetrics`/`MapArcanumEndpoints` — so compression wraps everything, including error responses.
-
-**Opt-in per request:** the middleware only compresses when the client's `Accept-Encoding` header lists a supported encoding; requests that omit it (or list only encodings Arcanum does not register) pass through unmodified. This makes the change non-breaking for any existing client, including test `HttpClient` instances that do not set the header by default.
-
-**Streaming exclusion:** `options.MimeTypes` is `ResponseCompressionDefaults.MimeTypes` with `text/event-stream` and `application/x-ndjson` explicitly subtracted — defense-in-depth beyond the fact that neither is in the framework default list. Every SSE route (§8.11/§8.13/§8.16, session stream, Chronicle) and every NDJSON route (`ping-stream`, spell/prompt `execute-stream`) already sets `Cache-Control: no-cache` / `X-Accel-Buffering: no` for incremental delivery (§8.9); compressing those streams would force the compressor to buffer frames before flushing, defeating that contract.
-
-**HTTPS:** `ResponseCompressionOptions.EnableForHttps` is left at its framework default (`false`) — a conservative choice given Arcanum typically serves over loopback HTTP or behind a TLS-terminating reverse proxy, avoiding any BREACH/CRIME-style compression-oracle consideration on a direct HTTPS listener until there is a concrete operator need for it.
+Brotli+Gzip via ASP.NET ResponseCompression; early pipeline. Excludes `text/event-stream` and `application/x-ndjson`. `EnableForHttps` left false (framework default).
 
 ### 8.26 Persisted inference audit log
 
-**Purpose:** a durable, append-only JSONL trail of completed inference turns (model, provider, token counts, latency, tool activity, finish reason) for operator auditing — independent of the Grimoire, which stores conversation *content*, not this operational metadata. Disabled by default (`Arcanum:Host:AuditLog:Enabled = false`) — zero behavior change, no file I/O, no directory creation, and `GET /api/audit` returns an empty list until an operator opts in.
-
-**File layout:** one file per UTC day, `{stem}-{yyyyMMdd}.jsonl` (default stem `audit`, directory and stem both derived from `Arcanum:Host:AuditLog:FilePath`, default `~/.config/arcanum/audit.jsonl`) — never a single ever-growing file. Each day's file gets **owner-only permissions** (`SecureFilePermissions.ApplyOwnerOnlyFile`) on creation. A soft **`MaxSizeMb`** cap (default 100, clamped 10–1,000) drops further writes for that day once reached (logged once, not per-write) rather than growing unbounded. **`RetentionDays`** (default 7, clamped 1–365) — files older than this are deleted the first time a new UTC day's file is created (no separate background sweep service).
-
-**Record shape** (`InferenceAuditRecord`, camelCase JSON via the dedicated `AuditJsonContext` in Core — readable by both `InferenceAuditLogger`, which writes it, and `GET /api/audit`, which reads it back through the same `IInferenceAuditLogger.QueryAsync` contract): `timestamp` (ISO 8601 UTC), `sessionId`, `requestType` (`"ping"` \| `"ping-stream"` \| `"v1-completion"` — see scope note below), `model`, `provider`, `promptTokens`, `completionTokens`, `totalTokens`, `latencyMs`, `toolCalls` (count), `toolNames` (array, always present), `toolArgumentsJson` (array parallel to `toolNames`, present only when `RedactToolArguments` is `false` — default `true` means tool *arguments* are never captured, only names, since arguments can carry file contents, command lines, or other sensitive data), `finishReason`, `clientIp`, `spellName`, `campaignId`. **Only successfully completed turns are recorded** — never error/timeout/interrupted turns, which already have their own telemetry (`arcanum_inference_*` metrics, §16) and would otherwise double-count; there is deliberately no `errorCode` field.
-
-**Wiring:** `InferenceAuditContext` (Core) is optional, additive metadata — `null` for every call site that does not construct one, with zero effect on behavior. `IArcanumIntelligenceProvider.ExecutePromptAsync`/`StreamPromptAsync` both gained a trailing optional `InferenceAuditContext? auditContext = null` parameter (added *after* `cancellationToken`, not next to `request`, so every existing positional call site stays source-compatible). `WizardIntelligenceProvider` appends to `auditContext.ToolNames`/`ToolArgumentsJson` as tools execute during the turn, then writes one record via `IInferenceAuditLogger.LogAsync` at the same success call sites as `TryIncrementSessionTokensAsync` (buffered: `AttemptBufferedInferenceAsync`; streaming: `StreamCommittedInferenceAsync`, right before the terminal `result` event). **Scope:** currently only `POST /api/intelligence/ping` (`requestType: "ping"`), `POST /api/intelligence/ping-stream` (`"ping-stream"`, via `InferenceExecuteWriter.WriteStreamAsync`'s own optional `auditContext` parameter), and `POST /v1/chat/completions` both buffered and streaming (`"v1-completion"`) construct an `InferenceAuditContext` — the highest-value, most security-relevant entry points. Spell/prompt execute(-stream), Apprentice steps, and the daemon/Campaign Logger do not yet populate one (a documented follow-up, not a functional gap: those turns simply are not audit-logged today).
-
-**Error tolerance:** `IInferenceAuditLogger` implementations must never throw — a logging failure must never fail the inference turn it is recording (which has, by construction, already succeeded by the time the write is attempted). `WizardIntelligenceProvider.TryLogInferenceAuditAsync` wraps the call in a try/catch as defense-in-depth beyond that contract, and always uses `CancellationToken.None` for the write so a client disconnecting at the exact moment of success does not silently drop the audit entry.
-
-**`GET /api/audit`:** read-only query surface (`ApiResponse<InferenceAuditRecord[]>`, newest first). Query params (all optional): `from`/`to` (ISO 8601 date/time, **400** `Validation.InvalidBody` if unparseable or `from` is after `to`), `model`, `sessionId`, `limit` (default 100, clamped 1–1,000). Returns an empty array (not an error) when the audit log is disabled. Malformed/partial lines (a concurrent write mid-flush) are skipped during a query, not thrown.
-
-**Key types:** `InferenceAuditRecord`, `InferenceAuditContext`, `IInferenceAuditLogger` (Core); `InferenceAuditLogger` (Infrastructure, singleton, one in-process `SemaphoreSlim` serializes writes — Arcanum is single-process, so no cross-process locking is needed); `AuditEndpoints` (Api).
+Opt-in JSONL (`Host:AuditLog:*`); dated files, owner-only, soft size + retention. Records successful turns only (ping / ping-stream / v1-completion today). Never throws into inference. Query: `GET /api/audit`.
 
 ### 8.27 Content guardrails (PII / toxicity / topics)
 
-**Purpose:** an opt-in content filter (Tier 3 Phase 4) that scans inbound messages *before* inference and the model's completed text *after* inference, rejecting turns that trip a PII, toxicity, or topic-policy rule. A complete pass-through when `Arcanum:Guardrails:Enabled = false` (the default): no scanning, no audit logging, success returned immediately — so enabling Arcanum never changes inference behavior until an operator opts in. Single canonical integration point: `WizardIntelligenceProvider.ExecutePromptAsync` / `StreamPromptAsync` call the pipeline before any tool-set building and after the final text is produced, so every inference path (stateless `/v1/chat/completions`, stateful `/api/intelligence/ping`, streaming) is guarded consistently without double-filtering.
+Opt-in (`Guardrails:Enabled` default false). Input PII (GeneratedRegex) → `Guardrails.PiiDetected`; toxicity/topics → `Guardrails.Blocked`. StreamingMode `passthrough` (default) vs `buffered`. Audit JSONL + `GET /api/guardrails/audit`. Redacted matched spans only in logs/errors.
 
-**Pipeline** (`GuardrailsPipeline`, Api, singleton, `RetroDownfall.Arcanum.Api.Intelligence.Guardrails`):
-
-- **PII detection** (`DetectPii`, default `true`, input-only): email, US SSN, credit-card (13–19 digits), and phone patterns matched via `[GeneratedRegex]` source generators — AOT-clean, no runtime reflection. A hit rejects the turn with `Guardrails.PiiDetected` (HTTP 400) *before* inference runs; the chat client is never called.
-- **Toxicity** (`BlockToxicity`, default `false`): case-insensitive substring match against the configurable `ToxicityBlocklist` (`string[]`, default empty — a no-op even when `BlockToxicity` is `true`). A hit on input or output rejects with `Guardrails.Blocked`.
-- **Topics** (`AllowedTopics` / `BlockedTopics`, regex `string[]`, default empty): when `AllowedTopics` is non-empty, input that fails to match any pattern is rejected (allowed-topics apply to input only — output may be any topic not explicitly blocked); `BlockedTopics` rejects input or output matching any pattern. Invalid regex is skipped with a warning log, never thrown (operator-supplied patterns can be malformed).
-- **Output scope:** PII is *not* re-scanned on output (the input gate already ran); output is scanned for toxicity and blocked-topics only. A blocked output is not finalized as the assistant's Grimoire reply — the buffered path resolves the turn as interrupted (`ResolveInterruptedAsync`), and the streaming path calls `ResolveInterruptedAndMarkFinalizedAsync` with `null` content (discarding the assistant entry) before emitting the `Error` event and `yield break`ing, so the `finally` block's cleanup cannot re-persist the blocked text.
-
-**Redaction:** the matched span is redacted *before* it leaves the pipeline. PII types collapse to a fixed masked shape (`***@***.***`, `***-**-****`, `****-****-****-****`, `***-***-****`); toxicity/topic matches keep only their first and last character with a masked interior. The `GuardrailsViolation.MatchedText` and the audit record's `MatchedTextRedacted` therefore never carry raw PII — safe to persist and to surface in an error envelope. The `Error.Message` returned to the caller is generic ("Input rejected: personally identifiable information detected. Redact PII and retry." / "...content matched a guardrail policy..."), never echoing the matched text.
-
-**DTOs** (`GuardrailsResult { bool IsAllowed, GuardrailsViolation[] Violations }`, `GuardrailsViolation { string Type, string Message, string? MatchedText }`): registered on `ArcanumJsonContext` (T, T[], List<T>). `Type` is one of `pii-email` / `pii-phone` / `pii-ssn` / `pii-credit-card` / `toxicity` / `topic-allowed` / `topic-blocked`. The pipeline returns `Result<GuardrailsResult>` — success carries `GuardrailsResult.Allowed`; failure carries the `Error` (the violations themselves are captured in the audit log internally, since the `Result<T>.Value` getter throws on the failure path).
-
-**Audit log:** `IGuardrailAuditLogger` (Core) + `GuardrailAuditLogger` (Infrastructure, singleton, JSONL, one file per UTC day `guardrails-YYYYMMDD.jsonl`, owner-only permissions, soft `MaxSizeMb` cap, `RetentionDays` sweep — mirroring `InferenceAuditLogger` exactly, but reading `Arcanum:Guardrails:AuditLog` config). `GuardrailAuditRecord` (`timestamp`, `sessionId`, `stage` `"Input"`/`"Output"`, `violationType`, `matchedTextRedacted`, `model`) is registered on the shared `AuditJsonContext`. The pipeline writes one record per blocked turn (the primary violation) inside `FilterInputAsync`/`FilterOutputAsync`, wrapped in try/catch-and-`LogWarning` — **never throws**: a guardrail that already blocked a turn must not be reported as failed just because its audit trail could not be written. A complete no-op when `Guardrails:AuditLog:Enabled` is `false` (the default).
-
-**`GET /api/guardrails/audit`:** read-only query surface (`ApiResponse<GuardrailAuditRecord[]>`, newest first), mirroring `GET /api/audit`. Query params (all optional): `from`/`to` (ISO 8601 date/time, **400** `Validation.InvalidBody` if unparseable or `from` is after `to`), `stage`, `violationType`, `sessionId`, `limit` (default 100, clamped 1–1,000). Returns an empty array (not an error) when the audit log is disabled.
-
-**Streaming modes.** `Arcanum:Guardrails:StreamingMode` controls how the output filter interacts with token-by-token streaming:
-- **`passthrough`** (default): tokens are emitted in real time as they are generated; the output filter runs after the stream completes, so it can reject the final `Complete` event and prevent the toxic reply from being persisted, but the streamed tokens have already left the wire. The input filter (the higher-value gate) runs before any streaming starts and is fully effective. This is the default behavior because it preserves real-time streaming and all existing client contracts.
-- **`buffered`** (opt-in): tokens are accumulated server-side, the output filter runs on the full text after generation completes, and only after the filter passes is the entire response emitted as a single `Token` event followed by the `Complete` event. This blocks toxic content before it reaches the client at the cost of real-time streaming. It is only effective when `Arcanum:Guardrails:Enabled` is `true`; when guardrails are disabled, the setting is a no-op and streaming remains real-time.
-
-Both modes still emit an `Error` event and `yield break` on output-filter rejection; the only difference is whether the tokens have already been written to the response body.
-
-**Key types:** `GuardrailsSettings` / `GuardrailsAuditLogSettings` (Core.Configuration); `GuardrailsPipeline`, `GuardrailsResult`, `GuardrailsViolation`, `GuardrailAuditContext`, `GuardrailsAuditEndpoints` (Api.Intelligence.Guardrails); `IGuardrailAuditLogger`, `GuardrailAuditRecord` (Core.Intelligence); `GuardrailAuditLogger` (Infrastructure.Logging). DI: `GuardrailsPipeline` registered singleton in `AddArcanumApiServices`; `IGuardrailAuditLogger` registered singleton in `AddArcanumInfrastructure`.
-
----
 
 ## 9. Native AOT and trimming
 
 ### 9.1 Why Native AOT
 
-The deciding factor for Native AOT is **zero runtime prerequisite**: the published binary is fully self-contained and does not require the .NET runtime or SDK to be installed on the target machine. This is critical for Arcanum's distribution model — operators install one native executable, not an application **plus** a framework. Without AOT, every machine running Arcanum would need a compatible .NET 10 runtime, adding a setup step and a version-drift risk that undermines the "single deployable CLI" goal (§1).
-
-Additional benefits:
-
-- **Fast cold start.** No JIT compilation on first run; the binary is machine code from the outset. This matters for short-lived CLI commands (`ask`, `look`) where JIT warmup would dominate wall time.
-- **Smaller deployment footprint.** Trimming removes unused framework code, producing a binary significantly smaller than a self-contained framework-dependent publish.
-- **Reduced reflection surface.** Source-generated JSON (`JsonSerializerContext`), source-generated request delegates (RDG), and hand-authored `AIFunction` tools avoid reflection at runtime, which both satisfies the IL linker and narrows the code surface area.
-- **Predictable memory profile.** No background JIT allocations or tiered-compilation transitions; memory behavior matches what profiling shows.
+Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs; smaller trimmed footprint; reduced reflection surface via source-gen JSON/RDG/hand-authored tools.
 
 ### 9.2 What is AOT-optimized today
 
@@ -1732,7 +1154,8 @@ After the dynamic system prompt is prepended to the in-memory message list (and 
 
 ### 10.2.3.1 Performance findings
 
-A dedicated performance audit identified and resolved the following: NDJSON per-frame `Utf8JsonWriter` reuse (`InferenceExecuteWriter`), spell metadata double-scan (catalog threaded into `SpellDependencyResolver`), `FullSpellCache` unbounded growth (bounded LRU), Loremaster full-table aggregation (`Session.UnsummarizedEntryCount`), MCP stdio line reads (`McpStdioLineReader`), workspace trust SHA-256 caching (bounded LRU), `/api/meta` process handle disposal, and Apprentice Second Wind backoff (full jitter). Two items were deemed acceptable as-is (log ring buffer copy, FTS sanitizer `StringBuilder`); one was not worthwhile (`IntelligenceEvent` pooling — unsafe across async streams).
+Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP line reader, trust digest LRU, `/api/meta` handles, Apprentice jitter) are implemented; acceptable-as-is notes live in code comments.
+
 
 ### 10.2.4 Scrying — the vision/multimodality capability gate
 
@@ -1763,7 +1186,7 @@ A dedicated performance audit identified and resolved the following: NDJSON per-
 
 **Turn budget / injection:** `MaxReferencesPerTurn` is a **combined** cap for user `AttachmentReferences` + model `attach_session_file` injections on the same turn. Each logical key+version is injected **once** per turn (subsequent tool rounds do not re-inject). Image re-attach requires `Arcanum:Scrying:Enabled` and a model with `SupportsVision`; oversize images are **rejected, never truncated**.
 
-**Model tool:** `attach_session_file` is an **internal MCP** tool (attunement-aware). After a successful call, a dedicated post-tool path injects resolved `TextContent` / `DataContent` into the **next** inference round.
+**Model tool:** `attach_session_file` is an **internal MCP** tool (attunement-aware). After a **successful** call (`!Failed && !Denied` — Ward/Sanctum denials and tool failures do not inject), a dedicated post-tool path materializes `TextContent` / `DataContent`, then atomically consumes the turn budget / inject-once mark, and queues content for the **next** inference round. User extras from a multi-tool model response are appended **only after** every tool call and tool result from that round are on the transcript (never interleaved between tool exchanges). Injected/rehydrated text is framed as untrusted DATA (adaptive fences); attachment headings harden hostile path characters. Unexpected post-processing failures follow `TolerateToolFailures` / streaming tolerant behavior and never partially inject.
 
 **Privacy:**
 
@@ -1855,7 +1278,7 @@ Failed authentication returns **`ApiResponse<string>`** at **401** with error co
 
 ### 11.5 OpenAPI and Scalar
 
-`MapOpenApi` runs unconditionally under the keyed `/api` group, so `openapi/v1.json` always requires the API key. **`MapScalarApiReference`** is **gated by `Arcanum:Host:EnableScalarUi`** (default **`false`**). When enabled, the Scalar route lives in a sub-group with a CSP filter that emits `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'` and `X-Content-Type-Options: nosniff` on every response. `'unsafe-inline'` is retained because Scalar's bootstrap relies on inline `<script>` / `<style>`; everything else is restricted to same-origin. The OpenAI-shaped **`POST /v1/chat/completions`** and **`GET /v1/models`** routes live under `MapGroup("/v1")` with the same API-key filter and are not advertised in the OpenAPI document.
+`MapOpenApi` runs unconditionally under the keyed `/api` group, so `openapi/v1.json` always requires the API key. **`MapScalarApiReference`** is **gated by `Arcanum:Host:EnableScalarUi`** (default **`false`**). When enabled, the Scalar route lives in a sub-group with a CSP filter that emits `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'` and `X-Content-Type-Options: nosniff` on every response (same-origin scripts/styles only — matching `ApiBootstrapper`). First-party browser UI must keep JS/CSS in external files; Scalar is an opt-in third-party surface under this CSP. The OpenAI-shaped **`POST /v1/chat/completions`** and **`GET /v1/models`** routes live under `MapGroup("/v1")` with the same API-key filter and are not advertised in the OpenAPI document.
 
 ### 11.6 Symlink containment for tool paths
 
@@ -1870,7 +1293,7 @@ The tool accepts arguments in **either** of two forms:
 
 `Arguments` is **never** assigned to `ProcessStartInfo.Arguments` directly, so model output cannot smuggle additional argv via shell metacharacters.
 
-### 11.8 Tool output caps
+**Child environment:** before spawn, `execute_command` and `run_spell_script` strip `ARCANUM_*` secret/config vars and loader/runtime hijack variables from the inherited environment while preserving `PATH`/`HOME`. MCP stdio servers use the same absolute-deny rules plus optional per-server `inheritEnv` (§5.6 / MCP host).
 
 `execute_command` and `run_spell_script` both read stdout/stderr through a `ReadStreamCappedAsync` helper that enforces **`Arcanum:Intelligence:ToolOutputCapBytes`** split evenly per stream. Beyond the cap, the stream is silently closed and a `[truncated: exceeded N bytes]` marker is appended. UTF-8 boundary safety is preserved by `ChooseSafeCharCount`. This prevents a verbose tool from exhausting host memory.
 
@@ -2012,7 +1435,7 @@ At startup, Arcanum would verify shipped native dependencies (`e_sqlcipher`) aga
 **Entries:**
 - Inference turns append via the hub (`IGrimoireRepository`).
 - **`POST /api/sessions/{id}/entries`** — manual append (operator or Studio); rejects archived sessions; publishes to **`SessionEventHub`** for live SSE subscribers.
-- Entries are **immutable** after insert (no update/delete API on individual entries).
+- There is **no update API** for entry content after insert. Gated memory-management routes (when **`Arcanum:Sessions:AllowMemoryManagement`** is **`true`**) allow **delete**, **pin** / **unpin**, and **compact** (`DELETE …/entries/{entryId}`, `POST`/`DELETE …/entries/{entryId}/pin`, `POST …/compact`) — see §4.3.
 
 **Metadata update (`PATCH /api/sessions/{id}`):** Accepts **`UpdateSessionRequest`** with optional **`title`** (`string?`) and **`status`** (`active` | `archived`). Only supplied (non-null) fields change; an empty or whitespace `title` clears it to `null`. An unrecognized `status` returns **400** `Session.InvalidStatus`. Setting `status` to `archived` has the same soft-delete effect as `DELETE /api/sessions/{id}` (PATCH returns **200** + the updated `SessionDetailDto` rather than **204**).
 
@@ -2215,13 +1638,13 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 - **Auth:** inherits `X-Arcanum-Key` from the `/api` group filter — no unauthenticated access.
 - **Secrets:** exception messages are length-capped (512 chars) before being returned to the caller, as a defensive last step on the rare exception path. The MCP bridge already formats tool output, so this is not a substitute for the bridge's own handling.
 
-**Invoke path:** the service resolves the merged `IMcpConnectionManager.GetAvailableToolsAsync(workingDirectory)` surface (the same surface the Wizard uses), finds the `AIFunction` by name, and calls `InvokeAsync`. `McpBridgeTool` is `internal` to Infrastructure, so the API project treats every tool as `AIFunction` and never references the bridge by type — the public surface is all that is needed. The result text is parsed as JSON when possible (else wrapped as a JSON string) and returned as `McpToolInvokeResponse` { `result`, `serverName`, `toolName`, `durationMs`, `truncated` }. A tool that returns `isError: true` makes `McpBridgeTool` throw `InvalidOperationException`, which the service maps to **400** `Mcp.ToolError`.
+**Invoke path:** after external-only discovery (statuses + optional `serverName` disambiguation; `arcanum-internal` excluded **before** candidate counting so an internal name collision never yields `AmbiguousTool`), the service calls **`IMcpConnectionManager.GetToolAsync(serverName, toolName, workingDirectory)`** to obtain the `AIFunction` bound to that managed server's own client — **never** re-resolving by bare name on the merged `GetAvailableToolsAsync` inference surface. `McpBridgeTool` remains `internal` to Infrastructure; the API project treats the result as `AIFunction`. The result text is parsed as JSON when possible (else wrapped as a JSON string) and returned as `McpToolInvokeResponse` { `result`, `serverName`, `toolName`, `durationMs`, `truncated` }. A tool that returns `isError: true` makes `McpBridgeTool` throw `InvalidOperationException`, which the service maps to **400** `Mcp.ToolError`.
 
 **Built-ins unchanged:** `POST /api/tools/invoke` (§11.27) continues to expose only the low-risk built-in tools (`get_local_system_time`, `get_system_info`, `browse_web` when enabled) and does **not** go through Ward/Sanctum — acceptable only because that registry is deliberately limited. The two endpoints are complementary: `/api/tools/invoke` for built-ins, `/api/mcp/tools/invoke` for external MCP.
 
 **Key types:** `McpToolInvokeRequest` / `McpToolInvokeResponse` (`Api/Models/`), `DiagnosticMcpInvocationService` / `DiagnosticMcpInvocationOutcome` (`Api/Mcp/`), `DiagnosticMcpInvocationEndpoints` (`Api/Mcp/`), mirrored The Forge DTOs `McpToolInvokeRequest` / `McpToolInvokeResponse` (`TheForge.Core/Models/`) + `TheForgeJsonContext` registrations.
 
-**Tests:** `tests/RetroDownfall.Arcanum.Tests/Mcp/DiagnosticMcpInvocationServiceTests.cs` covers every Forbidden Art block, empty tool name, stopped server, internal-server filter, untrusted-workspace hiding, ambiguous tool, tool-not-found (named and unnamed), happy path, truncation marker, tool error (`isError: true`), timeout, and non-JSON output wrapping — all with a fake `IMcpConnectionManager` + fake `AIFunction`, no API host required. Source-generated JSON round-trips for `McpToolInvokeRequest` / `McpToolInvokeResponse` / `DiagnosticMcpFixtureStoreDocument` are in `tests/RetroDownfall.TheForge.Tests/TheForgeJsonContextTests.cs`.
+**Tests:** `tests/RetroDownfall.Arcanum.Tests/Mcp/DiagnosticMcpInvocationServiceTests.cs` covers every Forbidden Art block, empty tool name, stopped server, internal-server filter, untrusted-workspace hiding, ambiguous tool, tool-not-found (named and unnamed), happy path, truncation marker, tool error (`isError: true`), timeout, non-JSON output wrapping, **internal+external name collision (external invoked; not ambiguous)**, **internal-only → ToolNotFound**, and **explicit wrong server → no fallback** — all with a fake `IMcpConnectionManager` + fake `AIFunction`, no API host required. Source-generated JSON round-trips for `McpToolInvokeRequest` / `McpToolInvokeResponse` / `DiagnosticMcpFixtureStoreDocument` are in `tests/RetroDownfall.TheForge.Tests/TheForgeJsonContextTests.cs`.
 
 ---
 
@@ -2397,29 +1820,14 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 ### 16.6 CLI UX surface (Spectre.Console + Command Center)
 
-Arcanum invests in Spectre.Console for **frameless one-shot / `chat` REPL** UX, and Terminal.Gui for the **Command Center** fixed viewport:
-
-- **Command Center (bare interactive `arcanum`)** — Terminal.Gui alternate-screen workbench: header (model · session continuation · API · generating) / left sessions list (UpdatedAt desc; filterable; collapses under 100 cols → Ctrl+O picker) / scrollable transcript with follow-tail / multiline composer (grows **1–10** content rows into the body, then scrolls internally; **Enter** inserts a newline; **Ctrl+Enter** sends) / focus-aware footer. Slash allowlist via `ShellCommandParser`/`ShellCommandDispatcher` (UI-agnostic; deny `/serve`, all `/daemon …`, `/key …`; `/session resume <id>` loads ≤200 recent entries via `SessionWorkspaceService`; `/doctor` compact). **Attachments** (when `Arcanum:Attachments:Enabled`): `/attach <path>` and inline `@path` stage a **local** file (text or Scrying image) for the next turn — host persists before inference (§10.2.5); `/attachments` lists bound session attachments via `GET /api/sessions/{id}/attachments`; `/attachments add <logicalName> [vN]` stages a prior session attachment as `AttachmentReferences`; `/attachments reveal <logicalName> [vN]` reveals via API row → absolute store path (interactive OS Reveal only). Model re-attach: MCP `attach_session_file`. Do not overload `/attach` for session logical names. Streaming via `CommandCenterChatRunner` + `StreamingUiCoalescer` + UI `Channel` (no Spectre/`Console.WriteLine` while TUI active). Shortcuts: F1, Ctrl+K palette, Ctrl+O/N/R, Tab, Enter / Ctrl+Enter (composer), Ctrl+C tiers, Ctrl+Q. Escape: `ARCANUM_NO_COMMAND_CENTER=1` → usage exit 0. `ARCANUM_NO_AUTO_SERVE=1` disables auto-serve only. `NO_COLOR`/`ARCANUM_NO_COLOR` → monochrome theme, not TUI off. Full-history paging / archived browsing deferred. Specs: `docs/superpowers/specs/2026-07-18-cli-command-center-design.md`, `docs/superpowers/specs/2026-07-19-session-attachments-design.md`.
-- **`arcanum chat` startup banner** — framed Panel showing the active model, tool state (`--no-tools`), unattended flag, inference overrides (`--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--presence-penalty`, `--frequency-penalty`, `--response-format`, `--stop`), and a help tip. Rendered once per REPL start.
-- **`arcanum doctor` panels** — each diagnostic section (System, Paths, MCP, Tokenizer, API Health) is wrapped in a themed `Panel` with check/warn/fail glyphs (`✓` / `!` / `✗`). The API probe runs inside a Spectre `Status` spinner when interactive. `Microsoft.ML.Tokenizers` smoke test catches missing data-package wiring early; `mcp.json` parses end-to-end so operators see syntax errors before `serve`. Pass `--json` to emit a structured `DoctorReport` (`healthy` boolean + `checks` array of `{name, status, detail}`) to stdout instead of the rendered panels, for programmatic consumption and CI health checks.
-- **`/mana` panel** — `Table` of session prompt/completion/total + lifetime totals + `BarChart` over the three series.
-- **`/help` table, `/history` table, `/arsenal` tree, `/log` / `/memory` panel, `/look` snapshot** — unchanged from earlier phases, all themed through `IThemePalette`.
-- **Error frames** — mid-stream errors render in a themed `Panel` with the `Error` palette color rather than as plain markup, so they're visually distinct from assistant text and tool diagnostics.
-- **Turn cancellation** — Ctrl+C produces a themed `Rule` ("⧖ Turn cancelled") instead of a plain `<Cancelled>` line.
-- **Inline `@file` feedback** — staged files print a `Staged: <name>` highlight line. Missing paths and oversize files print themed error/error-label lines and leave the literal `@path` in the prompt so the model can decide whether to ignore the token.
-- **Inline `@image` Scrying staging** — an `@path` token whose extension is `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp` (`ScryingFocusStager.IsImagePath`) routes to image staging instead of text-file staging: the token is size-checked immediately against `Arcanum:Scrying:MaxImageBytes` and, on success, prints `Scrying focus: <name> (<size>)`; the actual read/MIME-detect/base64-encode is deferred to turn submission (mirroring the text-file staging lifecycle). Oversize/unreadable images print a themed error and leave the literal `@path` in the prompt. In **`arcanum chat`** / **`ask`**, staged images remain **ephemeral** this pass — cleared after the turn, not written to the attachment store — and attach to `PingRequest.ScryingFoci`. **Command Center** stages the same way on the wire, but the host **persists** foci/files as session attachments when `Arcanum:Attachments:Enabled` (§10.2.5). Both surfaces require a vision-capable model (§10.2.4) or the turn is rejected before any inference token is consumed.
-- **TTY / NO_COLOR detection** (`ICliEnvironment`) — at `Program.cs` startup the CLI inspects `Console.IsOutputRedirected`, `Console.IsInputRedirected`, and the `NO_COLOR` / `ARCANUM_NO_COLOR` environment variables. When stdout is redirected or `NO_COLOR` is set, the global `AnsiConsole.Console` is rebuilt with `AnsiSupport.No` / `ColorSystemSupport.NoColors` / `InteractionSupport.No`, the mana bar is suppressed, and the doctor probe falls through without a spinner. Command Center still starts when interactive; `NO_COLOR` only selects its monochrome theme. `arcanum doctor` reports the detected state under **System**.
-- **`cli-session.txt` durability** — `CliSessionManager.SaveSessionId` writes to `cli-session.txt.tmp.<rand>` then atomically `File.Move`s onto the final path. On corruption (non-GUID content), the next read warns once with a 40-character preview and returns `null` so the next turn replaces the file.
+- **Command Center** (bare interactive `arcanum`): Terminal.Gui fixed viewport; hard-modal arbitration (Wards > HumanPrompt); attachments when enabled (§10.2.5); `ARCANUM_NO_COMMAND_CENTER=1` escapes to usage. Specs under `docs/superpowers/specs/`.
+- **Frameless `ask`/`chat`:** Spectre banner, mana bar, `@file`/`@image` staging (chat ephemeral; CC host-persists), TTY/`NO_COLOR` theme gating, atomic `cli-session.txt`.
+- **doctor:** themed panels + optional `--json` `DoctorReport`.
 
 ### 16.7 Reliability & Performance Hardening
 
-A dedicated hardening pass (post RAG Phases 1–5, post-Ollama-removal) audited concurrency, resource bounds, and edge-case reliability across the codebase without adding product features. It touched six areas:
+Closed pass: SIMD cosine in `EmbeddingBlobCodec`; `/v1` SSE disconnect classification; surrogate-safe RAG chunk/truncation; `SqliteBusyRetry` ownership already compliant; AOT purity gated by `verify-aot-il-warnings.sh`.
 
-- **SIMD cosine similarity.** `EmbeddingBlobCodec.CosineSimilarity` (Core `Primitives`) — the managed brute-force fallback `DivinationService.SearchManagedAsync` uses when sqlite-vec is unavailable — is vectorized via `System.Numerics.Vector<float>` instead of a scalar `for` loop. The JIT selects the hardware width (SSE/AVX on x64, NEON on Arm64) with no platform-specific code and no new NuGet dependency, so it stays Native AOT-safe. Each SIMD lane's dot/norm products are summed horizontally in `float` via `Vector.Dot`, then accumulated across lanes in `double` (matching the prior scalar implementation's precision), with a scalar remainder loop for lengths that are not a multiple of the SIMD width. The `0` return for mismatched-length or zero-norm vectors is unchanged. `SemanticSpellRouter`'s previously duplicated inline scalar copy was removed in favor of calling the shared codec directly (now a public Core type — no `InternalsVisibleTo` needed). Verified against a reference double-precision implementation in `EmbeddingBlobCodecTests` across vector lengths that are below, at, and above common SIMD widths.
-- **SSE/NDJSON disconnect leaks.** `SseConnectionGate`/`SseConnectionCounter` leases were already idempotent `IDisposable`s acquired inside `using` blocks, and `InMemoryEventBus.Subscribe`/`SessionEventHub`/`ChronicleHub` already unsubscribe in a `finally` the moment their linked `CancellationToken` (derived from `httpContext.RequestAborted`) fires — so a dropped TCP connection cannot leak a gate slot or a dead channel writer. Two remaining gaps were closed: the OpenAI-compatible `/v1/chat/completions` SSE stream now classifies a broken-pipe write failure via `ClientDisconnect.IsClientDisconnect` and skips writing any further frame to the dead socket (mirroring the pattern already used by `InferenceExecuteWriter`'s NDJSON routes).
-- **RAG chunk size & payload boundaries.** `WeaveService.ChunkAsync`'s sliding window no longer ends a non-final chunk on a lone UTF-16 high surrogate (the next window still covers the full character, so this cannot create a coverage gap). `EmbedBatchAsync` hard-truncates any individual string exceeding `Arcanum:Embeddings:ChunkSizeChars` on a surrogate-safe boundary before it reaches the provider — defense-in-depth for callers (e.g. `EntryWeavingService`) that embed content without chunking it first. `EmbedBatchAsync` also catches `ClientResultException`/`HttpRequestException` with a `413`/`400` status specifically, logs an actionable warning naming the likely cause (chunk size or batch size), and returns `Embeddings.ProviderUnavailable` rather than letting the exception cascade into a background service's tick loop. The surrogate-safe slicing logic is shared via `Utf8Truncation` in `RetroDownfall.Arcanum.Core.Primitives`, consolidating what were previously two independent private copies (`McpSecurityLimits`, `CappedChildProcessRunner`).
-- **`SqliteBusyRetry` and connection scoping.** Audited and found already compliant: `WorkspaceIndexingService`, `EntryWeavingService`, and `SagaExtractionService` (via `SagaMemoryStore`) each call `await Task.Yield()` at the top of `ExecuteAsync` so host startup is never blocked synchronously, obtain their connection through EF's `db.Database.GetDbConnection()` (opening it if needed but never closing/disposing it, since EF owns that lifecycle), and wrap every raw write against `workspace_file_*`, `entry_embeddings*`, and `saga_*`/`saga_memory_*` in `SqliteBusyRetry.ExecuteAsync`.
-- **AOT/trimming purity.** Audited and found already clean: no reflection-based `JsonSerializer.Serialize`/`Deserialize` calls and no ad hoc `new JsonSerializerOptions()` exist in `src/`; `SagaExtractionResponse` is deserialized via the source-generated `TheForgeJsonContext.Default`, not `JsonDocument` traversal. `./scripts/verify-aot-il-warnings.sh` remains the enforcement gate (publishes `RetroDownfall.Arcanum.Cli` Native AOT per-RID and fails on any unapproved first-party `IL####` warning).
 
 ---
 
@@ -2427,64 +1835,26 @@ A dedicated hardening pass (post RAG Phases 1–5, post-Ollama-removal) audited 
 
 | Term | Meaning |
 |------|---------|
-| **RDG** | ASP.NET Core Request Delegate Generator for Minimal API route handlers. |
-| **`JsonSerializerContext`** | System.Text.Json source generator context for AOT-safe serialization. |
-| **`CreateSlimBuilder`** | ASP.NET Core API returning a `WebApplicationBuilder` with reduced defaults. |
-| **`IsAotCompatible`** | MSBuild signal that a library is authored for AOT analysis. |
-| **`PublishAot`** | Enables Native AOT publishing (on `Cli`) or IL analysis (on `Infrastructure`). |
-| **NDJSON** | Newline-Delimited JSON for streaming `IntelligenceEvent`s. |
-| **Data Protection** | ASP.NET Core encryption system used for the local API key at rest. |
-| **Grimoire** | Encrypted local SQLite (EF Core + SQLCipher) for session persistence. |
-| **`AddArcanumInfrastructure`** | DI extension registering all infrastructure services (Serilog, options, secrets, Grimoire, workspace, perception, MCP, Comm Link). |
-| **Comm Link** | Operator alerting surface: `ICommLinkDispatcher` → typed `CommLinkDeliveryResult`, `WebhookCommLinkDispatcher`, MCP `send_commlink_alert` (legacy call alias `use_commlink`), `POST /api/commlink/send`, CLI `daemon alert`. |
-| **`ICommLinkDispatcher`** | Core contract: **`DispatchAsync(CommLinkMessage, CancellationToken)`** → **`Result`**. |
-| **`CommLinkMultiplexer`** | Infrastructure **`ICommLinkDispatcher`** implementation broadcasting to inner dispatchers (sequential; first failure wins). |
-| **`CommLinkInfrastructureJsonContext`** | Infrastructure-only source-generated JSON context for outbound **`WebhookPayloadDto`** (not on `HttpJsonOptions`). |
-| **`AddArcanumEyeOfTheWorld`** | Narrow DI extension: `IEyeOfTheWorld` only (no Grimoire or Serilog). |
-| **Eye of the World** | Situational directory perception — `EyeOfTheWorldService` in Infrastructure (§15). |
-| **`PatternSnapshot`** | `DomainType` + `RootPath` + `Threads` (bounded TOC lines). |
-| **`IGrimoireRepository`** | Core contract for Grimoire CRUD covering sessions, entries, lore, archive search, workspace snapshot rows, and **`IncrementSessionTokensAsync`** (§5.4). |
-| **`Chronosync reporting`** | Headless comparison of current `PatternSnapshot` vs latest `WorkspaceContext`; persists baseline and returns `ChronosyncReport` (§5.4.2). |
-| **`ChronosyncReport`** | DTO: `PreviousSnapshotTime`, `NewThreads`, `MissingThreads`, `DomainChanged`, `PreviousDomain`. |
-| **`IChronosyncEngine`** | `AnalyzeAndSyncAsync` — implemented by `ChronosyncEngine` in Infrastructure. |
-| **`GrimoireJsonContext`** | Core source-generated JSON context for `PatternSnapshot` stored in `WorkspaceContext.SerializedSnapshot` (§8.2). |
-| **`Workspaces`** | Literal API/registry term (no fantasy metaphor) for registered filesystem roots under `/api/workspaces`. |
-| **`ArcanumDbContextFactory`** | Design-time EF factory using a temp DB (§5.4.3). |
-| **`AddArcanumDaemonManagement`** | DI extension for OS-specific daemon lifecycle. |
-| **MCP** | Model Context Protocol — tool servers via JSON-RPC over stdio or in-process channels (§4.2). |
-| **`McpJsonSerializerContext`** | Source-generated context for JSON-RPC DTOs and MCP wire types. |
-| **`McpConfigJsonSerializerContext`** | Source-generated context for `mcp.json` deserialization. |
-| **`McpConnectionManager`** | Singleton managing global and per-partition MCP connections (§4.2). |
-| **`ArcanumInternalToolServer`** | In-process MCP server with native tools (§4.2). |
-| **Heraldry** | The A2A Agent Card describing Arcanum's identity and capabilities to external agents (§5.7.1). |
-| **Sending** (A2A) | An A2A Task, carried by The Conclave — either an inbound task (external agent → Arcanum Apprentice) or a delegated Sending dispatched outward (§5.7.1). |
-| **Archmage Client** | The Conclave's outward-facing A2A delegate; `IA2AClientService`/`A2AClientService`, invoked via the `dispatch_sending` MCP tool (§5.7.1). |
-| **`dispatch_sending`** | In-process MCP tool: an Apprentice delegates a Sending to an external A2A agent (§5.7.1). |
-| **`ArcanumA2AAgentHandler`** | The A2A server's `IAgentHandler`: maps inbound A2A messages to Apprentices and forwards the Chronicle onto the A2A task lifecycle (§5.7.1). |
-| **`MarkdigSpectreRenderer`** | AOT-safe Markdown → Spectre `IRenderable` walker for `chat` swap-at-end rendering. |
-| **`IThemeDetector`** | OS dark/light preference for `Arcanum:Cli:Theme` = `SystemDefault` (no Spectre in Infrastructure). |
-| **`IThemePalette`** | Semantic Spectre colors for all CLI markup (`RetroDownfall.Arcanum.Cli.UX`). |
-| **Output Formatting Directive** | System prompt block restricting model output to terminal-safe Markdown subset (§10.5). |
-| **The Proving Grounds** | In-memory Trial runner validating spell/prompt/plan output via **Inquisitors** (§20). |
-| **Trial** | Ephemeral test configuration: target (`spell` \| `prompt` \| `apprenticeGoal`), variables, and Inquisitor array. |
-| **Inquisitor** | Pass/fail criterion on Trial output (`regex`, `jsonSchema`, `semantic`). |
-| **`IProvingGroundsArbiter`** | Core contract: `AdjudicateAsync(output, inquisitors, judgeModel)` → `IReadOnlyList<InquisitorVerdict>`. |
-| **Resilience** | Provider health-tracking, fallback-resolution, and inference-retry layer (§10.1, §10.2). Disabled by default. |
-| **The Weave** | Arcanum's embedding and vector substrate (§21). `IWeaveService` / `WeaveService`. |
-| **Divination** | Semantic search (cosine similarity) through The Weave (§21). `IDivinationService` / `DivinationService`. Not to be confused with **`FilteredDivination`** (a `SpellRoutingDecisionMode`, §21.9). |
-| **Imprint** | A vector representation of text, stored in The Weave — the compressed semantic essence of content, stamped into a `float[]` (§21). |
-| **Lore** | **Legacy / operator-only** key-value memory (`MageSettings`; `/api/lore`, `arcanum lore`). The Lore MCP tools are removed; `EnableLoreSystem` no longer gates any MCP tool. Retained for backward compatibility until a follow-up removes it. Distinct from **The Lexicon** (model-directed entity memory; §10.6) and **Saga** (auto-extracted associative memory; §21.8). |
-| **The Lexicon** | Structured agent-directed entity memory (§10.6): `lexicon_entries` + FTS5 `lexicon_fts`, written via `scribe_lexicon`/`delete_lexicon` MCP tools, retrieved by exact-name match then column-weighted `bm25`, and injected into the Master system prompt under DATA as `### Lexicon (Known Context)`. Gated by `EnableLexiconSystem`. |
-| **Saga** | Auto-extracted long-term associative memory (RAG Phase 4; §21.8). Operator-only deletion (no `scribe_saga`/`delete_saga` MCP tool). Distinct from **Lore** (§4.2). Surfaced via `/api/saga*`, `read_saga`, `arcanum saga`. |
-| **`ISagaMemoryStore`** / **`SagaMemoryStore`** | Core contract / Infrastructure raw-SQL persistence for all four Saga tables, shared by extraction, the API, and `read_saga` (§21.8). |
-| **`SagaExtractionService`** | Infrastructure singleton `BackgroundService`; event-driven (bounded `Channel<Guid>`, `EnqueueExtraction`), extracts Saga memories from recent Grimoire entries via a headless LLM call after successful inference turns (§21.8). |
-| **Arcane Resonance** | Recursive `SPELL.json` `dependencies` resolution into the system prompt (§10.2.2). Not to be confused with **`DirectResonance`** (a `SpellRoutingDecisionMode`, §21.9). |
-| **Spell Routing** | Pre-flight Spell selection (§10.2.2, §21.9). `SpellRoutingDecisionMode`: `FullGrimoire`, `DirectResonance`, or `FilteredDivination`. |
-| **`SpellWeaveCache`** | Infrastructure singleton caching spell description imprints for RAG Phase 5 embedding-based spell routing; re-embeds the catalog only on change (§21.9). |
-| **`SemanticSpellRouter`** | Api scoped service; RAG Phase 5's embedding-based pre-filter in front of the existing LLM-based `SemanticRouter` — pure, hybrid, or disabled modes (§10.2.2, §21.9). |
-| **`vec0`** | The sqlite-vec virtual-table type used as The Weave's optional KNN acceleration index, with a managed brute-force cosine fallback when unavailable (§21.2). |
-
----
+| **RDG** | ASP.NET Core Request Delegate Generator for Minimal API handlers. |
+| **NDJSON** | Newline-delimited JSON for streaming `IntelligenceEvent`s. |
+| **Grimoire** | Encrypted local SQLite (EF Core + SQLCipher) session store. |
+| **Comm Link** | Operator alerting (`ICommLinkDispatcher`, webhook, MCP `send_commlink_alert`, `POST /api/commlink/send`). |
+| **Eye of the World** | Situational directory perception (§15). |
+| **Chronosync** | Temporal workspace delta vs last `WorkspaceContext` baseline. |
+| **MCP** | Model Context Protocol — tool servers over stdio / HTTP / in-process (§4.2). |
+| **Heraldry** | A2A Agent Card (§5.7.1). |
+| **Sending** | A2A task (inbound or outward via `dispatch_sending`). |
+| **Archmage Client** | Outward A2A delegate (`dispatch_sending`). |
+| **The Proving Grounds / Trial / Inquisitor** | Ephemeral LLM validation runner (§20). |
+| **Resilience** | Provider health + fallback retry (§10.1); default off. |
+| **The Weave / Divination / Imprint** | Embedding substrate / cosine search / stored vector (§21). |
+| **Lore** | Legacy operator key-value (`/api/lore`); not model-directed. |
+| **The Lexicon** | Model-writable entity memory (§10.6). |
+| **Saga** | Auto-extracted associative memory (§21.8); operator-delete only. |
+| **Arcane Resonance** | Spell `dependencies` injection (§10.2.2). |
+| **Spell Routing** | Pre-flight spell selection (`FullGrimoire` / `DirectResonance` / `FilteredDivination`). |
+| **`vec0`** | Optional sqlite-vec KNN index; managed cosine fallback when unavailable (§21.2). |
+| **Output Formatting Directive** | Terminal-safe Markdown subset for CLI (§10.5). |
 
 ## 18. Document maintenance
 
@@ -2494,823 +1864,149 @@ Any PR that changes **architecture, contracts, configuration, persistence, MCP s
 
 ## 19. The Forge — campaign, spell metadata, and prompt registry
 
-**Purpose:** Grimoire-persisted **campaigns** (named workspace roots), optional **`SPELL.json`** metadata alongside existing **`SPELL.md`** spells, and versioned **prompt templates** with parameter schemas — without changing inference routing (`SemanticRouter`, `WizardIntelligenceProvider`) or OpenAI `/v1` behaviour.
+Grimoire-backed campaigns, optional `SPELL.json` metadata, versioned prompts — without changing inference routing or `/v1` behaviour.
 
 ### 19.1 Data models
 
 | Entity | Storage | Notes |
 |--------|---------|-------|
-| **Campaign** | Grimoire `Campaigns` table | `Name`, `NameLower` (set in repository on write), `Path`, `WorkspaceType`, JSON `Settings`, JSON `SanctumConfigJson` (`SanctumConfig`; §11.15), timestamps. |
-| **Prompt** | Grimoire `Prompts` table | `Name`, `Version`, `CampaignId` (nullable = global), `Template`, `ParameterSchema` JSON, tags, defaults. Partial unique indexes: `(Name, Version)` when `CampaignId IS NULL`; `(Name, Version, CampaignId)` when scoped. |
-| **Spell sidecar metadata** | Disk `SPELL.json` (legacy `SKILL.json` read fallback) | Optional sibling of `SPELL.md`; not a separate `/api/skills` surface. Internal Core type remains `SkillMetadata`. |
-
-**JSON contexts:** `TheForgeJsonContext` (Core) for campaign settings and skill metadata; prompt DTOs on `ArcanumJsonContext` (Api).
+| **Campaign** | `Campaigns` | Path, settings JSON, `SanctumConfigJson` (§11.15) |
+| **Prompt** | `Prompts` | Versioned; nullable `CampaignId` (null = global); partial unique indexes |
+| **Spell sidecar** | Disk `SPELL.json` | Sibling of `SPELL.md`; legacy `SKILL.json` read fallback |
 
 ### 19.2 Architecture
 
-```mermaid
-flowchart LR
-  subgraph api [Api]
-    CE[CampaignEndpoints]
-    SE[SpellForgeEndpoints]
-    PE[PromptEndpoints]
-  end
-  subgraph infra [Infrastructure]
-    CR[CampaignRepository]
-    PR[PromptRepository]
-    SR[SpellRepository]
-    CWR[CampaignBackedWorkspaceRegistry]
-    PRE[PromptRenderer]
-  end
-  subgraph grimoire [Grimoire]
-    DB[(SQLite)]
-  end
-  CE --> CR
-  PE --> PR
-  PE --> PRE
-  SE --> SR
-  CR --> DB
-  PR --> DB
-  CWR --> CR
-  SR --> Disk[SPELL.md + SPELL.json]
-```
+Campaign/Spell/Prompt endpoints → repositories → Grimoire; `CampaignBackedWorkspaceRegistry` bridges campaigns into `/api/workspaces`. Spell bodies remain on disk.
 
 ### 19.3 Key decisions
 
-- **Campaign, not Project** — operator-facing term and `/api/campaigns` routes.
-- **No `/api/skills`** — structured spell metadata extends `/api/spells` only.
-- **`NameLower`** populated in `CampaignRepository.AddAsync` / `UpdateAsync` (no DB trigger).
-- **`SPELL.json`** parsed in `TryParseSpellFileAsync` during the existing spell scan (no second tree walk). Prefer `SPELL.json`; fall back to legacy `SKILL.json` when the canonical file is absent; when both exist, `SPELL.json` wins. Writes always use `SPELL.json`.
-- **Campaign export spell payload:** wire property `spellJson` carries the sidecar JSON string; legacy `skillJson` is accepted on import when `spellJson` is absent (see `CampaignExportSpellDto.ResolvedSpellJson`).
-- **`SystemPromptBuilder.Build`** is public for `POST /api/prompts/{id}/test` assembly previews.
-- **`POST /api/prompts/{id}/render`** and **`/test`** are separate endpoints (render only vs full DCI assembly).
-- **Grimoire schema** is applied on every host start via embedded SQL migrations; `IGrimoireDbReadiness.MarkReady()` after **`GrimoireSqlSchemaMigrator`** completes.
-
-- **Prompt `/test` vs `/execute`:** **`POST /api/prompts/{id}/test`** assembles the system prompt without LLM inference and does **not** resolve spell dependencies (prompt execution sets **`SkipSpellRouting: true`**). **`POST /api/prompts/{id}/execute`** and **`/execute-stream`** are live: they render the template via **`PromptRenderer`**, inject the result as **`PingRequest.AdditionalSystemPrompt`**, and dispatch to **`WizardIntelligenceProvider`** (buffered **`ApiResponse<PromptResponseDto>`** or NDJSON **`IntelligenceEvent`** stream — §4.3, §4.4).
+- Operator term **Campaign** / `/api/campaigns` (no `/api/skills`).
+- `SPELL.json` preferred; writes never create `SKILL.json`.
+- Export wire `spellJson` (legacy `skillJson` on import).
+- Prompt `/test` = assemble only (`SkipSpellRouting`); `/execute(-stream)` = live inference.
+- Schema via embedded SQL migrations each host start.
 
 ### 19.4 Disk layout
 
-| Path | Purpose |
-|------|---------|
-| `{campaignPath}/.arcanum/` | Created on campaign registration |
-| `{campaignPath}/.arcanum/campaign.json` | Optional import/export snapshot |
-| `{campaignPath}/.arcanum/prompts/{name}/{version}.json` | Prompt disk export format |
-| `{workspace}/spells/{name}/SPELL.md` | Spell body + frontmatter |
-| `{workspace}/spells/{name}/SPELL.json` | Optional structured metadata (canonical; legacy `SKILL.json` read-only fallback) |
+`{campaign}/.arcanum/` on register; prompts export under `.arcanum/prompts/`; workspace spells at `{workspace}/spells/{name}/SPELL.md` + optional `SPELL.json`.
 
 ### 19.5 Error codes
 
-All The Forge error codes (`Campaign.*`, `Sanctum.*`, `Spell.*`, `Prompt.*`, `Apprentice.*`) are centralized as `public const string` on `ErrorCodes` (Core) and mapped to HTTP statuses via `ArcanumErrorMapper` — see §8.23 for the full cross-domain catalog. A handful of endpoint-local codes (`Campaign.DuplicateName`/`DuplicatePath`, `Sanctum.InvalidConfig`, `Spell.InvalidFrontmatter`/`DuplicateName`, `Prompt.MissingParameter`/`UnknownParameter`/`RequiredParameterMissing`, `Apprentice.InvalidName`) are inline literals at their call site rather than `ErrorCodes` constants.
+Forge codes on `ErrorCodes` + `ArcanumErrorMapper` (§8.23). A few endpoint-local literals remain at call sites.
 
 ### 19.6 Apprentice orchestration
 
-**Purpose:** Persistent autonomous agents with plan generation, step execution, pause/resume/cancel, crash recovery, and Chronicle SSE (§5.7).
-
-| Entity | Storage | Notes |
-|--------|---------|-------|
-| **Apprentice** | Grimoire `Apprentices` table | Goal, JSON plan (`PlanStep[]` with per-step `attempts`), status (`Escalated` awaits DM), workspace, optional `CampaignId` / `SessionId`, checkpoint blob (`escalationReason`, `dmGuidance`) |
-| **Chronicle** | In-memory `ChronicleHub` per Apprentice | SSE at **`GET /api/apprentices/{id}/chronicle`**; not persisted |
-
-**Prompts:** Plan generation, step execution, and Shifting Fate evaluation prompts use Wizard/Apprentice/DM naming. Inference is routed through **`WizardIntelligenceProvider`** (implements **`IArcanumIntelligenceProvider`**).
-
-**Resilience mechanics (§5.7):** **Second Wind** (retry/backoff), **Shifting Fate** (autonomous + **`POST /reweave`**), **Divine Intervention** (`petition_dungeon_master` + **`POST /intervene`**).
-
-**Multi-agent & parallelism (§5.7):** **The Conclave** cross-Apprentice delegation (**`cast_sending`** + **`POST /api/apprentices/{id}/cast`**, gated by **`Arcanum:Conclave:Enabled`**) and **Simulacrum** parallel steps (**`isParallel`**, bounded by **`Arcanum:Apprentices:MaxSimulacra`**, isolated per-branch DI scope).
-
-**Deferred:** Apprentice personality templates, Apprentice vector memory, distributed execution.
-
----
+Persistent agents + Chronicle SSE — behaviour in §5.7. Table `Apprentices`; Chronicle in-memory only. Conclave / Simulacrum / Second Wind / Shifting Fate / Divine Intervention: §5.7. Deferred: personality templates, vector memory, distributed execution.
 
 ## 20. The Proving Grounds — Trials and Inquisitors
 
-**Purpose:** Automated validation of spell outcomes, prompt accuracy, and Apprentice plan success rates without persisting test fixtures to the Grimoire. Operators POST a **`Trial`** and receive a **`TrialResult`** with aggregated pass/fail and per-Inquisitor detail.
-
-**Terminology (strict):** Use **The Proving Grounds**, **Trial**, and **Inquisitor** exclusively. The legacy industry term for LLM testing is **prohibited** in code, API routes, type names, configuration keys, and documentation.
+Ephemeral Trial runner (no Grimoire persistence). Terminology: **The Proving Grounds** / **Trial** / **Inquisitor** only.
 
 ### 20.1 Data models (ephemeral)
 
-| Type | Storage | Notes |
-|------|---------|-------|
-| **`Trial`** | Request body only | `targetKind`, `target`, `inquisitors[]`, optional `variables`, `model`, `workspace`, `name`. |
-| **`Inquisitor`** | Embedded in `Trial` | Polymorphic via `kind` discriminator (`regex`, `jsonSchema`, `semantic`). Registered on `ArcanumJsonContext` with `[JsonDerivedType]` — the repo's first source-gen polymorphic wire type. |
-| **`TrialResult`** | Response `data` | `passed` (all Inquisitors pass), `output` (captured LLM text), `verdicts[]`, token `usage`. |
+In-memory `Trial` / `TrialResult` / polymorphic `Inquisitor` (`regex`, `jsonSchema`, `semantic`).
 
 ### 20.2 Architecture
 
-```mermaid
-flowchart LR
-  subgraph api [Api]
-    PE[ProvingGroundsEndpoints]
-    PR[ProvingGroundsRunner]
-  end
-  subgraph core [Core]
-    PA[ProvingGroundsArbiter]
-    IQ[Inquisitor types]
-  end
-  subgraph infra [Infrastructure]
-    SR[ISpellRepository]
-    PPR[IPromptRepository + PromptRenderer]
-    AP[ApprenticePromptBuilder]
-  end
-  WIZ[IArcanumIntelligenceProvider]
-  PE --> PR
-  PR --> SR
-  PR --> PPR
-  PR --> AP
-  PR --> WIZ
-  PR --> PA
-  PA --> IQ
-  PA --> WIZ
-```
-
-**Domain logic** lives in **`ProvingGroundsArbiter`** (Core). **`ProvingGroundsRunner`** (Api) resolves targets into `PingRequest` and orchestrates inference + adjudication.
+`POST /api/proving-grounds/trials/run` → resolve target (spell / prompt / apprenticeGoal) → run inference or plan prompt → adjudicate Inquisitors → `TrialResult`.
 
 ### 20.3 Key decisions
 
-- **No EF persistence (phase 1):** Trials are submitted and executed in-memory; no migrations or Grimoire tables.
-- **Apprentice Goal target:** Single-shot plan generation via `ApprenticePromptBuilder.BuildPlanGenerationPrompt` — validates plan JSON shape without spinning up a full Apprentice lifecycle.
-- **JsonSchema Inquisitor:** Lightweight subset (valid JSON, `required`, primitive `type` on `properties`) — mirrors `PromptRenderer`; no third-party JSON Schema validator (AOT-safe).
-- **Semantic Inquisitor:** Reuses Campaign Logger's FastModel pattern (`UnattendedMode`, `DisableMcpTools`, `SkipSpellRouting`, stateless messages, yes/no parsing).
-- **Regex Inquisitor:** 1-second `Regex.Match` timeout (ReDoS guard).
+Semantic judge uses FastModel→DefaultModel; jsonSchema is a lightweight subset (not full draft 2020-12). Industry LLM-test jargon prohibited in identifiers.
 
 ### 20.4 Error codes
 
-The Proving Grounds error codes (`ProvingGrounds.*`) are in the cross-domain catalog at §8.23. `ProvingGrounds.InferenceFailed` maps to HTTP 500 and is never downgraded by `ResolveStatusCodeDefaultBadRequest`.
+§8.23 (`ProvingGrounds.*`).
 
 ### 20.5 Deferred
 
-- Persisted Trial libraries / suites, Chronicle integration, batch runner, CLI verb.
-
----
+Persisted Trial suites, CI scheduling, richer schema validation.
 
 ## 21. The Weave, Divination, and Saga (RAG)
 
-**Purpose:** Retrieval-augmented generation (RAG) for Arcanum, delivered as five independently
-feature-flagged, gracefully-degrading phases. **The Weave** is Arcanum's embedding and vector
-substrate — text is **imprinted** into it as vectors. **Divination** is semantic search (cosine
-similarity) through The Weave, returning knowledge relevant to a query. **Saga** is Arcanum's
-long-term associative memory, auto-extracted from inference conversations — distinct from **Lore**
-(§4.2), which is explicit, operator-authored key-value pairs.
+**Purpose:** RAG as five independently feature-flagged, gracefully-degrading phases. **The Weave** imprints text as vectors; **Divination** is cosine semantic search; **Saga** is auto-extracted long-term associative memory (distinct from operator Lore / Lexicon).
 
-**All five phases are implemented:** the shared embedding foundation (§21.1–§21.2), session semantic
-search (§21.6), semantic codebase retrieval (§21.7), Saga long-term associative memory (§21.8), and
-embedding-based semantic spell routing (§21.9).
+All five phases are implemented (§21.1–§21.2 foundation; §21.6–§21.9 features). DDL for Weave/Saga/workspace embedding tables: see [Arcanum.PERSISTENCE.md](Arcanum.PERSISTENCE.md). Behavioral invariants stay here.
 
 ### 21.1 Phase 1 — embedding infrastructure (shared foundation)
 
-**Architecture:**
+**Layering:** `IWeaveService` / `WeaveService` (**Api** — depends on `IEmbeddingGeneratorFactory` / OpenAI SDK packages, mirroring `ChatClientFactory`). `IDivinationService` / `DivinationService` + `WeaveSchemaInitializer` + `SqliteVecExtensionLoader` + `WeaveIndexAvailability` (**Infrastructure**). `EmbeddingBlobCodec` (**Core**).
 
-```mermaid
-flowchart LR
-  subgraph api [Api]
-    EGF[EmbeddingGeneratorFactory]
-    WS[WeaveService]
-  end
-  subgraph infra [Infrastructure]
-    DS[DivinationService]
-    WIA[WeaveIndexAvailability]
-    SVL[SqliteVecExtensionLoader]
-    WSI[WeaveSchemaInitializer]
-  end
-  subgraph providers [AI Providers]
-    OAI["OpenAI-compatible embeddings (incl. Ollama via /v1)"]
-  end
-  subgraph grimoire [Grimoire SQLite]
-    BLOB[("entry_embeddings BLOB table")]
-    VEC[("entry_embeddings_vec vec0 table (optional)")]
-  end
-  WS --> EGF
-  EGF --> OAI
-  DS --> WIA
-  DS --> BLOB
-  DS -. "vec0 KNN when available" .-> VEC
-  WSI --> BLOB
-  WSI --> VEC
-  WSI --> SVL
-```
+**`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider/timeout → sanitized `Embeddings.ProviderUnavailable`. `EmbedBatchAsync` sequential by `BatchSize`. `ChunkAsync` naive sliding window (always runs).
 
-**`IWeaveService`** (Core contract, `RetroDownfall.Arcanum.Core.Weave`) / **`WeaveService`**
-(implementation): imprints text into vectors. `IsAvailable` is a computed property — read fresh from
-`IOptionsMonitor<ArcanumSettings>.CurrentValue` on every access (no `OnChange` registration; the same
-pattern as `McpConnectionManager` / `EyeOfTheWorldService`) — `true` only when
-`Arcanum:Embeddings:Enabled` is `true` and both `Provider` and `Model` are configured. `EmbedAsync`
-and `EmbedBatchAsync` never throw for expected failure modes: disabled returns
-`Embeddings.FeatureDisabled` immediately (no generator resolution, no HTTP call); a provider error or
-internal timeout returns `Embeddings.ProviderUnavailable` with a sanitized message (the real exception
-is logged, never returned to the caller). `EmbedBatchAsync` splits into `Arcanum:Embeddings:BatchSize`
-chunks and imprints them **sequentially**, not in parallel, to avoid overwhelming local providers.
-`ChunkAsync` is pure CPU (naive sliding window, no sentence-boundary detection — see §21.5) and always
-runs regardless of `IsAvailable`. **Layering note:** `WeaveService` lives in **Api**, not
-Infrastructure, because it depends on `IEmbeddingGeneratorFactory`, whose concrete provider wiring
-needs the AI SDK packages (`Microsoft.Extensions.AI.OpenAI`, `OpenAI`) that only the Api project
-references — this exactly mirrors why `ChatClientFactory` (the equivalent composition root for chat)
-also lives in Api rather than Infrastructure. Every other consumer only ever sees `IWeaveService` (Core)
-and is unaffected by which project registers the implementation.
+**Factory:** resolves `Embeddings:Provider`/`Model` as `OpenAICompatible` (incl. Ollama `/v1`); process-lifetime cached leases.
 
-**`IEmbeddingGeneratorFactory`** / **`EmbeddingGeneratorFactory`** (Api,
-`RetroDownfall.Arcanum.Api.Intelligence`, singleton): mirrors `IChatClientFactory`. Reads
-`IOptionsMonitor<ArcanumSettings>.CurrentValue` only inside `ResolveGeneratorAsync` (hot-reload safe),
-resolves `Arcanum:Embeddings:Provider` by name via `ProviderResolver.TryResolveProviderByName`, and
-builds an `IEmbeddingGenerator<string, Embedding<float>>` per `AiProviderKind`:
-
-- **`OpenAICompatible`** (all OpenAI-shaped embeddings APIs, including Ollama via its own `/v1`
-  endpoint): an OpenAI `EmbeddingClient` against the provider's configured `Endpoint`, wrapped via
-  `.AsIEmbeddingGenerator()`. Ollama has no bespoke embedding integration — operators pointing an
-  Ollama provider at this factory must configure `Endpoint` as Ollama's OpenAI-compatible base
-  (typically ending in `/v1`). The generator is process-lifetime cached, keyed by `providerName::model`.
-**`EmbeddingGeneratorLease`** (`IDisposable`): disposal mirrors `ChatClientLease` — cached
-`OpenAICompatible` generators are never disposed by a lease (process-lifetime cache).
-
-**`IDivinationService`** (Core contract) / **`DivinationService`** (Infrastructure, scoped, reuses the
-scoped `ArcanumDbContext` connection like `GrimoireRepository.SearchArchivesAsync`): the single, generic
-KNN entry point every RAG feature's retrieval code calls into. `SearchAsync` takes the **vec0 virtual
-table name** (e.g. `"entry_embeddings_vec"`) plus a shared primary-key/embedding column pair. When
-`WeaveIndexAvailability.IsVecAvailable` is `true`, it runs a parameterized vec0 KNN query directly
-against that table. When `false` (Phase 1's default — see below), it derives the companion **BLOB**
-table name by stripping the `_vec` suffix (`"entry_embeddings"`) and performs a managed, budgeted
-cosine scan in C# (`EmbeddingBlobCodec`, streaming top-K heap, internal row budget — see §21.5)
-instead — callers do not need to know or care which path ran.
-Table/column names are internal constants owned by the calling feature's retrieval code (never user
-input), interpolated into SQL the same way `GrimoireSqlSchemaMigrator` interpolates its own fixed
-migration identifiers. Never throws: any failure (vec0 unavailable and the managed fallback also
-failing, a locked database, etc.) returns a failed `Result<DivinationResult[]>` with a sanitized
-`Embeddings.ProviderUnavailable` error; callers treat that the same as an empty result set.
+**`IDivinationService.SearchAsync`:** callers pass vec0 table name + PK/embedding columns. If `WeaveIndexAvailability.IsVecAvailable`, vec0 KNN; else strip `_vec` and managed cosine over BLOB companion (`EmbeddingBlobCodec`, top-K heap, row budget). Never throws — sanitized `Result` failure.
 
 ### 21.2 Vector storage — vec0 acceleration with a managed fallback (always safe)
 
-Per RAG feature, two tables exist. Phase 1 wires up the first pair, for session entries (used by
-Phase 2's session semantic search):
+Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table (`distance_metric=cosine`) when extension loads. Schema created by `WeaveSchemaInitializer` after migrations (not a static embedded migration — dimensions interpolated from config). Extension load failure → managed-only; never fails startup.
 
-- **`entry_embeddings`** (always created, idempotently, at Grimoire bootstrap): the BLOB durable store
-  and the managed-fallback search source of truth.
+**Phase 1 default: managed-only** (no sqlite-vec NuGet in-tree). vec0 is performance-only.
 
-  ```sql
-  CREATE TABLE IF NOT EXISTS entry_embeddings (
-      EntryId TEXT PRIMARY KEY,
-      Embedding BLOB NOT NULL,
-      Dim INTEGER NOT NULL
-  );
-  ```
-
-  `EntryId` is the primary key, so its index is implicit — no extra index is needed in Phase 1.
-  Vectors are stored as little-endian `float32[]` bytes (`EmbeddingBlobCodec`); all realistic Arcanum
-  deployment targets (x64, Arm64) are little-endian.
-
-- **`entry_embeddings_vec`** (created only when `SqliteVecExtensionLoader.TryLoad` succeeds): the vec0
-  acceleration index, with an **explicit `distance_metric=cosine`** so `similarity = 1.0 - distance`
-  always holds — no version-specific distance-formula guessing. Columns are named
-  `EntryId`/`Embedding`, matching `entry_embeddings` exactly (this codebase's PascalCase SQL identifier
-  convention throughout, rather than sqlite-vec's own docs' snake_case examples), so `DivinationService`
-  passes one column-name pair for both the vec0 and managed-fallback paths.
-
-  ```sql
-  CREATE VIRTUAL TABLE IF NOT EXISTS entry_embeddings_vec USING vec0(
-      EntryId TEXT PRIMARY KEY,
-      Embedding FLOAT[{dimensions}] distance_metric=cosine
-  );
-  ```
-
-  `{dimensions}` is `Arcanum:Embeddings:Dimensions` (clamped 64–4,096), interpolated at bootstrap time —
-  not a user input, the same trust model `GrimoireSqlSchemaMigrator` already applies to its own fixed
-  migration scripts.
-
-**Not a registered migration.** `WeaveSchemaInitializer` runs immediately after
-`GrimoireSqlSchemaMigrator.ApplyPendingAsync` inside `GrimoireDatabaseBootstrapper.EnsureInitializedAsync`
-(the same connection, before it closes), but deliberately does **not** go through
-`GrimoireSqlSchemaMigrator.MigrationOrder`: there is no existing data to migrate (net-new feature, no
-users yet), and the vec0 table's vector column width must be interpolated from live configuration,
-which a static embedded `.sql` migration file cannot express. Every step is wrapped so a sqlite-vec
-problem degrades to a logged warning, never a startup failure — schema creation for the BLOB table
-alone is enough for Divination's managed fallback to work.
-
-**Extension loading (`SqliteVecExtensionLoader`).** Uses the same low-level `SQLitePCL.raw` API
-`GrimoireSqlSchemaMigrator` already uses for its `sqlite3_exec` migration runner:
-`sqlite3_enable_load_extension` then `sqlite3_load_extension`, verified with `SELECT vec_version()`.
-**Risk (documented, not a defect):** `SQLitePCLRaw.bundle_e_sqlcipher` — the SQLCipher provider this
-database uses — may have `sqlite3_enable_load_extension` compiled out for security. If it returns
-non-OK (or anything in the load path throws), `WeaveIndexAvailability.IsVecAvailable` is `false` and
-every RAG feature falls back to the managed cosine path. This is never treated as a failure: the vec0
-index is purely a performance layer over the same data.
-
-**Phase 1 default: managed-only.** No sqlite-vec NuGet package is referenced anywhere in the solution.
-`SqliteVecExtensionLoader` is written and tested — it gracefully handles the native library being
-absent — but with no native asset present, `IsVecAvailable` is `false` out of the box, so the managed
-brute-force cosine fallback (`EmbeddingBlobCodec.CosineSimilarity` over `entry_embeddings`) is the only
-active search path, and `entry_embeddings_vec` is never created. Adding the sqlite-vec native asset and
-validating Native AOT self-contained publish compatibility is a separate follow-up task; the managed
-path is production-viable for the dataset sizes Phase 1 targets.
-
-**Dimension-change handling.** At bootstrap, `WeaveSchemaInitializer` compares the configured
-`Dimensions` against the dimension already recorded in `entry_embeddings.Dim` (when any rows exist). On
-a mismatch it logs a warning — *"Embedding dimension changed from `{old}` to `{new}`. Existing
-embeddings are stale. Truncate the embedding tables and re-index to use the new dimension."* — and does
-**not** auto-truncate; operators must explicitly clear the embedding tables and re-index.
+**Dimension mismatch:** bootstrap warns when configured `Dimensions` ≠ stored `Dim`; **does not** auto-truncate — operator must `POST /api/embeddings/reset?confirm=true` (+ optional `scope`) then re-index.
 
 ### 21.3 Configuration
 
-See §3.4 for the full `Arcanum:Embeddings:*` reference table. Phase 1 ships the shared foundation
-fields (`Enabled`, `Provider`, `Model`, `Dimensions`, `BatchSize`, `ChunkSizeChars`,
-`ChunkOverlapChars`, `SimilarityThreshold`, `MaxResults`, `RequestTimeoutSeconds`) plus the four
-per-phase feature flags (`SessionSearchEnabled`, `CodebaseRetrievalEnabled`, `SagaEnabled`,
-`SemanticSpellRoutingEnabled`), all defaulting to `false`/off. Phase 2 adds
-`EmbeddingQueueIntervalSeconds`; Phase 3 adds the nested `Codebase:*` sub-record
-(`MaxFilesToIndex`, `MaxFileSizeChars`, `FileExtensions`, `IndexingIntervalMinutes`,
-`MaxRetrievedChunks` — see §21.7); Phase 4 adds the nested `Saga:*` sub-record
-(`ExtractionEnabled`, `MaxMemoriesPerSession`, `MaxMemoriesTotal`, `ExtractionModel`,
-`ExtractionMaxTokens`, `ExtractionIntervalMinutes`, `ExtractionWindowEntries` — see §21.8); Phase 5
-adds `SpellRoutingHybridMode` and `SpellRoutingHybridTopK` (see §21.9). `ConfigurationValidator`
-enforces that `Provider` resolves to a configured provider and `Model` is non-empty whenever `Enabled`
-is `true`, and that every feature flag requires `Enabled` to also be `true`.
+Full `Arcanum:Embeddings:*` keys: §3.4. Shared foundation + phase flags (`SessionSearchEnabled`, `CodebaseRetrievalEnabled`, `SagaEnabled`, `SemanticSpellRoutingEnabled`, all default off). Feature flags require `Enabled`. Validator enforces Provider/Model when enabled.
 
 ### 21.4 Graceful degradation matrix
 
 | Condition | Behavior |
 |-----------|----------|
-| `Arcanum:Embeddings:Enabled` = `false` (default) | Every RAG code path is unchanged from pre-RAG behavior. `WeaveService.IsAvailable` is `false`; `EmbedAsync`/`EmbedBatchAsync` return `Embeddings.FeatureDisabled` immediately, with no generator resolution and no HTTP call. |
-| Embedding provider unreachable or times out | `WeaveService` returns a sanitized `Embeddings.ProviderUnavailable` failure; the real exception is logged, never returned. Callers are expected to skip retrieval and continue with existing (non-RAG) behavior. |
-| sqlite-vec extension not loaded (Phase 1's default) | `WeaveIndexAvailability.IsVecAvailable` is `false` / `Mode=managed`; `DivinationService` transparently uses its managed brute-force cosine fallback over the BLOB tables (`ManagedSearchRowBudget` = 50,000). No feature is lost — only search performance on large datasets is affected. Surfaced to operators via `GET /api/health` component `Embeddings`, `GET /api/meta` (`embeddingsVectorMode` = `disabled` \| `managed` \| `vec0` \| `unavailable`), `arcanum doctor`, and The Forge managed-mode info banner. |
-| sqlite-vec claimed available but genuinely unusable (e.g. table missing) | `DivinationService.SearchAsync` catches the failure and returns a sanitized `Result` failure rather than throwing. |
-| Configured `Dimensions` changed after data exists | Bootstrap logs a warning; stale embeddings are **not** auto-truncated — an operator must explicitly clear and re-index. |
-| `Arcanum:Embeddings:SessionSearchEnabled` = `false` (default) | `EntryWeavingService` idles (1s poll); `POST /api/sessions/divine` returns **503** `Embeddings.FeatureDisabled`; `arcanum session divine` surfaces that error (§21.6). |
-| `Arcanum:Embeddings:CodebaseRetrievalEnabled` = `false` (default) | `WorkspaceIndexingService` idles (1s poll); `WizardIntelligenceProvider` never registers a workspace or attempts retrieval, so no semantic context is injected into the system prompt; `POST /api/workspaces/{id}/files/divine` and `.../files/index` return **503** `Embeddings.FeatureDisabled` (§21.7). |
-| Workspace has no indexed chunks (e.g. never re-indexed, or every file skipped) | Divination returns an empty result set; `POST /api/sessions/divine` / `.../files/divine` return **200** with an empty `Results`/array; inference proceeds with `[None]` in the Semantic Context DATA section — never a failure. |
-| `PingRequest.WorkingDirectory` is empty | `WizardIntelligenceProvider.RetrieveSemanticContextAsync` returns immediately (`null`) — no workspace registration, no embedding call, no Divination search is attempted, since codebase retrieval is inherently scoped to a workspace path. |
-| `Arcanum:Embeddings:SagaEnabled` = `false` (default) | `SagaExtractionService.EnqueueExtraction` calls are still accepted (never throw) but every dequeued item is skipped at the top of the loop; `RetrieveSagaMemoriesAsync` returns `null` immediately (no embedding call); `POST /api/saga/divine` returns **503** `Embeddings.FeatureDisabled`; `read_saga` is not advertised in `tools/list` and rejected if called anyway (§21.8). `GET /api/saga`, `DELETE /api/saga*`, and `GET /api/saga/stats` are **not** gated on this flag — they always operate on whatever memories already exist, so operators can browse/delete Saga history even while extraction/retrieval is off. |
-| `Arcanum:Embeddings:Saga:ExtractionEnabled` = `false` | Same as `SagaEnabled` = `false` for extraction only: the queue accepts and silently drops enqueues; retrieval and `/api/saga/*` reads/deletes are unaffected (retrieval-only mode; §21.8). |
-| Saga extraction LLM call fails (`Result.IsFailure`) | Logged as a warning; the session's extraction watermark is **not** advanced, so the same entries are retried on the next enqueued extraction for that session (no data loss, no duplicate extraction once it succeeds) (§21.8). |
-| Saga extraction LLM response is malformed JSON or an empty `memories` array | Treated as "no memories this tick" (logged as a warning for malformed JSON only); the watermark **is** advanced, since the extraction call itself succeeded (§21.8). |
-| Saga total or per-session memory cap reached | The extraction tick is skipped (logged as a warning); the watermark is **not** advanced, so extraction retries on the next enqueue once the cap has room (§21.8). |
-| `Arcanum:Embeddings:SemanticSpellRoutingEnabled` = `false` (default) | `SemanticSpellRouter.ResolveAsync` always returns `FullGrimoire`; `WizardIntelligenceProvider` calls the existing LLM-based `SemanticRouter.DetermineActiveSpellAsync` with the full spell catalog, byte-for-byte the same behavior as before Phase 5 (§21.9). |
-| `SpellWeaveCache.GetOrCreateAsync` returns `null` (Weave unavailable, or the batch embed call fails) | `SemanticSpellRouter` falls back to `FullGrimoire` (LLM-based routing over the full catalog), logged at Debug level — never a functional regression (§21.9). |
-| Embedding the user's prompt for spell routing fails | Same `FullGrimoire` fallback as above (§21.9). |
+| `Embeddings:Enabled` = `false` | Pre-RAG behavior; embed APIs return `Embeddings.FeatureDisabled` immediately |
+| Provider unreachable / timeout | Sanitized `Embeddings.ProviderUnavailable`; callers skip retrieval and continue |
+| sqlite-vec unavailable (default) | `Mode=managed`; Divination uses BLOB cosine (`ManagedSearchRowBudget` = 50,000). Surfaced via health/`/api/meta`/`doctor` |
+| vec0 claimed but unusable | `SearchAsync` returns sanitized failure (no throw) |
+| `Dimensions` changed after data | Warning only; no auto-truncate |
+| `SessionSearchEnabled` = `false` | `EntryWeavingService` idles; `POST /api/sessions/divine` → **503** `Embeddings.FeatureDisabled` |
+| `CodebaseRetrievalEnabled` = `false` | `WorkspaceIndexingService` idles; no prompt injection; divine/index → **503** |
+| No indexed chunks / empty WorkingDirectory | Empty results / skip retrieval — inference continues with `[None]` |
+| `SagaEnabled` = `false` | Extraction skips; divine/read_saga gated; **browse/delete/stats not gated** |
+| `Saga:ExtractionEnabled` = `false` | Extraction drops; retrieval/API reads unaffected |
+| Extraction LLM failure | Watermark **not** advanced (retry later) |
+| Malformed/empty extraction JSON | Watermark **is** advanced (“nothing this tick”) |
+| Saga caps reached | Skip tick; watermark **not** advanced |
+| `SemanticSpellRoutingEnabled` = `false` | `FullGrimoire` → existing LLM `SemanticRouter` unchanged |
+| Spell Weave cache / prompt embed failure | Fall back to `FullGrimoire` (Debug log; no regression) |
 
 ### 21.5 Known limitations
 
-- **Chunking is naive.** `WeaveService.ChunkAsync` is a sliding window with no sentence- or
-  word-boundary detection; a chunk boundary can fall mid-word. Acceptable for the current retrieval
-  quality bar across all five implemented phases.
-- **No re-indexing on model or dimension change.** Changing `Arcanum:Embeddings:Model` or `Dimensions`
-  does not invalidate or re-embed existing rows; only a logged warning signals the mismatch (§21.2).
-  Use `POST /api/embeddings/reset?confirm=true` to truncate the affected tables and clear companion
-  metadata (`workspace_file_chunks`, `saga_memories`, `saga_extraction_watermarks`) so the next
-  re-index/re-extraction actually rebuilds embeddings. Optional `?scope=entry|workspaceFile|saga`
-  targets a single scope; default `all` (or an omitted `scope`) clears every RAG table. Unknown
-  `scope` values are rejected with **400** `Validation.InvalidBody` to prevent typos from
-  accidentally wiping everything.
-- **Managed fallback uses a bounded brute-force scan.** When sqlite-vec is unavailable,
-  `DivinationService` scores BLOB rows in C# with a streaming top-K heap (no full scored list +
-  `OrderBy`/`Take`) and a hardcoded internal row budget (`ManagedSearchRowBudget` = 50,000 —
-  **not** an `Arcanum:*` setting). Exceeding the budget stops scoring early, logs a warning, and
-  returns the best hits among rows already scanned. Scoped workspace search joins the scope table
-  in SQL before reading embeddings (no unbounded `IN (...)` of every chunk id). Fine for the
-  dataset sizes Phases 1–4 target; raise the internal budget or add vec0 if interactive retrieval
-  needs to scale further.
-- **No real-time file watching (Phase 3).** `WorkspaceIndexingService` re-indexes on a polling interval
-  (`Arcanum:Embeddings:Codebase:IndexingIntervalMinutes`) plus an on-demand manual trigger
-  (`POST /api/workspaces/{id}/files/index`) — it does not use `FileSystemWatcher` or any other push
-  notification, so a file edited between ticks is not reflected in retrieval until the next tick or a
-  manual re-index.
-- **Session Divination has no cursor pagination.** `POST /api/sessions/divine`'s `HasMore`/`NextCursor`
-  are always `false`/`null` — the vector search itself is already bounded by `limit`, so there is no
-  further page of Divination hits to fetch (§21.6).
-- **Workspace re-indexing is single-workspace, sequential, and in-process.** `WorkspaceIndexingService`
-  walks its known workspaces one at a time per tick; there is no parallel indexing across workspaces
-  and no distributed/out-of-process indexing worker.
-- **Saga extraction prompt is naive (Phase 4).** `SagaExtractionService` asks the extraction LLM for a
-  flat list of one-sentence memories from a fixed-size recent-entries window; there is no
-  deduplication against existing memories, no summarization of a long conversation into fewer/denser
-  memories, and no confidence scoring — an operator who repeats the same fact across sessions will
-  accumulate near-duplicate Saga memories over time.
-- **Saga has no re-embedding on extraction-model change.** Like Phase 1–3, changing
-  `Arcanum:Embeddings:Model`/`Dimensions` does not retroactively re-embed existing `saga_memories` rows.
-- **Semantic spell routing pure mode has no tie-breaking beyond similarity order (Phase 5).** When two
-  spells have identical or near-identical cosine similarity to the prompt, `SemanticSpellRouter` simply
-  picks the first after a stable sort — there is no secondary signal (recency, usage frequency, etc.).
+Naive chunking; no auto re-index on model/dimension change (use `/api/embeddings/reset`); managed scan budgeted at 50k rows; Phase 3 polling (no `FileSystemWatcher`); Session Divination no cursor pagination; workspace index sequential in-process; Saga extraction naive (no dedupe); pure spell-routing ties break by stable sort only.
+
+**Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga` (default `all`); unknown scope → **400** `Validation.InvalidBody`.
 
 ### 21.6 Phase 2 — Session Divination
 
-**Concept:** semantic search over Grimoire conversation history. Entries are imprinted into The Weave
-in the background; operators (via CLI or API) can then ask a natural-language query and get back the
-most semantically relevant past entries, ranked by cosine similarity, instead of relying on exact
-keyword matching (`search_archives`' FTS5 `MATCH`).
+**Service:** `EntryWeavingService` (`BackgroundService`) — idle unless `Enabled && SessionSearchEnabled`; ticks on `EmbeddingQueueIntervalSeconds`. Embeds not-yet-imprinted non-empty `Entries` (SQL `LEFT JOIN`, empty filtered in SQL, batch upsert BLOB ± vec0). Idempotent; failures retry next tick.
 
-**`EntryWeavingService`** (Infrastructure, `RetroDownfall.Arcanum.Infrastructure.Hosting`,
-`BackgroundService`): idles (1s poll) unless both `Arcanum:Embeddings:Enabled` and
-`Arcanum:Embeddings:SessionSearchEnabled` are `true`. When enabled, ticks on
-`Arcanum:Embeddings:EmbeddingQueueIntervalSeconds` (default 10s, clamped 1–300). Each tick:
-
-1. Skips the tick entirely (logged at Debug) when `IWeaveService.IsAvailable` is `false`.
-2. Runs a `LEFT JOIN` against `Entries`/`entry_embeddings` — `WHERE ee."EntryId" IS NULL AND
-   TRIM(e."Content") != ''`, selecting `SUBSTR(e."Content", 1, ChunkSizeChars)` (clamped
-   `Arcanum:Embeddings:ChunkSizeChars`, the same per-item ceiling `WeaveService.EmbedBatchAsync`
-   hard-truncates to before the provider), `ORDER BY e."CreatedAt" DESC`, `LIMIT` clamped
-   `Arcanum:Embeddings:BatchSize` — to find not-yet-embedded, non-empty entries. Filtering empty
-   content **in SQL** (not after the fetch) prevents empty-content rows from permanently occupying
-   the `LIMIT` budget every tick, since they would otherwise be re-selected forever (no
-   `entry_embeddings` row is ever written for them). After materialization, a surrogate-safe
-   `Utf8Truncation.SafeCharSliceLength` defensive slice repairs any UTF-16 boundary SQLite `SUBSTR`
-   may have split.
-3. Calls `IWeaveService.EmbedBatchAsync` once for the whole batch; on failure, logs a warning and
-   returns — the same unembedded rows are retried on the next tick.
-4. Upserts each embedding into `entry_embeddings` (`INSERT ... ON CONFLICT("EntryId") DO UPDATE`), and
-   additionally into `entry_embeddings_vec` when `WeaveIndexAvailability.IsVecAvailable`.
-
-Idempotent by construction — the `LEFT JOIN` naturally skips already-embedded rows, so a tick
-interrupted mid-batch (e.g. process shutdown) simply resumes on the next tick with no partial-state
-cleanup needed.
-
-**`POST /api/sessions/divine`** (`SessionDivinationEndpoints`, behind `ApiKeyEndpointFilter`):
-
-1. **503** `Embeddings.FeatureDisabled` when `Enabled`/`SessionSearchEnabled` are not both `true`.
-2. **400** `Validation.InvalidBody` when `Query` is empty.
-3. **503** `Embeddings.ProviderUnavailable` when `IWeaveService.IsAvailable` is `false`, or embedding
-   the query fails.
-4. `IDivinationService.SearchAsync("entry_embeddings_vec", "EntryId", "Embedding", ...)` with `limit`
-   defaulting to `Arcanum:Embeddings:MaxResults` (request `limit` overrides, both clamped 1–50) and
-   `Arcanum:Embeddings:SimilarityThreshold`.
-5. Joins each hit's `EntryId` against `Entries`/`Sessions` (parameterized raw SQL through the request's
-   `ArcanumDbContext`) to populate `SessionId`, `SessionTitle`, `EntryRole` (the stored `MessageRole`
-   `INTEGER` mapped to its lowercase wire name), a surrogate-pair-safe (`Utf8Truncation.SafeCharSliceLength`)
-   200-char `EntryContentPreview`, and `EntryCreatedAt`.
-6. Applies optional `CampaignId` (normalized to EF's uppercase "D"-format Guid text before comparison —
-   see `SanctumBreachRepository.NormalizeCampaignId` for the identical concern) and `Status` filters
-   (`Status` defaults to `"active"` when omitted — deliberately narrower than the general
-   `GET /api/sessions` query, which treats a missing status as "no filter"; an explicit `Status` that
-   is neither `"active"` nor `"archived"` — the only two values ever written to that column — is
-   rejected with **400** `Validation.InvalidBody` rather than silently matching zero rows).
-7. Re-ranks by similarity descending and takes `limit` (the SQL join does not preserve Divination's
-   ordering), returning `ApiResponse<SemanticSearchResult>` (`Results[]`, `HasMore` always `false`,
-   `NextCursor` always `null` — see §21.5).
-
-**`arcanum session divine <QUERY> [--limit] [--campaign] [--status]`** (`SessionDivinationCommand`):
-calls the endpoint via `ArcanumApiClient.DivineSessionsAsync` and renders a Spectre table (Session ID,
-Title, Role, Similarity %, Created, Content Preview).
+**API/CLI:** `POST /api/sessions/divine` + `arcanum session divine` — gates/errors in §4.3 / §8.23. Filters `CampaignId` / `Status` (default `"active"`; invalid status → **400**). `HasMore`/`NextCursor` always false/null.
 
 ### 21.7 Phase 3 — Semantic Codebase Retrieval
 
-**Concept:** workspace source files are chunked, embedded, and indexed in the background; on every
-inference turn with a non-empty `WorkingDirectory`, the most semantically relevant chunks for the
-current prompt are retrieved and injected into the system prompt as read-only context — the model sees
-relevant code without the operator having to manually attach files.
+**Service:** `WorkspaceIndexingService` — idle unless `Enabled && CodebaseRetrievalEnabled`; registers workspaces from inference `WorkingDirectory`; interval + `IndexNowAsync` for `POST .../files/index` (**202**). Change detection via `FileLastWriteTime`; caps `MaxFilesToIndex` / `MaxFileSizeChars` / extensions; symlink prune; orphan cleanup only on non-truncated walks. Tables: `workspace_file_chunks` + embeddings BLOB/vec0 (PERSISTENCE).
 
-**Database tables** (added to `WeaveSchemaInitializer`, same idempotent bootstrap pattern as Phase 1):
+**Inference:** `RetrieveSemanticContextAsync` injects `### Semantic Context (Retrieved Codebase)` (DATA); failures → `null` (never fail turn).
 
-```sql
--- BLOB source of truth (always created)
-CREATE TABLE IF NOT EXISTS workspace_file_embeddings (
-    ChunkId TEXT PRIMARY KEY,
-    Embedding BLOB NOT NULL,
-    Dim INTEGER NOT NULL
-);
-
--- Chunk metadata, joined against Divination hits to render results
-CREATE TABLE IF NOT EXISTS workspace_file_chunks (
-    ChunkId TEXT PRIMARY KEY,
-    WorkspacePath TEXT NOT NULL,
-    RelativePath TEXT NOT NULL,
-    ChunkIndex INTEGER NOT NULL,
-    Content TEXT NOT NULL,
-    CharOffset INTEGER NOT NULL,
-    CharLength INTEGER NOT NULL,
-    FileLastWriteTime TEXT NOT NULL,
-    IndexedAt TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_workspace_file_chunks_path
-ON workspace_file_chunks(WorkspacePath, RelativePath);
-
--- vec0 acceleration (only when SqliteVecExtensionLoader succeeds)
-CREATE VIRTUAL TABLE IF NOT EXISTS workspace_file_embeddings_vec USING vec0(
-    ChunkId TEXT PRIMARY KEY,
-    Embedding FLOAT[{dimensions}] distance_metric=cosine
-);
-```
-
-`ChunkId` is a synthetic identifier minted by `WorkspaceIndexingService` (not tied to any EF-managed
-Guid column), so — unlike `entry_embeddings.EntryId` — there is no uppercase-D-format normalization
-concern when joining. `DivinationService`'s `_vec`-suffix-stripping convention applies identically:
-callers pass `"workspace_file_embeddings_vec"` and it is derived to `"workspace_file_embeddings"` when
-sqlite-vec is unavailable.
-
-**`WorkspaceIndexingService`** (Infrastructure, `RetroDownfall.Arcanum.Infrastructure.Hosting`,
-`BackgroundService` + `IWorkspaceIndexingService`): idles (1s poll) unless both
-`Arcanum:Embeddings:Enabled` and `Arcanum:Embeddings:CodebaseRetrievalEnabled` are `true`. Maintains a
-`ConcurrentDictionary<string, byte>` of known workspace paths, populated by `RegisterWorkspace` (called
-by `WizardIntelligenceProvider` on every inference turn with a non-empty `WorkingDirectory` — new paths
-are picked up on the service's next tick, never synchronously). Also exposes `IndexNowAsync`, used by
-the manual re-index endpoint, which indexes one workspace immediately and awaits completion.
-
-Per workspace, per tick:
-
-1. Skips (logged at Debug) when `IWeaveService.IsAvailable` is `false`, or when
-   `Arcanum:Embeddings:Codebase:FileExtensions` is empty.
-2. Walks the tree via a manual breadth-first traversal (`EnumerateCandidateFiles`, mirroring
-   `PhysicalFileSystemBrowser.ListAsync`'s recursive listing) rather than
-   `Directory.EnumerateFiles(..., RecurseSubdirectories: true)`: ignored directory segments (`bin`,
-   `obj`, `.git`, `node_modules`, `.vs`, `.nuget`, `packages`, `dist`, `build` — same list as
-   `EyeOfTheWorldService`) and symlink-escaping subdirectories are pruned **before** descending into
-   them, rather than being visited and then discarded entry-by-entry. The walk stops (and skips step 6
-   below for this tick) after 200,000 total filesystem entries, bounding worst-case tick duration for a
-   pathologically large tree. Files are filtered to `Arcanum:Embeddings:Codebase:FileExtensions`
-   (case-insensitive).
-3. Validates each candidate with `WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck` — an
-   escaping symlink is skipped, never followed.
-4. Skips files whose size heuristically or authoritatively exceeds
-   `Arcanum:Embeddings:Codebase:MaxFileSizeChars`.
-5. **Change detection:** compares the file's `LastWriteTimeUtc` against the `FileLastWriteTime` already
-   recorded on that file's `workspace_file_chunks` rows; an unchanged file is skipped without consuming
-   the tick's file budget (`Arcanum:Embeddings:Codebase:MaxFilesToIndex`) — but is still recorded as
-   "seen" for step 6's orphan cleanup regardless of the budget.
-6. For a new/changed file: deletes its existing chunk rows (`workspace_file_embeddings_vec` →
-   `workspace_file_embeddings` → `workspace_file_chunks`, in that order so the vec/BLOB deletes' `IN
-   (SELECT ChunkId FROM workspace_file_chunks WHERE ...)` subqueries still resolve), reads the file,
-   calls `IWeaveService.ChunkAsync` then `EmbedBatchAsync`, and inserts fresh rows. A single file's
-   read, chunk, or embed failure is logged as a warning and the tick continues with the next file —
-   never a crash.
-7. **Orphaned-chunk cleanup:** once the walk (step 2) completes without being truncated by the entry
-   bound, any `RelativePath` still present in `workspace_file_chunks` for this `WorkspacePath` but not
-   "seen" during the walk — i.e. the file was deleted, renamed, or moved outside every configured
-   extension since the last full walk — has its chunk/BLOB/vec rows deleted. Skipped entirely on a
-   truncated tick, so a budget-limited walk never misclassifies an unvisited-but-still-present file as
-   orphaned.
-
-**Retrieval integration (`WizardIntelligenceProvider.RetrieveSemanticContextAsync`):** called from both
-`AttemptBufferedInferenceAsync` and `StreamCommittedInferenceAsync`, immediately before
-`SystemPromptBuilder.Build`. Steps: check `Enabled`/`CodebaseRetrievalEnabled`/non-empty
-`WorkingDirectory`; register the workspace (fire-and-forget, try/catch); check `IWeaveService.IsAvailable`;
-embed the latest user message (reusing the same probe-extraction logic as semantic spell routing,
-`GetSemanticRouterUserProbe`); call `IDivinationService.SearchScopedAsync` on
-`"workspace_file_embeddings_vec"`, scoped to `workspace_file_chunks` rows with
-`WorkspacePath = WorkingDirectory`, with `limit` = `Arcanum:Embeddings:Codebase:MaxRetrievedChunks`
-(clamped 1–50) — the same cross-workspace-starvation concern as the `/files/divine` endpoint above
-applies here, since this runs on every inference turn against whichever workspace(s) are registered;
-join hits against `workspace_file_chunks` filtered by `WorkspacePath = WorkingDirectory`
-to populate `RelativePath`/`ChunkIndex`/`Content`, and compute `TotalChunks` per file via a `COUNT(*) ...
-GROUP BY RelativePath` query. Every step is wrapped so a failure anywhere returns `null` (never throws
-for expected failure modes) — the inference turn always proceeds, with or without semantic context
-(§21.4). Result is passed to `SystemPromptBuilder.Build`'s `semanticContext` parameter and rendered as
-the `### Semantic Context (Retrieved Codebase)` DATA section (§10.5).
-
-**`POST /api/workspaces/{id}/files/divine`** (`WorkspaceDivinationEndpoints`, behind
-`ApiKeyEndpointFilter`): same gating and flow as Session Divination (§21.6) — **503**
-`Embeddings.FeatureDisabled`, **404** `Workspace.NotFound`, **400** `Validation.InvalidBody` (empty
-`Query`, or `Query` longer than 4,096 characters — bounding what gets forwarded to the embedding
-provider on every request), **503** `Embeddings.ProviderUnavailable` — but joins Divination hits
-against `workspace_file_chunks` filtered
-by the resolved workspace's `Path` (the underlying Divination search is itself scoped to this
-workspace's chunks before ranking — see `IDivinationService.SearchScopedAsync` — rather than an
-unscoped global KNN that a small `limit` could let another workspace's chunks dominate), and returns
-`ApiResponse<WorkspaceSearchResult[]>` with a 500-char `ContentPreview` per chunk.
-
-**`POST /api/workspaces/{id}/files/index`**: resolves the workspace (**404** when missing), gated the
-same **503** `Embeddings.FeatureDisabled` check, then kicks off
-`WorkspaceIndexingService.IndexNowAsync(workspace.Path, ct)` as a background task (tied to
-`IHostApplicationLifetime.ApplicationStopping`, not the request) and immediately returns
-`ApiResponse<bool>` with **202 Accepted** — the re-index itself is not awaited inline, so a large
-workspace's full walk cannot hold the HTTP connection open or be killed by a client disconnect/proxy
-timeout.
-
-**RAG Phase 7 — read-only index inspector** (`WorkspaceIndexInspectorEndpoints` +
-`IWorkspaceIndexInspectorService` / `WorkspaceIndexInspectorService`, scoped): two read-only GET routes
-that expose the substrate the above routes write, for first-party inspection UIs (The Forge's "The Weave
-Inspector"). Both resolve the workspace through the registry only (no arbitrary filesystem paths), inherit
-`ApiKeyEndpointFilter` from the `/api` group, and **never trigger indexing or mutate state** — they query
-the existing `workspace_file_chunks` / `workspace_file_embeddings` tables directly via
-`ArcanumDbContext.Database.GetDbConnection()` (the same raw-SQL pattern as `WorkspaceDivinationEndpoints`).
-
-- **`GET /api/workspaces/{id}/files/index/status`** → `ApiResponse<WorkspaceIndexStatusDto>`: the
-  workspace's `VectorMode` / `VectorDiagnostic` / `IndexingEnabled` (resolved by the caller from the
-  `/api/meta`-equivalent `EmbeddingsVectorStatus` + `EmbeddingSettings`), `TotalIndexedFiles` /
-  `TotalChunks` (distinct `RelativePath` count + row count), oldest/newest `IndexedAt`, stored embedding
-  `Dimensions` (a `SELECT DISTINCT e."Dim"` join), and an honest `SkippedFilesNote` stating that
-  skipped-file reasons are **not persisted** by Arcanum (files too large / no parseable text / failed to
-  chunk-embed are logged server-side but not surfaced) — never synthesized. **404** `Workspace.NotFound`.
-- **`GET /api/workspaces/{id}/files/chunks?relativePath=&limit=&offset=`** →
-  `ApiResponse<WorkspaceFileChunkPage>`: a bounded, ordered (`RelativePath`, `ChunkIndex`) page of
-  `WorkspaceFileChunkDto` previews. `relativePath` is validated (rejects rooted paths and any `..`
-  segment → **400** `Workspace.PathTraversal`) and canonicalized to the platform separator; it is only
-  ever used as a SQL string equality against the `RelativePath` column (never joined to the filesystem
-  root, so no traversal risk — the check is defensive). `limit` is clamped 1–200 (default 50), `offset`
-  ≥ 0; `ContentPreview` is hard-capped to 500 chars via `Utf8Truncation.SafeCharSliceLength`
-  (surrogate-safe); the full chunk text is never returned. `TotalChunksForFile` per row mirrors
-  `WorkspaceSearchResult.TotalChunks` via a `COUNT(*) ... GROUP BY RelativePath` lookup of the page's
-  paths. `Total` is the full row count matching the optional filter; `HasMore` is true when another page
-  follows. **404** `Workspace.NotFound`.
-
-No new tables or state, so no PERSISTENCE change (§9). Source-generated JSON via `ArcanumJsonContext`
-(`WorkspaceIndexStatusDto`, `WorkspaceFileChunkDto`, `WorkspaceFileChunkPage`, and their
-`ApiResponse<T>` envelopes).
+**API:** `.../files/divine`, `.../files/index`, read-only inspector `.../index/status` + `.../chunks` (no mutate; preview capped). Errors §4.3.
 
 ### 21.8 Phase 4 — Saga (long-term associative memory)
 
-**Concept:** Saga is Arcanum's auto-maintained, cross-session knowledge base of facts, decisions, and
-preferences extracted from inference conversations. It differs from **Lore** (§4.2, `/api/lore`,
-`read_lore`/`scribe_lore`/`delete_lore`) along every axis that matters:
+**Contrast:** Lore/Lexicon are explicit; Saga is auto-extracted, operator-delete-only (no `scribe_saga`/`delete_saga`).
 
-| | Lore | Saga |
-|---|---|---|
-| Authored by | Operator (explicit key-value) | Auto-extracted by a background LLM call |
-| Scope | Global, keyed | Per-memory, cross-session |
-| Write path | `scribe_lore` (model-writable) | None for the model — extraction only |
-| Retrieval | Exact key lookup | Semantic search (Divination) |
-| Deletion | `delete_lore` (model-callable) | Operator-only (`DELETE /api/saga*`, CLI, never MCP) |
+**Store:** `ISagaMemoryStore` / `SagaMemoryStore` — `saga_memories` + embeddings + `saga_extraction_watermarks` (PERSISTENCE).
 
-**Database tables** (added to `WeaveSchemaInitializer`, same idempotent bootstrap pattern as Phases 1
-and 3):
+**Service:** `SagaExtractionService` — event-driven bounded channel (`EnqueueExtraction`, DropOldest); headless LLM extract after successful turns when `Enabled && SagaEnabled && ExtractionEnabled`. Caps, watermark rules, and degradation: §21.4.
 
-```sql
--- BLOB source of truth (always created)
-CREATE TABLE IF NOT EXISTS saga_memory_embeddings (
-    MemoryId TEXT PRIMARY KEY,
-    Embedding BLOB NOT NULL,
-    Dim INTEGER NOT NULL
-);
+**Retrieval:** `RetrieveSagaMemoriesAsync` → `### Saga (Associative Memory)` DATA. Shared query embed with Phase 3 per turn.
 
--- Metadata table
-CREATE TABLE IF NOT EXISTS saga_memories (
-    Id TEXT PRIMARY KEY,
-    Content TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL,
-    SessionId TEXT,
-    Tags TEXT,
-    Source TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_saga_memories_session ON saga_memories(SessionId);
-CREATE INDEX IF NOT EXISTS idx_saga_memories_created ON saga_memories(CreatedAt);
-
--- vec0 acceleration (only when SqliteVecExtensionLoader succeeds)
-CREATE VIRTUAL TABLE IF NOT EXISTS saga_memory_embeddings_vec USING vec0(
-    MemoryId TEXT PRIMARY KEY,
-    Embedding FLOAT[{dimensions}] distance_metric=cosine
-);
-
--- Extraction watermark (tracks which entries have been extracted per session)
-CREATE TABLE IF NOT EXISTS saga_extraction_watermarks (
-    SessionId TEXT PRIMARY KEY,
-    LastExtractedEntryCreatedAt TEXT NOT NULL
-);
-```
-
-`MemoryId` mirrors `saga_memories.Id`; `DivinationService`'s `_vec`-suffix-stripping convention applies
-identically — callers pass `"saga_memory_embeddings_vec"` and it derives
-`"saga_memory_embeddings"` when sqlite-vec is unavailable.
-
-**`ISagaMemoryStore`** (Core contract, `RetroDownfall.Arcanum.Core.Weave`) / **`SagaMemoryStore`**
-(Infrastructure, scoped, reuses the scoped `ArcanumDbContext` connection): the single raw-SQL
-persistence surface for all four Saga tables, shared by `SagaExtractionService` (writes),
-`SagaEndpoints` (reads/deletes), and `read_saga` (reads) — mirrors `UnseenServantWatermarkStore` /
-`SanctumBreachRepository`'s pattern for tables outside the compiled EF model. `InsertAsync` writes
-`saga_memories` + the BLOB embedding + (when available) the vec0 mirror in one call;
-`GetByIdsAsync` is the shared Divination-hit join used by every retrieval surface.
-
-**`SagaExtractionService`** (Infrastructure, `RetroDownfall.Arcanum.Infrastructure.Hosting`, singleton +
-`BackgroundService`, registered the same singleton-plus-hosted-factory way as `WorkspaceIndexingService`
-so the hub can inject it directly): **event-driven, not polling** — a bounded `Channel<Guid>` (capacity
-100, `BoundedChannelFullMode.DropOldest`, mirroring the SSE event bus's back-pressure model) holds
-session ids enqueued via `EnqueueExtraction` (thread-safe, never throws — a full queue silently drops
-the oldest pending session, which simply re-enqueues on its next successful turn). `ExecuteAsync` is a
-plain `await foreach` consumer with no `PeriodicTimer` — the channel reader naturally idles when
-nothing is enqueued, and each dequeued item first checks
-`Enabled && SagaEnabled && Saga.ExtractionEnabled`, skipping (never throwing) when any is `false`.
-
-Per dequeued session id (`ExtractForSessionAsync`, `internal` for direct test invocation, mirroring
-`EntryWeavingService.RunTickAsync`):
-
-1. Skip (Debug log) when `IWeaveService.IsAvailable` is `false`.
-2. Read the session's extraction watermark (`saga_extraction_watermarks.LastExtractedEntryCreatedAt`).
-3. Load the last `Arcanum:Embeddings:Saga:ExtractionWindowEntries` entries for the session
-   (`IGrimoireRepository.GetRecentSessionEntriesAsync`, ascending chronological order), then filter to
-   entries after the watermark when one exists. No entries beyond the watermark → skip (Debug log).
-4. Check `Saga:MaxMemoriesTotal` then `Saga:MaxMemoriesPerSession` (`ISagaMemoryStore.CountAsync` /
-   `CountBySessionAsync`) — either cap reached logs a warning and skips the tick entirely (watermark not
-   advanced, so the next enqueue retries once the cap has room).
-5. Build the extraction prompt (Saga Keeper persona + entry transcript) and call
-   `IArcanumIntelligenceProvider.ExecutePromptAsync` with `SkipSpellRouting: true`,
-   `DisableMcpTools: true`, `UnattendedMode: true`, `Model` = `Saga:ExtractionModel` →
-   `Arcanum:FastModel` → `Arcanum:DefaultModel`, `MaxOutputTokens` = `Saga:ExtractionMaxTokens` — the
-   same headless-call pattern `Loremaster` uses for Campaign Log summarization.
-6. On `Result.IsFailure`: log a warning, **do not advance the watermark** (next enqueue retries from the
-   same point — no data loss, no duplicate extraction once it eventually succeeds).
-7. Parse the response as `{ "memories": ["...", ...] }` via a **source-generated** `SagaExtractionResponse`
-   record (registered on the shared `TheForgeJsonContext`, not `JsonDocument.Parse` — AOT-safe, no
-   reflection; mirrors how `SemanticRouter` deserializes its own routing JSON). Malformed JSON or a
-   missing/empty `memories` array is treated as "nothing worth remembering this tick" (logged as a
-   warning only for malformed JSON) — the watermark **is** advanced, since the extraction call itself
-   succeeded.
-8. For each non-empty memory string: `IWeaveService.EmbedAsync`, then `ISagaMemoryStore.InsertAsync`
-   (`Id = Guid.NewGuid()`, `Source = "extraction"`, `Tags = null`). A single memory's embed failure is
-   logged at Debug and that memory is skipped; extraction continues with the rest.
-9. Advance the watermark to the latest processed entry's `CreatedAt`.
-
-**Hub integration (`WizardIntelligenceProvider`):**
-
-- **Retrieval** (`RetrieveSagaMemoriesAsync`, called from both `AttemptBufferedInferenceAsync` and
-  `StreamCommittedInferenceAsync`, alongside `RetrieveSemanticContextAsync`): gated on
-  `Enabled && SagaEnabled`; `IDivinationService.SearchAsync("saga_memory_embeddings_vec", "MemoryId",
-  "Embedding", ...)` with `Arcanum:Embeddings:MaxResults`/`SimilarityThreshold`; joins hits against
-  `saga_memories` via `ISagaMemoryStore.GetByIdsAsync`; returns `SagaMemory[]?` (`Content`,
-  `Similarity`, `CreatedAt`) for `SystemPromptBuilder.Build`'s `sagaMemories` parameter, or `null` on
-  any failure/empty result (never throws).
-- **Embedding reuse:** `RetrieveSemanticContextAsync` (Phase 3) and `RetrieveSagaMemoriesAsync`
-  (Phase 4) both need the current turn's prompt embedded. `ResolveRagQueryEmbeddingAsync` computes it
-  **once** per turn (only when at least one of `CodebaseRetrievalEnabled`/`SagaEnabled` needs it) via
-  the shared `EmbedQueryAsync` helper, and both retrieval methods reuse the same `Embedding<float>?` —
-  the prompt is never embedded twice for the same turn.
-- **Extraction enqueue:** after a successful buffered or streamed turn (same call site as
-  `TryIncrementSessionTokensAsync`), when `Enabled && SagaEnabled && Saga.ExtractionEnabled` are all
-  `true` and the turn is bound to a session, `WizardIntelligenceProvider` calls
-  `SagaExtractionService.EnqueueExtraction(sessionId)` — fire-and-forget, wrapped in try/catch so an
-  enqueue failure never affects the already-completed turn.
-
-**System prompt injection (`SystemPromptBuilder.Build`'s `sagaMemories` parameter, `SagaMemory[]?`,
-defaulted `null` so every pre-Phase-4 call site compiles unchanged):** renders a
-`### Saga (Associative Memory)` DATA section, positioned after `### Semantic Context (Retrieved
-Codebase)` and before `### Data Stream` (§10.5), one line per memory with its similarity and formation
-date, or `[None]` when no memories are available — the same sterile-placeholder convention as every
-other DATA section.
-
-**API — `/api/saga/*`** (`SagaEndpoints`, behind `ApiKeyEndpointFilter`):
-
-| Verb | Path | Success | Notes |
-|---|---|---|---|
-| `GET` | `/api/saga` | 200 | Paginated listing (`?q=` substring — **400** `Validation.InvalidBody` past 4,096 characters, `?sessionId=`, `?limit=` [1–10,000, default 100], `?offset=`); not gated on `SagaEnabled` — always reflects whatever memories exist. |
-| `POST` | `/api/saga/divine` | 200 | Semantic search (`SagaSearchRequest`); **503** `Embeddings.FeatureDisabled` when `Enabled`/`SagaEnabled` are not both `true`, **400** `Validation.InvalidBody` on empty query, **503** `Embeddings.ProviderUnavailable` when the embedding provider is unavailable, **500** `Saga.SearchFailed` on an internal Divination search failure. Returns `SagaSearchResult` (`Memories[]` parallel to `Similarities[]`). |
-| `DELETE` | `/api/saga/{id}` | 204 | Deletes one memory (BLOB + vec0 embedding rows too); **404** `Saga.NotFound` when missing. |
-| `DELETE` | `/api/saga` | 204 | Deletes every memory, embedding, and extraction watermark; requires `?confirm=true` or **400** `Saga.NotEmpty`. |
-| `GET` | `/api/saga/stats` | 200 | `SagaStats` — total count, distinct session count, oldest/newest `CreatedAt`. |
-
-**MCP — `read_saga`** (`ArcanumInternalToolServer`, gated by `Embeddings:Enabled &&
-Embeddings:SagaEnabled` — passed into `InProcessMcpTransport.CreatePair`/`ArcanumInternalToolServer`'s
-constructor as a plain `bool` the same way `conclaveEnabled` already is): embeds the query, runs
-Divination against `saga_memory_embeddings_vec`, joins via `ISagaMemoryStore.GetByIdsAsync`, and
-returns a readable text listing with similarity scores — same dual-gate pattern as `search_archives`
-(hidden from `tools/list` and rejected at `tools/call` when disabled). **Deliberately read-only: there
-is no `scribe_saga` or `delete_saga` tool** — Saga memories are auto-extracted and deletable only by
-the operator (API/CLI), so the model can never poison its own long-term memory.
-
-**CLI — `arcanum saga list|divine|delete|stats`** (`Cli/Commands/TheForge/SagaCommands.cs`): same
-`ArcanumApiClient` + themed Spectre rendering pattern as `arcanum session divine` (§21.6); `stats`
-renders a bordered `Panel` summary (total memories, sessions represented, oldest/newest) rather than a
-table.
+**Surfaces:** `/api/saga*` (§4.3), MCP `read_saga` (gated), CLI `arcanum saga …`.
 
 ### 21.9 Phase 5 — Semantic spell routing
 
-**Concept:** an embedding-based pre-filter in front of the existing LLM-based `SemanticRouter`
-(§10.2.2), with three modes selected by `Arcanum:Embeddings:SemanticSpellRoutingEnabled` and
-`Arcanum:Embeddings:SpellRoutingHybridMode`:
+**Modes** (`SemanticSpellRoutingEnabled` / `SpellRoutingHybridMode`): Disabled → `FullGrimoire` (LLM full catalog); pure → `DirectResonance` (no LLM); hybrid → `FilteredDivination` (top-K then LLM). Failures → `FullGrimoire`.
 
-- **Disabled** (`SemanticSpellRoutingEnabled = false`, the default): `SemanticRouter` is called exactly
-  as before Phase 5 — no behavior change.
-- **Pure embedding mode** (`SemanticSpellRoutingEnabled = true`, `SpellRoutingHybridMode = false`): the
-  user prompt and every spell's description are embedded; the highest-cosine-similarity spell above
-  `SimilarityThreshold` wins outright — **no LLM call at all**, faster and cheaper than the LLM router.
-- **Hybrid mode** (both `true`): embedding similarity narrows the catalog to the top
-  `SpellRoutingHybridTopK` candidates, then the existing LLM-based `SemanticRouter` picks from that
-  reduced set — smaller prompt, same JSON response protocol and timeout/fallback behavior as before.
-
-**`SpellWeaveCache`** (Infrastructure, `RetroDownfall.Arcanum.Infrastructure.Weave`, singleton):
-caches spell description imprints ("The Weave") keyed by spell name
-(`ConcurrentDictionary<string, Embedding<float>>`). `GetOrCreateAsync` compares the current spell
-catalog's `(Name, Description)` pairs against the last-cached snapshot; on a match, returns the cached
-dictionary with **zero** re-embedding. On a mismatch (a spell added, removed, or its description
-edited), re-embeds the **entire** catalog via `IWeaveService.EmbedBatchAsync` under a
-`SemaphoreSlim(1, 1)` — re-checked after acquiring the lock — so concurrent first-access callers cannot
-double-embed the same catalog. Falls back to `null` (never throws) when `IWeaveService.IsAvailable` is
-`false` or the batch embed call fails; callers treat `null` as "fall back to LLM-based routing".
-
-**`SemanticSpellRouter`** (Api, `RetroDownfall.Arcanum.Api.Intelligence`, scoped): the single entry
-point `WizardIntelligenceProvider.ResolveRoutedSpellAsync` now calls instead of `SemanticRouter`
-directly. `ResolveAsync(spells, userPrompt, ct)` returns a `SpellRoutingDecision`
-(`SpellRoutingDecisionMode`: `DirectResonance` | `FilteredDivination` | `FullGrimoire`):
-
-- `FullGrimoire` — disabled, `SpellWeaveCache` returned `null`, the prompt embedding failed, or any
-  unexpected exception (Debug-logged); the hub builds the router `IChatClient` (including the optional
-  `FastModel` lease) and calls `SemanticRouter.DetermineActiveSpellAsync(..., candidates: null)` exactly
-  as before Phase 5.
-- `DirectResonance` (pure mode) — carries the resolved spell (or `null` when none scored above
-  `SimilarityThreshold`) computed purely from cosine similarity; the hub uses it directly and skips
-  building an LLM router client entirely — no LLM cost for this turn's spell routing.
-- `FilteredDivination` (hybrid mode) — carries the top-`SpellRoutingHybridTopK` candidates by
-  similarity; the hub builds the router client as usual and calls `SemanticRouter` with
-  `candidates: decision.Candidates`.
-
-Cosine similarity is computed via the shared **`EmbeddingBlobCodec.CosineSimilarity`** (Core
-`Primitives`, `public` — see §4.1/§16.7), including its `0` return for mismatched or zero-length
-vectors. This is a straight call, not an inline duplicate: Core has no project-reference restriction
-that would keep Api from seeing a public Core type.
-
-**`SemanticRouter.DetermineActiveSpellAsync` modification:** gained an optional
-`IReadOnlyList<SpellMetadata>? candidates = null` parameter. `null` (every pre-Phase-5 call site,
-unchanged) means "offer the full `availableSpells` catalog to the LLM", exactly as before. A non-null
-list restricts only the **tools list offered to the LLM** to those candidates — name resolution of the
-LLM's JSON response still searches the full `availableSpells` list, so hybrid-mode routing can never
-fail to resolve a name that legitimately came from its (reduced) candidate set.
-
-`SkipSpellRouting` behavior is unchanged: when `true`, the hub skips both `SpellScanner` and
-`SemanticSpellRouter` entirely — `activeSpell` is `null` and no embedding cost is incurred for routing.
-
----
+**`SpellWeaveCache`:** singleton description imprints; re-embed catalog on change under lock. **`SemanticSpellRouter`** is the sole hub entry (`ResolveRoutedSpellAsync`). `SemanticRouter` optional `candidates` param; name resolve still searches full catalog. `SkipSpellRouting` skips scanner + router (no embed cost).
 
 ## 22. Structured output, cost tracking, and prompt caching
 

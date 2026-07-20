@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -16,8 +17,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 {
 
     private TempWorkspace _workspace = null!;
-
-    private McpConnectionManager _manager = null!;
 
     public async Task InitializeAsync()
     {
@@ -38,6 +37,78 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
               }
             }
             """);
+
+    }
+
+    public async Task DisposeAsync()
+    {
+
+        await _workspace.DisposeAsync();
+
+    }
+
+    [Fact]
+    public async Task GetAvailableToolsAsync_untrusted_workspace_does_not_register_local_servers()
+    {
+
+        await using McpConnectionManager manager = CreateManager(new UntrustedWorkspaceStore());
+
+        await manager.GetAvailableToolsAsync(_workspace.Root);
+
+        McpServerInfo? status = await manager.GetStatusAsync("untrusted-local", _workspace.Root);
+
+        Assert.Null(status);
+
+    }
+
+    [Fact]
+    public async Task RestartAsync_after_trust_revoke_returns_WorkspaceNotTrusted()
+    {
+
+        ToggleableTrustStore trust = new() { Trusted = true };
+
+        await using McpConnectionManager manager = CreateManager(trust);
+
+        await manager.RegisterFromConfigAsync(
+            new McpConfig
+            {
+                McpServers = new Dictionary<string, McpServerConfig>
+                {
+                    ["local-restart"] = new McpServerConfig
+                    {
+                        Command = "arcanum-nonexistent-binary-zzz",
+                    },
+                },
+            },
+            scopeWorkingDirectory: _workspace.Root,
+            CancellationToken.None);
+
+        Result start = await manager.StartAsync("local-restart", _workspace.Root);
+
+        Assert.True(start.IsFailure);
+
+        Assert.Equal("Mcp.StartFailed", start.Error.Code);
+
+        McpServerInfo? afterStart = await manager.GetStatusAsync("local-restart", _workspace.Root);
+
+        Assert.NotNull(afterStart);
+
+        Assert.Equal(McpServerState.Error, afterStart!.State);
+
+        trust.Trusted = false;
+
+        Result restart = await manager.RestartAsync("local-restart", _workspace.Root);
+
+        Assert.True(restart.IsFailure);
+
+        Assert.Equal("Mcp.WorkspaceNotTrusted", restart.Error.Code);
+
+        Assert.Contains("trust-workspace", restart.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    private McpConnectionManager CreateManager(ITrustedMcpWorkspaceStore trustStore)
+    {
 
         ServiceCollection services = new();
 
@@ -60,36 +131,15 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        _manager = new McpConnectionManager(
+        return new McpConnectionManager(
             NullLogger<McpConnectionManager>.Instance,
             humanPrompts,
             scopeFactory,
             pacer,
             new FakeEventBus(),
-            new UntrustedWorkspaceStore(),
+            trustStore,
             new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
-
-    }
-
-    public async Task DisposeAsync()
-    {
-
-        await _manager.DisposeAsync();
-
-        await _workspace.DisposeAsync();
-
-    }
-
-    [Fact]
-    public async Task GetAvailableToolsAsync_untrusted_workspace_does_not_register_local_servers()
-    {
-
-        await _manager.GetAvailableToolsAsync(_workspace.Root);
-
-        McpServerInfo? status = await _manager.GetStatusAsync("untrusted-local", _workspace.Root);
-
-        Assert.Null(status);
 
     }
 
@@ -98,6 +148,19 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
+
+        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+    }
+
+    private sealed class ToggleableTrustStore : ITrustedMcpWorkspaceStore
+    {
+
+        public bool Trusted { get; set; }
+
+        public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Trusted);
 
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -130,13 +193,12 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>
             Task.FromResult<SanctumChildProcessBoundary?>(null);
 
-public Task RecordResourceLimitBreachAsync(
+        public Task RecordResourceLimitBreachAsync(
             string? workspaceRoot,
             string toolName,
             Core.Platform.ResourceLimitKind resource,

@@ -4595,6 +4595,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<AITool>>(Tools);
 
+        public Task<AIFunction?> GetToolAsync(
+            string serverName,
+            string toolName,
+            string? workingDirectory,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<AIFunction?>(null);
+
         public Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.FromResult(new List<McpServerStatusDto>());
 

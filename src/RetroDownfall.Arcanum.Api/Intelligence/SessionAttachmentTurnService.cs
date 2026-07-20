@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -178,6 +179,20 @@ public static class SessionAttachmentTurnService
                                 imageError);
                         }
 
+                        string imageLabel = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
+
+                        if (imageLabel.Length == 0)
+                        {
+                            imageLabel = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
+                        }
+
+                        if (imageLabel.Length == 0)
+                        {
+                            imageLabel = "image";
+                        }
+
+                        rehydrated.Add(new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(imageLabel)));
+
                         rehydrated.Add(new DataContent(bytes, record.MimeType));
                     }
                     else
@@ -186,7 +201,20 @@ public static class SessionAttachmentTurnService
                             settings.Cli.MaxAttachFileSizeBytes);
 
                         string text = DecodeTextWithByteBound(bytes, maxTextBytes);
-                        rehydrated.Add(new TextContent(text));
+
+                        string label = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
+
+                        if (label.Length == 0)
+                        {
+                            label = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
+                        }
+
+                        if (label.Length == 0)
+                        {
+                            label = "attachment";
+                        }
+
+                        rehydrated.Add(new TextContent(SystemPromptBuilder.FormatUntrusted(label, text)));
                     }
                 }
             }

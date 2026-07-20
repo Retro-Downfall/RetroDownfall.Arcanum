@@ -36,6 +36,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -352,22 +354,63 @@ public sealed class ToolExecutionPipeline(
 
         IReadOnlyList<AIContent>? additionalContext = null;
 
-        if (!wardedExecution.Failed
+        bool executedSuccessfully = !wardedExecution.Failed && !wardedExecution.Denied;
+
+        if (executedSuccessfully
             && string.Equals(toolName, "attach_session_file", StringComparison.Ordinal)
             && SessionAttachmentToolAmbient.CurrentSessionId is { } ambientSessionId
             && SessionAttachmentToolInjection.TryParseAttachArguments(fcc.Arguments, out string logicalName, out int? version))
         {
 
-            additionalContext = await SessionAttachmentToolInjection
-                .TryBuildContentsAsync(
-                    sessionAttachmentStore,
-                    ambientSessionId,
-                    logicalName,
-                    version,
-                    settings.Value,
-                    request.Model,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+
+                additionalContext = await SessionAttachmentToolInjection
+                    .TryBuildContentsAsync(
+                        sessionAttachmentStore,
+                        ambientSessionId,
+                        logicalName,
+                        version,
+                        settings.Value,
+                        request.Model,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                throw;
+
+            }
+            catch (Exception ex)
+            {
+
+                if (suppressInvocationFailures)
+                {
+
+                    logger.LogError(
+                        ex,
+                        "attach_session_file post-process failed during inference (tolerated — Arcanum:Intelligence:TolerateToolFailures).");
+
+                    RecordToolInvocationMetric(toolName, "error");
+
+                    return new ProcessedToolCall(
+                        callId,
+                        toolName,
+                        argsSnapshot,
+                        PublicToolFailureMessage(toolName),
+                        wardedExecution.WardEvents,
+                        Failed: true,
+                        AdditionalContextContents: null);
+
+                }
+
+                RecordToolInvocationMetric(toolName, "error");
+
+                throw;
+
+            }
 
         }
 
@@ -1048,7 +1091,12 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    private static bool TryResolvePathUnderWorkspace(string workspaceRoot, string relativePath, out string absolutePath)
+    /// <summary>
+    /// Resolves <paramref name="relativePath"/> under <paramref name="workspaceRoot"/> and requires
+    /// workspace containment (lexical + symlink walk). Defense-in-depth for Sanctum preflight;
+    /// underlying tools still enforce their own sandbox checks.
+    /// </summary>
+    internal static bool TryResolvePathUnderWorkspace(string workspaceRoot, string relativePath, out string absolutePath)
     {
 
         absolutePath = string.Empty;
@@ -1062,11 +1110,22 @@ public sealed class ToolExecutionPipeline(
                 ? Path.GetFullPath(relativePath.Trim())
                 : Path.GetFullPath(Path.Combine(root, relativePath.Trim()));
 
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, absolutePath, out string? resolved))
+            {
+                absolutePath = string.Empty;
+
+                return false;
+            }
+
+            absolutePath = resolved ?? absolutePath;
+
             return true;
 
         }
         catch (Exception)
         {
+
+            absolutePath = string.Empty;
 
             return false;
 

@@ -202,6 +202,80 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
     }
 
+    [Fact]
+    public async Task Cancel_Then_Complete_RemainsCancelled()
+    {
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+        string executionId = await repository.StartAsync("daemon-cas", "Daemon CAS", CancellationToken.None);
+
+        DaemonExecutionSummary cancelled = await repository.CancelAsync(executionId, CancellationToken.None);
+        Assert.Equal(DaemonJobStatus.Cancelled, cancelled.Status);
+
+        DaemonExecutionSummary afterComplete = await repository.CompleteAsync(executionId, CancellationToken.None);
+        Assert.Equal(DaemonJobStatus.Cancelled, afterComplete.Status);
+    }
+
+    [Fact]
+    public async Task Complete_Then_Cancel_ThrowsNotRunning()
+    {
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+        string executionId = await repository.StartAsync("daemon-cas-2", "Daemon CAS 2", CancellationToken.None);
+
+        DaemonExecutionSummary completed = await repository.CompleteAsync(executionId, CancellationToken.None);
+        Assert.Equal(DaemonJobStatus.Completed, completed.Status);
+
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            repository.CancelAsync(executionId, CancellationToken.None));
+        Assert.Contains("not running", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Fail_Racing_Cancel_FirstTerminalWins()
+    {
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+        string executionId = await repository.StartAsync("daemon-race-term", "Daemon Race Term", CancellationToken.None);
+
+        using Barrier barrier = new(2);
+        Task<DaemonExecutionSummary> failTask = Task.Run(async () =>
+        {
+            barrier.SignalAndWait();
+            return await repository.FailAsync(executionId, "boom", CancellationToken.None);
+        });
+        Task<DaemonExecutionSummary> cancelTask = Task.Run(async () =>
+        {
+            barrier.SignalAndWait();
+            try
+            {
+                return await repository.CancelAsync(executionId, CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                DaemonExecutionDetail? detail = await repository.GetAsync(executionId, CancellationToken.None);
+                Assert.NotNull(detail);
+                return new DaemonExecutionSummary(
+                    detail!.Id,
+                    detail.DaemonId,
+                    detail.DaemonName,
+                    detail.Status,
+                    detail.StartedAt,
+                    detail.CompletedAt,
+                    detail.ErrorMessage);
+            }
+        });
+
+        DaemonExecutionSummary[] results = await Task.WhenAll(failTask, cancelTask);
+        Assert.All(
+            results,
+            r => Assert.True(
+                r.Status is DaemonJobStatus.Failed or DaemonJobStatus.Cancelled,
+                $"unexpected status {r.Status}"));
+        Assert.Equal(results[0].Status, results[1].Status);
+
+        DaemonExecutionDetail? final = await repository.GetAsync(executionId, CancellationToken.None);
+        Assert.NotNull(final);
+        Assert.True(final!.Status is DaemonJobStatus.Failed or DaemonJobStatus.Cancelled);
+    }
+
     private static InMemoryDaemonExecutionRepository CreateRepository()
     {
 

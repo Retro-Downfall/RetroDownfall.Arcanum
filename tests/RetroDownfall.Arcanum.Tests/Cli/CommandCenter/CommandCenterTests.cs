@@ -385,7 +385,7 @@ public sealed class ShellCommandDispatcherTests
             new ShellCommandParser(),
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
-            new CommandCenterWardCoordinator(),
+            new CommandCenterWardCoordinator(new CommandCenterHardModalArbiter()),
             NullLogger<ShellCommandDispatcher>.Instance);
     }
 

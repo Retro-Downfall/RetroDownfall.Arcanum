@@ -809,7 +809,22 @@ internal sealed partial class ArcanumInternalToolServer
 
         using CancellationTokenSource toolScope = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        _inFlightToolCalls[requestKey] = toolScope;
+        // Reject duplicate in-flight ids rather than overwriting the CTS (which would orphan the
+        // first call's cancellation registration and break notifications/cancelled correlation).
+        if (!_inFlightToolCalls.TryAdd(requestKey, toolScope))
+        {
+            return new JsonRpcResponse
+            {
+                Id = rpcId,
+                Result = null,
+                Error = new JsonRpcError
+                {
+                    Code = -32600,
+                    Message = "Duplicate JSON-RPC request id: a tools/call with this id is already in flight.",
+                    Data = null,
+                },
+            };
+        }
 
         Guid? previousAmbient = SessionAttachmentToolAmbient.CurrentSessionId;
 

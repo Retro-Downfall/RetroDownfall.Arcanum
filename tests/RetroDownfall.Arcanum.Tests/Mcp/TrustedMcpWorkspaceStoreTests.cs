@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Tests.Support;
+using System.Text;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -115,7 +116,41 @@ public sealed class TrustedMcpWorkspaceStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task IsTrustedAsync_reuses_cached_hash_when_file_unchanged()
+    public async Task IsTrustedAsync_detects_same_size_byte_change_even_when_mtime_restored()
+    {
+
+        // Same length so a naive mtime+length cache would still treat the file as unchanged.
+        const string original = """{"mcpServers":{"a":{}}}""";
+        const string modified = """{"mcpServers":{"b":{}}}""";
+
+        Assert.Equal(Encoding.UTF8.GetByteCount(original), Encoding.UTF8.GetByteCount(modified));
+
+        string mcpPath = _workspace.WriteFile("mcp.json", original);
+
+        DateTime originalWriteUtc = File.GetLastWriteTimeUtc(mcpPath);
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        await store.TrustAsync(_workspace.Root);
+
+        Assert.True(await store.IsTrustedAsync(_workspace.Root));
+
+        _workspace.WriteFile("mcp.json", modified);
+
+        File.SetLastWriteTimeUtc(mcpPath, originalWriteUtc);
+
+        Assert.Equal(originalWriteUtc, File.GetLastWriteTimeUtc(mcpPath));
+
+        Assert.Equal(Encoding.UTF8.GetByteCount(original), new FileInfo(mcpPath).Length);
+
+        bool trusted = await store.IsTrustedAsync(_workspace.Root);
+
+        Assert.False(trusted);
+
+    }
+
+    [Fact]
+    public async Task IsTrustedAsync_rereads_bytes_when_file_unchanged()
     {
 
         string mcpPath = _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");

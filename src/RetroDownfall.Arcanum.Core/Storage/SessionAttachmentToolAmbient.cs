@@ -21,19 +21,67 @@ public static class SessionAttachmentToolAmbient
     /// </summary>
     public const string OpaqueInvocationTokenArgumentName = "_arcanumHostInvocation";
 
+    /// <summary>
+    /// Default lifetime for request-id and opaque-token bindings. Abandoned binds (send failure,
+    /// never delivered tools/call) are swept after this interval so maps cannot grow forever.
+    /// </summary>
+    public static readonly TimeSpan DefaultBindingTtl = TimeSpan.FromMinutes(10);
+
     private static readonly AsyncLocal<Guid?> AsyncCurrent = new();
 
-    private static readonly ConcurrentDictionary<string, Guid> SessionByConnectionRequest =
+    private static readonly ConcurrentDictionary<string, AmbientBinding> SessionByConnectionRequest =
         new(StringComparer.Ordinal);
 
-    private static readonly ConcurrentDictionary<string, Guid> SessionByOpaqueToken =
+    private static readonly ConcurrentDictionary<string, AmbientBinding> SessionByOpaqueToken =
         new(StringComparer.Ordinal);
+
+    private static TimeSpan _bindingTtl = DefaultBindingTtl;
+
+    private static Func<long> _utcTicksNow = static () => DateTime.UtcNow.Ticks;
+
+    private readonly record struct AmbientBinding(Guid SessionId, long CreatedUtcTicks);
 
     /// <summary>Current session for attachment tool resolution on the inference async context.</summary>
     public static Guid? CurrentSessionId
     {
         get => AsyncCurrent.Value;
         set => AsyncCurrent.Value = value;
+    }
+
+    /// <summary>Test seam: override binding TTL. Call <see cref="ResetTestSeams"/> in teardown.</summary>
+    internal static void SetBindingTtlForTests(TimeSpan ttl) => _bindingTtl = ttl;
+
+    /// <summary>Test seam: override the clock used for TTL. Call <see cref="ResetTestSeams"/> in teardown.</summary>
+    internal static void SetUtcTicksNowForTests(Func<long> utcTicksNow) =>
+        _utcTicksNow = utcTicksNow ?? throw new ArgumentNullException(nameof(utcTicksNow));
+
+    /// <summary>Test seam: restore production TTL/clock defaults and clear maps.</summary>
+    internal static void ResetTestSeams()
+    {
+        _bindingTtl = DefaultBindingTtl;
+        _utcTicksNow = static () => DateTime.UtcNow.Ticks;
+        SessionByConnectionRequest.Clear();
+        SessionByOpaqueToken.Clear();
+    }
+
+    /// <summary>Test hook: count of live request-id bindings (after opportunistic sweep).</summary>
+    internal static int RequestBindingCountForTests
+    {
+        get
+        {
+            SweepExpired();
+            return SessionByConnectionRequest.Count;
+        }
+    }
+
+    /// <summary>Test hook: count of live opaque-token bindings (after opportunistic sweep).</summary>
+    internal static int OpaqueTokenCountForTests
+    {
+        get
+        {
+            SweepExpired();
+            return SessionByOpaqueToken.Count;
+        }
     }
 
     /// <summary>
@@ -46,7 +94,10 @@ public static class SessionAttachmentToolAmbient
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
 
-        SessionByConnectionRequest[ComposeRequestKey(connectionKey, requestId)] = sessionId;
+        SweepExpired();
+
+        SessionByConnectionRequest[ComposeRequestKey(connectionKey, requestId)] =
+            new AmbientBinding(sessionId, _utcTicksNow());
 
     }
 
@@ -61,9 +112,28 @@ public static class SessionAttachmentToolAmbient
             return false;
         }
 
-        return SessionByConnectionRequest.TryGetValue(
-            ComposeRequestKey(connectionKey, requestId),
-            out sessionId);
+        SweepExpired();
+
+        string key = ComposeRequestKey(connectionKey, requestId);
+
+        if (!SessionByConnectionRequest.TryGetValue(key, out AmbientBinding binding))
+        {
+            sessionId = default;
+
+            return false;
+        }
+
+        if (IsExpired(binding))
+        {
+            SessionByConnectionRequest.TryRemove(key, out _);
+            sessionId = default;
+
+            return false;
+        }
+
+        sessionId = binding.SessionId;
+
+        return true;
 
     }
 
@@ -87,9 +157,11 @@ public static class SessionAttachmentToolAmbient
     public static string CreateAndBindOpaqueToken(Guid sessionId)
     {
 
+        SweepExpired();
+
         string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
 
-        SessionByOpaqueToken[token] = sessionId;
+        SessionByOpaqueToken[token] = new AmbientBinding(sessionId, _utcTicksNow());
 
         return token;
 
@@ -108,7 +180,25 @@ public static class SessionAttachmentToolAmbient
             return false;
         }
 
-        return SessionByOpaqueToken.TryRemove(token, out sessionId);
+        SweepExpired();
+
+        if (!SessionByOpaqueToken.TryRemove(token, out AmbientBinding binding))
+        {
+            sessionId = default;
+
+            return false;
+        }
+
+        if (IsExpired(binding))
+        {
+            sessionId = default;
+
+            return false;
+        }
+
+        sessionId = binding.SessionId;
+
+        return true;
 
     }
 
@@ -124,6 +214,32 @@ public static class SessionAttachmentToolAmbient
         SessionByOpaqueToken.TryRemove(token, out _);
 
     }
+
+    /// <summary>Removes expired request-id and opaque-token bindings.</summary>
+    public static void SweepExpired()
+    {
+        long now = _utcTicksNow();
+        long ttlTicks = _bindingTtl.Ticks;
+
+        foreach (KeyValuePair<string, AmbientBinding> pair in SessionByConnectionRequest)
+        {
+            if (now - pair.Value.CreatedUtcTicks > ttlTicks)
+            {
+                SessionByConnectionRequest.TryRemove(pair.Key, out _);
+            }
+        }
+
+        foreach (KeyValuePair<string, AmbientBinding> pair in SessionByOpaqueToken)
+        {
+            if (now - pair.Value.CreatedUtcTicks > ttlTicks)
+            {
+                SessionByOpaqueToken.TryRemove(pair.Key, out _);
+            }
+        }
+    }
+
+    private static bool IsExpired(AmbientBinding binding) =>
+        _utcTicksNow() - binding.CreatedUtcTicks > _bindingTtl.Ticks;
 
     private static string ComposeRequestKey(string connectionKey, string requestId) =>
         connectionKey + "\u001f" + requestId;

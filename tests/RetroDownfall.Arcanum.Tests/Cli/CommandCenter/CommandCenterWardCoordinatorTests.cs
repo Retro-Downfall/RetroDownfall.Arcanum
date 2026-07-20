@@ -3,12 +3,13 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
+// Existing ward coordinator tests updated for hard-modal arbiter constructor.
 public sealed class CommandCenterWardCoordinatorTests
 {
     [Fact]
     public async Task RequestApprovalAsync_Completes_When_TryCompletePending()
     {
-        CommandCenterWardCoordinator coordinator = new();
+        CommandCenterWardCoordinator coordinator = CreateCoordinator();
         bool shown = false;
         coordinator.SetUiCallbacks(_ => shown = true, () => { });
 
@@ -26,9 +27,10 @@ public sealed class CommandCenterWardCoordinatorTests
     }
 
     [Fact]
-    public async Task RequestApprovalAsync_DeniesPrevious_WhenReplaced()
+    public async Task RequestApprovalAsync_QueuesSecond_WithoutDenyingFirst()
     {
-        CommandCenterWardCoordinator coordinator = new();
+        CommandCenterHardModalArbiter arbiter = new();
+        CommandCenterWardCoordinator coordinator = new(arbiter);
         coordinator.SetUiCallbacks(_ => { }, () => { });
 
         Task<WardApprovalDecision> first = coordinator.RequestApprovalAsync(
@@ -41,16 +43,21 @@ public sealed class CommandCenterWardCoordinatorTests
             new WardApprovalRequest("ward-2", "write_file", "{}"),
             CancellationToken.None);
 
-        Assert.Equal(WardApprovalDecision.Deny, await first);
+        Assert.False(first.IsCompleted);
+        Assert.True(arbiter.IsQueued(CommandCenterHardModalKind.WardConfirm, "ward-2"));
 
         Assert.True(coordinator.TryCompletePending(WardApprovalDecision.Allow));
-        Assert.Equal(WardApprovalDecision.Allow, await second);
+        Assert.Equal(WardApprovalDecision.Allow, await first);
+
+        await Task.Yield();
+        Assert.True(coordinator.TryCompletePending(WardApprovalDecision.Deny));
+        Assert.Equal(WardApprovalDecision.Deny, await second);
     }
 
     [Fact]
     public async Task TryResolvePendingWardAsDenied_CompletesPending_AndIsIdempotent()
     {
-        CommandCenterWardCoordinator coordinator = new();
+        CommandCenterWardCoordinator coordinator = CreateCoordinator();
         coordinator.SetUiCallbacks(_ => { }, () => { });
 
         Task<WardApprovalDecision> pending = coordinator.RequestApprovalAsync(
@@ -68,7 +75,7 @@ public sealed class CommandCenterWardCoordinatorTests
     [Fact]
     public void TryResolvePendingWardAsDenied_ReturnsFalse_WhenNothingPending()
     {
-        CommandCenterWardCoordinator coordinator = new();
+        CommandCenterWardCoordinator coordinator = CreateCoordinator();
         Assert.False(coordinator.TryResolvePendingWardAsDenied());
     }
 
@@ -81,4 +88,7 @@ public sealed class CommandCenterWardCoordinatorTests
         Assert.True(preview.Length <= 41);
         Assert.EndsWith("…", preview);
     }
+
+    private static CommandCenterWardCoordinator CreateCoordinator() =>
+        new(new CommandCenterHardModalArbiter());
 }

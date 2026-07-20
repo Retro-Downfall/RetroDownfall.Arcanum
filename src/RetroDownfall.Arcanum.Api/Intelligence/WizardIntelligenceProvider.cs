@@ -563,6 +563,8 @@ public sealed class WizardIntelligenceProvider(
 
                     try
                     {
+                        List<AIContent>? pendingAttachmentExtras = null;
+
                         foreach (FunctionCallContent fcc in calls)
                         {
                             FunctionCallContent invokeFcc = fcc;
@@ -625,9 +627,11 @@ public sealed class WizardIntelligenceProvider(
 
                             if (processed.AdditionalContextContents is { Count: > 0 } extras)
                             {
-                                // Prefer a User message so vision providers receive DataContent on the next round
-                                // (Tool-role messages are a poor carrier for multimodal payload).
-                                chatMessages.Add(new MeAiChatMessage(ChatRole.User, extras.ToList()));
+                                // Defer User extras until every tool result in this round is appended
+                                // so providers never see User interleaved mid-tool-transcript.
+                                pendingAttachmentExtras ??= [];
+
+                                pendingAttachmentExtras.AddRange(extras);
                             }
 
                             await grimoireTurnWriter.TryAppendToolInteractionAsync(
@@ -638,6 +642,13 @@ public sealed class WizardIntelligenceProvider(
                                 targetModel,
                                 inferenceToken)
                                 .ConfigureAwait(false);
+                        }
+
+                        if (pendingAttachmentExtras is { Count: > 0 })
+                        {
+                            // Prefer a User message so vision providers receive DataContent on the next round
+                            // (Tool-role messages are a poor carrier for multimodal payload).
+                            chatMessages.Add(new MeAiChatMessage(ChatRole.User, pendingAttachmentExtras));
                         }
                     }
                     finally
@@ -1778,6 +1789,8 @@ public sealed class WizardIntelligenceProvider(
 
                 try
                 {
+                    List<AIContent>? streamPendingAttachmentExtras = null;
+
                     foreach (FunctionCallContent fcc in toolCalls)
                     {
                         FunctionCallContent invokeFcc = fcc;
@@ -1928,9 +1941,11 @@ public sealed class WizardIntelligenceProvider(
 
                             if (processed.AdditionalContextContents is { Count: > 0 } extras)
                             {
-                                // Prefer a User message so vision providers receive DataContent on the next round
-                                // (Tool-role messages are a poor carrier for multimodal payload).
-                                chatMessages.Add(new MeAiChatMessage(ChatRole.User, extras.ToList()));
+                                // Defer User extras until every tool result in this round is appended
+                                // so providers never see User interleaved mid-tool-transcript.
+                                streamPendingAttachmentExtras ??= [];
+
+                                streamPendingAttachmentExtras.AddRange(extras);
                             }
 
                             await grimoireTurnWriter.TryAppendToolInteractionAsync(
@@ -1951,6 +1966,13 @@ public sealed class WizardIntelligenceProvider(
                                 await askHumanReservation.DisposeAsync().ConfigureAwait(false);
                             }
                         }
+                    }
+
+                    if (streamPendingAttachmentExtras is { Count: > 0 })
+                    {
+                        // Prefer a User message so vision providers receive DataContent on the next round
+                        // (Tool-role messages are a poor carrier for multimodal payload).
+                        chatMessages.Add(new MeAiChatMessage(ChatRole.User, streamPendingAttachmentExtras));
                     }
                 }
                 finally

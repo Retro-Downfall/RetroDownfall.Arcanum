@@ -1,9 +1,7 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -11,11 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDisposable
 {
 
-    private const int McpFileHashCacheCapacity = 64;
-
     private static readonly SemaphoreSlim _storeLock = new(1, 1);
-
-    private readonly BoundedLruCache<string, McpFileHashCacheEntry> _mcpFileHashCache = new(McpFileHashCacheCapacity);
 
     private static string StorePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "trusted-mcp-workspaces.json");
@@ -156,7 +150,11 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     }
 
-    private async Task<string> ComputeFileSha256HexAsync(string path, CancellationToken cancellationToken)
+    /// <summary>
+    /// Always reads current <c>mcp.json</c> bytes and hashes them. Trust decisions must never
+    /// authorize from path, length, mtime, or a previously cached digest alone.
+    /// </summary>
+    private static async Task<string> ComputeFileSha256HexAsync(string path, CancellationToken cancellationToken)
     {
 
         FileInfo fileInfo = new(path);
@@ -168,31 +166,12 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
         }
 
-        long lastWriteUtcTicks = fileInfo.LastWriteTimeUtc.Ticks;
-
-        long length = fileInfo.Length;
-
-        if (_mcpFileHashCache.TryGetValue(path, out McpFileHashCacheEntry cached)
-            && cached.LastWriteUtcTicks == lastWriteUtcTicks
-            && cached.Length == length)
-        {
-
-            return cached.Hash;
-
-        }
-
         await using FileStream stream = fileInfo.OpenRead();
 
         byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
 
-        string hex = Convert.ToHexString(hash);
-
-        _mcpFileHashCache.Set(path, new McpFileHashCacheEntry(lastWriteUtcTicks, length, hex));
-
-        return hex;
+        return Convert.ToHexString(hash);
 
     }
-
-    private sealed record McpFileHashCacheEntry(long LastWriteUtcTicks, long Length, string Hash);
 
 }

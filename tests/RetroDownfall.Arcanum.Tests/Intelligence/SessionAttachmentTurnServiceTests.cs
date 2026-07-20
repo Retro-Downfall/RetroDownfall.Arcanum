@@ -255,11 +255,21 @@ public sealed class SessionAttachmentTurnServiceTests
             pendingTurnId: null);
 
         Assert.Null(prep.ErrorMessage);
-        Assert.Equal(2, prep.RehydratedContents.Count);
-        Assert.IsType<TextContent>(prep.RehydratedContents[0]);
-        Assert.Equal("hello", ((TextContent)prep.RehydratedContents[0]).Text);
-        Assert.IsType<DataContent>(prep.RehydratedContents[1]);
-        Assert.True(((DataContent)prep.RehydratedContents[1]).Data.Span.SequenceEqual(imageBytes));
+        Assert.Equal(3, prep.RehydratedContents.Count);
+
+        TextContent framed = Assert.IsType<TextContent>(prep.RehydratedContents[0]);
+
+        Assert.Contains("[Attached: notes.txt]", framed.Text, StringComparison.Ordinal);
+
+        Assert.Contains("hello", framed.Text, StringComparison.Ordinal);
+
+        TextContent imageNotice = Assert.IsType<TextContent>(prep.RehydratedContents[1]);
+
+        Assert.Contains("[Attached image:", imageNotice.Text, StringComparison.Ordinal);
+
+        Assert.IsType<DataContent>(prep.RehydratedContents[2]);
+
+        Assert.True(((DataContent)prep.RehydratedContents[2]).Data.Span.SequenceEqual(imageBytes));
 
     }
 

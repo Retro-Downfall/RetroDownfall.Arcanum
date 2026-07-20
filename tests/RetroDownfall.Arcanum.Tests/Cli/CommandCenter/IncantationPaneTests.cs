@@ -128,6 +128,43 @@ public sealed class IncantationFormatterTests
     }
 
     [Fact]
+    public void Api_key_in_result_json_reaches_formatter_and_is_redacted()
+    {
+        // Proof: without treating api_key as sensitive, succeeded non-heavy tools append raw
+        // ResultText (see FormatBlock success branch). Credential-shaped JSON therefore reaches
+        // the Incantations sink — expand SensitiveKeyNames so HasSensitiveOrContentBearingArgs
+        // flips the block to heavy and suppresses the secret.
+        const string secret = "sk-live-leak-proof-value";
+        IncantationRecord record = new("id", "fetch_credentials");
+        record.ApplyCall("fetch_credentials", """{"path":"/tmp/cfg"}""");
+        record.ApplyResult($$"""{"api_key":"{{secret}}"}""");
+
+        Assert.True(IncantationFormatter.IsSensitiveKey("api_key"));
+        Assert.True(IncantationFormatter.IsSensitiveKey("password"));
+        Assert.True(IncantationFormatter.IsSensitiveKey("authorization"));
+        Assert.True(IncantationFormatter.IsSensitiveKey("token"));
+        Assert.True(IncantationFormatter.IsSensitiveKey("secret"));
+
+        IReadOnlyList<string> lines = IncantationFormatter.FormatBlock(record, 120);
+        string joined = string.Join('\n', lines);
+        Assert.DoesNotContain(secret, joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("sk-live", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Password_argument_is_treated_as_sensitive()
+    {
+        const string secret = "hunter2-proof";
+        IncantationRecord record = new("id", "login_helper");
+        record.ApplyCall("login_helper", $$"""{"url":"https://example.test","password":"{{secret}}"}""");
+
+        IReadOnlyList<string> lines = IncantationFormatter.FormatBlock(record, 100);
+        string joined = string.Join('\n', lines);
+        Assert.DoesNotContain(secret, joined, StringComparison.Ordinal);
+        Assert.Contains("url=", joined, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Malformed_json_is_name_and_state_only()
     {
         IncantationRecord record = new("id", "foo");

@@ -464,6 +464,56 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Duplicate_in_flight_request_id_is_rejected_with_json_rpc_error()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        string sentinelPath = Path.Combine(_workspace.Root, "dup-id-sentinel.txt");
+
+        (string command, string[] argumentList) = ResolveDelayedWriteCommand(sentinelPath);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams { Command = command, ArgumentList = argumentList },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "execute_command", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        const int sharedId = 4242;
+
+        await session.WriteRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
+
+        // Give the first call time to register in _inFlightToolCalls before the duplicate arrives.
+        await Task.Delay(300);
+
+        await session.WriteRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
+
+        // Duplicate is rejected immediately (JSON-RPC error); the first call is still sleeping.
+        JsonRpcResponse duplicate = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(duplicate.Error);
+        Assert.Equal(-32600, duplicate.Error!.Code);
+        Assert.Contains("Duplicate", duplicate.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        await session.SendCancelNotificationAsync(sharedId);
+
+        JsonRpcResponse first = await session.ReadNextResponseAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(first.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            first.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+
+    }
+
+    [Fact]
     public async Task ExecuteCommand_without_workspace_is_blocked_before_spawn()
     {
 
@@ -1245,6 +1295,22 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             return (id, ReadResponseAsync());
 
         }
+
+        public Task WriteRequestWithFixedIdAsync(int id, string method, JsonElement? parameters)
+        {
+
+            JsonRpcRequest request = new()
+            {
+                Method = method,
+                Params = parameters,
+                Id = JsonSerializer.SerializeToElement(id, McpJsonSerializerContext.Default.Int32),
+            };
+
+            return transport.WriteRequestAsync(request);
+
+        }
+
+        public Task<JsonRpcResponse> ReadNextResponseAsync() => ReadResponseAsync();
 
         private async Task<JsonRpcResponse> ReadResponseAsync()
         {

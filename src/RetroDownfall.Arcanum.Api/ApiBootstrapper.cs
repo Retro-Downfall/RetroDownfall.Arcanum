@@ -233,6 +233,8 @@ public static class ApiBootstrapper
 
         services.AddProblemDetails();
 
+        services.AddSingleton<IGrimoireLivenessProbe, GrimoireLivenessProbe>();
+
         services.AddSingleton<ArcanumHealthChecker>();
 
         services.AddScoped<GrimoireStatsService>();

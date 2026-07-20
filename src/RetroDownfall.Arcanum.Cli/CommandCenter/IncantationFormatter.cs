@@ -51,6 +51,20 @@ internal static partial class IncantationFormatter
         "source",
         "code",
         "prompt",
+        "api_key",
+        "apiKey",
+        "token",
+        "password",
+        "secret",
+        "authorization",
+        "auth",
+        "access_token",
+        "accessToken",
+        "refresh_token",
+        "refreshToken",
+        "bearer",
+        "client_secret",
+        "clientSecret",
     };
 
     private static readonly HashSet<string> SummaryKeyNames = new(StringComparer.OrdinalIgnoreCase)
@@ -469,7 +483,9 @@ internal static partial class IncantationFormatter
     private static bool LooksLikeHugeBlob(string text) =>
         text.Length > 400 || text.Count(static c => c is '\n' or '\r') > 3;
 
-    [GeneratedRegex(@"content|body|payload|base64|patch|diff|replacement|old.?string|new.?string", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(
+        @"content|body|payload|base64|patch|diff|replacement|old.?string|new.?string|api.?key|password|secret|token|authorization|bearer|client.?secret",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveKeyRegex();
 
     [GeneratedRegex(@"\x1B\[[0-9;?]*[ -/]*[@-~]|\[[0-9;]*m", RegexOptions.CultureInvariant)]

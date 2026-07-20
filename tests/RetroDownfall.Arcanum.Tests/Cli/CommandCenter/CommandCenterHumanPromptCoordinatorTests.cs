@@ -146,6 +146,52 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
     }
 
     [Fact]
+    public void TryClose_PromptIdMismatch_DoesNotCloseActive()
+    {
+        CommandCenterHumanPromptCoordinator coordinator = CreateCoordinator(_ => OkTrue());
+        coordinator.SetUiCallbacks((_, _) => { }, (_, _) => { }, _ => { });
+        coordinator.BeginPrompt(new HumanPromptRequest("c1", "prompt-b", "Q?"));
+
+        Assert.False(coordinator.TryClose(HumanPromptCloseReason.Submitted, promptId: "prompt-a"));
+        Assert.True(coordinator.IsActive);
+        Assert.Equal("prompt-b", coordinator.Pending!.PromptId);
+    }
+
+    [Fact]
+    public async Task SubmitAnswerAsync_StaleSubmit_DoesNotCloseReplacementPrompt()
+    {
+        TaskCompletionSource<HttpResponseMessage> gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CommandCenterHardModalArbiter arbiter = new();
+        ArcanumApiClient client = new(
+            new Factory(new AsyncHandler(_ => gate.Task)),
+            new FakeSecretStore());
+        CommandCenterHumanPromptCoordinator coordinator = new(client, arbiter);
+        List<string> closed = [];
+        coordinator.SetUiCallbacks(
+            onShow: (_, _) => { },
+            onHide: (_, _) => { },
+            onStatus: _ => { });
+
+        // Prompt A starts submit, then is closed and replaced by B before A completes.
+        coordinator.BeginPrompt(new HumanPromptRequest("c-a", "prompt-a", "A?"));
+        Task<HumanPromptSubmitOutcome> submitA = coordinator.SubmitAnswerAsync("answer-a", CancellationToken.None);
+        await Task.Yield();
+
+        Assert.True(coordinator.TryClose(HumanPromptCloseReason.Cancelled, promptId: "prompt-a"));
+        coordinator.BeginPrompt(new HumanPromptRequest("c-b", "prompt-b", "B?"));
+        Assert.True(coordinator.IsActive);
+        Assert.Equal("prompt-b", coordinator.Pending!.PromptId);
+
+        gate.SetResult(OkTrue());
+        HumanPromptSubmitOutcome outcome = await submitA;
+        Assert.Equal(HumanPromptSubmitOutcome.Accepted, outcome);
+        // B must still be active — stale A success must not close B.
+        Assert.True(coordinator.IsActive);
+        Assert.Equal("prompt-b", coordinator.Pending!.PromptId);
+        _ = closed;
+    }
+
+    [Fact]
     public void IsTimeoutText_DetectsLockedMessage()
     {
         Assert.True(CommandCenterHumanPromptCoordinator.IsTimeoutText(
@@ -159,7 +205,7 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
         ArcanumApiClient client = new(
             new Factory(new SyncHandler(respond)),
             new FakeSecretStore());
-        return new CommandCenterHumanPromptCoordinator(client);
+        return new CommandCenterHumanPromptCoordinator(client, new CommandCenterHardModalArbiter());
     }
 
     private static CommandCenterHumanPromptCoordinator CreateAsyncCoordinator(
@@ -168,7 +214,7 @@ public sealed class CommandCenterHumanPromptCoordinatorTests
         ArcanumApiClient client = new(
             new Factory(new AsyncHandler(respond)),
             new FakeSecretStore());
-        return new CommandCenterHumanPromptCoordinator(client);
+        return new CommandCenterHumanPromptCoordinator(client, new CommandCenterHardModalArbiter());
     }
 
     private static HttpResponseMessage OkTrue()

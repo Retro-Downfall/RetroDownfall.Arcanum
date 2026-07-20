@@ -176,25 +176,35 @@ public sealed class DiagnosticMcpInvocationService
         CancellationToken cancellationToken)
     {
 
-        IReadOnlyList<AITool> surface = await _mcpConnectionManager
-            .GetAvailableToolsAsync(string.IsNullOrEmpty(workspace) ? null : workspace, cancellationToken)
-            .ConfigureAwait(false);
+        // Provenance-preserving: invoke the tool object bound to this server only — never re-resolve
+        // by bare name on the merged inference surface (internal/local collisions).
+        if (string.Equals(resolvedServerName, InternalServerName, StringComparison.Ordinal))
+        {
 
-        AIFunction? tool = surface
-            .OfType<AIFunction>()
-            .FirstOrDefault(t => string.Equals(t.Name, toolName, StringComparison.Ordinal));
+            return Result<DiagnosticMcpInvocationOutcome>.Failure(
+                new Error(ErrorCodes.Mcp.ToolNotFound,
+                    $"Tool '{toolName}' is not provided by any running external MCP server."));
+
+        }
+
+        AIFunction? tool = await _mcpConnectionManager
+            .GetToolAsync(
+                resolvedServerName,
+                toolName,
+                string.IsNullOrEmpty(workspace) ? null : workspace,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         if (tool is null)
         {
 
             return Result<DiagnosticMcpInvocationOutcome>.Failure(
                 new Error(ErrorCodes.Mcp.ToolNotFound,
-                    $"Tool '{toolName}' was not present in the merged MCP surface for server '{resolvedServerName}'. The server may have just stopped, or the name may be provided only by the blocked internal server."));
+                    $"Tool '{toolName}' was not present on server '{resolvedServerName}'. The server may have just stopped."));
 
         }
 
-        // Defensive: a blocked tool name should never reach the merged external surface, but check
-        // again in case a third-party server chose a colliding name.
+        // Defensive: Forbidden Arts must never run via diagnostic even if an external server reuses the name.
         if (BlockedToolNames.Contains(tool.Name))
         {
 

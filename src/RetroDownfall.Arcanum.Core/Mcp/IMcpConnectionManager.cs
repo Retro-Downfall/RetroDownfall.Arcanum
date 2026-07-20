@@ -32,6 +32,17 @@ public interface IMcpConnectionManager
 
     Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns the <see cref="AIFunction"/> bound to the named managed server's own client
+    /// (no merge / local-wins rewrite). Null when the server or tool is absent, not running,
+    /// or not visible for the workspace scope.
+    /// </summary>
+    Task<AIFunction?> GetToolAsync(
+        string serverName,
+        string toolName,
+        string? workingDirectory,
+        CancellationToken cancellationToken = default);
+
     Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default);
 
     Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default);

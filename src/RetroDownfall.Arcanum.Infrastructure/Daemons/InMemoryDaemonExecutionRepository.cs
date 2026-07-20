@@ -276,6 +276,12 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         lock (GetLock(record.DaemonId))
         {
+            // Terminal CAS: only Running → terminal; first terminal wins; later Complete/Fail no-op.
+            if (record.Status != DaemonJobStatus.Running)
+            {
+                return record.ToSummary();
+            }
+
             record.Status = status;
 
             record.CompletedAt = DateTimeOffset.UtcNow;

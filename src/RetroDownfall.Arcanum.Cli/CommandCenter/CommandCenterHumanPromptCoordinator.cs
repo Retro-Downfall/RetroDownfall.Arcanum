@@ -30,8 +30,11 @@ internal enum HumanPromptSubmitOutcome
 /// Bridges streamed <c>ask_human</c> ToolCall events to the Command Center UI thread.
 /// Host wires show/hide/status callbacks; ChatRunner opens and expires; Host submits.
 /// Does not block the stream pump — timeout/ToolError frames must still be readable.
+/// Display arbitration goes through <see cref="CommandCenterHardModalArbiter"/>.
 /// </summary>
-internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiClient)
+internal sealed class CommandCenterHumanPromptCoordinator(
+    ArcanumApiClient apiClient,
+    CommandCenterHardModalArbiter hardModalArbiter)
 {
     private readonly object _gate = new();
     private Action<HumanPromptRequest, string?>? _onShow;
@@ -40,6 +43,7 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
     private HumanPromptRequest? _pending;
     private bool _submitInFlight;
     private string? _statusMessage;
+    private readonly List<HumanPromptRequest> _queued = [];
 
     public HumanPromptRequest? Pending
     {
@@ -99,7 +103,8 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
     }
 
     /// <summary>
-    /// Opens (or replaces) the pending prompt. Correlates by CallId + promptId.
+    /// Opens the prompt when the hard-modal slot is free; otherwise queues it.
+    /// Never preempts an active hard modal.
     /// </summary>
     public void BeginPrompt(HumanPromptRequest request)
     {
@@ -110,30 +115,65 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
         }
 
         Action<HumanPromptRequest, string?>? onShow;
-        Action<HumanPromptCloseReason, string?>? onHideReplace;
         lock (_gate)
         {
-            if (_pending is not null)
+            onShow = _onShow;
+            // If this prompt is already pending (retry), refresh display only when active.
+            if (_pending is not null
+                && string.Equals(_pending.PromptId, request.PromptId, StringComparison.Ordinal))
             {
-                onHideReplace = _onHide;
-                _pending = null;
+                _pending = request;
                 _submitInFlight = false;
                 _statusMessage = null;
             }
-            else
+            else if (_pending is null
+                && !hardModalArbiter.HasActiveHardModal
+                && !hardModalArbiter.IsQueued(CommandCenterHardModalKind.HumanPrompt, request.PromptId))
             {
-                onHideReplace = null;
+                _pending = request;
+                _submitInFlight = false;
+                _statusMessage = null;
             }
-
-            _pending = request;
-            _submitInFlight = false;
-            _statusMessage = null;
-            onShow = _onShow;
+            else if (!_queued.Exists(q =>
+                         string.Equals(q.PromptId, request.PromptId, StringComparison.Ordinal)))
+            {
+                _queued.Add(request);
+            }
         }
 
-        // Close any previous overlay before showing the replacement.
-        onHideReplace?.Invoke(HumanPromptCloseReason.Cancelled, null);
-        onShow?.Invoke(request, null);
+        _ = hardModalArbiter.RequestShow(
+            CommandCenterHardModalKind.HumanPrompt,
+            request.PromptId,
+            () => ShowQueuedOrPending(request, onShow));
+    }
+
+    private void ShowQueuedOrPending(
+        HumanPromptRequest request,
+        Action<HumanPromptRequest, string?>? onShow)
+    {
+        HumanPromptRequest toShow;
+        lock (_gate)
+        {
+            // Promote from queue if this show is for a queued id, else use request.
+            int queuedIndex = _queued.FindIndex(q =>
+                string.Equals(q.PromptId, request.PromptId, StringComparison.Ordinal));
+            if (queuedIndex >= 0)
+            {
+                toShow = _queued[queuedIndex];
+                _queued.RemoveAt(queuedIndex);
+            }
+            else
+            {
+                toShow = request;
+            }
+
+            _pending = toShow;
+            _submitInFlight = false;
+            _statusMessage = null;
+            onShow ??= _onShow;
+        }
+
+        onShow?.Invoke(toShow, null);
     }
 
     /// <summary>
@@ -178,16 +218,47 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
         }
     }
 
-    public bool TryClose(HumanPromptCloseReason reason, string? notice = null)
+    /// <summary>
+    /// Closes only when <paramref name="promptId"/> matches the active pending prompt.
+    /// Stale closes for a previous prompt are ignored.
+    /// </summary>
+    public bool TryClose(
+        HumanPromptCloseReason reason,
+        string? notice = null,
+        string? promptId = null)
     {
         Action<HumanPromptCloseReason, string?>? onHide;
+        string? closedId;
         lock (_gate)
         {
             if (_pending is null)
             {
+                // May still be queued — drop without display.
+                if (!string.IsNullOrWhiteSpace(promptId))
+                {
+                    _ = _queued.RemoveAll(q =>
+                        string.Equals(q.PromptId, promptId, StringComparison.Ordinal));
+                    _ = hardModalArbiter.TryRemoveQueued(
+                        CommandCenterHardModalKind.HumanPrompt,
+                        promptId!);
+                }
+
                 return false;
             }
 
+            if (!string.IsNullOrWhiteSpace(promptId)
+                && !string.Equals(_pending.PromptId, promptId, StringComparison.Ordinal))
+            {
+                // Stale close for a different prompt — also drop if that id is only queued.
+                _ = _queued.RemoveAll(q =>
+                    string.Equals(q.PromptId, promptId, StringComparison.Ordinal));
+                _ = hardModalArbiter.TryRemoveQueued(
+                    CommandCenterHardModalKind.HumanPrompt,
+                    promptId!);
+                return false;
+            }
+
+            closedId = _pending.PromptId;
             _pending = null;
             _submitInFlight = false;
             _statusMessage = null;
@@ -195,7 +266,22 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
         }
 
         onHide?.Invoke(reason, notice);
+        _ = hardModalArbiter.TryClose(CommandCenterHardModalKind.HumanPrompt, closedId);
         return true;
+    }
+
+    /// <summary>
+    /// Closes the active prompt (if any), correlating by its PromptId.
+    /// </summary>
+    public bool TryCloseActive(HumanPromptCloseReason reason, string? notice = null)
+    {
+        string? id;
+        lock (_gate)
+        {
+            id = _pending?.PromptId;
+        }
+
+        return id is not null && TryClose(reason, notice, id);
     }
 
     public void SetStatus(string? message)
@@ -215,7 +301,6 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
         }
 
         onStatus?.Invoke(message);
-        // Keep show callback optional refresh path when status changes mid-flight.
         _ = pending;
     }
 
@@ -264,7 +349,8 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
 
             if (result.IsSuccess)
             {
-                _ = TryClose(HumanPromptCloseReason.Submitted);
+                // Correlate by PromptId — stale submit for A must not close B.
+                _ = TryClose(HumanPromptCloseReason.Submitted, notice: null, promptId: request.PromptId);
                 return HumanPromptSubmitOutcome.Accepted;
             }
 
@@ -275,7 +361,8 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
             {
                 _ = TryClose(
                     HumanPromptCloseReason.Expired,
-                    "Human prompt expired (no longer waiting).");
+                    "Human prompt expired (no longer waiting).",
+                    promptId: request.PromptId);
                 return HumanPromptSubmitOutcome.NotFound;
             }
 
@@ -308,7 +395,12 @@ internal sealed class CommandCenterHumanPromptCoordinator(ArcanumApiClient apiCl
         {
             lock (_gate)
             {
-                _submitInFlight = false;
+                // Only clear in-flight if this submit's prompt is still the active one.
+                if (_pending is not null
+                    && string.Equals(_pending.PromptId, request.PromptId, StringComparison.Ordinal))
+                {
+                    _submitInFlight = false;
+                }
             }
 
             throw;

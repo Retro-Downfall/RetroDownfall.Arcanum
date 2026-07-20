@@ -344,6 +344,22 @@ public sealed partial class McpConnectionManager(
 
                     result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
                 }
+                else if (entry.ScopeWorkingDirectory is not null
+                    && !await trustedMcpWorkspaces
+                        .IsTrustedAsync(entry.ScopeWorkingDirectory, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    const string notTrustedMessage =
+                        "Workspace-local MCP servers require operator approval. POST /api/mcp/trust-workspace for this workspace before starting.";
+
+                    entry.State = McpServerState.Error;
+
+                    entry.ErrorMessage = notTrustedMessage;
+
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+                    result = new Error("Mcp.WorkspaceNotTrusted", notTrustedMessage);
+                }
                 else
                 {
                     entry.State = McpServerState.Starting;
@@ -450,6 +466,54 @@ public sealed partial class McpConnectionManager(
         }
 
         return statuses.ToArray();
+    }
+
+    /// <inheritdoc />
+    public async Task<AIFunction?> GetToolAsync(
+        string serverName,
+        string toolName,
+        string? workingDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(serverName) || string.IsNullOrWhiteSpace(toolName))
+        {
+            return null;
+        }
+
+        Result<ManagedMcpServerEntry> resolved = ResolveEntry(serverName.Trim(), workingDirectory);
+
+        if (resolved.IsFailure)
+        {
+            return null;
+        }
+
+        ManagedMcpServerEntry entry = resolved.Value;
+
+        if (!await IsWorkspaceServerVisibleAsync(entry, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        if (entry.State is not McpServerState.Running)
+        {
+            return null;
+        }
+
+        string normalizedTool = toolName.Trim();
+
+        foreach (LoadedMcpToolRow row in entry.LoadedTools)
+        {
+            if (string.Equals(row.Tool.Name, normalizedTool, StringComparison.Ordinal))
+            {
+                return row.Tool;
+            }
+        }
+
+        return null;
     }
 
     /// <inheritdoc />

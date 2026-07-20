@@ -1564,6 +1564,8 @@ public sealed class ChatCommand(
 
         bool submitFailed = false;
 
+        ConsoleAskHumanCoordinator? hitl = null;
+
         try
         {
             string cwd = Environment.CurrentDirectory;
@@ -1616,8 +1618,10 @@ public sealed class ChatCommand(
                     .ConfigureAwait(false);
             }
 
+            hitl = new ConsoleAskHumanCoordinator(apiClient, themePalette);
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, perTurnCts.Token).ConfigureAwait(false))
             {
+                hitl.ObserveStreamEvent(evt);
                 switch (evt.Type)
                 {
                     case IntelligenceEventType.Status:
@@ -1656,15 +1660,18 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.ToolCall:
 
-                        AskHumanResult humanResult = await                         AskHumanToolCallStreamHandler
-                            .TryHandleAskHumanAsync(
+                        AskHumanResult humanResult = await hitl
+                            .TryBeginAsync(
                                 evt,
                                 unattended,
                                 cliEnvironment.IsInteractive,
-                                apiClient,
-                                themePalette,
                                 perTurnCts.Token)
                             .ConfigureAwait(false);
+
+                        if (humanResult == AskHumanResult.PendingInput)
+                        {
+                            break;
+                        }
 
                         if (humanResult == AskHumanResult.SubmitFailed)
                         {
@@ -1746,9 +1753,22 @@ public sealed class ChatCommand(
                     break;
                 }
             }
+
+            AskHumanResult? hitlResult = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+            if (hitlResult == AskHumanResult.SubmitFailed)
+            {
+                submitFailed = true;
+                errored = true;
+            }
         }
         catch (OperationCanceledException)
         {
+            hitl?.Cancel();
+            if (hitl is not null)
+            {
+                _ = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
             cancelled = true;
         }
         catch (Exception ex)
@@ -1848,6 +1868,8 @@ public sealed class ChatCommand(
 
         bool submitFailed = false;
 
+        ConsoleAskHumanCoordinator? hitl = null;
+
         int tokenSinceRefresh = 0;
 
         System.Diagnostics.Stopwatch refreshClock = System.Diagnostics.Stopwatch.StartNew();
@@ -1872,6 +1894,7 @@ public sealed class ChatCommand(
 
         try
         {
+            hitl = new ConsoleAskHumanCoordinator(apiClient, themePalette);
             await AnsiConsole.Live(ChatLayoutRenderer.Build(BuildCtx(generating: true)))
                 .AutoClear(true)
                 .Overflow(VerticalOverflow.Ellipsis)
@@ -1895,6 +1918,7 @@ public sealed class ChatCommand(
 
                     await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, cancellationToken).ConfigureAwait(false))
                     {
+                        hitl.ObserveStreamEvent(evt);
                         switch (evt.Type)
                         {
                             case IntelligenceEventType.Status:
@@ -1930,15 +1954,18 @@ public sealed class ChatCommand(
 
                             case IntelligenceEventType.ToolCall:
 
-                                AskHumanResult humanResult = await AskHumanToolCallStreamHandler
-                                    .TryHandleAskHumanAsync(
+                                AskHumanResult humanResult = await hitl
+                                    .TryBeginAsync(
                                         evt,
                                         unattended,
                                         cliEnvironment.IsInteractive,
-                                        apiClient,
-                                        themePalette,
                                         cancellationToken)
                                     .ConfigureAwait(false);
+
+                                if (humanResult == AskHumanResult.PendingInput)
+                                {
+                                    break;
+                                }
 
                                 if (humanResult == AskHumanResult.SubmitFailed)
                                 {
@@ -2041,9 +2068,22 @@ public sealed class ChatCommand(
                     }
                 })
                 .ConfigureAwait(false);
+
+            AskHumanResult? hitlResult = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+            if (hitlResult == AskHumanResult.SubmitFailed)
+            {
+                submitFailed = true;
+                errored = true;
+            }
         }
         catch (OperationCanceledException)
         {
+            hitl?.Cancel();
+            if (hitl is not null)
+            {
+                _ = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
             cancelled = true;
         }
         catch (Exception ex)

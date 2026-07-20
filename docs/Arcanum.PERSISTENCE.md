@@ -6,6 +6,8 @@ One deliberately **non-Grimoire** persisted artifact exists alongside it: the **
 
 **Session attachment bytes** follow the same split as OpenAI `/v1/files`: metadata in the Grimoire (`SessionAttachments`), raw bytes on disk under `~/.config/arcanum/attachments/` — **not** SQLCipher-encrypted (see §13). The audit log remains out of scope for the rest of this document's Grimoire-backed state tables; attachment metadata is in-scope below.
 
+**Weave / Saga / workspace embedding tables** (`entry_embeddings`[+`_vec`], `workspace_file_*`, `saga_*`) are raw-SQL schemas created by `WeaveSchemaInitializer` after migrations (dimensions from config; optional sqlite-vec `vec0`). Behavioral gates and degradation: DESIGN.md §21. Reset: `POST /api/embeddings/reset`.
+
 This is a living document. It is updated each time an in-memory subsystem gains Grimoire persistence (see `docs/Arcanum.DESIGN.md` §2.2 for the tracked backlog of remaining amnesiac gaps).
 
 ## 1. Where state lives
@@ -23,7 +25,7 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 | **Session attachment metadata** (Command Center + host; DESIGN.md §10.2.5) | `SessionAttachments` | Existing — hand-authored SQL migration `20260719180000_AddSessionAttachments`; raw SQL via `ISessionAttachmentStore` / `SessionAttachmentStore`. Bytes under `ArcanumPaths.AttachmentsDirectory` (original filenames preserved under version folders). **Not** part of the compiled EF model. |
 | **Batch job metadata** (`/v1/batches`; DESIGN.md §11.21) | `Batches` | Existing — no request-count columns; `GET` computes `request_counts` on the fly by reading the input/output/error files off disk (all three are themselves `UploadedFiles` rows) |
 | **Session accumulated cost** (USD spend per session, updated atomically with `TotalTokensUsed`) | `Sessions.TotalCostUsd` | Existing — `NUMERIC NOT NULL DEFAULT 0` column on the existing `Sessions` table (precision 18, scale 8) |
-| **Budget alerts** (per-threshold-per-UTC-day alert dispatch log; prevents duplicate Comm Link notifications) | `BudgetAlerts` | Existing — unique index `IX_BudgetAlerts_Threshold_Date` on `(Threshold, date(AlertedAt))` enforces one alert per threshold per day at the database level; `BudgetAlertRepository.RecordAlertAsync` swallows the resulting `SQLITE_CONSTRAINT` and returns `false` for duplicate inserts. `BudgetMonitor` inserts the alert row *before* dispatching the Comm Link notification, so the unique index is the dedup authority under concurrent turns (no check-then-insert race). Decimal columns (`SpendUsd`, `DailyLimitUsd`) are bound as `decimal`, not strings. |
+| **Budget alerts** | `BudgetAlerts` | Existing — unique `(Threshold, date(AlertedAt))`; insert-before-dispatch so the index is the dedup authority. |
 | **Embedding reset** (`POST /api/embeddings/reset`) | `entry_embeddings`, `entry_embeddings_vec`, `workspace_file_embeddings`, `workspace_file_embeddings_vec`, `workspace_file_chunks`, `saga_memory_embeddings`, `saga_memory_embeddings_vec`, `saga_memories`, `saga_extraction_watermarks` | Existing — raw-SQL tables created by `WeaveSchemaInitializer`; cleared by `EmbeddingsResetService` in a single transaction per scope (`all`, `entry`, `workspaceFile`, `saga`) |
 | **Entry pinning** (`IsPinned` flag on conversation entries; pinned entries survive read-time context compression and are included in inference context even when older than the compression watermark) | `Entries.IsPinned` | Existing — `INTEGER NOT NULL DEFAULT 0` column on `Entries` with index `IX_Entries_SessionId_IsPinned`; compiled EF model regenerated with `dotnet ef dbcontext optimize` |
 | Apprentice Chronicle (lifecycle/execution events) | — | Deferred (in-memory bounded channel, `ChronicleHub`) |
@@ -58,42 +60,32 @@ New tables ship as embedded `.sql` files under `src/RetroDownfall.Arcanum.Infras
 
 ## 4. Retention/eviction policy
 
-Watermarks are **one row per configured job key**, unbounded but inherently low-cardinality (bounded by the number of `Arcanum:Daemon:Jobs` entries an operator configures — typically single digits). No TTL or periodic cleanup job is needed. `DeleteAsync(jobKey)` is exposed for callers that want to remove a watermark row when a job is deleted from configuration, but nothing in this change calls it automatically — an orphaned watermark for a removed job is inert (never looked up again) and costs one row.
+Watermarks are **one row per configured job key** (cardinality ≈ configured `Arcanum:Daemon:Jobs`). No TTL. Orphaned rows for deleted jobs are inert. `DeleteAsync(jobKey)` exists for callers; nothing auto-deletes on config change.
 
-**`SanctumBreaches` retention (implemented):** most-recent-N per campaign, evaluated as truncation on write — matching the former in-memory default of 1,000 breaches per campaign, now configurable per campaign via `SanctumConfig.MaxBreachCount` (clamp 100 – 100,000). `SanctumBreachRepository.RecordAsync` inserts the new row, counts rows for the campaign, and deletes the oldest overflow (`ORDER BY OccurredAt ASC LIMIT`) inside the same `SqliteBusyRetry`-wrapped transaction as the insert.
-
-Bounded in-memory state that *is* deferred to a future prompt (daemon execution history) will need an explicit retention policy — most-recent-N per key, evaluated as truncation on write, matching today's in-memory default (100 executions per daemon) — documented here once implemented.
+**`SanctumBreaches`:** most-recent-N per campaign on write (`SanctumConfig.MaxBreachCount`, clamp 100–100,000).
 
 ## 5. Crash consistency
 
-All watermark writes are **write-through**: the scheduler calls `SaveAsync` synchronously in the code path that produced the new value (job completion, interval override), with no batching, debouncing, or periodic snapshot timer. This is safe because:
-
-- Watermark writes happen at most once per job per interval (default 60+ minutes) and once per interval-override API call — vanishingly small volume compared to inference request/response traffic
-- SQLite WAL mode (`journal_mode=WAL`, applied on every connection via `SqliteConnectionPragmas`) provides crash-safe durability for each committed write
-- Write contention is retried via `SqliteBusyRetry` (bounded exponential backoff on `SQLITE_BUSY`/`SQLITE_LOCKED`)
-
-A failed watermark write is logged as a warning and swallowed — it never crashes the scheduler or the pacer. Worst case on a write failure: the in-memory state (already updated) diverges from the persisted state until the next successful write, which is equivalent to today's fully-in-memory behavior.
+Watermark writes are **write-through** (no batching). WAL + `SqliteBusyRetry` cover durability/contention. Failed writes are logged and swallowed — in-memory state may diverge until the next successful write.
 
 ## 6. Read path
 
-`UnseenServantService` (an ASP.NET Core `BackgroundService`) hydrates from the Grimoire once, at the start of `ExecuteAsync`, before the first scheduler tick:
+`UnseenServantService` hydrates once at `ExecuteAsync` start (after Grimoire migrations):
 
-1. `GrimoireDatabaseHostedService` has already applied all pending migrations and marked the Grimoire ready before other hosted services begin their work (existing host startup ordering — unchanged by this prompt)
-2. `UnseenServantService.ExecuteAsync` creates a DI scope, resolves `IUnseenServantWatermarkStore`, and calls `GetAllAsync()`
-3. The result hydrates two in-memory stores: `IUnseenServantJobTracker.HydrateAsync` (last-run timestamps, with a **cooldown window** — see below) and `IUnseenServantPacer.HydrateAsync` (dynamic interval overrides)
-4. If hydration fails for any reason (I/O error, corrupt row), it is logged as a warning and the scheduler falls back to today's behavior — every job runs with startup jitter, same as before this change. Hydration failure is never fatal to host startup.
+1. `IUnseenServantWatermarkStore.GetAllAsync()`
+2. Hydrate `IUnseenServantJobTracker` (last-run timestamps; overdue → keep `LastRunAt`, mark result) and `IUnseenServantPacer` (interval overrides)
+3. Hydration failure → warn and fall back to startup jitter (never fatal)
 
-**Cooldown window (warm-start behavior):** if the host was down longer than a job's effective interval, the persisted `LastRunAt + EffectiveIntervalMinutes` is already in the past. Without correction, every such job would fire immediately on the first tick after hydration — the exact restart-storm this change exists to prevent. To avoid this, `IUnseenServantJobTracker.HydrateAsync` checks each watermark: if `LastRunAt + EffectiveIntervalMinutes < now`, the tracker seeds the in-memory record with `DateTimeOffset.UtcNow` (not the stale persisted value) and `LastResult = "Skipped (host was down)"`. The job is treated as having just run, so it waits one full interval before its next real execution — trading one skipped cycle for eliminating duplicate-inference storms after extended downtime.
+**Persisted vs process-local:** `LastRunAt` and dynamic interval overrides (`EffectiveIntervalMinutes`) persist and hydrate into the tracker + pacer. **`nextDueAt` is reconstructed** in memory as `LastRunAt + effectiveInterval` (plus startup jitter on first dispatch). **`LastResult` is process-local** — hydrate seeds `"Overdue (host was down)"` or `"Restored from Grimoire"`; real run summaries are never written to the Grimoire.
 
-**Cooldown.** If `UnseenServantWatermarks` is lost or corrupt, hydrate falls back to in-memory state plus startup jitter (same path as a failed `GetAllAsync`). Recreate or repair the Grimoire to restore durable watermarks, or accept one-interval cooldown after restore when rows come back (warm-start seeding may treat restored timestamps as stale).
+**Overdue on hydrate:** if `LastRunAt + EffectiveIntervalMinutes < now`, hydrate **keeps the real `LastRunAt`** and marks `LastResult = "Overdue (host was down)"` so the job stays due and can dispatch on the first tick (comment in `UnseenServantJobTracker.HydrateAsync`). It does **not** pretend the job just ran. Lost/corrupt watermarks → warn and fall back to startup jitter (same as failed hydrate).
 
 ## 7. What is NOT persisted
 
-- **Wards** (`WardGate`) — inherently ephemeral. A ward holds a `TaskCompletionSource` correlated to a specific in-flight inference turn in a specific process. On restart, the process (and the awaiting caller) is gone — there is nothing meaningful to resume. `WardGate` is a fresh, empty singleton on every process start, so "auto-deny on restart" is a no-op in practice; the `HostRestartedReason` constant exists purely as a documented contract value for future use, not as an active code path.
-- **SSE event bus subscriber state** (`InMemoryEventBus`) — live client connections; a reconnecting client re-subscribes and receives new events going forward. There is no "replay from before I connected" contract today.
-- **Live token streams** — an in-flight `/v1` or `/api/intelligence/ping-stream` response is bound to one HTTP connection and one process; it cannot survive a restart by definition.
-- **`_firstDispatchAfterUtc` startup jitter** (`UnseenServantService`) — intentionally regenerated fresh on every process start (a random 0-60s delay per job) to spread first-tick load; it is not a watermark and persisting it would serve no purpose.
-- **A2A task mappings** (`ArcanumA2AAgentHandler`'s in-memory task-id ↔ Apprentice-id map; DESIGN.md §5.7.1) — an A2A Task maps to an Apprentice, and the Apprentice itself is already fully persisted in `Apprentices`/`Sessions`/`Entries`; the mapping is a cheap runtime index, not new state. On restart, in-flight external A2A tasks are lost (the remote client will see the connection drop and can re-poll `GetTaskAsync`, which will 404 since `InMemoryTaskStore` is also process-lifetime) exactly like any other live SSE/streaming connection in this document. The Archmage Client's outbound delegations (`dispatch_sending`) are also ephemeral: the remote agent's task id lives only in the `sendingDispatched`/`sendingCompleted`/`sendingFailed` Chronicle events on the calling Apprentice, not in a queryable table.
+- **Wards** (`WardGate`) — ephemeral `TaskCompletionSource`s; nothing to resume after restart.
+- **SSE subscriber state** / **live token streams** — connection-bound.
+- **`_firstDispatchAfterUtc` startup jitter** — regenerated each process start.
+- **A2A task mappings** — runtime index; Apprentices/Sessions/Entries already persist. In-flight external A2A tasks die with the process (same as other live streams).
 
 ## 7a. The Lexicon (raw-SQL, no EF migration)
 

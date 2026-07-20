@@ -114,7 +114,11 @@ internal static class IntelligenceEndpoints
 
         apiGroup.MapPost(
             "/intelligence/human-response",
-            async (HttpContext httpContext, IHumanPromptRegistry registry, CancellationToken cancellationToken) =>
+            async (
+                HttpContext httpContext,
+                IHumanPromptRegistry registry,
+                IOptionsSnapshot<ArcanumSettings> settings,
+                CancellationToken cancellationToken) =>
             {
                 SubmitHumanResponseRequest? body;
 
@@ -150,6 +154,19 @@ internal static class IntelligenceEndpoints
                         new Error("Validation.InvalidHumanResponse", "promptId and answer are required."));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+                }
+
+                int maxAnswerBytes = ArcanumSettingClamps.MaxEntryContentBytes(
+                    settings.Value.Sessions.MaxEntryContentBytes);
+
+                if (System.Text.Encoding.UTF8.GetByteCount(body.Answer) > maxAnswerBytes)
+                {
+                    Result<bool> tooLarge = Result<bool>.Failure(
+                        new Error(
+                            ErrorCodes.Validation.InvalidBody,
+                            $"answer exceeds maximum size of {maxAnswerBytes} UTF-8 bytes."));
+
+                    return Results.BadRequest(ApiResponse<bool>.FromResult(tooLarge, traceId));
                 }
 
                 bool accepted = registry.TrySubmitResponse(body.PromptId.Trim(), body.Answer);

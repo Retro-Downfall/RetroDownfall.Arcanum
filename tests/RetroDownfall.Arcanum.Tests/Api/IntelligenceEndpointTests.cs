@@ -292,4 +292,35 @@ public sealed class IntelligenceEndpointTests
 
     }
 
+    [SkippableFact]
+    public async Task PostHumanResponse_AnswerExceedingMaxEntryContentBytes_Returns400()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Default Sessions.MaxEntryContentBytes is 1 MiB (clamped); send one byte over.
+        string hugeAnswer = new('x', 1_048_577);
+        string payload = JsonSerializer.Serialize(
+            new SubmitHumanResponseRequest("prompt-oversized", hugeAnswer),
+            ArcanumJsonContext.Default.SubmitHumanResponseRequest);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/intelligence/human-response",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+        Assert.False(body.IsSuccess);
+        Assert.Equal("Validation.InvalidBody", body.Error?.Code);
+        Assert.Contains("UTF-8", body.Error?.Message ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+    }
+
 }

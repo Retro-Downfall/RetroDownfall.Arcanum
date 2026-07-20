@@ -216,7 +216,7 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.Error:
                         sawError = true;
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
-                        _ = humanPromptCoordinator.TryClose(
+                        _ = humanPromptCoordinator.TryCloseActive(
                             HumanPromptCloseReason.Expired,
                             "Turn ended with an error — human prompt closed.");
                         state.Log.Append(SessionLogEntryKind.Error, evt.Message);
@@ -228,7 +228,7 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.Result:
                         sawResult = true;
-                        _ = humanPromptCoordinator.TryClose(
+                        _ = humanPromptCoordinator.TryCloseActive(
                             HumanPromptCloseReason.Expired,
                             "Turn completed — human prompt closed.");
                         await coalescer.FlushFinalAsync(cancellationToken).ConfigureAwait(false);
@@ -239,13 +239,13 @@ internal sealed class CommandCenterChatRunner(
         catch (OperationCanceledException)
         {
             cancelled = true;
-            _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Cancelled);
+            _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
             await coalescer.FlushCancelledAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Command Center chat turn failed.");
-            _ = humanPromptCoordinator.TryClose(
+            _ = humanPromptCoordinator.TryCloseActive(
                 HumanPromptCloseReason.Expired,
                 "Turn failed — human prompt closed.");
             await coalescer.FlushBeforeBlockAsync(CancellationToken.None).ConfigureAwait(false);
@@ -254,7 +254,7 @@ internal sealed class CommandCenterChatRunner(
         finally
         {
             // Stream ended unexpectedly (or normally) — never leave HITL modal orphaned.
-            _ = humanPromptCoordinator.TryClose(
+            _ = humanPromptCoordinator.TryCloseActive(
                 HumanPromptCloseReason.Expired,
                 "Stream ended — human prompt closed.");
 
@@ -437,7 +437,8 @@ internal sealed class CommandCenterChatRunner(
                 ? "Human prompt timed out."
                 : "Human prompt closed (tool result).";
 
-        _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Expired, notice);
+        string? promptId = humanPromptCoordinator.Pending?.PromptId;
+        _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Expired, notice, promptId);
     }
 
     private static void StopThinking(CommandCenterState state)

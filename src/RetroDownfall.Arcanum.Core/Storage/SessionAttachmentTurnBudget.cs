@@ -77,11 +77,48 @@ public static class SessionAttachmentTurnBudget
             return true;
         }
 
-        string key = logicalKey + "\u001f" + version.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string key = InjectedKey(logicalKey, version);
 
         return state.Injected.Add(key);
 
     }
+
+    /// <summary>
+    /// Atomically consumes one budget slot and marks inject-once. On failure neither side effect
+    /// applies (failed validation must call this only after materialization succeeds).
+    /// </summary>
+    public static bool TryConsumeAndMarkInjected(string logicalKey, int version)
+    {
+
+        State? state = Current.Value;
+
+        if (state is null)
+        {
+            return true;
+        }
+
+        string key = InjectedKey(logicalKey, version);
+
+        if (state.Injected.Contains(key))
+        {
+            return false;
+        }
+
+        if (state.Used >= state.Max)
+        {
+            return false;
+        }
+
+        state.Used++;
+
+        state.Injected.Add(key);
+
+        return true;
+
+    }
+
+    private static string InjectedKey(string logicalKey, int version) =>
+        logicalKey + "\u001f" + version.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private sealed class State
     {

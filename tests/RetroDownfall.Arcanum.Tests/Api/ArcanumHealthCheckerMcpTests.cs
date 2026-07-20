@@ -20,9 +20,11 @@ public sealed class ArcanumHealthCheckerMcpTests
 
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
+            new AlwaysOkLiveness(),
             new AllDownMcpManager(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-            new WeaveIndexAvailability());
+            new WeaveIndexAvailability(),
+            new AlwaysHealthyTracker());
 
         HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
 
@@ -40,9 +42,11 @@ public sealed class ArcanumHealthCheckerMcpTests
 
         ArcanumHealthChecker checker = new(
             new ReadyGrimoire(),
+            new AlwaysOkLiveness(),
             new EmptyMcpManager(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-            new WeaveIndexAvailability());
+            new WeaveIndexAvailability(),
+            new AlwaysHealthyTracker());
 
         HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
 
@@ -78,6 +82,12 @@ public sealed class ArcanumHealthCheckerMcpTests
 
     }
 
+    private sealed class AlwaysOkLiveness : IGrimoireLivenessProbe
+    {
+        public Task<(bool Ok, string Detail)> ProbeAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult((true, "Database ready."));
+    }
+
     private sealed class EmptyMcpManager : IMcpConnectionManager
     {
 
@@ -103,6 +113,13 @@ public sealed class ArcanumHealthCheckerMcpTests
             throw new NotImplementedException();
 
         public Task<IReadOnlyList<Microsoft.Extensions.AI.AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<Microsoft.Extensions.AI.AIFunction?> GetToolAsync(
+            string serverName,
+            string toolName,
+            string? workingDirectory,
+            CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
         public Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
@@ -157,6 +174,13 @@ public sealed class ArcanumHealthCheckerMcpTests
         public Task<IReadOnlyList<Microsoft.Extensions.AI.AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
+        public Task<Microsoft.Extensions.AI.AIFunction?> GetToolAsync(
+            string serverName,
+            string toolName,
+            string? workingDirectory,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
         public Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
@@ -166,6 +190,27 @@ public sealed class ArcanumHealthCheckerMcpTests
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
+    }
+
+    private sealed class AlwaysHealthyTracker : RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker
+    {
+        public event Action<RetroDownfall.Arcanum.Core.Resilience.ProviderHealthStatus>? HealthChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public bool IsHealthy(string providerName) => true;
+
+        public void MarkFailed(string providerName)
+        {
+        }
+
+        public void MarkHealthy(string providerName)
+        {
+        }
+
+        public IReadOnlyList<RetroDownfall.Arcanum.Core.Resilience.ProviderHealthStatus> GetAllStatuses() => [];
     }
 
 }

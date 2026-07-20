@@ -17,14 +17,24 @@ internal sealed record WardApprovalRequest(
 /// <summary>
 /// Bridges streaming <c>warded</c> events to the Command Center UI thread.
 /// Host wires show/hide callbacks; ChatRunner awaits <see cref="RequestApprovalAsync"/>.
+/// Display arbitration goes through <see cref="CommandCenterHardModalArbiter"/>.
 /// </summary>
-internal sealed class CommandCenterWardCoordinator
+internal sealed class CommandCenterWardCoordinator(CommandCenterHardModalArbiter hardModalArbiter)
 {
     private readonly object _gate = new();
     private Action<WardApprovalRequest>? _onShow;
     private Action? _onHide;
-    private TaskCompletionSource<WardApprovalDecision>? _pendingDecision;
-    private WardApprovalRequest? _pendingRequest;
+    private readonly Dictionary<string, PendingWard> _pendingById = new(StringComparer.Ordinal);
+    private string? _displayedWardId;
+
+    private sealed class PendingWard(
+        WardApprovalRequest request,
+        TaskCompletionSource<WardApprovalDecision> decision)
+    {
+        public WardApprovalRequest Request { get; } = request;
+        public TaskCompletionSource<WardApprovalDecision> Decision { get; } = decision;
+        public bool WasShown { get; set; }
+    }
 
     public WardApprovalRequest? PendingRequest
     {
@@ -32,7 +42,13 @@ internal sealed class CommandCenterWardCoordinator
         {
             lock (_gate)
             {
-                return _pendingRequest;
+                if (_displayedWardId is not null
+                    && _pendingById.TryGetValue(_displayedWardId, out PendingWard? displayed))
+                {
+                    return displayed.Request;
+                }
+
+                return null;
             }
         }
     }
@@ -51,25 +67,48 @@ internal sealed class CommandCenterWardCoordinator
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (string.IsNullOrWhiteSpace(request.WardId))
+        {
+            throw new ArgumentException("WardId is required.", nameof(request));
+        }
 
         TaskCompletionSource<WardApprovalDecision> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PendingWard pending = new(request, tcs);
         Action<WardApprovalRequest>? onShow;
         Action? onHide;
 
         lock (_gate)
         {
-            // Fail-closed: never overwrite a pending TCS without completing it as Deny.
-            _ = TryResolvePendingWardAsDeniedUnlocked();
-            _pendingRequest = request;
-            _pendingDecision = tcs;
+            _pendingById[request.WardId] = pending;
             onShow = _onShow;
             onHide = _onHide;
         }
 
+        bool shown = hardModalArbiter.RequestShow(
+            CommandCenterHardModalKind.WardConfirm,
+            request.WardId,
+            () =>
+            {
+                lock (_gate)
+                {
+                    pending.WasShown = true;
+                    _displayedWardId = request.WardId;
+                }
+
+                onShow?.Invoke(request);
+            });
+
+        if (shown)
+        {
+            lock (_gate)
+            {
+                pending.WasShown = true;
+                _displayedWardId = request.WardId;
+            }
+        }
+
         try
         {
-            onShow?.Invoke(request);
-
             await using CancellationTokenRegistration registration = cancellationToken.Register(
                 static state =>
                 {
@@ -81,48 +120,100 @@ internal sealed class CommandCenterWardCoordinator
         }
         finally
         {
-            onHide?.Invoke();
+            bool wasShown;
+            bool wasDisplayed;
             lock (_gate)
             {
-                if (ReferenceEquals(_pendingDecision, tcs))
+                wasShown = pending.WasShown;
+                wasDisplayed = string.Equals(_displayedWardId, request.WardId, StringComparison.Ordinal);
+                _ = _pendingById.Remove(request.WardId);
+                if (wasDisplayed)
                 {
-                    _pendingRequest = null;
-                    _pendingDecision = null;
+                    _displayedWardId = null;
                 }
+            }
+
+            if (wasShown && wasDisplayed)
+            {
+                onHide?.Invoke();
+                _ = hardModalArbiter.TryClose(CommandCenterHardModalKind.WardConfirm, request.WardId);
+            }
+            else
+            {
+                // Queued Ward resolved/denied/timed out before display — remove from queue.
+                _ = hardModalArbiter.TryRemoveQueued(CommandCenterHardModalKind.WardConfirm, request.WardId);
             }
         }
     }
 
     /// <summary>
-    /// Completes a pending UI wait (Enter/Esc/slash). Returns false if nothing pending.
+    /// Completes the currently displayed ward wait. Returns false if nothing displayed.
     /// </summary>
     public bool TryCompletePending(WardApprovalDecision decision)
     {
         TaskCompletionSource<WardApprovalDecision>? tcs;
         lock (_gate)
         {
-            tcs = _pendingDecision;
+            if (_displayedWardId is null
+                || !_pendingById.TryGetValue(_displayedWardId, out PendingWard? pending))
+            {
+                return false;
+            }
+
+            tcs = pending.Decision;
         }
 
-        return tcs is not null && tcs.TrySetResult(decision);
+        return tcs.TrySetResult(decision);
     }
 
     /// <summary>
-    /// Completes any pending ward wait as <see cref="WardApprovalDecision.Deny"/> before another
-    /// overlay steals focus. Idempotent: returns false when nothing pending or already completed.
+    /// Completes a specific ward by id (displayed or queued). Used for correlated stale closes.
+    /// </summary>
+    public bool TryCompleteByWardId(string wardId, WardApprovalDecision decision)
+    {
+        if (string.IsNullOrWhiteSpace(wardId))
+        {
+            return false;
+        }
+
+        TaskCompletionSource<WardApprovalDecision>? tcs;
+        lock (_gate)
+        {
+            if (!_pendingById.TryGetValue(wardId, out PendingWard? pending))
+            {
+                return false;
+            }
+
+            tcs = pending.Decision;
+        }
+
+        return tcs.TrySetResult(decision);
+    }
+
+    /// <summary>
+    /// Completes the displayed ward as Deny. Does not deny queued wards (they keep observing timeout).
+    /// Idempotent: returns false when nothing displayed or already completed.
     /// </summary>
     public bool TryResolvePendingWardAsDenied()
     {
-        lock (_gate)
-        {
-            return TryResolvePendingWardAsDeniedUnlocked();
-        }
+        return TryCompletePending(WardApprovalDecision.Deny);
     }
 
-    private bool TryResolvePendingWardAsDeniedUnlocked()
+    /// <summary>
+    /// Denies all pending wards (displayed and queued) — used on quit / session teardown.
+    /// </summary>
+    public void DenyAllPending()
     {
-        TaskCompletionSource<WardApprovalDecision>? tcs = _pendingDecision;
-        return tcs is not null && tcs.TrySetResult(WardApprovalDecision.Deny);
+        List<TaskCompletionSource<WardApprovalDecision>> targets;
+        lock (_gate)
+        {
+            targets = _pendingById.Values.Select(p => p.Decision).ToList();
+        }
+
+        foreach (TaskCompletionSource<WardApprovalDecision> tcs in targets)
+        {
+            _ = tcs.TrySetResult(WardApprovalDecision.Deny);
+        }
     }
 
     public static string FormatArgumentsPreview(JsonElement? arguments, int maxChars = 480)

@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -19,6 +20,7 @@ public static class SessionAttachmentToolInjection
     /// <summary>
     /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
     /// inject-once, Scrying/vision for images, and size limits (images are rejected, never truncated).
+    /// Budget and inject-once are consumed only after validation and materialization succeed.
     /// </summary>
     public static async Task<IReadOnlyList<AIContent>?> TryBuildContentsAsync(
         ISessionAttachmentStore store,
@@ -38,11 +40,6 @@ public static class SessionAttachmentToolInjection
             return null;
         }
 
-        if (!SessionAttachmentTurnBudget.TryConsume())
-        {
-            return null;
-        }
-
         SessionAttachmentRecord? record = await store
             .GetByLogicalAsync(sessionId, logicalName.Trim(), version, cancellationToken)
             .ConfigureAwait(false);
@@ -54,7 +51,9 @@ public static class SessionAttachmentToolInjection
             return null;
         }
 
-        if (!SessionAttachmentTurnBudget.TryMarkInjected(record.LogicalKey, record.Version))
+        if (string.IsNullOrWhiteSpace(record.RelativePath)
+            || Path.IsPathRooted(record.RelativePath)
+            || record.RelativePath.Contains("..", StringComparison.Ordinal))
         {
             return null;
         }
@@ -62,6 +61,8 @@ public static class SessionAttachmentToolInjection
         ReadOnlyMemory<byte> bytes = await store
             .ReadBytesAsync(record, cancellationToken)
             .ConfigureAwait(false);
+
+        List<AIContent> contents;
 
         if (record.Kind == SessionAttachmentKind.Image)
         {
@@ -74,22 +75,60 @@ public static class SessionAttachmentToolInjection
 
             string mime = string.IsNullOrWhiteSpace(record.MimeType) ? "image/*" : record.MimeType;
 
-            return [new DataContent(bytes, mime)];
+            string label = FrameLabel(record);
+
+            contents =
+            [
+                new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label)),
+                new DataContent(bytes, mime),
+            ];
         }
-
-        long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Cli.MaxAttachFileSizeBytes);
-
-        if (bytes.Length > maxTextBytes && maxTextBytes > 0)
+        else
         {
-            // Text may be truncated at a UTF-8 boundary; images must never be truncated (rejected above).
-            string truncated = DecodeTextWithByteBound(bytes, maxTextBytes);
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Cli.MaxAttachFileSizeBytes);
 
-            return [new TextContent(truncated)];
+            string text;
+
+            if (bytes.Length > maxTextBytes && maxTextBytes > 0)
+            {
+                // Text may be truncated at a UTF-8 boundary; images must never be truncated (rejected above).
+                text = DecodeTextWithByteBound(bytes, maxTextBytes);
+            }
+            else
+            {
+                text = Encoding.UTF8.GetString(bytes.Span);
+            }
+
+            string label = FrameLabel(record);
+
+            contents = [new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))];
         }
 
-        string text = Encoding.UTF8.GetString(bytes.Span);
+        if (!SessionAttachmentTurnBudget.TryConsumeAndMarkInjected(record.LogicalKey, record.Version))
+        {
+            return null;
+        }
 
-        return [new TextContent(text)];
+        return contents;
+
+    }
+
+    private static string FrameLabel(SessionAttachmentRecord record)
+    {
+
+        string hardened = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
+
+        if (hardened.Length == 0)
+        {
+            hardened = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
+        }
+
+        if (hardened.Length == 0)
+        {
+            hardened = "attachment";
+        }
+
+        return hardened;
 
     }
 

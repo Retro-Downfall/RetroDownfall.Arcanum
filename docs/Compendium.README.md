@@ -67,7 +67,7 @@ The Host section includes optional HTTPS settings (`host.https.*`) and a **Gener
 - **Shell B (Visual Studio–like):** menu bar + left section list + center document tabs + sticky `SaveBar`. Theme tokens are copied from TheForge (VS 2026 Fluent Dark/Light) and selected via Avalonia `ThemeDictionaries` so the chrome follows the OS light/dark preference (`RequestedThemeVariant=Default`).
 - **Models**: UI-only types — `ConfigSection`/`SectionDescriptor` (nav) and the `SettingDescriptor` metadata table (see below). The domain model is reused from `RetroDownfall.Arcanum.Core`.
 - **Services**: `ArcanumConfigurationStore`, `ArcanumDataProtectionSecretProtector`, `DialogService` (via `IMainWindowProvider`), `IUiDispatcher`. All filesystem paths are composed with `Path.Combine` and `ArcanumPaths.*`.
-- **ViewModels**: one root `ConfigurationViewModel` plus 14 polished `SectionViewModel` classes. Several sections group multiple config domains: **Storage** covers Grimoire + Sessions + EventBus + Logs + Workspaces; **Forge** covers Spells + Campaigns + Perception + Prompts + Codex; **Orchestration** covers Daemon + Apprentices + Conclave (top-level only — the nested `Conclave.A2A` sub-record round-trips untouched); **Security** covers Security + Ward. Core records are immutable `init`-only; the VMs expose mutable `[ObservableProperty]` fields and rebuild records via `with` expressions on save.
+- **ViewModels**: one root `ConfigurationViewModel` plus 14 polished `SectionViewModel` classes. Several sections group multiple config domains: **Storage** covers Grimoire + Sessions + EventBus + Logs + Workspaces; **Forge** covers Spells + Campaigns + Perception + Prompts + Codex; **Orchestration** covers Daemon + Apprentices + Conclave (top-level only — the nested `Conclave.A2A` sub-record round-trips untouched); **Security** covers Security + Ward. Core settings types are `record` POCOs with **`{ get; set; }`** (required for the configuration binding generator — not `init`-only). Compendium VMs expose mutable `[ObservableProperty]` fields and rebuild settings snapshots via `with` expressions on save.
 - **Generic descriptor editor:** domains without a polished hand-authored view (Resilience, Moderations, Pricing, Budget, StructuredOutput, WebBrowsing, ClientToolForwarding, Guardrails, Embeddings, Metrics, Files, Batches) open `GenericSettingsSectionView`, which renders fields from `SettingDescriptors` grouped by subdomain. Edits live in `GenericSettingFieldViewModel` instances; `_snapshot` stays the last loaded baseline until Save/Reload. On save, `BuildSettings()` applies polished `with` edits then a reflection-based key updater (`GenericSettingsUpdater`) for generic fields. Compendium is a desktop editor and is not Native AOT-shipped.
 - **Views**: `MainWindow` + one Avalonia `UserControl` per polished section + `GenericSettingsSectionView`, and reusable controls (`LabeledEntry`, `LabeledStepper`/`NumericUpDown`, `LabeledToggle`, `ChipsEditor`, `LabeledPicker`, `LabeledColorEntry`, `SaveBar`).
 
@@ -86,23 +86,13 @@ A single `SettingDescriptor` table (`src/RetroDownfall.Compendium.Ux/Models/Sett
 Two tests in `tests/RetroDownfall.Compendium.Tests` guard the table against drift:
 
 - `SettingDescriptorParityTests` — every numeric descriptor's `Min`/`Max` equal the bounds of the corresponding `ArcanumSettingClamps.*` method (verified by invoking the clamp with extreme values).
-- `SettingDescriptorCoverageTests` — reflects over `ArcanumSettings` and every nested record's `init` properties and asserts each has a matching descriptor; also asserts no orphaned descriptors and no duplicate keys.
+- `SettingDescriptorCoverageTests` — reflects over `ArcanumSettings` and nested settings records' public settable properties and asserts each has a matching descriptor; also asserts no orphaned descriptors and no duplicate keys.
 
 `GenericSettingsPreservationTests` asserts polished edits do not drop generic-domain values, and that generic field edits apply through `BuildSettings()`.
 
 ## Reusable controls
 
-| Control | Kind | Behaviour |
-|---|---|---|
-| `LabeledEntry` | String / Path / Secret | Label + `TextBox` + description + validation hint; `IsPassword` for secrets. |
-| `LabeledStepper` | Int / Long / Float | Label + `NumericUpDown` bound to descriptor clamp `Min`/`Max`/`Increment` + description + validation hint. |
-| `LabeledToggle` | Bool | Label + `ToggleSwitch` + description. |
-| `ChipsEditor` | StringArray | Add/remove chips for `string[]` fields (CORS origins, forbidden arts, allowed hosts, Scrying allowed MIME types). `JoinCsv`/`SplitCsv` and chip rendering dedupe case-insensitively so duplicate origins never appear twice. |
-| `LabeledPicker` | Enum | Label + `ComboBox` whose `ItemsSource` is `Enum.GetValues(EnumType)`; `EnumToStringConverter` renders human-readable labels (e.g. `OpenAI Compatible`, `System Default`). |
-| `LabeledColorEntry` | Color | Hex `TextBox` + live swatch (via `HexToBrushConverter` / `HexColorParser`, parses `#RGB`/`#RRGGBB`/`#AARRGGBB`) + description + validation hint. Used for all 10 CLI theme colors. |
-| `SaveBar` | — | Sticky strip: dirty dot, Save/Cancel/Reload, last-saved timestamp, external-change prompt. Save enablement is driven solely by `SaveCommand.CanExecute` (`IsDirty && !IsSaving && !HasExternalChange`); Cancel runs `CancelCommand` (`IsDirty && !IsSaving`) and re-applies the last loaded snapshot without a confirm dialog. `MarkDirty()` and flag changes raise `NotifyCanExecuteChanged`. |
-
-`EnumToStringConverter` and `HexToBrushConverter` are Avalonia `IValueConverter` implementations. `HexColorParser` is pure C# and unit-tested without Avalonia app initialization.
+`LabeledEntry`, `LabeledStepper`, `LabeledToggle`, `ChipsEditor`, `LabeledPicker`, `LabeledColorEntry`, `SaveBar` — descriptor-driven controls with validation hints. Converters: `EnumToStringConverter`, `HexToBrushConverter` / `HexColorParser` (unit-tested without Avalonia app init).
 
 ## Validation routing
 

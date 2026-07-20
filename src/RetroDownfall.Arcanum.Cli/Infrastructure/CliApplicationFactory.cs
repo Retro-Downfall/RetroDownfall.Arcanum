@@ -114,6 +114,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<ShellCommandDispatcher>();
 
+        services.AddSingleton<CommandCenterHardModalArbiter>();
+
         services.AddSingleton<CommandCenterWardCoordinator>();
 
         services.AddSingleton<CommandCenterHumanPromptCoordinator>();

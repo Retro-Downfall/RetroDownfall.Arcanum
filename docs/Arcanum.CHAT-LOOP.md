@@ -1,6 +1,6 @@
 # Chat Loop Workflow
 
-This document describes the **chat loop** — the end-to-end flow Arcanum runs for every inference turn, from HTTP entry through the iterative tool-call loop to response finalization. The orchestrator is the **Wizard** (`WizardIntelligenceProvider`, which implements `IArcanumIntelligenceProvider`). See [DESIGN.md §10](DESIGN.md#10-intelligence-pipeline) for the authoritative deep reference and the [README naming metaphor](README.md#naming-metaphor) for the D&D terms used below (Wizard, Grimoire, Codex, Spell, Ward, Sanctum, Saga, The Weave, Session, Dungeon Master).
+This document describes the **chat loop** — the end-to-end flow Arcanum runs for every inference turn, from HTTP entry through the iterative tool-call loop to response finalization. The orchestrator is the **Wizard** (`WizardIntelligenceProvider`, which implements `IArcanumIntelligenceProvider`). See [Arcanum.DESIGN.md §10](Arcanum.DESIGN.md#10-intelligence-pipeline) for the architecture authority and the [README naming metaphor](Arcanum.README.md#naming-metaphor) for the D&D terms used below (Wizard, Grimoire, Codex, Spell, Ward, Sanctum, Saga, The Weave, Session, Dungeon Master).
 
 There are two parallel shapes that share most of the pipeline:
 
@@ -101,20 +101,6 @@ flowchart TD
 
 Five HTTP surfaces all funnel into the same `IArcanumIntelligenceProvider` contract:
 
-```1:25:src/RetroDownfall.Arcanum.Core/Intelligence/IArcanumIntelligenceProvider.cs
-public interface IArcanumIntelligenceProvider
-{
-    Task<Result<PromptTurnResult>> ExecutePromptAsync(
-        PingRequest request,
-        CancellationToken cancellationToken = default,
-        InferenceAuditContext? auditContext = null);
-
-    IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
-        PingRequest request,
-        CancellationToken cancellationToken = default,
-        InferenceAuditContext? auditContext = null);
-}
-```
 
 | Surface | Method | Path | Calls |
 |---|---|---|---|
@@ -134,56 +120,7 @@ The OpenAI v1 path first converts the request via `OpenAi/OpenAiChatCompletionMa
 
 ## 3. Pre-flight gates (shared)
 
-Both `ExecutePromptAsync` and `StreamPromptAsync` run the **same sequence of gates** before any inference. From `ExecutePromptAsync`:
-
-```85:111:src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs
-    public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
-        PingRequest request,
-        CancellationToken cancellationToken = default,
-        InferenceAuditContext? auditContext = null)
-    {
-        string prompt = request.Prompt;
-
-        Result guardrailsInput = await FilterGuardrailsInputAsync(request, cancellationToken).ConfigureAwait(false);
-
-        if (guardrailsInput.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(guardrailsInput.Error);
-        }
-
-        if (!TryValidateAttachedFiles(request, out Error attachedFilesError))
-        {
-            return Result<PromptTurnResult>.Failure(attachedFilesError);
-        }
-
-        Result bounds = PingRequestBoundsValidator.Validate(request, settings.Value);
-
-        if (bounds.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(bounds.Error);
-        }
-
-        Result scryingGate = ValidateScryingGate(request);
-
-        if (scryingGate.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(scryingGate.Error);
-        }
-
-        if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
-        {
-            return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
-        }
-
-        Result budgetGate = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);
-
-        if (budgetGate.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(budgetGate.Error);
-        }
-```
-
-The gates, in order:
+Both `ExecutePromptAsync` and `StreamPromptAsync` run the **same sequence of gates** before any inference, in order:
 
 1. **Guardrails input filter** — `FilterGuardrailsInputAsync` → `Guardrails/GuardrailsPipeline.cs` `FilterInputAsync`. Scans concatenated message text for PII (email/SSN/credit card/phone via source-generated regexes), toxicity blocklist, and topic allow/block regex lists. Returns `ErrorCodes.Guardrails.PiiDetected` or `ErrorCodes.Guardrails.Blocked` on hit. Pass-through when `Arcanum:Guardrails:Enabled` is false.
 2. **Attached files validation** — `TryValidateAttachedFiles`.
@@ -202,172 +139,13 @@ After the gates, a linked `CancellationTokenSource` is built for the inference w
 
 The `ChatClientLease` owns the turn's `IChatClient`; `Dispose()` releases it. Prompt caching is provider-managed; Arcanum does not inject provider-specific cache request fields.
 
-When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop):
-
-```189:270:src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs
-        for (int attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex++)
-        {
-            (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
-
-            bool isLastAttempt = attemptIndex == maxAttempts - 1;
-
-            ChatClientLease lease;
-
-            try
-            {
-                lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
-
-                if (isConnectivityFailure)
-                {
-                    healthTracker!.MarkFailed(provider.Name);
-                }
-
-                logger.LogWarning(
-                    ex,
-                    "Provider {ProviderName} unavailable while resolving client (fallback attempt {Attempt}/{MaxAttempts}).",
-                    provider.Name,
-                    attemptIndex + 1,
-                    maxAttempts);
-
-                lastFailure = Result<PromptTurnResult>.Failure(new Error(
-                    ErrorCodes.Hub.Error,
-                    BuildInferenceFailureMessage(provider)));
-
-                if (!isConnectivityFailure || isLastAttempt)
-                {
-                    return lastFailure;
-                }
-
-                continue;
-            }
-
-            using (lease)
-            {
-                InferenceAttemptResult attempt = await AttemptBufferedInferenceAsync(lease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
-
-                if (attempt.Result.IsSuccess)
-                {
-                    healthTracker!.MarkHealthy(provider.Name);
-
-                    return attempt.Result;
-                }
-
-                lastFailure = attempt.Result;
-
-                if (!attempt.IsConnectivityFailure || isLastAttempt)
-                {
-                    return lastFailure;
-                }
-
-                healthTracker!.MarkFailed(provider.Name);
-
-                logger.LogWarning(
-                    "Provider {ProviderName} inference failed with a connectivity error (fallback attempt {Attempt}/{MaxAttempts}); trying next candidate.",
-                    provider.Name,
-                    attemptIndex + 1,
-                    maxAttempts);
-
-            }
-
-        }
-```
-
-Only a **connectivity-classified** failure (`HttpRequestException`, `SocketException`, timeout-cancellation, etc.) falls back to the next healthy candidate. Model/auth/400/429/5xx errors do **not** fall back — they are surfaced immediately. The streaming analog has the same loop but only retries if the *first* event is a connectivity error; once any real content has streamed, fallback is abandoned so a client never sees a mid-stream provider swap.
+When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop). Only a **connectivity-classified** failure (`HttpRequestException`, `SocketException`, timeout-cancellation, etc.) falls back to the next healthy candidate. Model/auth/400/429/5xx errors do **not** fall back — they are surfaced immediately. The streaming analog has the same loop but only retries if the *first* event is a connectivity error; once any real content has streamed, fallback is abandoned so a client never sees a mid-stream provider swap.
 
 ---
 
 ## 5. Context assembly (once per turn)
 
 Both `AttemptBufferedInferenceAsync` (buffered) and `StreamCommittedInferenceAsync` (streaming) perform the same context-assembly sequence before entering the tool loop:
-
-```290:368:src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs
-            Session? thread = await inferenceContextBuilder
-            .LoadThreadAsync(request, inferenceToken)
-            .ConfigureAwait(false);
-
-        GrimoireTurnWriter.TurnHandle grimoireTurn = await grimoireTurnWriter
-            .TryBeginBufferedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
-            .ConfigureAwait(false);
-
-        string? codexContent = await CodexReader
-            .ReadCodexAsync(
-                request.WorkingDirectory,
-                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value),
-                inferenceToken)
-            .ConfigureAwait(false);
-
-        ResolvedSpell? resolvedSpell;
-
-        if (request.SkipSpellRouting)
-        {
-            resolvedSpell = null;
-        }
-        else
-        {
-            string? spellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy.TryNormalizeWorkspace(
-                request.WorkingDirectory,
-                out string? spellRoot,
-                out _)
-                ? spellRoot
-                : null;
-
-            Result<ResolvedSpell?> routedSpell = await ResolveRoutedSpellAsync(
-                request,
-                chatClient,
-                spellWorkspaceRoot,
-                inferenceToken).ConfigureAwait(false);
-
-            if (routedSpell.IsFailure)
-            {
-                if (!grimoireTurn.IsFinalized)
-                {
-                    await grimoireTurnWriter
-                        .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                        .ConfigureAwait(false);
-                }
-
-                return new InferenceAttemptResult(Result<PromptTurnResult>.Failure(routedSpell.Error), IsConnectivityFailure: false);
-            }
-
-            resolvedSpell = routedSpell.Value;
-        }
-
-        ParsedSpell? activeSpell = resolvedSpell?.Primary;
-
-        IReadOnlyList<ParsedSpell>? resonants = resolvedSpell?.Resonants;
-
-        Embedding<float>? queryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
-
-        SemanticContextChunk[]? semanticContext = await RetrieveSemanticContextAsync(request, queryEmbedding, inferenceToken).ConfigureAwait(false);
-
-        SagaMemory[]? sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, inferenceToken).ConfigureAwait(false);
-
-        string builtSystemPrompt = SystemPromptBuilder.Build(
-            request,
-            codexContent,
-            activeSpell,
-            request.AttachedFiles,
-            dependencySpells: resonants,
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
-            semanticContext: semanticContext,
-            sagaMemories: sagaMemories);
-
-        List<AITool> toolSet = request.ForwardClientTools
-            ? BuildClientForwardedToolSet(request)
-            : await BuildToolSetWithMcpAsync(request, resolvedSpell, inferenceToken).ConfigureAwait(false);
-
-        ToolExecutionPipeline.TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, inferenceToken).ConfigureAwait(false);
-```
-
-The steps:
 
 1. **Load thread** — `InferenceContextBuilder.LoadThreadAsync`. Returns `null` for stateless requests, otherwise loads the `Session` (with Entries) from the Grimoire.
 2. **Begin Grimoire turn** — `GrimoireTurnWriter.TryBeginBufferedAssistantReplyAsync` / `TryBeginStreamedAssistantReplyAsync`. For stateful turns, inserts an in-flight assistant Entry and returns a `TurnHandle` tracking `(sessionId, assistantEntryId)` for finalize/discard.
@@ -387,110 +165,7 @@ The steps:
 This is the core of the workflow. `AttemptBufferedInferenceAsync` contains **two nested `while (true)` loops**:
 
 - **Outer loop** — normally runs once. Only `continue`s if the model throws an exception that looks like "model does not support tools"; then it rebuilds `chatOptions` without tools and retries inference once.
-- **Inner loop — the chat loop** — the bounded tool-call loop. Each iteration is one inference round.
-
-```369:485:src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs
-        while (true)
-        {
-            try
-            {
-                List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
-
-                InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, builtSystemPrompt);
-
-                (bool compressedSync, List<MeAiChatMessage> syncMessages) = inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
-                    request,
-                    chatMessages,
-                    codexContent,
-                    activeSpell,
-                    resonants,
-                    thread,
-                    prompt,
-                    lease);
-
-                chatMessages = syncMessages;
-
-                if (compressedSync)
-                {
-                    logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
-                }
-
-                ChatOptions chatOptions = CreateInferenceChatOptions(inferenceUsesTools, turnContext.InferenceTools, request, lease);
-
-                ChatResponse? response;
-
-                int toolRoundsExecuted = 0;
-
-                int maxToolRounds = ArcanumSettingClamps.MaxToolInferenceRounds(settings.Value.Intelligence.MaxToolInferenceRounds);
-
-                ChatCompletionUsage? accumulatedUsage = null;
-
-                List<PromptToolCall>? observedToolCalls = null;
-
-                while (true)
-                {
-                    response = await chatClient
-                        .GetResponseAsync(chatMessages, chatOptions, inferenceToken)
-                        .ConfigureAwait(false);
-
-                    accumulatedUsage = AccumulateUsage(accumulatedUsage, MapUsageDetails(response.Usage));
-
-                List<FunctionCallContent> calls = ToolExecutionPipeline.CollectActionableFunctionCalls(response);
-
-                if (calls.Count == 0)
-                {
-                    break;
-                }
-
-                if (request.ForwardClientTools)
-                {
-                    foreach (FunctionCallContent fcc in calls)
-                    {
-                        (observedToolCalls ??= []).Add(new PromptToolCall(
-                            ToolExecutionPipeline.ResolveCallId(fcc),
-                            fcc.Name ?? string.Empty,
-                            ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc)));
-                    }
-
-                    break;
-                }
-
-                toolRoundsExecuted++;
-
-                if (toolRoundsExecuted > maxToolRounds)
-                {
-                        if (!grimoireTurn.IsFinalized)
-                        {
-                            await grimoireTurnWriter
-                                .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                                .ConfigureAwait(false);
-                        }
-
-                        return new InferenceAttemptResult(
-                            Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.ToolLoop, "Tool invocation limit reached.")),
-                            IsConnectivityFailure: false);
-                    }
-
-                    foreach (FunctionCallContent fcc in calls)
-                    {
-                        ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
-                            .ProcessSingleToolCallAsync(
-                                fcc,
-                                request,
-                                chatOptions,
-                                activeSpell,
-                                grimoireTurn.SessionId?.ToString(),
-                                turnContext,
-                                suppressInvocationFailures: settings.Value.Intelligence.TolerateToolFailures,
-                                inferenceToken)
-                            .ConfigureAwait(false);
-
-                        (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
-
-                        auditContext?.ToolNames.Add(processed.ToolName);
-
-                        auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
-```
+- **Inner loop — the chat loop** — the bounded tool-call loop. Each iteration is one inference round:
 
 Each iteration of the inner loop:
 
@@ -504,29 +179,7 @@ Each iteration of the inner loop:
 8. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. The result is appended to `observedToolCalls` and the audit context.
 9. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id) and a tool message containing `FunctionResultContent(callId, resultText)`. **This is the feedback that feeds the next inference round.**
 10. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` calls `grimoire.AppendToolInteractionAsync` then publishes recent Entries to `SessionEventHub`, so `/sessions/{id}/stream` subscribers see the tool interaction appear live.
-11. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) is sent to the model again. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 5).
-
-The message-append step is what makes this a loop rather than a single call:
-
-```174:190:src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs
-    public static void AppendToolExchangeToMessages(
-        List<MeAiChatMessage> chatMessages,
-        FunctionCallContent fcc,
-        string callId,
-        string resultText)
-    {
-
-        FunctionCallContent normalizedCall = string.IsNullOrEmpty(fcc.CallId)
-            ? new FunctionCallContent(callId, fcc.Name, fcc.Arguments)
-            : fcc;
-
-        chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [normalizedCall]));
-
-        chatMessages.Add(
-            new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText)]));
-
-    }
-```
+11. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) is sent to the model again. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 5). Step 9 is what makes this a loop rather than a single call.
 
 ### 6.1 Sequence diagram for a single tool round
 
@@ -585,60 +238,7 @@ sequenceDiagram
 
 ## 7. Tool execution — Ward + Sanctum gates
 
-`ToolExecutionPipeline.ProcessSingleToolCallAsync` delegates to `ExecuteToolCallWithWardAsync`, the per-tool-call security gate sequence:
-
-```517:575:src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs
-    private async Task<WardedToolExecutionResult> ExecuteToolCallWithWardAsync(
-        FunctionCallContent fcc,
-        PingRequest request,
-        ChatOptions chatOptions,
-        ParsedSpell? activeSpell,
-        string? sessionId,
-        ToolExecutionPipeline.TurnContext turnContext,
-        string argsSnapshot,
-        CancellationToken cancellationToken)
-    {
-
-        string toolName = fcc.Name ?? string.Empty;
-
-        WardSettings wardSettings = settings.Value.Ward ?? new WardSettings();
-
-        if (IsWardCandidate(toolName, turnContext.CampaignRequiresWard, wardSettings)
-            && request.UnattendedMode
-            && wardSettings.AutoDenyInUnattendedMode)
-        {
-
-            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), [], Denied: true);
-
-        }
-
-        if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
-        {
-
-            (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
-                fcc,
-                activeSpell,
-                chatOptions,
-                turnContext,
-                argsSnapshot,
-                cancellationToken).ConfigureAwait(false);
-
-            return new WardedToolExecutionResult(directResult, [], directDenied);
-
-        }
-
-        string wardId = Guid.NewGuid().ToString();
-
-        JsonDocument? argsDocument = TryParseToolArgumentsDocument(argsSnapshot);
-
-        JsonElement? wardArguments = argsDocument?.RootElement.Clone();
-
-        DateTimeOffset wardTimestamp = DateTimeOffset.UtcNow;
-
-        var wardEvents = new List<IntelligenceEvent>(2);
-```
-
-The gate order:
+`ToolExecutionPipeline.ProcessSingleToolCallAsync` delegates to `ExecuteToolCallWithWardAsync`. Gate order:
 
 1. **Unattended auto-deny** — if the tool is a Ward candidate (`RequiresWardForTool`: Ward enabled + tool in `Arcanum:Ward:ForbiddenArts`; `execute_command` always requires Ward, others only if `CampaignRequiresWard`) and `UnattendedMode && AutoDenyInUnattendedMode`, return a synthetic deny result (no operator available).
 2. **Not a Forbidden Art → skip Ward, go straight to Sanctum** — `InvokeToolCallWithSanctumAsync`.
@@ -700,7 +300,7 @@ The sequence of events a streaming client sees for a typical multi-round tool tu
      - `WardResolved` — (only if the Ward gate triggers) allow/deny + reason
      - `ToolError` — (only if the tool failed and was tolerated)
      - `ToolResult` — the stringified result returned to the model
-     - *(session attachments)* successful `attach_session_file` injects `TextContent`/`DataContent` into the **next** round (inject-once; combined `MaxReferencesPerTurn` with user refs; images need Scrying + vision)
+     - *(session attachments)* after **all** tool results in the round are appended, a **successful** `attach_session_file` (`!Failed && !Denied`) queues untrusted-framed `TextContent`/`DataContent` for the **next** round (budget/inject-once consumed only after materialization; images need Scrying + vision; Ward/Sanctum denial and post-process failures do not inject)
 6. (loop repeats with more `Token`s for the next round)
 7. `Result` — terminal: "Complete" with usage, finish reason, warnings
 8. Or `Error` — terminal: inference error, guardrails rejection, or validation failure
@@ -727,7 +327,7 @@ The **core chat loop** is #3/#5: `GetResponseAsync`/`GetStreamingResponseAsync` 
 
 ## 12. Key configuration knobs
 
-All of these live under `Arcanum:` in `arcanum.json` and have runtime clamps in `ArcanumSettingClamps`. See [DESIGN.md §3.4](DESIGN.md#34-configuration-reference-arcanumsettings) for the full reference.
+All of these live under `Arcanum:` in `arcanum.json` and have runtime clamps in `ArcanumSettingClamps`. See [Arcanum.DESIGN.md §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings) for the full reference.
 
 | Setting | Default | Effect on the chat loop |
 |---|---|---|

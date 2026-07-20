@@ -186,6 +186,8 @@ public sealed class AskCommand(
 
         var accumulatedText = new StringBuilder();
 
+        ConsoleAskHumanCoordinator? hitl = null;
+
         try
         {
             string cwd = Environment.CurrentDirectory;
@@ -256,6 +258,8 @@ public sealed class AskCommand(
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
                 receivedAnyStreamEvent = true;
+                hitl ??= new ConsoleAskHumanCoordinator(apiClient, palette);
+                hitl.ObserveStreamEvent(evt);
 
                 switch (evt.Type)
                 {
@@ -279,15 +283,18 @@ public sealed class AskCommand(
 
                     case IntelligenceEventType.ToolCall:
 
-                        AskHumanResult humanResult = await AskHumanToolCallStreamHandler
-                            .TryHandleAskHumanAsync(
+                        AskHumanResult humanResult = await hitl
+                            .TryBeginAsync(
                                 evt,
                                 effectiveUnattended,
                                 cliEnvironment.IsInteractive,
-                                apiClient,
-                                palette,
                                 linked.Token)
                             .ConfigureAwait(false);
+
+                        if (humanResult == AskHumanResult.PendingInput)
+                        {
+                            break;
+                        }
 
                         if (humanResult == AskHumanResult.SubmitFailed)
                         {
@@ -339,9 +346,24 @@ public sealed class AskCommand(
                         return 1;
                 }
             }
+
+            if (hitl is not null)
+            {
+                AskHumanResult? hitlResult = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+                if (hitlResult == AskHumanResult.SubmitFailed)
+                {
+                    return 1;
+                }
+            }
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
+            hitl?.Cancel();
+            if (hitl is not null)
+            {
+                _ = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
             // W4.1: return 130 (SIGINT) only on an actual user/host cancellation. A cancellation
             // from another source (e.g. a transient client timeout surfacing as OCE) falls through
             // to the generic handler and reports a normal error (exit 1).

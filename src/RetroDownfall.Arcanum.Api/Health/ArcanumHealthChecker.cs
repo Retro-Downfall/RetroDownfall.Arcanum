@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -10,9 +11,11 @@ namespace RetroDownfall.Arcanum.Api.Health;
 
 public sealed class ArcanumHealthChecker(
     IGrimoireDbReadiness grimoireReadiness,
+    IGrimoireLivenessProbe grimoireLiveness,
     IMcpConnectionManager mcpConnectionManager,
     IOptionsMonitor<ArcanumSettings> settings,
-    WeaveIndexAvailability weaveIndexAvailability)
+    WeaveIndexAvailability weaveIndexAvailability,
+    IProviderHealthTracker providerHealthTracker)
 {
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
@@ -20,12 +23,38 @@ public sealed class ArcanumHealthChecker(
 
         List<HealthComponentDto> components = [];
 
-        HealthStatus grimoireStatus = grimoireReadiness.IsReady ? HealthStatus.Healthy : HealthStatus.Unhealthy;
+        HealthStatus grimoireStatus;
+        string grimoireDetail;
+
+        if (!grimoireReadiness.IsReady)
+        {
+            grimoireStatus = HealthStatus.Unhealthy;
+            grimoireDetail = "Grimoire database is not ready.";
+        }
+        else
+        {
+            (bool liveOk, string liveDetail) = await grimoireLiveness
+                .ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (liveOk)
+            {
+                grimoireStatus = HealthStatus.Healthy;
+                grimoireDetail = liveDetail;
+            }
+            else
+            {
+                // Readiness-critical: overall Unhealthy → 503 is appropriate when the DB is dead
+                // after MarkReady (startup latch is intentionally left set).
+                grimoireStatus = HealthStatus.Unhealthy;
+                grimoireDetail = liveDetail;
+            }
+        }
 
         components.Add(new HealthComponentDto(
             "Grimoire",
             grimoireStatus,
-            grimoireReadiness.IsReady ? "Database ready." : "Grimoire database is not ready."));
+            grimoireDetail));
 
         McpServerInfo[] mcpServers = await mcpConnectionManager
             .GetAllStatusesAsync(cancellationToken)
@@ -54,14 +83,7 @@ public sealed class ArcanumHealthChecker(
 
         components.Add(new HealthComponentDto("MCP", mcpStatus, mcpDetail));
 
-        int providerCount = (settings.CurrentValue.Providers ?? []).Length;
-
-        components.Add(new HealthComponentDto(
-            "Providers",
-            providerCount > 0 ? HealthStatus.Healthy : HealthStatus.Degraded,
-            providerCount > 0
-                ? $"{providerCount} providers configured; reachability is tracked by resilience probes."
-                : "No providers configured."));
+        components.Add(BuildProvidersComponent(settings.CurrentValue, providerHealthTracker));
 
         bool escapeHatch = settings.CurrentValue.Security?.AllowUnsandboxedToolChildren ?? false;
 
@@ -91,14 +113,107 @@ public sealed class ArcanumHealthChecker(
 
         components.Add(new HealthComponentDto("Embeddings", embeddingsHealth, embeddingsDetail));
 
-        HealthStatus overall = components.Any(static c => c.Status == HealthStatus.Unhealthy)
-            ? HealthStatus.Unhealthy
-            : components.Any(static c => c.Status == HealthStatus.Degraded)
-                ? HealthStatus.Degraded
-                : HealthStatus.Healthy;
+        HealthStatus overall = AggregateOverall(components);
 
         return new HealthReportDto(overall, components.ToArray());
 
+    }
+
+    internal static HealthComponentDto BuildProvidersComponent(
+        ArcanumSettings arcanumSettings,
+        IProviderHealthTracker tracker)
+    {
+        ProviderSettings[] providers = arcanumSettings.Providers ?? [];
+        int providerCount = providers.Length;
+        bool resilienceEnabled = arcanumSettings.Resilience?.Enabled == true;
+
+        if (!resilienceEnabled)
+        {
+            return new HealthComponentDto(
+                "Providers",
+                providerCount > 0 ? HealthStatus.Healthy : HealthStatus.Degraded,
+                providerCount > 0
+                    ? $"{providerCount} providers configured; reachability is not actively probed."
+                    : "No providers configured.");
+        }
+
+        if (providerCount == 0)
+        {
+            return new HealthComponentDto(
+                "Providers",
+                HealthStatus.Degraded,
+                "No providers configured.");
+        }
+
+        int healthy = 0;
+        int unhealthy = 0;
+        foreach (ProviderSettings provider in providers)
+        {
+            if (string.IsNullOrWhiteSpace(provider.Name))
+            {
+                continue;
+            }
+
+            // Unobserved providers are assumed healthy per IProviderHealthTracker contract.
+            if (tracker.IsHealthy(provider.Name))
+            {
+                healthy++;
+            }
+            else
+            {
+                unhealthy++;
+            }
+        }
+
+        int observed = healthy + unhealthy;
+        if (observed == 0)
+        {
+            return new HealthComponentDto(
+                "Providers",
+                HealthStatus.Degraded,
+                "No named providers configured.");
+        }
+
+        HealthStatus status = unhealthy == 0
+            ? HealthStatus.Healthy
+            : healthy == 0
+                ? HealthStatus.Unhealthy
+                : HealthStatus.Degraded;
+
+        return new HealthComponentDto(
+            "Providers",
+            status,
+            $"{healthy}/{observed} providers healthy (resilience probes).");
+    }
+
+    /// <summary>
+    /// Providers Unhealthy/Degraded contribute at most Degraded to overall readiness.
+    /// Overall Unhealthy only from readiness-critical components (e.g. Grimoire, MCP).
+    /// </summary>
+    internal static HealthStatus AggregateOverall(IReadOnlyList<HealthComponentDto> components)
+    {
+        HealthStatus worst = HealthStatus.Healthy;
+        foreach (HealthComponentDto component in components)
+        {
+            HealthStatus effective = component.Status;
+            if (string.Equals(component.Name, "Providers", StringComparison.Ordinal)
+                && effective == HealthStatus.Unhealthy)
+            {
+                effective = HealthStatus.Degraded;
+            }
+
+            if (effective == HealthStatus.Unhealthy)
+            {
+                return HealthStatus.Unhealthy;
+            }
+
+            if (effective == HealthStatus.Degraded)
+            {
+                worst = HealthStatus.Degraded;
+            }
+        }
+
+        return worst;
     }
 
 }
