@@ -167,12 +167,15 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.WardResolved:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
                         string resolved = evt.WardAllowed == true
-                            ? $"Ward allowed: {evt.WardToolName ?? evt.Message}"
-                            : $"Ward denied: {evt.WardToolName ?? evt.Message}"
+                            ? $"Ward allowed: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
+                            : $"Ward denied: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
                               + (string.IsNullOrWhiteSpace(evt.WardReason) ? string.Empty : $" ({evt.WardReason})");
-                        state.Log.Append(SessionLogEntryKind.Status, resolved);
+                        _ = state.Incantations.AppendWardNote(
+                            NormalizeToolName(evt.WardToolName ?? evt.Message),
+                            resolved,
+                            evt.WardId);
                         await uiUpdates.WriteAsync(
-                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog),
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
                                 cancellationToken)
                             .ConfigureAwait(false);
                         break;
@@ -286,15 +289,16 @@ internal sealed class CommandCenterChatRunner(
         CancellationToken cancellationToken)
     {
         string wardId = evt.WardId ?? string.Empty;
-        string toolName = evt.WardToolName ?? evt.Message;
+        string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
         string argsPreview = CommandCenterWardCoordinator.FormatArgumentsPreview(evt.WardArguments);
 
-        state.Log.Append(
-            SessionLogEntryKind.Status,
-            string.IsNullOrEmpty(argsPreview)
-                ? $"Ward pending: {toolName} ({wardId})"
-                : $"Ward pending: {toolName} ({wardId}) — {argsPreview}");
-        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
+        string pendingNote = string.IsNullOrEmpty(argsPreview)
+            ? $"Ward pending ({wardId})"
+            : $"Ward pending ({wardId}) — {argsPreview}";
+        _ = state.Incantations.AppendWardNote(toolName, pendingNote, wardId);
+        await uiUpdates.WriteAsync(
+                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(wardId))
@@ -309,7 +313,10 @@ internal sealed class CommandCenterChatRunner(
         if (state.SessionAllowedArts.Contains(toolName))
         {
             allow = true;
-            state.Log.Append(SessionLogEntryKind.Status, $"Auto-allowing {toolName} (session allow-list).");
+            _ = state.Incantations.AppendWardNote(
+                toolName,
+                $"Auto-allowing {toolName} (session allow-list)",
+                wardId);
         }
         else
         {
@@ -321,13 +328,22 @@ internal sealed class CommandCenterChatRunner(
             {
                 _ = state.SessionAllowedArts.Add(toolName);
                 allow = true;
-                state.Log.Append(
-                    SessionLogEntryKind.Status,
-                    $"Always allowing {toolName} for this Command Center session.");
+                _ = state.Incantations.AppendWardNote(
+                    toolName,
+                    $"Always allowing {toolName} for this Command Center session",
+                    wardId);
             }
             else
             {
                 allow = decision == WardApprovalDecision.Allow;
+                if (allow)
+                {
+                    _ = state.Incantations.AppendWardNote(toolName, $"Allowed once: {toolName}", wardId);
+                }
+                else
+                {
+                    _ = state.Incantations.AppendWardNote(toolName, $"Denied: {toolName}", wardId);
+                }
             }
         }
 
@@ -340,15 +356,20 @@ internal sealed class CommandCenterChatRunner(
             state.Log.Append(
                 SessionLogEntryKind.Error,
                 $"Failed to resolve ward {wardId}: {resolve.Error.Message}");
+            await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
+                .ConfigureAwait(false);
         }
         else
         {
-            state.Log.Append(
-                SessionLogEntryKind.Status,
-                allow ? $"Submitted allow for ward {wardId}." : $"Submitted deny for ward {wardId}.");
+            _ = state.Incantations.AppendWardNote(
+                toolName,
+                allow ? $"Submitted allow for ward {wardId}" : $"Submitted deny for ward {wardId}",
+                wardId);
         }
 
-        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
+        await uiUpdates.WriteAsync(
+                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
+                cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -360,7 +381,7 @@ internal sealed class CommandCenterChatRunner(
     private static void IngestToolCall(CommandCenterState state, IntelligenceEvent evt)
     {
         string? callId = evt.ToolCall?.CallId;
-        string name = evt.ToolCall?.Name ?? evt.Message;
+        string name = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
         string? args = evt.ToolCall?.ArgumentsJson
             ?? (LooksLikeJsonObject(evt.Data) ? evt.Data : null);
         _ = state.Incantations.UpsertCall(callId, name, args);
@@ -369,7 +390,7 @@ internal sealed class CommandCenterChatRunner(
     private static void IngestToolResult(CommandCenterState state, IntelligenceEvent evt)
     {
         string? callId = evt.ToolCall?.CallId;
-        string? name = evt.ToolCall?.Name ?? evt.Message;
+        string? name = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
         string? result = evt.Data ?? evt.ToolCall?.ArgumentsJson;
         _ = state.Incantations.UpsertResult(callId, name, result);
     }
@@ -377,10 +398,14 @@ internal sealed class CommandCenterChatRunner(
     private static void IngestToolError(CommandCenterState state, IntelligenceEvent evt)
     {
         string? callId = evt.ToolCall?.CallId;
-        string? name = evt.ToolCall?.Name ?? evt.Message;
-        string? error = evt.Data ?? evt.Message;
+        string? name = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
+        // Prefer structured public failure text on ToolCall payload over the generic Data blurb.
+        string? error = evt.ToolCall?.ArgumentsJson ?? evt.Data ?? evt.Message;
         _ = state.Incantations.UpsertError(callId, name, error);
     }
+
+    private static string NormalizeToolName(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? "unknown" : name.Trim();
 
     private static bool LooksLikeJsonObject(string? text) =>
         !string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("{");

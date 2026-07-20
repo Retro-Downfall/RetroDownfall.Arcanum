@@ -151,13 +151,14 @@ internal sealed class SessionWorkspaceService(
             state.Incantations.Clear();
             foreach (EntryDto e in chronological)
             {
-                SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(e.Role);
-                if (kind == SessionLogEntryKind.Tool)
+                if (PersistedToolInteraction.IsToolInteraction(e)
+                    || SessionLogBuffer.MapEntryRole(e.Role) == SessionLogEntryKind.Tool)
                 {
                     IngestHistoryTool(state.Incantations, e);
                     continue;
                 }
 
+                SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(e.Role);
                 mapped.Add((kind, FormatEntryContent(e)));
             }
 
@@ -256,10 +257,26 @@ internal sealed class SessionWorkspaceService(
     private static void IngestHistoryTool(IncantationStore store, EntryDto entry)
     {
         string? callId = entry.ToolCallId;
-        string? toolName = entry.ToolName;
         string content = entry.Content ?? string.Empty;
+        bool isErrorRole = entry.Role.Contains("error", StringComparison.OrdinalIgnoreCase)
+            || entry.Role.Contains("tool_error", StringComparison.OrdinalIgnoreCase);
 
-        // Persisted tool-interaction: prefer structured fields; unparseable → safe summary.
+        if (PersistedToolInteraction.TryParseToolCall(content, out string parsedName, out string? parsedArgs))
+        {
+            string name = !string.IsNullOrWhiteSpace(entry.ToolName) ? entry.ToolName!.Trim() : parsedName;
+            _ = store.UpsertCall(callId, name, parsedArgs);
+            return;
+        }
+
+        if (PersistedToolInteraction.TryParseToolResult(content, out string parsedResult))
+        {
+            bool looksLikeError = isErrorRole
+                || parsedResult.Contains("[Tool error:", StringComparison.OrdinalIgnoreCase);
+            _ = store.CompleteLatestPending(entry.ToolName, parsedResult, looksLikeError);
+            return;
+        }
+
+        string? toolName = entry.ToolName;
         bool hasStructure = !string.IsNullOrWhiteSpace(callId) || !string.IsNullOrWhiteSpace(toolName);
         if (!hasStructure && string.IsNullOrWhiteSpace(content))
         {
@@ -274,9 +291,6 @@ internal sealed class SessionWorkspaceService(
         }
 
         bool looksJson = content.TrimStart().StartsWith('{');
-        bool isError = entry.Role.Contains("error", StringComparison.OrdinalIgnoreCase)
-            || entry.Role.Contains("tool_error", StringComparison.OrdinalIgnoreCase);
-
         if (!hasStructure && !looksJson)
         {
             _ = store.AddFromHistory(
@@ -289,16 +303,23 @@ internal sealed class SessionWorkspaceService(
             return;
         }
 
-        string? args = looksJson && string.IsNullOrWhiteSpace(toolName) ? content : null;
-        string? result = looksJson ? null : content;
-        if (!string.IsNullOrWhiteSpace(toolName) && looksJson)
+        if (!string.IsNullOrWhiteSpace(toolName))
         {
-            // Content may be args or result; treat as result when tool name known.
-            result = content;
-            args = null;
+            // Structured ToolName without bracket markup — treat content as args when JSON, else result.
+            if (looksJson)
+            {
+                _ = store.UpsertCall(callId, toolName, content);
+            }
+            else
+            {
+                _ = store.UpsertCall(callId, toolName, argumentsJson: null);
+                _ = store.CompleteLatestPending(toolName, content, isErrorRole);
+            }
+
+            return;
         }
 
-        _ = store.AddFromHistory(callId, toolName, args, result, isError, unparseable: false);
+        _ = store.AddFromHistory(callId, toolName, looksJson ? content : null, looksJson ? null : content, isErrorRole, unparseable: false);
     }
 
     private static bool IsArchivedStatus(string? status) =>

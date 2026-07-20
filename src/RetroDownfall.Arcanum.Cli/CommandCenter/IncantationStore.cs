@@ -42,6 +42,11 @@ internal sealed class IncantationRecord
     /// <summary>When resume cannot parse structured fields — formatter shows only this.</summary>
     public string? SafeSummaryOverride { get; private set; }
 
+    private readonly List<string> _wardNotes = new();
+
+    /// <summary>Ward pending / allow / deny notes for this invocation (Incantations-only).</summary>
+    public IReadOnlyList<string> WardNotes => _wardNotes;
+
     public void ApplyCall(string? toolName, string? argumentsJson)
     {
         if (!string.IsNullOrWhiteSpace(toolName))
@@ -64,6 +69,18 @@ internal sealed class IncantationRecord
 
     public void ApplyResult(string? resultText)
     {
+        // ToolError is emitted before ToolResult for tolerated failures — do not promote Failed → Succeeded.
+        if (State == IncantationState.Failed)
+        {
+            if (!string.IsNullOrWhiteSpace(resultText) && string.IsNullOrWhiteSpace(ErrorText))
+            {
+                ErrorText = resultText;
+            }
+
+            Touch();
+            return;
+        }
+
         ResultText = resultText;
         ErrorText = null;
         State = IncantationState.Succeeded;
@@ -74,6 +91,24 @@ internal sealed class IncantationRecord
     {
         ErrorText = errorText;
         State = IncantationState.Failed;
+        Touch();
+    }
+
+    public void AppendWardNote(string note)
+    {
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return;
+        }
+
+        string cleaned = note.Trim();
+        if (_wardNotes.Count > 0
+            && string.Equals(_wardNotes[^1], cleaned, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _wardNotes.Add(cleaned);
         Touch();
     }
 
@@ -177,6 +212,87 @@ internal sealed class IncantationStore
 
             record.ApplyError(errorText);
             return record;
+        }
+    }
+
+    /// <summary>
+    /// Completes the most recent pending invocation (optionally matching <paramref name="toolName"/>).
+    /// Used when resumed <c>[ToolResult]</c> rows lack a CallId.
+    /// </summary>
+    public IncantationRecord CompleteLatestPending(string? toolName, string? resultOrError, bool isError)
+    {
+        lock (_gate)
+        {
+            IncantationRecord? match = null;
+            for (int i = _order.Count - 1; i >= 0; i--)
+            {
+                IncantationRecord candidate = _order[i];
+                if (candidate.State != IncantationState.Pending)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(toolName)
+                    && !string.Equals(candidate.ToolName, toolName.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                match = candidate;
+                break;
+            }
+
+            match ??= GetOrCreateUnlocked(callId: null, toolName);
+            if (isError)
+            {
+                match.ApplyError(resultOrError);
+            }
+            else
+            {
+                match.ApplyResult(resultOrError);
+            }
+
+            return match;
+        }
+    }
+
+    /// <summary>
+    /// Attach a ward status note to the matching tool invocation (latest pending preferred).
+    /// Creates a pending placeholder when no CallId match exists yet.
+    /// </summary>
+    public IncantationRecord AppendWardNote(string? toolName, string note, string? wardId = null)
+    {
+        lock (_gate)
+        {
+            string name = string.IsNullOrWhiteSpace(toolName) ? "unknown" : toolName.Trim();
+            IncantationRecord? match = null;
+            for (int i = _order.Count - 1; i >= 0; i--)
+            {
+                IncantationRecord candidate = _order[i];
+                if (!string.Equals(candidate.ToolName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (candidate.State == IncantationState.Pending)
+                {
+                    match = candidate;
+                    break;
+                }
+
+                match ??= candidate;
+            }
+
+            if (match is null)
+            {
+                string id = string.IsNullOrWhiteSpace(wardId)
+                    ? Guid.NewGuid().ToString("N")
+                    : "ward:" + wardId.Trim();
+                match = GetOrCreateUnlocked(id, name);
+            }
+
+            match.AppendWardNote(note);
+            return match;
         }
     }
 

@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -18,14 +19,83 @@ public sealed class IncantationStoreTests
     }
 
     [Fact]
-    public void ToolError_marks_failed_and_stays_in_store()
+    public void ToolError_then_ToolResult_keeps_failed()
     {
         IncantationStore store = new();
-        _ = store.UpsertCall("c2", "list_directory", """{"path":"."}""");
-        _ = store.UpsertError("c2", "list_directory", "permission denied");
+        _ = store.UpsertCall("c3", "execute_command", """{"command":"dotnet --version"}""");
+        _ = store.UpsertError("c3", "execute_command", "[Tool error: execute_command failed with an internal error.]");
+        _ = store.UpsertResult("c3", "execute_command", "[Tool error: execute_command failed with an internal error.]");
 
-        Assert.Equal(IncantationState.Failed, store.Snapshot()[0].State);
-        Assert.Equal("permission denied", store.Snapshot()[0].ErrorText);
+        IncantationRecord record = store.Snapshot()[0];
+        Assert.Equal(IncantationState.Failed, record.State);
+        Assert.Contains("internal error", record.ErrorText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Ward_note_attaches_to_pending_tool()
+    {
+        IncantationStore store = new();
+        _ = store.UpsertCall("c4", "write_file", """{"path":"/tmp/a"}""");
+        _ = store.AppendWardNote("write_file", "Ward pending (abc)", "abc");
+        _ = store.AppendWardNote("write_file", "Always allowing write_file for this Command Center session", "abc");
+
+        IncantationRecord record = store.Snapshot()[0];
+        Assert.Equal(2, record.WardNotes.Count);
+        Assert.Contains("Always allowing", record.WardNotes[^1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CompleteLatestPending_pairs_tool_result_without_call_id()
+    {
+        IncantationStore store = new();
+        _ = store.UpsertCall(null, "execute_command", """{"command":"ls"}""");
+        _ = store.CompleteLatestPending("execute_command", "ok", isError: false);
+
+        Assert.Single(store.Snapshot());
+        Assert.Equal(IncantationState.Succeeded, store.Snapshot()[0].State);
+        Assert.Equal("ok", store.Snapshot()[0].ResultText);
+    }
+}
+
+public sealed class PersistedToolInteractionTests
+{
+    [Fact]
+    public void Parses_grimoire_paren_tool_call_and_result()
+    {
+        Assert.True(
+            PersistedToolInteraction.TryParseToolCall(
+                """[ToolCall: write_file({"path":"/a"})]""",
+                out string name,
+                out string? args));
+        Assert.Equal("write_file", name);
+        Assert.Equal("""{"path":"/a"}""", args);
+
+        Assert.True(PersistedToolInteraction.TryParseToolResult("[ToolResult: done]", out string result));
+        Assert.Equal("done", result);
+    }
+
+    [Fact]
+    public void Detects_assistant_tool_call_and_system_tool_result_entries()
+    {
+        EntryDto call = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "assistant",
+            "[ToolCall: ls({})]",
+            null,
+            "ls",
+            DateTimeOffset.UtcNow);
+        EntryDto result = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "system",
+            "[ToolResult: ok]",
+            null,
+            null,
+            DateTimeOffset.UtcNow);
+
+        Assert.True(PersistedToolInteraction.IsToolInteraction(call));
+        Assert.True(PersistedToolInteraction.IsToolInteraction(result));
     }
 }
 

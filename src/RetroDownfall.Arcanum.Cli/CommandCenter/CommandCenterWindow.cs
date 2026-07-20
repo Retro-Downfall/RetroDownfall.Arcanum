@@ -137,6 +137,7 @@ internal sealed class CommandCenterWindow : Window
         SessionsView = new ListView
         {
             CanFocus = true,
+            TabStop = TabBehavior.NoStop,
             X = 0,
             Y = 0,
             Width = Dim.Fill(),
@@ -158,6 +159,7 @@ internal sealed class CommandCenterWindow : Window
         LogView = new ListView
         {
             CanFocus = true,
+            TabStop = TabBehavior.NoStop,
             X = 0,
             Y = 0,
             Width = Dim.Fill(),
@@ -199,6 +201,7 @@ internal sealed class CommandCenterWindow : Window
         IncantationsView = new ListView
         {
             CanFocus = true,
+            TabStop = TabBehavior.NoStop,
             X = 0,
             Y = 0,
             Width = Dim.Fill(),
@@ -220,6 +223,7 @@ internal sealed class CommandCenterWindow : Window
         Input = new TextView
         {
             CanFocus = true,
+            TabStop = TabBehavior.NoStop,
             BorderStyle = chrome,
             Title = "Composer",
             SchemeName = CommandCenterTheme.InputScheme,
@@ -251,6 +255,7 @@ internal sealed class CommandCenterWindow : Window
         OverlayFilter = new TextField
         {
             CanFocus = true,
+            TabStop = TabBehavior.NoStop,
             Visible = false,
             X = 0,
             Y = 0,
@@ -262,6 +267,7 @@ internal sealed class CommandCenterWindow : Window
         OverlayList = new ListView
         {
             CanFocus = true,
+            TabStop = TabBehavior.NoStop,
             X = 0,
             Y = 1,
             Width = Dim.Fill(),
@@ -1216,6 +1222,8 @@ internal sealed class CommandCenterWindow : Window
         ArgumentNullException.ThrowIfNull(input);
         input.Multiline = true;
         input.WordWrap = true;
+        // Tab cycles Command Center panes — never insert \t into the composer.
+        input.TabKeyAddsTab = false;
         // Leave EnterKeyAddsLine at its Multiline=true default (true). Setting it false
         // clears Multiline/WordWrap in Terminal.Gui 2.4.17.
     }

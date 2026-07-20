@@ -580,7 +580,7 @@ internal sealed class ShellCommandDispatcher(
                 "  Ctrl+O        Sessions (sidebar or picker)",
                 "  Ctrl+N        New session",
                 "  Ctrl+R / F5   Refresh sessions",
-                "  Tab/S-Tab     Cycle focus (sessions / transcript / composer)",
+                "  Tab/S-Tab     Cycle focus (Composer→Sessions→Transcript→Incantations)",
                 "  Enter         Newline (composer) / resume selected session",
                 "  Ctrl+Enter    Send (composer)",
                 "  ↑↓ / j k      Move session selection",

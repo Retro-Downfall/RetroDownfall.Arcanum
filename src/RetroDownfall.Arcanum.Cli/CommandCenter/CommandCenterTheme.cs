@@ -46,19 +46,21 @@ internal static class CommandCenterTheme
         Color silverBright = new(220, 220, 225, 255);
         Color blue = new(30, 58, 138, 255);       // #1E3A8A
         Color blueBright = new(96, 165, 250, 255); // #60A5FA
+        // Slight warm charcoal — less harsh than pure #000000.
+        Color bg = new(18, 18, 20, 255);
 
-        TgAttr normal = new(Color.White, Color.Black);
-        TgAttr muted = new(silver, Color.Black);
-        TgAttr focus = new(Color.BrightYellow, Color.Black);
-        TgAttr hot = new(blueBright, Color.Black);
-        TgAttr header = new(blueBright, Color.Black);
-        TgAttr banner = new(silverBright, Color.Black);
-        TgAttr border = new(silver, Color.Black);
-        TgAttr borderActive = new(blueBright, Color.Black);
+        TgAttr normal = new(Color.White, bg);
+        TgAttr muted = new(silver, bg);
+        TgAttr focus = new(Color.BrightYellow, bg);
+        TgAttr hot = new(blueBright, bg);
+        TgAttr header = new(blueBright, bg);
+        TgAttr banner = new(silverBright, bg);
+        TgAttr border = new(silver, bg);
+        TgAttr borderActive = new(blueBright, bg);
         TgAttr input = new(Color.White, Color.DarkGray);
         TgAttr inputFocus = new(Color.Black, blueBright);
         TgAttr highlight = new(Color.Black, blue);
-        TgAttr disabled = new(Color.DarkGray, Color.Black);
+        TgAttr disabled = new(Color.DarkGray, bg);
 
         Upsert(BaseScheme, new Scheme
         {

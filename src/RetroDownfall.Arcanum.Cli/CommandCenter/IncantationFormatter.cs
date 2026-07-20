@@ -159,6 +159,11 @@ internal static partial class IncantationFormatter
             bodyParts.Add("→ " + TruncateCells(Sanitize(record.ResultText!), Math.Max(8, width * 2)));
         }
 
+        if (record.WardNotes.Count > 0)
+        {
+            bodyParts.Add(Sanitize(record.WardNotes[^1]));
+        }
+
         string combined = bodyParts.Count == 0
             ? header
             : header + " — " + string.Join(" · ", bodyParts);

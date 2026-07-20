@@ -54,6 +54,9 @@ internal sealed class CommandCenterHost(
 
     private int _thinkingCallbackQueued;
 
+    /// <summary>Prevents Tab from cycling twice when both focused-view and app.Keyboard fire.</summary>
+    private long _lastTabHandledTicks;
+
     public static bool IsCommandCenterDisabled()
     {
         string? value = Environment.GetEnvironmentVariable(NoCommandCenterEnvVar);
@@ -111,8 +114,8 @@ internal sealed class CommandCenterHost(
                             }
 
                             lines.Add(string.Empty);
-                            lines.Add("Enter = allow once");
-                            lines.Add("A = always allow this tool (this session)");
+                            lines.Add("Enter / A = always allow this tool (this session)");
+                            lines.Add("O = allow once");
                             lines.Add("Esc / D = deny");
                             lines.Add("Or: /ward allow  |  /ward deny");
 
@@ -176,6 +179,31 @@ internal sealed class CommandCenterHost(
                         Math.Max(window.Frame.Height, app.Driver?.Rows ?? 24)));
                 });
 
+                // Single Tab path: handle on the focused view (mark Handled so TextView cannot
+                // insert \t / TG AdvanceFocus cannot steal). app.Keyboard is a fallback only.
+                void HandleTabChord(Key e)
+                {
+                    e.Handled = true;
+                    long now = Environment.TickCount64;
+                    if (now - _lastTabHandledTicks < 40)
+                    {
+                        return;
+                    }
+
+                    _lastTabHandledTicks = now;
+                    bool overlayOpen = state.Overlay != CommandCenterOverlayKind.None;
+                    CommandCenterAction tabAction = CommandCenterKeymap.Map(
+                        state.FocusRegion,
+                        state.IsStreaming,
+                        window.ComposerHasText,
+                        overlayOpen,
+                        ToChord(e));
+                    if (tabAction is CommandCenterAction.CycleFocusNext or CommandCenterAction.CycleFocusPrev)
+                    {
+                        HandleAction(tabAction);
+                    }
+                }
+
                 window.Input.KeyDown += (_, e) =>
                 {
                     // Logical focus wins: Ctrl+O / Tab may set Sessions while TG focus
@@ -189,9 +217,9 @@ internal sealed class CommandCenterHost(
                             ? state.FocusRegion
                             : CommandCenterFocusRegion.Composer;
 
-                    // Tab is owned exclusively by app.Keyboard — ignore here.
                     if (e == Key.Tab || e == Key.Tab.WithShift)
                     {
+                        HandleTabChord(e);
                         return;
                     }
 
@@ -229,6 +257,7 @@ internal sealed class CommandCenterHost(
                 {
                     if (e == Key.Tab || e == Key.Tab.WithShift)
                     {
+                        HandleTabChord(e);
                         return;
                     }
 
@@ -239,6 +268,7 @@ internal sealed class CommandCenterHost(
                 {
                     if (e == Key.Tab || e == Key.Tab.WithShift)
                     {
+                        HandleTabChord(e);
                         return;
                     }
 
@@ -249,6 +279,7 @@ internal sealed class CommandCenterHost(
                 {
                     if (e == Key.Tab || e == Key.Tab.WithShift)
                     {
+                        HandleTabChord(e);
                         return;
                     }
 
@@ -262,6 +293,12 @@ internal sealed class CommandCenterHost(
 
                 window.OverlayFilter.KeyDown += (_, e) =>
                 {
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        HandleTabChord(e);
+                        return;
+                    }
+
                     if (e == Key.Esc)
                     {
                         e.Handled = true;
@@ -293,6 +330,12 @@ internal sealed class CommandCenterHost(
 
                 window.OverlayList.KeyDown += (_, e) =>
                 {
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        HandleTabChord(e);
+                        return;
+                    }
+
                     if (e == Key.Enter)
                     {
                         e.Handled = true;
@@ -315,6 +358,15 @@ internal sealed class CommandCenterHost(
                     {
                         e.Handled = true;
                         _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
+                        CloseOverlayAndFocusInput(state, window, app);
+                        return;
+                    }
+
+                    if (state.Overlay == CommandCenterOverlayKind.WardConfirm
+                        && (e == Key.O || e == Key.O.WithShift))
+                    {
+                        e.Handled = true;
+                        _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Allow);
                         CloseOverlayAndFocusInput(state, window, app);
                         return;
                     }
@@ -343,22 +395,10 @@ internal sealed class CommandCenterHost(
                 {
                     KeyChord chord = ToChord(keyEvent);
 
-                    // Single Tab routing path (do not also handle Tab on child KeyDown).
+                    // Fallback Tab path when no focused child KeyDown ran (e.g. focus on Window).
                     if (chord.IsTab)
                     {
-                        bool overlayOpen = state.Overlay != CommandCenterOverlayKind.None;
-                        CommandCenterAction tabAction = CommandCenterKeymap.Map(
-                            state.FocusRegion,
-                            state.IsStreaming,
-                            window.ComposerHasText,
-                            overlayOpen,
-                            chord);
-                        keyEvent.Handled = true;
-                        if (tabAction is CommandCenterAction.CycleFocusNext or CommandCenterAction.CycleFocusPrev)
-                        {
-                            HandleAction(tabAction);
-                        }
-
+                        HandleTabChord(keyEvent);
                         return;
                     }
 
@@ -668,7 +708,8 @@ internal sealed class CommandCenterHost(
             case CommandCenterAction.ConfirmPending:
                 if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
                 {
-                    _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Allow);
+                    // Enter defaults to session always-allow (scaffolding rarely wants once-only).
+                    _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
                     CloseOverlayAndFocusInput(state, window, app);
                     break;
                 }
@@ -1194,38 +1235,43 @@ internal sealed class CommandCenterHost(
         IApplication app,
         bool forward)
     {
-        state.FocusRegion = CommandCenterFocusCycle.Next(
+        CommandCenterFocusRegion desired = CommandCenterFocusCycle.Next(
             state.FocusRegion,
             forward,
             window.SidebarVisible);
+        state.FocusRegion = desired;
         state.FooterHint = null;
         app.Invoke(() =>
         {
-            switch (state.FocusRegion)
+            ApplyFocusRegion(window, desired);
+            // TextView can be sticky — retry once; keep logical FocusRegion even if TG lags
+            // (Input.KeyDown already routes by FocusRegion).
+            if (window.ResolveFocusedRegion() != desired)
             {
-                case CommandCenterFocusRegion.Sessions:
-                    window.FocusSessions();
-                    break;
-                case CommandCenterFocusRegion.Transcript:
-                    window.FocusLog();
-                    break;
-                case CommandCenterFocusRegion.Incantations:
-                    window.FocusIncantations();
-                    break;
-                default:
-                    window.FocusInput();
-                    break;
-            }
-
-            CommandCenterFocusRegion? actual = window.ResolveFocusedRegion();
-            if (actual is { } focused && focused != state.FocusRegion
-                && focused is not CommandCenterFocusRegion.Overlay)
-            {
-                state.FocusRegion = focused;
+                ApplyFocusRegion(window, desired);
             }
 
             window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
+    }
+
+    private static void ApplyFocusRegion(CommandCenterWindow window, CommandCenterFocusRegion region)
+    {
+        switch (region)
+        {
+            case CommandCenterFocusRegion.Sessions:
+                window.FocusSessions();
+                break;
+            case CommandCenterFocusRegion.Transcript:
+                window.FocusLog();
+                break;
+            case CommandCenterFocusRegion.Incantations:
+                window.FocusIncantations();
+                break;
+            default:
+                window.FocusInput();
+                break;
+        }
     }
 
     private void StartThinkingTimer(IApplication app, CommandCenterWindow window, CommandCenterState state)
@@ -1423,6 +1469,15 @@ internal sealed class CommandCenterHost(
         {
             e.Handled = true;
             _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
+            CloseOverlayAndFocusInput(state, window, app);
+            return true;
+        }
+
+        if (state.Overlay == CommandCenterOverlayKind.WardConfirm
+            && (e == Key.O || e == Key.O.WithShift))
+        {
+            e.Handled = true;
+            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Allow);
             CloseOverlayAndFocusInput(state, window, app);
             return true;
         }

@@ -257,6 +257,7 @@ internal sealed class SessionLogBuffer
         List<(Guid Id, string Line)> expanded = new();
         lock (_gate)
         {
+            bool emittedAnyEntry = false;
             foreach (SessionLogEntry e in _entries)
             {
                 if (e.Kind == SessionLogEntryKind.Tool)
@@ -269,19 +270,43 @@ internal sealed class SessionLogBuffer
                 IEnumerable<string> lines = wrapWidth > 1
                     ? raw.SelectMany(line => WrapLine(line, wrapWidth))
                     : raw;
-                foreach (string line in lines)
+
+                List<string> entryLines = lines.ToList();
+                if (entryLines.Count == 0)
+                {
+                    continue;
+                }
+
+                if (emittedAnyEntry)
+                {
+                    // One blank line between transcript entries (collapsed further below if needed).
+                    expanded.Add((e.Id, string.Empty));
+                }
+
+                foreach (string line in entryLines)
                 {
                     expanded.Add((e.Id, line));
                 }
+
+                emittedAnyEntry = true;
             }
         }
 
         target.Clear();
         lineAnchors?.Clear();
+        bool previousBlank = false;
         foreach ((Guid id, string line) in expanded)
         {
+            bool blank = line.Length == 0;
+            if (blank && previousBlank)
+            {
+                // At most one blank line between content (model/markdown often emits \n\n\n).
+                continue;
+            }
+
             target.Add(line);
             lineAnchors?.Add(id);
+            previousBlank = blank;
         }
     }
 
@@ -353,7 +378,7 @@ internal sealed class SessionLogBuffer
     {
         string prefix = entry.Kind switch
         {
-            SessionLogEntryKind.User => "You: ",
+            SessionLogEntryKind.User => "Dungeon Master: ",
             SessionLogEntryKind.Assistant => entry.Streaming
                 ? (string.IsNullOrEmpty(entry.Text) ? "Mage is generating…" : "Mage (streaming): ")
                 : "Mage: ",

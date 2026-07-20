@@ -36,7 +36,7 @@ public sealed class SessionLogBufferHistoryTests
 
         string text = buffer.RenderPlainText();
         Assert.Contains(SessionLogBuffer.OlderMessagesMarker, text, StringComparison.Ordinal);
-        Assert.Contains("You:", text, StringComparison.Ordinal);
+        Assert.Contains("Dungeon Master:", text, StringComparison.Ordinal);
         Assert.Contains("Mage:", text, StringComparison.Ordinal);
     }
 
@@ -145,6 +145,54 @@ public sealed class SessionWorkspaceServiceTests
         Assert.False(store.Cleared);
         Assert.Contains("New Session", state.Log.RenderPlainText(), StringComparison.Ordinal);
         Assert.Contains("Last session unavailable", state.FooterHint ?? "", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Resume_routes_grimoire_tool_call_result_pairs_to_incantations()
+    {
+        Guid id = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        DateTimeOffset t0 = DateTimeOffset.Parse("2026-07-20T12:00:00Z");
+        DateTimeOffset t1 = DateTimeOffset.Parse("2026-07-20T12:00:01Z");
+        DateTimeOffset t2 = DateTimeOffset.Parse("2026-07-20T12:00:02Z");
+        DateTimeOffset t3 = DateTimeOffset.Parse("2026-07-20T12:00:03Z");
+
+        // Newest-first API order: result, call, assistant, user
+        EntryDto[] apiEntries =
+        [
+            new(Guid.NewGuid(), id, "system", "[ToolResult: ok]", null, null, t3),
+            new(
+                Guid.NewGuid(),
+                id,
+                "assistant",
+                """[ToolCall: write_file({"path":"/tmp/a.cs","content":"x"})]""",
+                null,
+                "write_file",
+                t2),
+            new(Guid.NewGuid(), id, "assistant", "Scaffolding…", null, null, t1),
+            new(Guid.NewGuid(), id, "user", "build an app", null, null, t0),
+        ];
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(id, null, "Tools", "Active", EntryCount: 4, t0, t3, null, 0),
+            entries: apiEntries);
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        SessionResumeResult result = await workspace.ResumeSessionAsync(state, id, CancellationToken.None);
+
+        Assert.Equal(SessionResumeOutcome.Success, result.Outcome);
+        string transcript = state.Log.RenderPlainText();
+        Assert.DoesNotContain("[ToolCall:", transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain("[ToolResult:", transcript, StringComparison.Ordinal);
+        Assert.Contains("build an app", transcript, StringComparison.Ordinal);
+        Assert.Contains("Scaffolding", transcript, StringComparison.Ordinal);
+
+        Assert.Equal(1, state.Incantations.Count);
+        IncantationRecord record = state.Incantations.Snapshot()[0];
+        Assert.Equal("write_file", record.ToolName);
+        Assert.Equal(IncantationState.Succeeded, record.State);
+        Assert.Equal("ok", record.ResultText);
+        Assert.Contains("path", record.ArgumentsJson ?? "", StringComparison.Ordinal);
     }
 
     private static SessionWorkspaceService CreateWorkspace(

@@ -140,6 +140,36 @@ public sealed class SessionLogBufferTests
     }
 
     [Fact]
+    public void CopyLinesTo_collapses_consecutive_blank_lines_to_one()
+    {
+        SessionLogBuffer buffer = new();
+        buffer.Append(SessionLogEntryKind.Assistant, "alpha\n\n\n\nbeta\n\n\ngamma");
+
+        ObservableCollection<string> lines = new();
+        buffer.CopyLinesTo(lines, wrapWidth: 80);
+
+        string joined = string.Join('\n', lines);
+        Assert.DoesNotContain("\n\n\n", joined, StringComparison.Ordinal);
+        Assert.Contains("alpha\n\nbeta\n\ngamma", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CopyLinesTo_inserts_single_blank_between_entries()
+    {
+        SessionLogBuffer buffer = new();
+        buffer.Append(SessionLogEntryKind.User, "hi");
+        buffer.Append(SessionLogEntryKind.Assistant, "hello");
+
+        ObservableCollection<string> lines = new();
+        buffer.CopyLinesTo(lines, wrapWidth: 80);
+
+        Assert.Equal(3, lines.Count);
+        Assert.Contains("Dungeon Master:", lines[0], StringComparison.Ordinal);
+        Assert.Equal(string.Empty, lines[1]);
+        Assert.Contains("Mage:", lines[2], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RemoveEphemeralGeneratingStatuses_clears_stuck_placeholder()
     {
         SessionLogBuffer buffer = new();

@@ -26,8 +26,8 @@ All view mutations → Host / Window via `IApplication.Invoke`.
 
 - Header: model · session continuation line · API status · **Thinking ⠋** (synthetic, while waiting for first token/tool) or Generating…
 - Left sessions list (UpdatedAt desc); collapses under 100 cols → Ctrl+O filterable overlay picker
-- **Transcript** (follow-tail when at bottom): user/assistant/status/command/error — **not** tool lines
-- **Incantations** under Transcript (same width, ~⅓ body height, min frame **3**): CallId-keyed tool invocations; ToolCall creates, ToolResult/ToolError updates; tolerated failures stay here (not Transcript errors)
+- **Transcript** (follow-tail when at bottom): user/assistant/status/command/error — **not** tool lines or ward chatter
+- **Incantations** under Transcript (same width, ~⅓ body height, min frame **3**): CallId-keyed tool invocations + ward notes; ToolCall creates, ToolResult/ToolError updates; tolerated failures stay here (not Transcript errors)
 - Composer (multiline TextView): soft-wrap; grows **1–10** content rows upward into the body, then internal scroll; effective max respects header/footer + **minimum body 6** (Transcript 3 + Incantations 3) at the ≥80×12 floor
 - Focus-aware footer hints
 - Independent Transcript / Incantations viewport + follow-tail; rebuild restores by entry id / CallId
@@ -38,6 +38,8 @@ All view mutations → Host / Window via `IApplication.Invoke`.
 - Fail-closed heavy suppression (known heavy names + sensitive keys); summary keys limited to path/file/name/key/command/url/query-style metadata.
 - ≤3 content lines per CallId (cell-width wrap); HR separator **between** blocks, outside the 3-line budget.
 - Resume: parse tool-interaction fields; unparseable → generic safe summary (never raw text).
+- **Ward** pending / allow / deny / submit notes attach to the matching Incantation (by tool name); they do **not** appear in Transcript.
+- Ward modal: **Enter / A** = always allow this tool for the Command Center session; **O** = allow once; **D / Esc** = deny.
 
 ## Thinking spinner
 
