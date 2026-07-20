@@ -17,7 +17,9 @@ internal sealed class WebhookCommLinkDispatcher(
 
     internal const string HttpClientName = "CommLinkWebhook";
 
-    public async Task<Result> DispatchAsync(CommLinkMessage message, CancellationToken cancellationToken = default)
+    public async Task<Result<CommLinkDeliveryResult>> DispatchAsync(
+        CommLinkMessage message,
+        CancellationToken cancellationToken = default)
     {
 
         CommLinkSettings? commLinkSettings = optionsMonitor.CurrentValue.CommLink;
@@ -29,7 +31,8 @@ internal sealed class WebhookCommLinkDispatcher(
 
             logger.LogWarning("Comm Link webhook URL is not configured; alert was not sent.");
 
-            return Result.Failure(new Error(ErrorCodes.CommLink.Suppressed, "webhook URL is not configured"));
+            return Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
 
         }
 
@@ -38,7 +41,8 @@ internal sealed class WebhookCommLinkDispatcher(
 
             logger.LogWarning("Comm Link webhook URL is invalid; alert was not sent.");
 
-            return Result.Failure(new Error(ErrorCodes.CommLink.Suppressed, "webhook URL is invalid"));
+            return Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
 
         }
 
@@ -51,7 +55,8 @@ internal sealed class WebhookCommLinkDispatcher(
                 "Comm Link webhook URL host '{Host}' is not in Arcanum:CommLink:AllowedHosts; alert was not sent.",
                 endpoint.Host);
 
-            return Result.Failure(new Error(ErrorCodes.CommLink.Suppressed, "webhook host not allowed"));
+            return Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
 
         }
 
@@ -62,7 +67,8 @@ internal sealed class WebhookCommLinkDispatcher(
                 "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:CommLink:AllowedSchemes; alert was not sent.",
                 endpoint.Scheme);
 
-            return Result.Failure(new Error(ErrorCodes.CommLink.Suppressed, "webhook scheme not allowed"));
+            return Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
 
         }
 
@@ -75,7 +81,8 @@ internal sealed class WebhookCommLinkDispatcher(
                 "Comm Link webhook URL was rejected by outbound URL policy: {Reason}",
                 outbound.Error.Message);
 
-            return Result.Failure(new Error(ErrorCodes.CommLink.Suppressed, "webhook rejected by outbound URL policy"));
+            return Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
 
         }
 
@@ -125,7 +132,7 @@ internal sealed class WebhookCommLinkDispatcher(
 
                 string phrase = response.ReasonPhrase ?? string.Empty;
 
-                return Result.Failure(
+                return Result<CommLinkDeliveryResult>.Failure(
                     new Error(
                         "CommLink.WebhookHttpError",
                         $"Webhook returned HTTP {(int)response.StatusCode} {phrase}".Trim()));
@@ -142,16 +149,21 @@ internal sealed class WebhookCommLinkDispatcher(
         catch (Exception ex)
         {
 
-            logger.LogWarning(ex, "Comm Link webhook POST failed.");
+            // Log host only — never the full webhook URL (may contain path/query secrets).
+            logger.LogWarning(
+                ex,
+                "Comm Link webhook POST failed for host {Host}.",
+                endpoint.Host);
 
-            return Result.Failure(
+            return Result<CommLinkDeliveryResult>.Failure(
                 new Error(
                     "CommLink.WebhookException",
                     "Comm Link webhook POST failed. See server logs for details."));
 
         }
 
-        return Result.Success();
+        return Result<CommLinkDeliveryResult>.Success(
+            new CommLinkDeliveryResult(CommLinkDeliveryStatus.Delivered));
 
     }
 

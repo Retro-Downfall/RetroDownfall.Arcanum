@@ -24,6 +24,7 @@ internal sealed class CommandCenterHost(
     CommandCenterApp commandCenterApp,
     SessionWorkspaceService sessionWorkspace,
     CommandCenterWardCoordinator wardCoordinator,
+    CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterHost> logger) : ICommandCenterHost
 {
     public const string NoCommandCenterEnvVar = "ARCANUM_NO_COMMAND_CENTER";
@@ -113,11 +114,7 @@ internal sealed class CommandCenterHost(
                                 lines.Add(request.ArgumentsPreview!);
                             }
 
-                            lines.Add(string.Empty);
-                            lines.Add("Enter / A = always allow this tool (this session)");
-                            lines.Add("O = allow once");
-                            lines.Add("Esc / D = deny");
-                            lines.Add("Or: /ward allow  |  /ward deny");
+                            lines.AddRange(WardOverlayContent.ChoiceLines);
 
                             window.ShowOverlay(
                                 CommandCenterOverlayKind.WardConfirm,
@@ -135,6 +132,71 @@ internal sealed class CommandCenterHost(
                             {
                                 CloseOverlay(state, window, app);
                             }
+                        });
+                    });
+
+                humanPromptCoordinator.SetUiCallbacks(
+                    onShow: (request, status) =>
+                    {
+                        app.Invoke(() =>
+                        {
+                            // HumanPrompt steals focus: deny any pending Ward before mutating overlay.
+                            _ = wardCoordinator.TryResolvePendingWardAsDenied();
+                            state.Overlay = CommandCenterOverlayKind.HumanPrompt;
+                            state.FocusRegion = CommandCenterFocusRegion.Overlay;
+                            state.FooterHint = status;
+                            window.ShowHumanPromptOverlay(request.Question, request.PromptId, status);
+                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+                        });
+                    },
+                    onHide: (reason, notice) =>
+                    {
+                        app.Invoke(() =>
+                        {
+                            if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
+                            {
+                                CloseOverlayAndFocusInput(state, window, app);
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(notice))
+                            {
+                                state.FooterHint = notice;
+                                state.Log.Append(SessionLogEntryKind.Status, notice!);
+                                window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshAll);
+                            }
+                        });
+                    },
+                    onStatus: status =>
+                    {
+                        app.Invoke(() =>
+                        {
+                            if (state.Overlay != CommandCenterOverlayKind.HumanPrompt)
+                            {
+                                return;
+                            }
+
+                            HumanPromptRequest? pending = humanPromptCoordinator.Pending;
+                            if (pending is null)
+                            {
+                                return;
+                            }
+
+                            state.FooterHint = status;
+                            // Refresh body with status while preserving answer TextView contents.
+                            string answer = window.GetHumanPromptAnswer();
+                            window.ShowHumanPromptOverlay(pending.Question, pending.PromptId, status);
+                            if (!string.IsNullOrEmpty(answer))
+                            {
+                                try
+                                {
+                                    window.OverlayAnswer.Text = answer;
+                                }
+                                catch
+                                {
+                                }
+                            }
+
+                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
                         });
                     });
 
@@ -328,7 +390,7 @@ internal sealed class CommandCenterHost(
                     });
                 };
 
-                window.OverlayList.KeyDown += (_, e) =>
+                void OnOverlayKeyDown(object? _, Key e)
                 {
                     if (e == Key.Tab || e == Key.Tab.WithShift)
                     {
@@ -338,8 +400,23 @@ internal sealed class CommandCenterHost(
 
                     if (e == Key.Enter)
                     {
+                        if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
+                        {
+                            // Enter = newline in answer field; handled by OverlayAnswer path.
+                            return;
+                        }
+
                         e.Handled = true;
                         HandleAction(CommandCenterKeymap.MapOverlayEnter(state.Overlay));
+                        return;
+                    }
+
+                    if (e == Key.Esc
+                        && state.Overlay == CommandCenterOverlayKind.HumanPrompt)
+                    {
+                        e.Handled = true;
+                        state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
                         return;
                     }
 
@@ -377,6 +454,47 @@ internal sealed class CommandCenterHost(
                         e.Handled = true;
                         _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
                         CloseOverlayAndFocusInput(state, window, app);
+                        return;
+                    }
+
+                    _ = TryMapAndHandle(e, CommandCenterFocusRegion.Overlay, state, window, HandleAction);
+                }
+
+                window.OverlayList.KeyDown += OnOverlayKeyDown;
+                window.OverlayBody.KeyDown += OnOverlayKeyDown;
+                window.OverlayAnswer.KeyDown += (_, e) =>
+                {
+                    if (state.Overlay != CommandCenterOverlayKind.HumanPrompt)
+                    {
+                        return;
+                    }
+
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        e.Handled = true;
+                        return;
+                    }
+
+                    KeyChord chord = ToChord(e);
+                    if (chord.IsEnter && chord.IsCtrl)
+                    {
+                        e.Handled = true;
+                        _ = SubmitHumanPromptAsync(state, window, app, uiChannel.Writer, linked.Token);
+                        return;
+                    }
+
+                    if (e == Key.Esc)
+                    {
+                        // Hard modal: Esc does not dismiss; Ctrl+C cancels the turn.
+                        e.Handled = true;
+                        state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+                        return;
+                    }
+
+                    // Bare Enter = newline (TextView default). Do not ConfirmPending.
+                    if (chord.IsEnter && !chord.IsCtrl)
+                    {
                         return;
                     }
 
@@ -450,6 +568,7 @@ internal sealed class CommandCenterHost(
                 StopThinkingTimer();
                 linked.Cancel();
                 wardCoordinator.SetUiCallbacks(null, null);
+                humanPromptCoordinator.SetUiCallbacks(null, null, null);
                 uiChannel.Writer.TryComplete();
                 try
                 {
@@ -551,7 +670,16 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.Send:
-                submitFromInput();
+                if (humanPromptCoordinator.IsActive
+                    || state.Overlay == CommandCenterOverlayKind.HumanPrompt)
+                {
+                    _ = SubmitHumanPromptAsync(state, window, app, ui, linked.Token);
+                }
+                else
+                {
+                    submitFromInput();
+                }
+
                 break;
 
             case CommandCenterAction.InsertComposerNewLine:
@@ -563,8 +691,9 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.CancelTurn:
-                // Cancel only — Host owns TurnCts disposal.
+                // Cancel only — Host owns TurnCts disposal. HITL modal closes via ChatRunner cancel path.
                 state.TurnCts?.Cancel();
+                _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Cancelled);
                 break;
 
             case CommandCenterAction.ClearComposer:
@@ -585,18 +714,37 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.Quit:
+                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 RequestQuit(state, window, app);
                 break;
 
             case CommandCenterAction.Help:
+                if (BlockOverlayStealWhileHumanPrompt(state, window, app))
+                {
+                    break;
+                }
+
+                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 ShowHelpOverlay(state, window, app);
                 break;
 
             case CommandCenterAction.CommandPalette:
+                if (BlockOverlayStealWhileHumanPrompt(state, window, app))
+                {
+                    break;
+                }
+
+                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 ShowPalette(state, window, app);
                 break;
 
             case CommandCenterAction.FocusSessions:
+                if (BlockOverlayStealWhileHumanPrompt(state, window, app))
+                {
+                    break;
+                }
+
+                _ = wardCoordinator.TryResolvePendingWardAsDenied();
                 state.FocusRegion = CommandCenterFocusRegion.Sessions;
                 state.FooterHint = null;
                 // Prefer the left Sessions pane when visible (Claude Code–style).
@@ -647,6 +795,15 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.CloseOverlayOrFocusComposer:
+                if (state.Overlay == CommandCenterOverlayKind.HumanPrompt
+                    || humanPromptCoordinator.IsActive)
+                {
+                    // Hard modal — Esc does not dismiss HITL.
+                    state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                    app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
+                    break;
+                }
+
                 if (state.Overlay is CommandCenterOverlayKind.QuitConfirm
                     or CommandCenterOverlayKind.DiscardConfirm
                     or CommandCenterOverlayKind.WardConfirm)
@@ -1004,6 +1161,8 @@ internal sealed class CommandCenterHost(
 
     private void RequestQuit(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
+        _ = wardCoordinator.TryResolvePendingWardAsDenied();
+
         if (state.Generating)
         {
             _pendingConfirm = new PendingConfirm(PendingConfirmKind.Quit, null);
@@ -1026,8 +1185,9 @@ internal sealed class CommandCenterHost(
         app.Invoke(() => app.RequestStop());
     }
 
-    private static void ShowDiscardConfirm(CommandCenterState state, CommandCenterWindow window, IApplication app)
+    private void ShowDiscardConfirm(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
+        _ = wardCoordinator.TryResolvePendingWardAsDenied();
         state.Overlay = CommandCenterOverlayKind.DiscardConfirm;
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
@@ -1041,8 +1201,9 @@ internal sealed class CommandCenterHost(
         });
     }
 
-    private static void ShowHelpOverlay(CommandCenterState state, CommandCenterWindow window, IApplication app)
+    private void ShowHelpOverlay(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
+        _ = wardCoordinator.TryResolvePendingWardAsDenied();
         state.Overlay = CommandCenterOverlayKind.Help;
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
@@ -1070,6 +1231,8 @@ internal sealed class CommandCenterHost(
                     "",
                     "Incantations: tool calls by CallId (heavy args suppressed)",
                     "Thinking ⠋ while waiting for first token",
+                    "",
+                    "ask_human: Ctrl+Enter submit · Enter newline · Ctrl+C cancel turn",
                 ],
                 "Help",
                 showFilter: false);
@@ -1077,8 +1240,9 @@ internal sealed class CommandCenterHost(
         });
     }
 
-    private static void ShowPalette(CommandCenterState state, CommandCenterWindow window, IApplication app)
+    private void ShowPalette(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
+        _ = wardCoordinator.TryResolvePendingWardAsDenied();
         state.Overlay = CommandCenterOverlayKind.CommandPalette;
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
@@ -1440,6 +1604,52 @@ internal sealed class CommandCenterHost(
 
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
 
+        if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
+        {
+            KeyChord humanChord = ToChord(e);
+            if (humanChord.IsEnter && humanChord.IsCtrl)
+            {
+                e.Handled = true;
+                handle(CommandCenterAction.Send);
+                return true;
+            }
+
+            if (e == Key.Esc)
+            {
+                e.Handled = true;
+                state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+                return true;
+            }
+
+            // Steal focus back to the answer editor; do not type into the composer.
+            if (!window.OverlayAnswer.HasFocus)
+            {
+                window.OverlayAnswer.SetFocus();
+            }
+
+            // Let printable / Enter reach OverlayAnswer (newline). Block composer side-effects.
+            if (humanChord.IsEnter && !humanChord.IsCtrl)
+            {
+                return false;
+            }
+
+            if (!e.IsCtrl && !e.IsAlt && e != Key.Tab)
+            {
+                // Character keys: focus answer; one keystroke may be lost if composer had focus.
+                e.Handled = true;
+                return true;
+            }
+
+            return TryMapAndHandle(
+                e,
+                CommandCenterFocusRegion.Overlay,
+                state,
+                window,
+                handle,
+                syncFocusRegion: false);
+        }
+
         if (e == Key.Enter)
         {
             e.Handled = true;
@@ -1510,6 +1720,77 @@ internal sealed class CommandCenterHost(
         }
 
         return false;
+    }
+
+    private bool BlockOverlayStealWhileHumanPrompt(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app)
+    {
+        if (!humanPromptCoordinator.IsActive && state.Overlay != CommandCenterOverlayKind.HumanPrompt)
+        {
+            return false;
+        }
+
+        state.FooterHint = "Answer the Mage prompt first (Ctrl+Enter), or cancel the turn (Ctrl+C).";
+        app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
+        return true;
+    }
+
+    private async Task SubmitHumanPromptAsync(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app,
+        ChannelWriter<CommandCenterUiUpdate> ui,
+        CancellationToken cancellationToken)
+    {
+        if (!humanPromptCoordinator.IsActive)
+        {
+            return;
+        }
+
+        string answer = window.GetHumanPromptAnswer();
+        HumanPromptSubmitOutcome outcome = await humanPromptCoordinator
+            .SubmitAnswerAsync(answer, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (outcome is HumanPromptSubmitOutcome.Accepted or HumanPromptSubmitOutcome.NotFound)
+        {
+            // Overlay closed via onHide callback.
+            try
+            {
+                await ui.WriteAsync(
+                        new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll),
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+
+            return;
+        }
+
+        if (outcome == HumanPromptSubmitOutcome.AlreadyInFlight)
+        {
+            app.Invoke(() =>
+            {
+                state.FooterHint = "Submit already in progress…";
+                window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+            });
+            return;
+        }
+
+        // TransientFailure / RejectedEmpty — status already pushed via onStatus.
+        app.Invoke(() =>
+        {
+            if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
+            {
+                window.OverlayAnswer.SetFocus();
+            }
+
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+        });
     }
 
     private static bool TryMapAndHandle(

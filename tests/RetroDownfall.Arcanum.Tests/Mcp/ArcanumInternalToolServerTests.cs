@@ -128,6 +128,15 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         HashSet<string> registeredNames = session.Server.RegisteredToolHandlerNamesForTests
             .ToHashSet(StringComparer.Ordinal);
 
+        // Deprecated tools/call-only alias — registered but never advertised.
+        Assert.Contains("use_commlink", registeredNames);
+
+        Assert.DoesNotContain("use_commlink", listedNames);
+
+        Assert.Contains("send_commlink_alert", listedNames);
+
+        registeredNames.Remove("use_commlink");
+
         Assert.Equal(registeredNames, listedNames);
 
     }

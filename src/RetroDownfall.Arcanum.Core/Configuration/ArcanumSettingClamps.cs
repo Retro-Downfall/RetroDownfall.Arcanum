@@ -146,7 +146,7 @@ public static class ArcanumSettingClamps
 
     public static int DaemonExecutionHistoryLimit(int value) => Math.Clamp(value, 10, 10_000);
 
-    public static int MaxToolInferenceRounds(int value) => Math.Clamp(value, 1, 64);
+    public static int MaxToolInferenceRounds(int value) => Math.Clamp(value, 1, 100);
 
     public static int CompressionPreflightMinMessages(int value) => Math.Clamp(value, 0, 100);
 

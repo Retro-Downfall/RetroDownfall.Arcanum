@@ -187,7 +187,7 @@ internal static class DaemonEndpoints
 
                 CommLinkMessage message = new(title, bodyText, body.Severity, source);
 
-                Result dispatch = await commLink
+                Result<CommLinkDeliveryResult> dispatch = await commLink
                     .DispatchAsync(message, cancellationToken)
                     .ConfigureAwait(false);
 
@@ -201,6 +201,7 @@ internal static class DaemonEndpoints
                         statusCode: StatusCodes.Status502BadGateway);
                 }
 
+                // Delivered and Suppressed are both successful outcomes from the API's perspective.
                 Result<bool> ok = Result<bool>.Success(true);
 
                 return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));

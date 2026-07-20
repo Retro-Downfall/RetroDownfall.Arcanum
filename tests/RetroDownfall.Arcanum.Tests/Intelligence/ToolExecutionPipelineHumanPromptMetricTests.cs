@@ -114,6 +114,77 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
     }
 
+    [Fact]
+    public async Task ProcessSingleToolCall_UseCommlink_RecordsCanonicalSendCommlinkAlertMetric()
+    {
+
+        ConcurrentQueue<string> toolNames = new();
+
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) => activeListener.EnableMeasurementEvents(instrument),
+        };
+
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+
+            if (instrument.Name != "arcanum_tool_invocations_total")
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+
+                if (tag.Key == "tool_name" && tag.Value is string tn)
+                {
+                    toolNames.Enqueue(tn);
+                }
+
+            }
+
+        });
+
+        listener.Start();
+
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            new FakeWard(),
+            new AllowAllSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+
+        FunctionCallContent fcc = new("call_1", "use_commlink", new Dictionary<string, object?>());
+
+        ChatOptions chatOptions = new()
+        {
+            Tools =
+            [
+                AIFunctionFactory.Create(() => "sent", "use_commlink"),
+            ],
+        };
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
+            .ProcessSingleToolCallAsync(
+                fcc,
+                new PingRequest("hi", WorkingDirectory: "/tmp"),
+                chatOptions,
+                activeSpell: null,
+                sessionId: null,
+                turnContext: new ToolExecutionPipeline.TurnContext(),
+                suppressInvocationFailures: true,
+                cancellationToken: CancellationToken.None);
+
+        Assert.False(processed.Failed);
+
+        Assert.Equal("use_commlink", processed.ToolName);
+
+        string recorded = Assert.Single(toolNames);
+
+        Assert.Equal("send_commlink_alert", recorded);
+
+    }
+
     private sealed class FakeWard : IWard
     {
 

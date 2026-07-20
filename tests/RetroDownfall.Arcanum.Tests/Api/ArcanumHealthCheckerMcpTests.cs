@@ -70,6 +70,12 @@ public sealed class ArcanumHealthCheckerMcpTests
         {
         }
 
+        public Task WaitUntilReadyAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public void MarkFailed(Exception exception)
+        {
+        }
+
     }
 
     private sealed class EmptyMcpManager : IMcpConnectionManager

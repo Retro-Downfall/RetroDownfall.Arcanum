@@ -58,6 +58,8 @@ internal sealed class CommandCenterWardCoordinator
 
         lock (_gate)
         {
+            // Fail-closed: never overwrite a pending TCS without completing it as Deny.
+            _ = TryResolvePendingWardAsDeniedUnlocked();
             _pendingRequest = request;
             _pendingDecision = tcs;
             onShow = _onShow;
@@ -105,7 +107,25 @@ internal sealed class CommandCenterWardCoordinator
         return tcs is not null && tcs.TrySetResult(decision);
     }
 
-    public static string FormatArgumentsPreview(JsonElement? arguments, int maxChars = 240)
+    /// <summary>
+    /// Completes any pending ward wait as <see cref="WardApprovalDecision.Deny"/> before another
+    /// overlay steals focus. Idempotent: returns false when nothing pending or already completed.
+    /// </summary>
+    public bool TryResolvePendingWardAsDenied()
+    {
+        lock (_gate)
+        {
+            return TryResolvePendingWardAsDeniedUnlocked();
+        }
+    }
+
+    private bool TryResolvePendingWardAsDeniedUnlocked()
+    {
+        TaskCompletionSource<WardApprovalDecision>? tcs = _pendingDecision;
+        return tcs is not null && tcs.TrySetResult(WardApprovalDecision.Deny);
+    }
+
+    public static string FormatArgumentsPreview(JsonElement? arguments, int maxChars = 480)
     {
         if (arguments is null)
         {

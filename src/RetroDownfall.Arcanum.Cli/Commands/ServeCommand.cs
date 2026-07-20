@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
@@ -14,6 +15,7 @@ using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Spectre.Console;
@@ -175,27 +177,43 @@ public sealed class ServeCommand(IThemePalette themePalette)
             static state => ((IHostApplicationLifetime)state!).StopApplication(),
             app.Lifetime);
 
-        Log.Information(
-            "{Timestamp:o} Arcanum listening on {Scheme}://{ListenHost}:{Port}",
-            DateTimeOffset.UtcNow,
-            listenScheme,
-            listenHost,
-            listenPort);
-
-        if (!autoLaunched)
-        {
-            AnsiConsole.MarkupLine(
-                themePalette.HighlightMarkup(
-                    Markup.Escape($"Listening on {listenScheme}://{listenHost}:{listenPort}")));
-        }
-
         try
         {
-            await app.RunAsync().ConfigureAwait(false);
+            await app.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            IGrimoireDbReadiness readiness = app.Services.GetRequiredService<IGrimoireDbReadiness>();
+            await readiness.WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
+
+            Log.Information(
+                "{Timestamp:o} Arcanum listening on {Scheme}://{ListenHost}:{Port}",
+                DateTimeOffset.UtcNow,
+                listenScheme,
+                listenHost,
+                listenPort);
+
+            if (!autoLaunched)
+            {
+                AnsiConsole.MarkupLine(
+                    themePalette.HighlightMarkup(
+                        Markup.Escape($"Listening on {listenScheme}://{listenHost}:{listenPort}")));
+            }
+
+            await app.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             await stopRegistration.DisposeAsync().ConfigureAwait(false);
+
+            try
+            {
+                await app.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Arcanum host StopAsync during serve cleanup failed.");
+            }
+
+            await app.DisposeAsync().ConfigureAwait(false);
 
             Log.CloseAndFlush();
         }

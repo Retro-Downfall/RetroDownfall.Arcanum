@@ -192,6 +192,7 @@ public sealed class CommandCenterKeymapTests
     [InlineData(nameof(CommandCenterOverlayKind.QuitConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.DiscardConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.WardConfirm), nameof(CommandCenterAction.ConfirmPending))]
+    [InlineData(nameof(CommandCenterOverlayKind.HumanPrompt), nameof(CommandCenterAction.NoOp))]
     [InlineData(nameof(CommandCenterOverlayKind.None), nameof(CommandCenterAction.NoOp))]
     public void Overlay_Enter_is_explicit_by_kind(string kindName, string expectedName)
     {
@@ -238,6 +239,28 @@ public sealed class CommandCenterKeymapTests
 
         Assert.Equal(9, height); // 2 border + 7 lines
         Assert.True(height < 25);
+    }
+
+    [Fact]
+    public void OverlayLayout_MeasureWidth_grows_with_content()
+    {
+        Assert.Equal(60, OverlayLayout.MeasureWidth(200, contentColumns: 10));
+        Assert.Equal(82, OverlayLayout.MeasureWidth(200, contentColumns: 80));
+        Assert.Equal(120, OverlayLayout.MeasureWidth(200, contentColumns: 200));
+        Assert.Equal(76, OverlayLayout.MeasureWidth(80, contentColumns: 200)); // terminal - 4
+    }
+
+    [Fact]
+    public void OverlayLayout_WrapLines_expands_then_truncates_preview()
+    {
+        string longLine = new('x', 201);
+        List<string> wrapped = OverlayLayout.WrapLines(["head", longLine, "tail"], innerWidth: 50);
+
+        Assert.Equal("head", wrapped[0]);
+        Assert.Equal("tail", wrapped[^1]);
+        int previewRows = wrapped.Count - 2; // exclude head/tail
+        Assert.Equal(OverlayLayout.MaxWrappedPreviewRows, previewRows);
+        Assert.EndsWith("…", wrapped[^2]);
     }
 
     [Fact]

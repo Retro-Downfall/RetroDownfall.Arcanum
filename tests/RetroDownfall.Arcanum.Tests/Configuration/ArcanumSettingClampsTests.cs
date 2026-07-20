@@ -115,4 +115,13 @@ public sealed class ArcanumSettingClampsTests
 
     }
 
+    [Fact]
+    public void MaxToolInferenceRounds_clamps_to_1_through_100()
+    {
+        Assert.Equal(1, ArcanumSettingClamps.MaxToolInferenceRounds(0));
+        Assert.Equal(50, ArcanumSettingClamps.MaxToolInferenceRounds(50));
+        Assert.Equal(100, ArcanumSettingClamps.MaxToolInferenceRounds(100));
+        Assert.Equal(100, ArcanumSettingClamps.MaxToolInferenceRounds(250));
+    }
+
 }

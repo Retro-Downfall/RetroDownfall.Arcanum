@@ -292,6 +292,8 @@ internal static class CommandCenterKeymap
             CommandCenterOverlayKind.QuitConfirm or CommandCenterOverlayKind.DiscardConfirm
                 or CommandCenterOverlayKind.WardConfirm
                 => CommandCenterAction.ConfirmPending,
+            // HumanPrompt: Enter inserts newline in the answer TextView; Ctrl+Enter submits.
+            CommandCenterOverlayKind.HumanPrompt => CommandCenterAction.NoOp,
             _ => CommandCenterAction.NoOp,
         };
 }

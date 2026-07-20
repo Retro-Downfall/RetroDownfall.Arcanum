@@ -276,6 +276,13 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public void MarkReady() => IsReady = true;
 
+        public Task WaitUntilReadyAsync(CancellationToken cancellationToken = default) =>
+            IsReady ? Task.CompletedTask : Task.Delay(Timeout.Infinite, cancellationToken);
+
+        public void MarkFailed(Exception exception)
+        {
+        }
+
     }
 
     private sealed class TestSecretStore : ISecretStore

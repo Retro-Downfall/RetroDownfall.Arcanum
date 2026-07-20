@@ -59,7 +59,7 @@ public sealed record IntelligenceSettings
     /// A round = one model response containing tool calls + one server-side execution batch.
     /// Beyond this cap, the hub fails the turn with <c>Hub.ToolLoop</c>.
     /// </summary>
-    public int MaxToolInferenceRounds { get; set; } = 8;
+    public int MaxToolInferenceRounds { get; set; } = 100;
 
     /// <summary>
     /// When <see langword="true"/> (default), an unexpected exception from a single tool

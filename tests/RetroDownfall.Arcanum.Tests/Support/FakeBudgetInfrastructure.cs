@@ -9,11 +9,15 @@ internal sealed class FakeCommLinkDispatcher : ICommLinkDispatcher
 
     public List<CommLinkMessage> Dispatched { get; } = [];
 
-    public Task<Result> DispatchAsync(CommLinkMessage message, CancellationToken cancellationToken = default)
+    public Task<Result<CommLinkDeliveryResult>> DispatchAsync(
+        CommLinkMessage message,
+        CancellationToken cancellationToken = default)
     {
         Dispatched.Add(message);
 
-        return Task.FromResult(Result.Success());
+        return Task.FromResult(
+            Result<CommLinkDeliveryResult>.Success(
+                new CommLinkDeliveryResult(CommLinkDeliveryStatus.Delivered)));
     }
 
 }

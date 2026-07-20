@@ -169,6 +169,10 @@ public sealed class HumanPromptRegistryTests
         string response = await waitTask;
 
         Assert.Equal("approved", response);
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
     }
 
     [Fact]
@@ -208,6 +212,8 @@ public sealed class HumanPromptRegistryTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waitTask);
 
         Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
     }
 
     [Fact]
@@ -227,6 +233,8 @@ public sealed class HumanPromptRegistryTests
         Assert.Equal(HumanPromptTimeoutException.DefaultMessage, ex.Message);
 
         Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
 
         Assert.False(registry.TrySubmitResponse(promptId, "too-late"));
     }
@@ -250,6 +258,8 @@ public sealed class HumanPromptRegistryTests
 
         Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.WaiterCountForTesting);
 
+        Assert.Equal(0, registry.AvailableSlotsForTesting);
+
         foreach ((string id, Task<string> wait) in tracked)
         {
             Assert.True(registry.TrySubmitResponse(id, "ok"));
@@ -258,6 +268,117 @@ public sealed class HumanPromptRegistryTests
         }
 
         Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
+    }
+
+    [Fact]
+    public async Task TryCreateReservation_SubmitDoesNotReleaseCapacity_UntilDispose()
+    {
+        HumanPromptRegistry registry = new();
+
+        IHumanPromptReservation? reservation = registry.TryCreateReservation();
+
+        Assert.NotNull(reservation);
+
+        Assert.Equal(1, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters - 1, registry.AvailableSlotsForTesting);
+
+        Task<string> waitTask = reservation.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        Assert.True(registry.TrySubmitResponse(reservation.PromptId, "held"));
+
+        Assert.Equal("held", await waitTask);
+
+        // Submit completed the waiter but capacity remains owned until dispose.
+        Assert.Equal(1, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters - 1, registry.AvailableSlotsForTesting);
+
+        await reservation.DisposeAsync();
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
+    }
+
+    [Fact]
+    public async Task AwaitReservedAsync_WaitsWithoutReleasingCapacity()
+    {
+        HumanPromptRegistry registry = new();
+
+        IHumanPromptReservation? reservation = registry.TryCreateReservation();
+
+        Assert.NotNull(reservation);
+
+        Task<string> awaitTask = registry.AwaitReservedAsync(
+            reservation.PromptId,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        Assert.True(registry.TrySubmitResponse(reservation.PromptId, "from-tool"));
+
+        Assert.Equal("from-tool", await awaitTask);
+
+        Assert.Equal(1, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters - 1, registry.AvailableSlotsForTesting);
+
+        await reservation.DisposeAsync();
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
+    }
+
+    [Fact]
+    public async Task Reservation_Timeout_DoesNotReleaseCapacity_UntilDispose()
+    {
+        HumanPromptRegistry registry = new()
+        {
+            CeilingForTesting = TimeSpan.FromMilliseconds(50),
+        };
+
+        IHumanPromptReservation? reservation = registry.TryCreateReservation();
+
+        Assert.NotNull(reservation);
+
+        HumanPromptTimeoutException ex = await Assert.ThrowsAsync<HumanPromptTimeoutException>(() =>
+            reservation.WaitAsync(TimeSpan.FromMilliseconds(50), CancellationToken.None));
+
+        Assert.Equal(HumanPromptTimeoutException.DefaultMessage, ex.Message);
+
+        Assert.Equal(1, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters - 1, registry.AvailableSlotsForTesting);
+
+        Assert.False(registry.TrySubmitResponse(reservation.PromptId, "too-late"));
+
+        await reservation.DisposeAsync();
+
+        Assert.Equal(0, registry.WaiterCountForTesting);
+
+        Assert.Equal(HumanPromptRegistry.MaxConcurrentWaiters, registry.AvailableSlotsForTesting);
+    }
+
+    [Fact]
+    public void TryCreateReservation_CapExhaustion_ReturnsNull()
+    {
+        HumanPromptRegistry registry = new();
+
+        List<IHumanPromptReservation> held = [];
+
+        for (int i = 0; i < HumanPromptRegistry.MaxConcurrentWaiters; i++)
+        {
+            IHumanPromptReservation? reservation = registry.TryCreateReservation();
+
+            Assert.NotNull(reservation);
+
+            held.Add(reservation);
+        }
+
+        Assert.Null(registry.TryCreateReservation());
+
+        Assert.Equal(0, registry.AvailableSlotsForTesting);
     }
 
 }

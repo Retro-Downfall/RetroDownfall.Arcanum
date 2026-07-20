@@ -35,6 +35,8 @@ internal sealed class CommandCenterWindow : Window
 
     private bool _overlayShowFilter;
 
+    private bool _overlayHumanPrompt;
+
     private bool _followTail = true;
 
     private bool _incantationsFollowTail = true;
@@ -249,7 +251,7 @@ internal sealed class CommandCenterWindow : Window
             BorderStyle = chrome,
             CanFocus = false,
             Visible = false,
-            SchemeName = CommandCenterTheme.SessionScheme,
+            SchemeName = CommandCenterTheme.OverlayScheme,
         };
 
         OverlayFilter = new TextField
@@ -261,22 +263,57 @@ internal sealed class CommandCenterWindow : Window
             Y = 0,
             Width = Dim.Fill(),
             Height = 1,
-            SchemeName = CommandCenterTheme.InputScheme,
+            SchemeName = CommandCenterTheme.OverlayScheme,
+        };
+
+        // Confirm dialogs (Ward, quit, discard): multiline Label so each choice is its own row.
+        // ListView is reserved for filterable pickers (Sessions).
+        OverlayBody = new Label
+        {
+            CanFocus = true,
+            TabStop = TabBehavior.NoStop,
+            Visible = false,
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            SchemeName = CommandCenterTheme.OverlayScheme,
+            TextAlignment = Alignment.Start,
+            VerticalTextAlignment = Alignment.Start,
         };
 
         OverlayList = new ListView
         {
             CanFocus = true,
             TabStop = TabBehavior.NoStop,
+            Visible = false,
             X = 0,
             Y = 1,
             Width = Dim.Fill(),
             Height = Dim.Fill(1),
-            SchemeName = CommandCenterTheme.SessionScheme,
+            SchemeName = CommandCenterTheme.OverlayScheme,
             ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar,
         };
         OverlayList.SetSource(_overlayLines);
-        OverlayPane.Add(OverlayFilter, OverlayList);
+
+#pragma warning disable CS0618 // TextView obsolete in TG 2.4.17; multiline answer for HumanPrompt.
+        OverlayAnswer = new TextView
+        {
+            CanFocus = true,
+            TabStop = TabBehavior.NoStop,
+            Visible = false,
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = HumanPromptOverlayContent.AnswerViewportRows,
+            BorderStyle = LineStyle.Single,
+            Title = "Answer",
+            SchemeName = CommandCenterTheme.OverlayScheme,
+        };
+        ConfigureComposerTextView(OverlayAnswer);
+#pragma warning restore CS0618
+
+        OverlayPane.Add(OverlayFilter, OverlayBody, OverlayList, OverlayAnswer);
 
         Add(HeaderPane, SessionsPane, TranscriptPane, IncantationsPane, Input, Footer, OverlayPane);
         ApplyAbsoluteLayout(80, 24);
@@ -314,6 +351,13 @@ internal sealed class CommandCenterWindow : Window
 
     public TextField OverlayFilter { get; }
 
+    public Label OverlayBody { get; }
+
+    /// <summary>Multiline answer editor for <see cref="CommandCenterOverlayKind.HumanPrompt"/>.</summary>
+#pragma warning disable CS0618
+    public TextView OverlayAnswer { get; }
+#pragma warning restore CS0618
+
     public ListView OverlayList { get; }
 
     public bool SidebarVisible { get; private set; } = true;
@@ -342,7 +386,7 @@ internal sealed class CommandCenterWindow : Window
             return CommandCenterFocusRegion.Sessions;
         }
 
-        if (OverlayPane.Visible && OverlayList.HasFocus)
+        if (OverlayPane.Visible && (OverlayList.HasFocus || OverlayBody.HasFocus || OverlayAnswer.HasFocus))
         {
             return CommandCenterFocusRegion.Overlay;
         }
@@ -667,22 +711,63 @@ internal sealed class CommandCenterWindow : Window
 
     public void ShowOverlay(CommandCenterOverlayKind kind, IReadOnlyList<string> lines, string title, bool showFilter)
     {
+        _overlayHumanPrompt = false;
+        OverlayAnswer.Visible = false;
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
         OverlayPane.Title = title;
         OverlayPane.Visible = true;
         _overlayShowFilter = showFilter;
         OverlayFilter.Visible = showFilter;
         OverlayFilter.Text = string.Empty;
-        OverlayList.Y = showFilter ? 1 : 0;
-        OverlayList.Height = showFilter ? Dim.Fill(1) : Dim.Fill();
-        _overlayLines.Clear();
+
+        // Size width from raw content, then wrap long lines so height expands and text stays readable.
+        int longest = 0;
         foreach (string line in lines)
+        {
+            if (line.Length > longest)
+            {
+                longest = line.Length;
+            }
+        }
+
+        int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
+        int innerWidth = Math.Max(8, overlayW - 2);
+        IReadOnlyList<string> displayLines = showFilter
+            ? lines
+            : OverlayLayout.WrapLines(lines, innerWidth);
+
+        _overlayLines.Clear();
+        foreach (string line in displayLines)
         {
             _overlayLines.Add(line);
         }
 
-        if (_overlayLines.Count > 0)
+        if (showFilter)
         {
-            OverlayList.SelectedItem = 0;
+            OverlayBody.Visible = false;
+            OverlayBody.Text = string.Empty;
+            OverlayList.Visible = true;
+            OverlayList.Y = 1;
+            OverlayList.Height = Dim.Fill(1);
+            if (_overlayLines.Count > 0)
+            {
+                OverlayList.SelectedItem = 0;
+            }
+        }
+        else
+        {
+            OverlayList.Visible = false;
+            OverlayBody.Visible = true;
+            OverlayBody.Y = 0;
+            OverlayBody.Height = Dim.Fill();
+            OverlayBody.Text = string.Join('\n', displayLines);
         }
 
         // Recompute frame to content height before focusing (half-screen default is too tall for confirms).
@@ -694,7 +779,98 @@ internal sealed class CommandCenterWindow : Window
         }
         else
         {
-            OverlayList.SetFocus();
+            OverlayBody.SetFocus();
+        }
+    }
+
+    /// <summary>
+    /// Hard-modal HumanPrompt: question/promptId in the body Label; multiline answer TextView below.
+    /// </summary>
+    public void ShowHumanPromptOverlay(string question, string promptId, string? statusMessage)
+    {
+        ArgumentNullException.ThrowIfNull(question);
+        ArgumentNullException.ThrowIfNull(promptId);
+
+        _overlayHumanPrompt = true;
+        _overlayShowFilter = false;
+        OverlayPane.Title = "Mage asks";
+        OverlayPane.Visible = true;
+        OverlayFilter.Visible = false;
+        OverlayFilter.Text = string.Empty;
+        OverlayList.Visible = false;
+
+        List<string> lines =
+        [
+            question,
+            string.Empty,
+            $"promptId: {promptId}",
+        ];
+        lines.AddRange(HumanPromptOverlayContent.HintLines);
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+        {
+            lines.Add(string.Empty);
+            lines.Add(statusMessage!);
+        }
+
+        int longest = 0;
+        foreach (string line in lines)
+        {
+            if (line.Length > longest)
+            {
+                longest = line.Length;
+            }
+        }
+
+        int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
+        int innerWidth = Math.Max(8, overlayW - 2);
+        IReadOnlyList<string> displayLines = OverlayLayout.WrapLines(lines, innerWidth);
+
+        _overlayLines.Clear();
+        foreach (string line in displayLines)
+        {
+            _overlayLines.Add(line);
+        }
+
+        int answerRows = HumanPromptOverlayContent.AnswerViewportRows;
+        OverlayBody.Visible = true;
+        OverlayBody.Y = 0;
+        OverlayBody.Height = Math.Max(1, displayLines.Count);
+        OverlayBody.Text = string.Join('\n', displayLines);
+
+        OverlayAnswer.Visible = true;
+        OverlayAnswer.Y = displayLines.Count;
+        OverlayAnswer.Height = answerRows;
+        OverlayAnswer.Width = Dim.Fill();
+
+        ApplyAbsoluteLayout(_cols, _rows);
+        OverlayAnswer.SetFocus();
+    }
+
+    public string GetHumanPromptAnswer()
+    {
+        try
+        {
+            var lines = OverlayAnswer.GetAllLines();
+            if (lines is { Count: > 0 })
+            {
+                return JoinComposerLines(lines);
+            }
+        }
+        catch
+        {
+        }
+
+        return OverlayAnswer.Text?.ToString() ?? string.Empty;
+    }
+
+    public void ClearHumanPromptAnswer()
+    {
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
         }
     }
 
@@ -703,16 +879,42 @@ internal sealed class CommandCenterWindow : Window
         OverlayPane.Visible = false;
         OverlayFilter.Visible = false;
         OverlayFilter.Text = string.Empty;
+        OverlayBody.Visible = false;
+        OverlayBody.Text = string.Empty;
+        OverlayList.Visible = false;
+        OverlayAnswer.Visible = false;
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
         _overlayShowFilter = false;
+        _overlayHumanPrompt = false;
         _overlayLines.Clear();
     }
 
     public void ShowSessionPickerOverlay()
     {
+        _overlayHumanPrompt = false;
+        OverlayAnswer.Visible = false;
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
         OverlayPane.Title = "Sessions";
         OverlayPane.Visible = true;
         _overlayShowFilter = true;
+        OverlayBody.Visible = false;
+        OverlayBody.Text = string.Empty;
         OverlayFilter.Visible = true;
+        OverlayList.Visible = true;
         OverlayList.Y = 1;
         OverlayList.Height = Dim.Fill(1);
         ApplyAbsoluteLayout(_cols, _rows);
@@ -720,7 +922,8 @@ internal sealed class CommandCenterWindow : Window
     }
 
     public bool IsOverlayFocused =>
-        OverlayPane.Visible && (OverlayList.HasFocus || OverlayFilter.HasFocus);
+        OverlayPane.Visible
+        && (OverlayList.HasFocus || OverlayFilter.HasFocus || OverlayBody.HasFocus || OverlayAnswer.HasFocus);
 
     public int GetOverlaySelectedIndex() =>
         _overlayLines.Count == 0 ? -1 : Math.Clamp(OverlayList.SelectedItem ?? 0, 0, _overlayLines.Count - 1);
@@ -1172,10 +1375,25 @@ internal sealed class CommandCenterWindow : Window
         Footer.Width = _cols;
         Footer.Height = footerH;
 
-        int overlayW = OverlayLayout.MeasureWidth(_cols);
+        int longestOverlay = 0;
+        foreach (string line in _overlayLines)
+        {
+            if (line.Length > longestOverlay)
+            {
+                longestOverlay = line.Length;
+            }
+        }
+
+        int overlayW = OverlayLayout.MeasureWidth(_cols, longestOverlay);
+        int contentRows = _overlayLines.Count;
+        if (_overlayHumanPrompt)
+        {
+            contentRows += HumanPromptOverlayContent.AnswerViewportRows;
+        }
+
         int overlayH = OverlayPane.Visible
             ? OverlayLayout.MeasureHeight(
-                _overlayLines.Count,
+                contentRows,
                 _overlayShowFilter || OverlayFilter.Visible,
                 bodyH,
                 _rows,
@@ -1185,6 +1403,15 @@ internal sealed class CommandCenterWindow : Window
         OverlayPane.Y = Math.Max(headerH, (_rows - overlayH) / 2);
         OverlayPane.Width = overlayW;
         OverlayPane.Height = overlayH;
+
+        if (_overlayHumanPrompt && OverlayAnswer.Visible)
+        {
+            int answerRows = HumanPromptOverlayContent.AnswerViewportRows;
+            int bodyRows = Math.Max(1, overlayH - 2 - answerRows);
+            OverlayBody.Height = bodyRows;
+            OverlayAnswer.Y = bodyRows;
+            OverlayAnswer.Height = answerRows;
+        }
 
         if (_boundLog is not null)
         {

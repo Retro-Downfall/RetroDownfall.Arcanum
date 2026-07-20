@@ -116,6 +116,8 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<CommandCenterWardCoordinator>();
 
+        services.AddSingleton<CommandCenterHumanPromptCoordinator>();
+
         services.AddTransient<CommandCenterChatRunner>();
 
         services.AddTransient<CommandCenterApp>();

@@ -422,7 +422,7 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "source",
-                "Optional origin label (defaults to use_commlink).");
+                "Optional origin label (defaults to send_commlink_alert).");
 
             w.WriteEndObject();
 

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -107,7 +108,17 @@ internal sealed class McpBridgeTool : AIFunction
 
         if (result.IsError == true)
         {
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(text) ? "MCP tool returned isError: true." : text);
+            string errorText = string.IsNullOrWhiteSpace(text) ? "MCP tool returned isError: true." : text;
+
+            // Preserve expected HITL timeout as a typed exception so the tool pipeline can
+            // surface the fixed public message instead of a generic tolerate failure.
+            if (string.Equals(errorText, HumanPromptTimeoutException.DefaultMessage, StringComparison.Ordinal)
+                || errorText.Contains(HumanPromptTimeoutException.DefaultMessage, StringComparison.Ordinal))
+            {
+                throw new HumanPromptTimeoutException();
+            }
+
+            throw new InvalidOperationException(errorText);
         }
 
         return text;

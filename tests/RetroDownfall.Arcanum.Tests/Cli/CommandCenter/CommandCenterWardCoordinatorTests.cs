@@ -26,6 +26,53 @@ public sealed class CommandCenterWardCoordinatorTests
     }
 
     [Fact]
+    public async Task RequestApprovalAsync_DeniesPrevious_WhenReplaced()
+    {
+        CommandCenterWardCoordinator coordinator = new();
+        coordinator.SetUiCallbacks(_ => { }, () => { });
+
+        Task<WardApprovalDecision> first = coordinator.RequestApprovalAsync(
+            new WardApprovalRequest("ward-1", "execute_command", "{}"),
+            CancellationToken.None);
+
+        await Task.Yield();
+
+        Task<WardApprovalDecision> second = coordinator.RequestApprovalAsync(
+            new WardApprovalRequest("ward-2", "write_file", "{}"),
+            CancellationToken.None);
+
+        Assert.Equal(WardApprovalDecision.Deny, await first);
+
+        Assert.True(coordinator.TryCompletePending(WardApprovalDecision.Allow));
+        Assert.Equal(WardApprovalDecision.Allow, await second);
+    }
+
+    [Fact]
+    public async Task TryResolvePendingWardAsDenied_CompletesPending_AndIsIdempotent()
+    {
+        CommandCenterWardCoordinator coordinator = new();
+        coordinator.SetUiCallbacks(_ => { }, () => { });
+
+        Task<WardApprovalDecision> pending = coordinator.RequestApprovalAsync(
+            new WardApprovalRequest("ward-1", "execute_command", "{}"),
+            CancellationToken.None);
+
+        await Task.Yield();
+
+        Assert.True(coordinator.TryResolvePendingWardAsDenied());
+        Assert.False(coordinator.TryResolvePendingWardAsDenied());
+
+        Assert.Equal(WardApprovalDecision.Deny, await pending);
+    }
+
+    [Fact]
+    public void TryResolvePendingWardAsDenied_ReturnsFalse_WhenNothingPending()
+    {
+        CommandCenterWardCoordinator coordinator = new();
+        Assert.False(coordinator.TryResolvePendingWardAsDenied());
+    }
+
+    [Fact]
     public void FormatArgumentsPreview_Truncates()
     {
         string payload = "{\"command\":\"" + new string('x', 300) + "\"}";

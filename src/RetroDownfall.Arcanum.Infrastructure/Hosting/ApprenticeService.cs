@@ -438,6 +438,67 @@ internal sealed class ApprenticeService(
 
         }
 
+        // Resume needs a slot first: MaxReached must not mutate plan/checkpoint/events.
+        if (resume
+            && !TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out bool _, out Result<string>? capacityFailure))
+        {
+
+            return capacityFailure!;
+
+        }
+
+        try
+        {
+
+            ApplyDivineInterventionGuidance(apprentice, guidance.Trim());
+
+            if (resume)
+            {
+
+                apprentice.Status = ApprenticeStatus.Running.ToString();
+
+            }
+
+            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+            Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.ApprenticeIntervened,
+                ApprenticeId = apprenticeId,
+                Timestamp = DateTimeOffset.UtcNow,
+                AtStep = apprentice.CurrentStep,
+                Summary = guidance.Trim(),
+            });
+
+            if (resume)
+            {
+
+                BeginExecutionTask(apprenticeId);
+
+            }
+
+            return Result<string>.Success(apprenticeId.ToString());
+
+        }
+        catch
+        {
+
+            if (resume)
+            {
+
+                ReleaseAcquiredExecutionSlot(apprenticeId);
+
+            }
+
+            throw;
+
+        }
+
+    }
+
+    private static void ApplyDivineInterventionGuidance(Apprentice apprentice, string guidance)
+    {
+
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
         int stepIndex = apprentice.CurrentStep;
@@ -469,48 +530,11 @@ internal sealed class ApprenticeService(
             CompletedToolCallIds = existing?.CompletedToolCallIds ?? [],
             Timestamp = DateTimeOffset.UtcNow,
             EscalationReason = existing?.EscalationReason,
-            DmGuidance = guidance.Trim(),
+            DmGuidance = guidance,
             ParentApprenticeId = existing?.ParentApprenticeId,
         });
 
         apprentice.ErrorMessage = null;
-
-        Publish(apprenticeId, new ApprenticeEvent
-        {
-            Type = ApprenticeEventType.ApprenticeIntervened,
-            ApprenticeId = apprenticeId,
-            Timestamp = DateTimeOffset.UtcNow,
-            AtStep = apprentice.CurrentStep,
-            Summary = guidance.Trim(),
-        });
-
-        if (!resume)
-        {
-
-            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
-            return Result<string>.Success(apprenticeId.ToString());
-
-        }
-
-        if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: false, out bool _, out Result<string>? capacityFailure))
-        {
-
-            apprentice.Status = ApprenticeStatus.Escalated.ToString();
-
-            await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
-            return capacityFailure!;
-
-        }
-
-        apprentice.Status = ApprenticeStatus.Running.ToString();
-
-        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
-
-        BeginExecutionTask(apprenticeId);
-
-        return Result<string>.Success(apprenticeId.ToString());
 
     }
 
@@ -699,6 +723,26 @@ internal sealed class ApprenticeService(
             new Error(ErrorCodes.Apprentice.MaxReached, "Maximum concurrent Apprentices reached."));
 
         return false;
+
+    }
+
+    /// <summary>
+    /// Releases a slot acquired via <see cref="TryAcquireExecutionSlot"/> before
+    /// <see cref="BeginExecutionTask"/> runs (e.g. InterveneAsync persistence failure).
+    /// </summary>
+    private void ReleaseAcquiredExecutionSlot(Guid apprenticeId)
+    {
+
+        _activeTasks.TryRemove(apprenticeId, out _);
+
+        if (_executionLeases.TryRemove(apprenticeId, out IDisposable? lease))
+        {
+
+            lease.Dispose();
+
+            TryDequeuePendingStart();
+
+        }
 
     }
 
@@ -1681,7 +1725,9 @@ internal sealed class ApprenticeService(
                 CommLinkSeverity.Critical,
                 "apprentice-escalation");
 
-            Result dispatch = await dispatcher.DispatchAsync(message, cancellationToken).ConfigureAwait(false);
+            Result<CommLinkDeliveryResult> dispatch = await dispatcher
+                .DispatchAsync(message, cancellationToken)
+                .ConfigureAwait(false);
 
             if (dispatch.IsFailure)
             {
@@ -2645,6 +2691,40 @@ internal sealed class ApprenticeService(
 
     }
 
+    /// <summary>
+    /// Fail-closed parse of <c>petition_dungeon_master</c> structured result.
+    /// Only an explicit <c>notificationStatus: "delivered"</c> counts as already alerted.
+    /// </summary>
+    private static bool IsPetitionNotificationDelivered(string? resultText)
+    {
+
+        if (string.IsNullOrWhiteSpace(resultText))
+        {
+
+            return false;
+
+        }
+
+        try
+        {
+
+            PetitionDungeonMasterResultWire? payload = System.Text.Json.JsonSerializer.Deserialize(
+                resultText.Trim(),
+                McpJsonSerializerContext.Default.PetitionDungeonMasterResultWire);
+
+            return payload is not null
+                && string.Equals(payload.NotificationStatus, "delivered", StringComparison.Ordinal);
+
+        }
+        catch (System.Text.Json.JsonException)
+        {
+
+            return false;
+
+        }
+
+    }
+
     private async Task<StepExecutionOutcome> ExecuteStepStreamAsync(
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
@@ -2677,6 +2757,9 @@ internal sealed class ApprenticeService(
         string? stepError = null;
 
         string? escalationReason = null;
+
+        // Pending petition ToolCalls awaiting ToolResult/ToolError, keyed by CallId.
+        HashSet<string> pendingPetitionCallIds = new(StringComparer.Ordinal);
 
         List<Guid> spawnedChildIds = [];
 
@@ -2726,9 +2809,39 @@ internal sealed class ApprenticeService(
 
                     escalationRequested = true;
 
-                    alreadyAlerted = true;
+                    // Do not assume delivery on ToolCall — wait for ToolResult by CallId.
+                    if (!string.IsNullOrWhiteSpace(frame.ToolCall?.CallId))
+                    {
+
+                        pendingPetitionCallIds.Add(frame.ToolCall.CallId);
+
+                    }
 
                     escalationReason = TryExtractPetitionReason(frame.ToolCall?.ArgumentsJson);
+
+                }
+
+                if (frame.Type == IntelligenceEventType.ToolResult
+                    && frame.ToolCall is { CallId: { Length: > 0 } resultCallId }
+                    && pendingPetitionCallIds.Remove(resultCallId))
+                {
+
+                    // Fail closed: only an explicit "delivered" status counts as already alerted.
+                    if (IsPetitionNotificationDelivered(frame.Data))
+                    {
+
+                        alreadyAlerted = true;
+
+                    }
+
+                }
+
+                if (frame.Type == IntelligenceEventType.ToolError
+                    && frame.ToolCall is { CallId: { Length: > 0 } errorCallId }
+                    && pendingPetitionCallIds.Remove(errorCallId))
+                {
+
+                    // ToolError for a pending petition → not alerted (alreadyAlerted unchanged).
 
                 }
 
@@ -2745,6 +2858,9 @@ internal sealed class ApprenticeService(
                     stepFailed = true;
 
                     stepError = frame.Message;
+
+                    // Stream Error: any still-pending petitions are not alerted.
+                    pendingPetitionCallIds.Clear();
 
                 }
 

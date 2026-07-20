@@ -9,7 +9,7 @@ public sealed class HumanPromptTimeoutException : Exception
 {
 
     public const string DefaultMessage =
-        "No human response was received before the ask_human timeout. Continue without operator input or explain what is needed.";
+        "No operator response was received before the human prompt timed out.";
 
     public HumanPromptTimeoutException()
         : base(DefaultMessage)

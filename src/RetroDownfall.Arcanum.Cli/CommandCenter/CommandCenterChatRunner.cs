@@ -20,6 +20,7 @@ internal sealed class CommandCenterChatRunner(
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     SessionWorkspaceService sessionWorkspace,
     CommandCenterWardCoordinator wardCoordinator,
+    CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterChatRunner> logger)
 {
     public async Task RunTurnAsync(
@@ -136,12 +137,14 @@ internal sealed class CommandCenterChatRunner(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshHeader),
                                 cancellationToken)
                             .ConfigureAwait(false);
+                        TryBeginHumanPrompt(evt);
                         break;
 
                     case IntelligenceEventType.ToolResult:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
                         StopThinking(state);
                         IngestToolResult(state, evt);
+                        TryCloseHumanPromptOnToolOutcome(evt, isError: false);
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
                                 cancellationToken)
@@ -152,6 +155,7 @@ internal sealed class CommandCenterChatRunner(
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
                         StopThinking(state);
                         IngestToolError(state, evt);
+                        TryCloseHumanPromptOnToolOutcome(evt, isError: true);
                         // Tolerated tool failures stay in Incantations — not Transcript Error.
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
@@ -212,6 +216,9 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.Error:
                         sawError = true;
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        _ = humanPromptCoordinator.TryClose(
+                            HumanPromptCloseReason.Expired,
+                            "Turn ended with an error — human prompt closed.");
                         state.Log.Append(SessionLogEntryKind.Error, evt.Message);
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog),
@@ -221,6 +228,9 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.Result:
                         sawResult = true;
+                        _ = humanPromptCoordinator.TryClose(
+                            HumanPromptCloseReason.Expired,
+                            "Turn completed — human prompt closed.");
                         await coalescer.FlushFinalAsync(cancellationToken).ConfigureAwait(false);
                         break;
                 }
@@ -229,16 +239,25 @@ internal sealed class CommandCenterChatRunner(
         catch (OperationCanceledException)
         {
             cancelled = true;
+            _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Cancelled);
             await coalescer.FlushCancelledAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Command Center chat turn failed.");
+            _ = humanPromptCoordinator.TryClose(
+                HumanPromptCloseReason.Expired,
+                "Turn failed — human prompt closed.");
             await coalescer.FlushBeforeBlockAsync(CancellationToken.None).ConfigureAwait(false);
             state.Log.Append(SessionLogEntryKind.Error, ex.Message);
         }
         finally
         {
+            // Stream ended unexpectedly (or normally) — never leave HITL modal orphaned.
+            _ = humanPromptCoordinator.TryClose(
+                HumanPromptCloseReason.Expired,
+                "Stream ended — human prompt closed.");
+
             await coalescer.FlushFinalAsync(CancellationToken.None).ConfigureAwait(false);
 
             string finalText = assistant.ToString();
@@ -371,6 +390,54 @@ internal sealed class CommandCenterChatRunner(
                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private void TryBeginHumanPrompt(IntelligenceEvent evt)
+    {
+        string toolName = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
+        // Do not route petition_dungeon_master / send_commlink_alert (or aliases) through ask_human.
+        if (!string.Equals(toolName, "ask_human", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!AskHumanToolCallStreamHandler.TryParseAskHumanArgs(evt, out var args, out _)
+            || args is null)
+        {
+            return;
+        }
+
+        string callId = evt.ToolCall?.CallId ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            return;
+        }
+
+        humanPromptCoordinator.BeginPrompt(
+            new HumanPromptRequest(callId, args.PromptId.Trim(), args.Question.Trim()));
+    }
+
+    private void TryCloseHumanPromptOnToolOutcome(IntelligenceEvent evt, bool isError)
+    {
+        if (!humanPromptCoordinator.IsActive)
+        {
+            return;
+        }
+
+        string? callId = evt.ToolCall?.CallId;
+        if (!humanPromptCoordinator.MatchesCallId(callId))
+        {
+            return;
+        }
+
+        string? text = evt.Data ?? evt.ToolCall?.ArgumentsJson ?? evt.Message;
+        string notice = isError
+            ? "Human prompt closed (tool error)."
+            : CommandCenterHumanPromptCoordinator.IsTimeoutText(text)
+                ? "Human prompt timed out."
+                : "Human prompt closed (tool result).";
+
+        _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Expired, notice);
     }
 
     private static void StopThinking(CommandCenterState state)

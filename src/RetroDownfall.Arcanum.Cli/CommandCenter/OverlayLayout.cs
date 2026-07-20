@@ -7,6 +7,12 @@ internal static class OverlayLayout
 
     public const int DefaultMaxWidth = 60;
 
+    /// <summary>Hard ceiling so a huge terminal does not spawn a wall-wide modal.</summary>
+    public const int AbsoluteMaxWidth = 120;
+
+    /// <summary>Max wrapped rows kept for a single long argument preview line.</summary>
+    public const int MaxWrappedPreviewRows = 4;
+
     /// <summary>
     /// Content-fit height: border chrome + optional filter row + list lines, clamped to the body.
     /// Avoids half-screen confirm dialogs when only a handful of lines are shown.
@@ -26,6 +32,61 @@ internal static class OverlayLayout
         return Math.Clamp(needed, MinHeight, maxHeight);
     }
 
-    public static int MeasureWidth(int terminalCols, int maxWidth = DefaultMaxWidth) =>
-        Math.Min(Math.Max(0, terminalCols - 4), maxWidth);
+    /// <summary>
+    /// Width grows with content (up to <see cref="AbsoluteMaxWidth"/>) but never past the terminal.
+    /// </summary>
+    public static int MeasureWidth(int terminalCols, int contentColumns = 0, int maxWidth = AbsoluteMaxWidth)
+    {
+        int terminalBudget = Math.Max(0, terminalCols - 4);
+        int wanted = Math.Max(DefaultMaxWidth, contentColumns + 2);
+        int capped = Math.Min(wanted, maxWidth);
+        return Math.Min(terminalBudget, capped);
+    }
+
+    /// <summary>
+    /// Wraps long lines to <paramref name="innerWidth"/>; truncates a single logical line to
+    /// <see cref="MaxWrappedPreviewRows"/> wrapped rows with an ellipsis on the last row.
+    /// </summary>
+    public static List<string> WrapLines(IReadOnlyList<string> lines, int innerWidth)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        int width = Math.Max(8, innerWidth);
+        List<string> result = new(lines.Count);
+
+        foreach (string line in lines)
+        {
+            if (string.IsNullOrEmpty(line))
+            {
+                result.Add(string.Empty);
+                continue;
+            }
+
+            if (line.Length <= width)
+            {
+                result.Add(line);
+                continue;
+            }
+
+            int offset = 0;
+            int rows = 0;
+            while (offset < line.Length && rows < MaxWrappedPreviewRows)
+            {
+                int remaining = line.Length - offset;
+                bool lastAllowed = rows == MaxWrappedPreviewRows - 1;
+                if (lastAllowed && remaining > width)
+                {
+                    int take = Math.Max(1, width - 1);
+                    result.Add(line.Substring(offset, take) + "…");
+                    break;
+                }
+
+                int chunk = Math.Min(width, remaining);
+                result.Add(line.Substring(offset, chunk));
+                offset += chunk;
+                rows++;
+            }
+        }
+
+        return result;
+    }
 }

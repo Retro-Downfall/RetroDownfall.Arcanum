@@ -204,10 +204,14 @@ public sealed class ToolExecutionPipeline(
     /// </summary>
     private static void RecordToolInvocationMetric(string toolName, string outcome)
     {
+        // Canonicalize the internal use_commlink alias so metrics stay on send_commlink_alert.
+        string metricToolName = string.Equals(toolName, "use_commlink", StringComparison.Ordinal)
+            ? "send_commlink_alert"
+            : toolName;
 
         ArcanumMetrics.ToolInvocationsTotal.Add(
             1,
-            new KeyValuePair<string, object?>("tool_name", toolName),
+            new KeyValuePair<string, object?>("tool_name", metricToolName),
             new KeyValuePair<string, object?>("outcome", outcome));
 
     }
@@ -983,6 +987,7 @@ public sealed class ToolExecutionPipeline(
 
             }
 
+            case "send_commlink_alert":
             case "use_commlink":
             case "petition_dungeon_master":
             {

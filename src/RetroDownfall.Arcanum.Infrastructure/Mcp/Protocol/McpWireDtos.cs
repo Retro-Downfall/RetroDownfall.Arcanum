@@ -263,7 +263,8 @@ public sealed record AdjustInitiativeArgs
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>use_commlink</c> tool (Comm Link alerts).
+/// Arguments accepted by the in-process <c>send_commlink_alert</c> tool (Comm Link alerts).
+/// Legacy tools/call alias <c>use_commlink</c> accepts the same shape.
 /// </summary>
 public sealed record UseCommlinkParams
 {
@@ -292,6 +293,22 @@ public sealed record PetitionDungeonMasterParams
 
     [JsonPropertyName("source")]
     public string? Source { get; init; }
+}
+
+/// <summary>
+/// Structured result from <c>petition_dungeon_master</c>. Delivery is informational —
+/// the tool never sets MCP <c>IsError</c> for Comm Link delivery outcomes.
+/// <c>notificationStatus</c> is <c>delivered</c>, <c>suppressed</c>, or <c>failed</c>.
+/// </summary>
+public sealed record PetitionDungeonMasterResultWire
+{
+
+    [JsonPropertyName("escalationRequested")]
+    public required bool EscalationRequested { get; init; }
+
+    [JsonPropertyName("notificationStatus")]
+    public required string NotificationStatus { get; init; }
+
 }
 
 /// <summary>

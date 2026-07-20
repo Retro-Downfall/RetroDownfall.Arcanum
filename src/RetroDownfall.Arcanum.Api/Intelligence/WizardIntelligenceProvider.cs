@@ -70,6 +70,7 @@ public sealed class WizardIntelligenceProvider(
     InferenceTokenizerResolver tokenizerResolver,
     BudgetMonitor budgetMonitor,
     ISessionAttachmentStore sessionAttachmentStore,
+    IHumanPromptRegistry humanPromptRegistry,
     IProviderHealthTracker? healthTracker = null,
     GuardrailsPipeline? guardrailsPipeline = null) : IArcanumIntelligenceProvider
 {
@@ -81,6 +82,9 @@ public sealed class WizardIntelligenceProvider(
 
     private const string PublicInferenceTimeoutMessage =
         "Inference timed out. Increase Arcanum:Intelligence:InferenceTimeoutSeconds or retry with a shorter prompt.";
+
+    private const string AskHumanUnavailableMessage =
+        "ask_human is only available during attended streaming turns with a live human-response channel.";
 
     private static readonly ArcanumLocalTimeTool _localTimeTool = new();
 
@@ -445,6 +449,9 @@ public sealed class WizardIntelligenceProvider(
             maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(attachmentSettings.MaxIndexItemsInPrompt),
             maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(attachmentSettings.MaxIndexBytesInPrompt));
 
+        // Buffered turns never have a live HITL channel — ask_human would deadlock until timeout.
+        const bool humanInteractionAvailable = false;
+
         List<AITool> toolSet = request.ForwardClientTools
             ? BuildClientForwardedToolSet(request)
             : await BuildToolSetWithMcpAsync(
@@ -453,7 +460,11 @@ public sealed class WizardIntelligenceProvider(
                 grimoireTurn.SessionId ?? request.SessionId,
                 inferenceToken).ConfigureAwait(false);
 
-        ToolExecutionPipeline.TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, inferenceToken).ConfigureAwait(false);
+        ToolExecutionPipeline.TurnContext turnContext = await BuildTurnContextAsync(
+            request,
+            toolSet,
+            humanInteractionAvailable,
+            inferenceToken).ConfigureAwait(false);
 
         bool inferenceUsesTools = true;
 
@@ -554,9 +565,43 @@ public sealed class WizardIntelligenceProvider(
                     {
                         foreach (FunctionCallContent fcc in calls)
                         {
+                            FunctionCallContent invokeFcc = fcc;
+
+                            if (IsAskHumanTool(fcc))
+                            {
+                                // Defense in depth: buffered path never advertises ask_human, but if it
+                                // appears do not register an invisible waiter.
+                                ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
+                                    fcc,
+                                    AskHumanUnavailableMessage);
+
+                                (observedToolCalls ??= []).Add(new PromptToolCall(denied.CallId, denied.ToolName, denied.ArgsSnapshot));
+
+                                auditContext?.ToolNames.Add(denied.ToolName);
+
+                                auditContext?.ToolArgumentsJson.Add(denied.ArgsSnapshot);
+
+                                ToolExecutionPipeline.AppendToolExchangeToMessages(
+                                    chatMessages,
+                                    fcc,
+                                    denied.CallId,
+                                    denied.ResultText);
+
+                                await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                                    grimoireTurn.SessionId,
+                                    denied.ToolName,
+                                    denied.ArgsSnapshot,
+                                    denied.ResultText,
+                                    targetModel,
+                                    inferenceToken)
+                                    .ConfigureAwait(false);
+
+                                continue;
+                            }
+
                             ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
                                 .ProcessSingleToolCallAsync(
-                                    fcc,
+                                    invokeFcc,
                                     request,
                                     chatOptions,
                                     activeSpell,
@@ -574,7 +619,7 @@ public sealed class WizardIntelligenceProvider(
 
                             ToolExecutionPipeline.AppendToolExchangeToMessages(
                                 chatMessages,
-                                fcc,
+                                invokeFcc,
                                 processed.CallId,
                                 processed.ResultText);
 
@@ -1245,6 +1290,9 @@ public sealed class WizardIntelligenceProvider(
 
         Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
+        Channel<IntelligenceEvent>? liveHumanPromptChannel = null;
+        IHumanPromptLiveEmitter? previousHumanPromptEmitter = HumanPromptLiveEmitterAmbient.Current;
+
         try
         {
             string targetModel = lease.ResolvedModel;
@@ -1481,6 +1529,26 @@ public sealed class WizardIntelligenceProvider(
             yield return new IntelligenceEvent(IntelligenceEventType.Status, IntelligenceStatusMessages.MemoryCompressionNotice);
         }
 
+        // Per-turn live HITL emitter — created before tool-set assembly so HumanInteractionAvailable
+        // can strip ask_human when no live response channel exists (buffered path never creates this).
+        // Also published via AsyncLocal so the singleton MCP ElicitationHandler can emit ask_human-shaped
+        // frames on this same channel during nested tool calls.
+        Func<IntelligenceEvent, CancellationToken, Task>? liveHumanPromptEmit = null;
+
+        if (!request.UnattendedMode)
+        {
+            liveHumanPromptChannel = Channel.CreateUnbounded<IntelligenceEvent>();
+
+            liveHumanPromptEmit = async (evt, ct) =>
+            {
+                await liveHumanPromptChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
+            };
+
+            HumanPromptLiveEmitterAmbient.Current = new ChannelHumanPromptLiveEmitter(liveHumanPromptChannel);
+        }
+
+        bool humanInteractionAvailable = liveHumanPromptEmit is not null;
+
         List<AITool> streamToolSet = request.ForwardClientTools
             ? BuildClientForwardedToolSet(request)
             : await BuildToolSetWithMcpAsync(
@@ -1489,7 +1557,11 @@ public sealed class WizardIntelligenceProvider(
                 grimoireTurn.SessionId ?? request.SessionId,
                 inferenceToken).ConfigureAwait(false);
 
-        ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, inferenceToken).ConfigureAwait(false);
+        ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
+            request,
+            streamToolSet,
+            humanInteractionAvailable,
+            inferenceToken).ConfigureAwait(false);
 
         bool streamUsesTools = true;
 
@@ -1693,7 +1765,7 @@ public sealed class WizardIntelligenceProvider(
                         "Streaming inference exceeded tool round limit for model {ModelName}.",
                         targetModel);
 
-                    inferenceError = "Tool invocation limit reached.";
+                    inferenceError = ErrorCodes.Hub.ToolLoop + ": Tool invocation limit reached.";
 
                     break;
                 }
@@ -1708,106 +1780,177 @@ public sealed class WizardIntelligenceProvider(
                 {
                     foreach (FunctionCallContent fcc in toolCalls)
                     {
-                        string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
+                        FunctionCallContent invokeFcc = fcc;
 
-                        string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
+                        IHumanPromptReservation? askHumanReservation = null;
 
-                        string callId = toolExecutionPipeline.ResolveCallId(fcc);
-
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.ToolCall,
-                            fcc.Name ?? string.Empty,
-                            toolCallData,
-                            null,
-                            new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
-
-                        Channel<IntelligenceEvent> liveWards = Channel.CreateUnbounded<IntelligenceEvent>();
-
-                        async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
+                        try
                         {
-                            try
+                            if (IsAskHumanTool(fcc))
                             {
-                                return await toolExecutionPipeline
-                                    .ProcessSingleToolCallAsync(
-                                        fcc,
-                                        request,
-                                        streamChatOptions,
-                                        streamActiveSpell,
-                                        grimoireTurn.SessionId?.ToString(),
-                                        streamTurnContext,
-                                        suppressInvocationFailures: true,
-                                        inferenceToken,
-                                        liveWardEmit: async (wardEvent, ct) =>
-                                        {
-                                            await liveWards.Writer.WriteAsync(wardEvent, ct).ConfigureAwait(false);
-                                        })
-                                    .ConfigureAwait(false);
+                                if (!humanInteractionAvailable)
+                                {
+                                    await foreach (IntelligenceEvent denialEvent in EmitSyntheticAskHumanDenialAsync(
+                                                       fcc,
+                                                       AskHumanUnavailableMessage,
+                                                       toolCallIndex,
+                                                       chatMessages,
+                                                       grimoireTurn,
+                                                       targetModel,
+                                                       auditContext,
+                                                       inferenceToken)
+                                                       .ConfigureAwait(false))
+                                    {
+                                        yield return denialEvent;
+                                    }
+
+                                    toolCallIndex++;
+
+                                    continue;
+                                }
+
+                                askHumanReservation = humanPromptRegistry.TryCreateReservation();
+
+                                if (askHumanReservation is null)
+                                {
+                                    await foreach (IntelligenceEvent denialEvent in EmitSyntheticAskHumanDenialAsync(
+                                                       fcc,
+                                                       HumanPromptCapExceededException.DefaultMessage,
+                                                       toolCallIndex,
+                                                       chatMessages,
+                                                       grimoireTurn,
+                                                       targetModel,
+                                                       auditContext,
+                                                       inferenceToken)
+                                                       .ConfigureAwait(false))
+                                    {
+                                        yield return denialEvent;
+                                    }
+
+                                    toolCallIndex++;
+
+                                    continue;
+                                }
+
+                                invokeFcc = PrepareAskHumanFunctionCall(fcc, askHumanReservation.PromptId);
                             }
-                            finally
-                            {
-                                liveWards.Writer.TryComplete();
-                            }
-                        }
 
-                        Task<ToolExecutionPipeline.ProcessedToolCall> processTask = ProcessWithLiveWardsAsync();
+                            string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(invokeFcc);
 
-                        await foreach (IntelligenceEvent wardEvent in liveWards.Reader.ReadAllAsync(inferenceToken)
-                                           .ConfigureAwait(false))
-                        {
-                            yield return wardEvent;
-                        }
+                            string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(invokeFcc, argsSnapshot);
 
-                        ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
+                            string callId = toolExecutionPipeline.ResolveCallId(invokeFcc);
 
-                        foreach (IntelligenceEvent wardEvent in processed.WardEvents)
-                        {
-                            yield return wardEvent;
-                        }
-
-                        if (processed.Failed)
-                        {
                             yield return new IntelligenceEvent(
-                                IntelligenceEventType.ToolError,
+                                IntelligenceEventType.ToolCall,
+                                invokeFcc.Name ?? string.Empty,
+                                toolCallData,
+                                null,
+                                new IntelligenceToolCallEvent(callId, invokeFcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
+
+                            Channel<IntelligenceEvent> liveWards = Channel.CreateUnbounded<IntelligenceEvent>();
+
+                            async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
+                            {
+                                try
+                                {
+                                    return await toolExecutionPipeline
+                                        .ProcessSingleToolCallAsync(
+                                            invokeFcc,
+                                            request,
+                                            streamChatOptions,
+                                            streamActiveSpell,
+                                            grimoireTurn.SessionId?.ToString(),
+                                            streamTurnContext,
+                                            suppressInvocationFailures: true,
+                                            inferenceToken,
+                                            liveWardEmit: async (wardEvent, ct) =>
+                                            {
+                                                await liveWards.Writer.WriteAsync(wardEvent, ct).ConfigureAwait(false);
+                                            })
+                                        .ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    liveWards.Writer.TryComplete();
+                                }
+                            }
+
+                            Task<ToolExecutionPipeline.ProcessedToolCall> processTask = ProcessWithLiveWardsAsync();
+
+                            // Pump wards and elicitation/HITL frames concurrently while the tool runs.
+                            // Elicitation emits ask_human-shaped ToolCall frames on the per-turn channel
+                            // and blocks until the operator answers — those frames must reach the client
+                            // before AwaitReservedAsync can complete.
+                            await foreach (IntelligenceEvent liveEvent in PumpWardAndHumanEventsAsync(
+                                               liveWards.Reader,
+                                               liveHumanPromptChannel?.Reader,
+                                               processTask,
+                                               inferenceToken)
+                                               .ConfigureAwait(false))
+                            {
+                                yield return liveEvent;
+                            }
+
+                            ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
+
+                            foreach (IntelligenceEvent wardEvent in processed.WardEvents)
+                            {
+                                yield return wardEvent;
+                            }
+
+                            if (processed.Failed)
+                            {
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.ToolError,
+                                    processed.ToolName,
+                                    "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                                    null,
+                                    new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
+                            }
+
+                            yield return new IntelligenceEvent(
+                                IntelligenceEventType.ToolResult,
                                 processed.ToolName,
-                                "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                                processed.ResultText,
                                 null,
                                 new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
+
+                            auditContext?.ToolNames.Add(processed.ToolName);
+
+                            auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
+
+                            ToolExecutionPipeline.AppendToolExchangeToMessages(
+                                chatMessages,
+                                invokeFcc,
+                                processed.CallId,
+                                processed.ResultText);
+
+                            if (processed.AdditionalContextContents is { Count: > 0 } extras)
+                            {
+                                // Prefer a User message so vision providers receive DataContent on the next round
+                                // (Tool-role messages are a poor carrier for multimodal payload).
+                                chatMessages.Add(new MeAiChatMessage(ChatRole.User, extras.ToList()));
+                            }
+
+                            await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                                grimoireTurn.SessionId,
+                                processed.ToolName,
+                                processed.ArgsSnapshot,
+                                processed.ResultText,
+                                targetModel,
+                                inferenceToken)
+                                .ConfigureAwait(false);
+
+                            toolCallIndex++;
                         }
-
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.ToolResult,
-                            processed.ToolName,
-                            processed.ResultText,
-                            null,
-                            new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
-
-                        auditContext?.ToolNames.Add(processed.ToolName);
-
-                        auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
-
-                        ToolExecutionPipeline.AppendToolExchangeToMessages(
-                            chatMessages,
-                            fcc,
-                            processed.CallId,
-                            processed.ResultText);
-
-                        if (processed.AdditionalContextContents is { Count: > 0 } extras)
+                        finally
                         {
-                            // Prefer a User message so vision providers receive DataContent on the next round
-                            // (Tool-role messages are a poor carrier for multimodal payload).
-                            chatMessages.Add(new MeAiChatMessage(ChatRole.User, extras.ToList()));
+                            if (askHumanReservation is not null)
+                            {
+                                await askHumanReservation.DisposeAsync().ConfigureAwait(false);
+                            }
                         }
-
-                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                            grimoireTurn.SessionId,
-                            processed.ToolName,
-                            processed.ArgsSnapshot,
-                            processed.ResultText,
-                            targetModel,
-                            inferenceToken)
-                            .ConfigureAwait(false);
-
-                        toolCallIndex++;
                     }
                 }
                 finally
@@ -1994,6 +2137,10 @@ public sealed class WizardIntelligenceProvider(
         }
         finally
         {
+            HumanPromptLiveEmitterAmbient.Current = previousHumanPromptEmitter;
+
+            liveHumanPromptChannel?.Writer.TryComplete();
+
             SessionAttachmentTurnBudget.EndTurn();
 
             await grimoireTurnWriter
@@ -2007,6 +2154,7 @@ public sealed class WizardIntelligenceProvider(
     private async Task<ToolExecutionPipeline.TurnContext> BuildTurnContextAsync(
         PingRequest request,
         IReadOnlyList<AITool> toolSet,
+        bool humanInteractionAvailable,
         CancellationToken cancellationToken)
     {
         Campaign? campaign = null;
@@ -2051,6 +2199,8 @@ public sealed class WizardIntelligenceProvider(
             ? FilterToolsForUnattended(inferenceTools)
             : inferenceTools;
 
+        inferenceTools = FilterAskHumanUnlessAvailable(inferenceTools, humanInteractionAvailable);
+
         // W3.5: capture every spell-script root (active spell + resonant dependencies) so the Sanctum
         // preflight validates each candidate path the tool may resolve, not just the active spell's.
         IReadOnlyList<string> spellScriptRoots = toolSet
@@ -2070,6 +2220,30 @@ public sealed class WizardIntelligenceProvider(
         };
     }
 
+    private static IReadOnlyList<AITool> FilterAskHumanUnlessAvailable(
+        IReadOnlyList<AITool> tools,
+        bool humanInteractionAvailable)
+    {
+        if (humanInteractionAvailable)
+        {
+            return tools;
+        }
+
+        var filtered = new List<AITool>(tools.Count);
+
+        foreach (AITool tool in tools)
+        {
+            if (tool is AIFunction function && string.Equals(function.Name, "ask_human", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            filtered.Add(tool);
+        }
+
+        return filtered;
+    }
+
     private static IReadOnlyList<AITool> FilterToolsForUnattended(IReadOnlyList<AITool> tools)
     {
         var filtered = new List<AITool>(tools.Count);
@@ -2085,6 +2259,182 @@ public sealed class WizardIntelligenceProvider(
         }
 
         return filtered;
+    }
+
+    private static bool IsAskHumanTool(FunctionCallContent fcc) =>
+        string.Equals(fcc.Name, "ask_human", StringComparison.Ordinal);
+
+    private sealed class ChannelHumanPromptLiveEmitter(Channel<IntelligenceEvent> channel) : IHumanPromptLiveEmitter
+    {
+        public ValueTask EmitAsync(IntelligenceEvent evt, CancellationToken cancellationToken) =>
+            channel.Writer.WriteAsync(evt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Yields ward + human-prompt frames until <paramref name="processTask"/> completes and the
+    /// ward channel is finished. The human channel is per-turn and is not completed here.
+    /// </summary>
+    private static async IAsyncEnumerable<IntelligenceEvent> PumpWardAndHumanEventsAsync(
+        ChannelReader<IntelligenceEvent> wards,
+        ChannelReader<IntelligenceEvent>? humans,
+        Task processTask,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            while (wards.TryRead(out IntelligenceEvent? ward) && ward is not null)
+            {
+                yield return ward;
+            }
+
+            if (humans is not null)
+            {
+                while (humans.TryRead(out IntelligenceEvent? human) && human is not null)
+                {
+                    yield return human;
+                }
+            }
+
+            if (processTask.IsCompleted && wards.Completion.IsCompleted)
+            {
+                while (wards.TryRead(out IntelligenceEvent? ward) && ward is not null)
+                {
+                    yield return ward;
+                }
+
+                if (humans is not null)
+                {
+                    while (humans.TryRead(out IntelligenceEvent? human) && human is not null)
+                    {
+                        yield return human;
+                    }
+                }
+
+                yield break;
+            }
+
+            List<Task> waits = [processTask, wards.WaitToReadAsync(cancellationToken).AsTask()];
+            if (humans is not null)
+            {
+                waits.Add(humans.WaitToReadAsync(cancellationToken).AsTask());
+            }
+
+            _ = await Task.WhenAny(waits).ConfigureAwait(false);
+
+            if (processTask.IsCompleted)
+            {
+                // Surface tool failures later via await processTask; ignore here.
+                try
+                {
+                    await processTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // ignored — caller awaits processTask after the pump
+                }
+            }
+        }
+    }
+
+    private static FunctionCallContent PrepareAskHumanFunctionCall(FunctionCallContent fcc, string hostPromptId)
+    {
+        string question = ExtractAskHumanQuestion(fcc);
+
+        Dictionary<string, object?> preparedArgs = new(StringComparer.Ordinal)
+        {
+            ["question"] = question,
+            ["promptId"] = hostPromptId,
+        };
+
+        // Preserve provider CallId; only promptId is host-owned.
+        return new FunctionCallContent(fcc.CallId ?? string.Empty, fcc.Name, preparedArgs);
+    }
+
+    private static string ExtractAskHumanQuestion(FunctionCallContent fcc)
+    {
+        if (fcc.Arguments is null || fcc.Arguments.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        if (!fcc.Arguments.TryGetValue("question", out object? raw)
+            && !fcc.Arguments.TryGetValue("Question", out raw))
+        {
+            return string.Empty;
+        }
+
+        return raw switch
+        {
+            null => string.Empty,
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? string.Empty,
+            JsonElement je => je.ToString(),
+            _ => raw.ToString() ?? string.Empty,
+        };
+    }
+
+    private ToolExecutionPipeline.ProcessedToolCall CreateSyntheticAskHumanDenial(
+        FunctionCallContent fcc,
+        string message)
+    {
+        string callId = toolExecutionPipeline.ResolveCallId(fcc);
+
+        string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
+
+        return new ToolExecutionPipeline.ProcessedToolCall(
+            callId,
+            fcc.Name ?? "ask_human",
+            argsSnapshot,
+            message,
+            [],
+            Failed: true);
+    }
+
+    private async IAsyncEnumerable<IntelligenceEvent> EmitSyntheticAskHumanDenialAsync(
+        FunctionCallContent fcc,
+        string message,
+        int toolCallIndex,
+        List<MeAiChatMessage> chatMessages,
+        GrimoireTurnWriter.TurnHandle grimoireTurn,
+        string targetModel,
+        InferenceAuditContext? auditContext,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(fcc, message);
+
+        // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.
+        yield return new IntelligenceEvent(
+            IntelligenceEventType.ToolError,
+            denied.ToolName,
+            message,
+            null,
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+
+        yield return new IntelligenceEvent(
+            IntelligenceEventType.ToolResult,
+            denied.ToolName,
+            denied.ResultText,
+            null,
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+
+        auditContext?.ToolNames.Add(denied.ToolName);
+
+        auditContext?.ToolArgumentsJson.Add(denied.ArgsSnapshot);
+
+        ToolExecutionPipeline.AppendToolExchangeToMessages(
+            chatMessages,
+            fcc,
+            denied.CallId,
+            denied.ResultText);
+
+        await grimoireTurnWriter.TryAppendToolInteractionAsync(
+            grimoireTurn.SessionId,
+            denied.ToolName,
+            denied.ArgsSnapshot,
+            denied.ResultText,
+            targetModel,
+            cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
@@ -3022,6 +3372,7 @@ public sealed class WizardIntelligenceProvider(
         "read_lore",
         "search_archives",
         "ask_human",
+        "send_commlink_alert",
         "use_commlink",
         "petition_dungeon_master",
         ArcanumLocalTimeTool.ToolName,

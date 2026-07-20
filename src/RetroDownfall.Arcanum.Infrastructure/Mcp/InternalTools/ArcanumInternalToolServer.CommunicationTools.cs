@@ -39,8 +39,12 @@ internal sealed partial class ArcanumInternalToolServer
 
         try
         {
+            // Host already reserved this promptId before emitting ToolCall; await without re-registering.
             string answer = await _humanPrompts
-                .WaitForResponseAsync(args.PromptId.Trim(), cancellationToken)
+                .AwaitReservedAsync(
+                    args.PromptId.Trim(),
+                    HumanPromptRegistryHardCeiling,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             return new McpToolsCallResultWire
@@ -56,16 +60,15 @@ internal sealed partial class ArcanumInternalToolServer
         {
             throw;
         }
-        catch (HumanPromptTimeoutException ex)
+        catch (HumanPromptTimeoutException)
         {
-            // Expected tool-level timeout — model-visible result, not an infrastructure fault.
             return new McpToolsCallResultWire
             {
                 Content =
                 [
-                    new McpToolContentTextWire { Text = ex.Message },
+                    new McpToolContentTextWire { Text = HumanPromptTimeoutException.DefaultMessage },
                 ],
-                IsError = false,
+                IsError = true,
             };
         }
         catch (HumanPromptCapExceededException ex)
@@ -74,11 +77,14 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (InvalidOperationException ex)
         {
-            _logger?.LogError(ex, "ask_human registration failed.");
+            _logger?.LogError(ex, "ask_human await failed.");
 
             return ToolError("ask_human: an internal error occurred.");
         }
     }
+
+    // Mirrors HumanPromptRegistry.HardCeiling without taking a dependency on the Api assembly.
+    private static readonly TimeSpan HumanPromptRegistryHardCeiling = TimeSpan.FromMinutes(30);
 
     private Task<McpToolsCallResultWire> ExecuteAdjustInitiativeAsync(
         JsonElement arguments,
@@ -124,7 +130,7 @@ internal sealed partial class ArcanumInternalToolServer
             });
     }
 
-    private async Task<McpToolsCallResultWire> ExecuteUseCommlinkAsync(
+    private async Task<McpToolsCallResultWire> ExecuteSendCommlinkAlertAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
@@ -140,9 +146,9 @@ internal sealed partial class ArcanumInternalToolServer
         catch (JsonException ex)
         {
 
-            _logger?.LogError(ex, "use_commlink argument deserialization failed.");
+            _logger?.LogError(ex, "send_commlink_alert argument deserialization failed.");
 
-            return ToolError("Invalid arguments for use_commlink.");
+            return ToolError("Invalid arguments for send_commlink_alert.");
 
         }
 
@@ -152,7 +158,7 @@ internal sealed partial class ArcanumInternalToolServer
             || string.IsNullOrWhiteSpace(args.Severity))
         {
 
-            return ToolError("use_commlink requires non-empty 'title', 'body', and 'severity'.");
+            return ToolError("send_commlink_alert requires non-empty 'title', 'body', and 'severity'.");
 
         }
 
@@ -163,7 +169,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         }
 
-        string source = string.IsNullOrWhiteSpace(args.Source) ? "use_commlink" : args.Source.Trim();
+        string source = string.IsNullOrWhiteSpace(args.Source) ? "send_commlink_alert" : args.Source.Trim();
 
         CommLinkMessage message = new(args.Title.Trim(), args.Body.Trim(), severity, source);
 
@@ -174,22 +180,33 @@ internal sealed partial class ArcanumInternalToolServer
 
             ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
 
-            Result r = await dispatcher
+            Result<CommLinkDeliveryResult> r = await dispatcher
                 .DispatchAsync(message, cancellationToken)
                 .ConfigureAwait(false);
 
             if (r.IsFailure)
             {
 
-                return ToolError($"use_commlink failed: {r.Error.Message}");
+                return new McpToolsCallResultWire
+                {
+                    Content =
+                    [
+                        new McpToolContentTextWire { Text = "failed" },
+                    ],
+                    IsError = true,
+                };
 
             }
+
+            string status = r.Value.Status == CommLinkDeliveryStatus.Delivered
+                ? "delivered"
+                : "suppressed";
 
             return new McpToolsCallResultWire
             {
                 Content =
                 [
-                    new McpToolContentTextWire { Text = "Comm Link alert dispatched successfully." },
+                    new McpToolContentTextWire { Text = status },
                 ],
                 IsError = false,
             };
@@ -204,9 +221,9 @@ internal sealed partial class ArcanumInternalToolServer
         catch (Exception ex)
         {
 
-            _logger?.LogError(ex, "use_commlink dispatch failed.");
+            _logger?.LogError(ex, "send_commlink_alert dispatch failed.");
 
-            return ToolError("An internal error occurred during use_commlink.");
+            return ToolError("An internal error occurred during send_commlink_alert.");
 
         }
 
@@ -258,28 +275,18 @@ internal sealed partial class ArcanumInternalToolServer
 
             ICommLinkDispatcher dispatcher = scope.ServiceProvider.GetRequiredService<ICommLinkDispatcher>();
 
-            Result r = await dispatcher
+            Result<CommLinkDeliveryResult> r = await dispatcher
                 .DispatchAsync(message, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (r.IsFailure)
-            {
+            // Delivery is informational: petition never sets IsError for Comm Link outcomes.
+            string notificationStatus = r.IsFailure
+                ? "failed"
+                : r.Value.Status == CommLinkDeliveryStatus.Delivered
+                    ? "delivered"
+                    : "suppressed";
 
-                return ToolError($"petition_dungeon_master failed: {r.Error.Message}");
-
-            }
-
-            return new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire
-                    {
-                        Text = "Petition sent to the Dungeon Master. The Apprentice awaits Divine Intervention.",
-                    },
-                ],
-                IsError = false,
-            };
+            return PetitionResult(notificationStatus);
 
         }
         catch (OperationCanceledException)
@@ -293,9 +300,31 @@ internal sealed partial class ArcanumInternalToolServer
 
             _logger?.LogError(ex, "petition_dungeon_master dispatch failed.");
 
-            return ToolError("An internal error occurred during petition_dungeon_master.");
+            return PetitionResult("failed");
 
         }
+
+    }
+
+    private McpToolsCallResultWire PetitionResult(string notificationStatus)
+    {
+
+        PetitionDungeonMasterResultWire payload = new()
+        {
+            EscalationRequested = true,
+            NotificationStatus = notificationStatus,
+        };
+
+        string json = JsonSerializer.Serialize(payload, _json.PetitionDungeonMasterResultWire);
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = json },
+            ],
+            IsError = false,
+        };
 
     }
 

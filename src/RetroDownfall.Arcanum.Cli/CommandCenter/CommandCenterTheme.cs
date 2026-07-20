@@ -22,6 +22,9 @@ internal static class CommandCenterTheme
 
     public const string InputScheme = "ArcanumCC.Input";
 
+    /// <summary>Modal overlay — blue field with silver lettering.</summary>
+    public const string OverlayScheme = "ArcanumCC.Overlay";
+
     /// <summary>Pane chrome — silver double-line borders.</summary>
     public static LineStyle PaneBorderStyle { get; private set; } = LineStyle.Double;
 
@@ -145,6 +148,29 @@ internal static class CommandCenterTheme
             Editable = input,
             ReadOnly = muted,
         });
+
+        // Modal: banner-border blue (#60A5FA) ground, silver type.
+        TgAttr overlayNormal = new(silverBright, blueBright);
+        TgAttr overlayFocus = new(Color.White, blueBright);
+        TgAttr overlayHot = new(silver, blueBright);
+        TgAttr overlayBorder = new(silverBright, blueBright);
+        TgAttr overlayHighlight = new(blue, silverBright);
+        TgAttr overlayDisabled = new(silver, blueBright);
+        TgAttr overlayEditable = new(silverBright, blueBright);
+
+        Upsert(OverlayScheme, new Scheme
+        {
+            Normal = overlayNormal,
+            HotNormal = overlayHot,
+            Focus = overlayFocus,
+            HotFocus = overlayFocus,
+            Active = overlayBorder,
+            HotActive = overlayBorder,
+            Highlight = overlayHighlight,
+            Disabled = overlayDisabled,
+            Editable = overlayEditable,
+            ReadOnly = overlayNormal,
+        });
     }
 
     private static void RegisterMono()
@@ -156,6 +182,8 @@ internal static class CommandCenterTheme
         TgAttr disabled = new(Color.DarkGray, Color.Black);
         TgAttr input = new(Color.White, Color.DarkGray);
         TgAttr inputFocus = new(Color.Black, Color.White);
+        TgAttr overlay = new(Color.White, Color.Blue);
+        TgAttr overlayHighlight = new(Color.Blue, Color.White);
 
         Scheme mono = new()
         {
@@ -200,6 +228,19 @@ internal static class CommandCenterTheme
             Disabled = disabled,
             Editable = input,
             ReadOnly = muted,
+        });
+        Upsert(OverlayScheme, new Scheme
+        {
+            Normal = overlay,
+            HotNormal = overlay,
+            Focus = overlay,
+            HotFocus = overlay,
+            Active = overlay,
+            HotActive = overlay,
+            Highlight = overlayHighlight,
+            Disabled = overlay,
+            Editable = overlay,
+            ReadOnly = overlay,
         });
     }
 

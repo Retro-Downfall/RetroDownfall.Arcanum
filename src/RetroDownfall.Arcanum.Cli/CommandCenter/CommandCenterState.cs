@@ -286,6 +286,7 @@ internal enum CommandCenterOverlayKind
     QuitConfirm,
     DiscardConfirm,
     WardConfirm,
+    HumanPrompt,
 }
 
 internal enum CommandCenterUiUpdateKind

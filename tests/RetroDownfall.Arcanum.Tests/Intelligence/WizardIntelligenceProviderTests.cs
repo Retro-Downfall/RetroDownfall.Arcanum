@@ -1100,7 +1100,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains(
             events,
             static e => e.Type == IntelligenceEventType.Error
-                && e.Message == "Tool invocation limit reached.");
+                && e.Message.Contains("Tool invocation limit reached.", StringComparison.Ordinal)
+                && e.Message.Contains(ErrorCodes.Hub.ToolLoop, StringComparison.Ordinal));
 
     }
 
@@ -2147,6 +2148,129 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains("read_file_chunk", toolNames);
 
         Assert.DoesNotContain("ask_human", toolNames);
+
+    }
+
+    [Fact]
+    public async Task Scenario54b_BufferedAttended_FiltersAskHumanTool()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("buffered attended");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("ask_human"));
+
+        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "tools",
+                SkipSpellRouting = true,
+                UnattendedMode = false,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+
+        Assert.Contains("read_file_chunk", toolNames);
+
+        Assert.DoesNotContain("ask_human", toolNames);
+
+    }
+
+    [Fact]
+    public async Task Scenario54c_StreamingAttended_AdvertisesAskHumanTool()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("streamed");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("ask_human"));
+
+        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "tools",
+                SkipSpellRouting = true,
+                UnattendedMode = false,
+            });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+
+        Assert.Contains("ask_human", toolNames);
+
+        Assert.Contains("read_file_chunk", toolNames);
+
+    }
+
+    [Fact]
+    public async Task Scenario54d_StreamingAskHuman_PreparesHostPromptIdBeforeToolCall()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(
+            "ask_human",
+            callId: "call_ask_1",
+            arguments: new Dictionary<string, object?>
+            {
+                ["question"] = "What is the passphrase?",
+                ["promptId"] = "model-supplied-id",
+            });
+
+        chat.EnqueueStreamTokens("done");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("ask_human"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "ask",
+                SkipSpellRouting = true,
+                UnattendedMode = false,
+            });
+
+        IntelligenceEvent toolCall = Assert.Single(events, static e => e.Type == IntelligenceEventType.ToolCall);
+
+        Assert.NotNull(toolCall.ToolCall);
+
+        Assert.Equal("call_ask_1", toolCall.ToolCall.CallId);
+
+        Assert.Equal("ask_human", toolCall.ToolCall.Name);
+
+        Assert.Contains("What is the passphrase?", toolCall.ToolCall.ArgumentsJson, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("model-supplied-id", toolCall.ToolCall.ArgumentsJson, StringComparison.Ordinal);
+
+        Assert.Contains("\"promptId\":", toolCall.ToolCall.ArgumentsJson, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolError
+                && (e.Message?.Contains("Too many ask_human", StringComparison.Ordinal) ?? false));
 
     }
 
@@ -3593,6 +3717,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             budgetMonitor,
             new NoOpSessionAttachmentStore(),
+            new HumanPromptRegistry(),
             null,
             guardrailsPipeline);
     }

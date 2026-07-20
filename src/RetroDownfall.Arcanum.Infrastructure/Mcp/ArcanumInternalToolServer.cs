@@ -639,23 +639,23 @@ internal sealed partial class ArcanumInternalToolServer
             },
             new McpToolDefinitionWire
             {
-                Name = "use_commlink",
+                Name = "send_commlink_alert",
                 Description =
-                    "Sends a high-priority Comm Link alert to the operator (e.g. configured webhook). Use when immediate human attention is required.",
+                    "Send a one-way external notification through the configured Comm Link. This does not wait for or receive a reply.",
                 InputSchema = _useCommlinkSchema,
             },
             new McpToolDefinitionWire
             {
                 Name = "petition_dungeon_master",
                 Description =
-                    "Petition the Dungeon Master (human operator) when the Apprentice is stuck on an unresolvable path. Pauses escalation and alerts the operator via Comm Link.",
+                    "Escalate an autonomous task that cannot safely continue. The Apprentice pauses for later Dungeon Master intervention. Do not use for ordinary questions.",
                 InputSchema = _petitionDungeonMasterSchema,
             },
             new McpToolDefinitionWire
             {
                 Name = "ask_human",
                 Description =
-                    "Ask the human operator a question and wait for their answer. Use a new random UUID for promptId on every call.",
+                    "Ask the active operator a question and wait for their response. Use only during attended interactive turns.",
                 InputSchema = _askHumanSchema,
             },
         ];

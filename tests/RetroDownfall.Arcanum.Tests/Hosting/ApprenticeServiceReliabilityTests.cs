@@ -20,15 +20,19 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 public sealed class ApprenticeServiceReliabilityTests
 {
 
-    // W2.4 Fix 1: an intervene-and-resume at full capacity must NOT leave the
-    // apprentice persisted as Running. It must acquire the slot first and, on
-    // capacity failure, revert to its prior Escalated state before returning.
+    // P8: intervene-and-resume at full capacity must acquire the slot FIRST and
+    // return MaxReached with NO state mutation (no plan/checkpoint/publish).
 
     [Fact]
-    public async Task Intervene_ResumeAtCapacity_RevertsToEscalatedAndReturnsCapacityFailure()
+    public async Task Intervene_ResumeAtCapacity_ReturnsCapacityFailureWithNoStateMutation()
     {
 
         Guid escalade = Guid.NewGuid();
+
+        string originalPlan = ApprenticeRepository.SerializePlan(
+        [
+            new PlanStep { Index = 1, Description = "Stuck step", Status = "failed", Attempts = 3 },
+        ]);
 
         Apprentice apprentice = new()
         {
@@ -43,11 +47,13 @@ public sealed class ApprenticeServiceReliabilityTests
 
             Status = ApprenticeStatus.Escalated.ToString(),
 
-            Plan = "[]",
+            Plan = originalPlan,
 
             CurrentStep = 0,
 
             CheckpointData = null,
+
+            ErrorMessage = "Need Divine Intervention.",
 
         };
 
@@ -88,6 +94,12 @@ public sealed class ApprenticeServiceReliabilityTests
         Apprentice persisted = repo.Get(escalade);
 
         Assert.Equal(ApprenticeStatus.Escalated.ToString(), persisted.Status);
+
+        Assert.Equal(originalPlan, persisted.Plan);
+
+        Assert.Null(persisted.CheckpointData);
+
+        Assert.Equal("Need Divine Intervention.", persisted.ErrorMessage);
 
     }
 

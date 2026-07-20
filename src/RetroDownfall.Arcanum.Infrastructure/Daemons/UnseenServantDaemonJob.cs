@@ -105,7 +105,7 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
                 $"""
                 Execute Unseen Servant background protocol. Current polling interval is {clampedInterval} minutes.
 
-                If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
+                If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `send_commlink_alert` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
                 """;
         }
         else
@@ -122,7 +122,7 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
                 {previousState}
 
                 Instructions: Analyze the environment. If you calculate new moving averages, trends, or state that you need for your next waking cycle, you MUST use the `scribe_lexicon` tool to update the entity named `{stateName}` (type `{LexiconLimits.DaemonStateType}`) with concise facts before you complete your turn.
-                If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `use_commlink` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
+                If you detect a high-alpha or critical condition requiring the user's immediate attention, you MUST use the `send_commlink_alert` tool to send an alert (set severity appropriately: Info, Warning, or Critical).
                 """;
         }
 

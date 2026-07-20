@@ -378,7 +378,9 @@ public static class ServiceCollectionExtensions
 
             IReadOnlyList<ICommLinkDispatcher> sinks = [webhook];
 
-            return new CommLinkMultiplexer(sinks);
+            ILogger<CommLinkMultiplexer> logger = sp.GetRequiredService<ILogger<CommLinkMultiplexer>>();
+
+            return new CommLinkMultiplexer(sinks, logger);
         });
 
         services.AddSingleton<ITrustedMcpWorkspaceStore, TrustedMcpWorkspaceStore>();

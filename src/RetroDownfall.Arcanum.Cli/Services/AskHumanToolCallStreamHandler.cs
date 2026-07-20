@@ -16,10 +16,13 @@ internal enum AskHumanResult
 
     SubmitFailed,
 
+    ParseFailed,
+
 }
 
 /// <summary>
-/// When NDJSON streaming exposes <see cref="IntelligenceEventType.ToolCall"/> for <c>ask_human</c>, submits the human answer (or unattended stub) to the API.
+/// When NDJSON streaming exposes <see cref="IntelligenceEventType.ToolCall"/> for <c>ask_human</c>,
+/// submits the human answer (or unattended stub) to the API.
 /// </summary>
 internal static class AskHumanToolCallStreamHandler
 {
@@ -36,15 +39,23 @@ internal static class AskHumanToolCallStreamHandler
             return AskHumanResult.NotHandled;
         }
 
-        if (!string.Equals(evt.Message, "ask_human", StringComparison.Ordinal))
+        string toolName = evt.ToolCall?.Name ?? evt.Message;
+
+        if (!string.Equals(toolName, "ask_human", StringComparison.Ordinal))
         {
             return AskHumanResult.NotHandled;
         }
 
-        AskHumanParams? args = ParseArgs(evt.Data);
-
-        if (args is null)
+        if (!TryParseAskHumanArgs(evt, out AskHumanParams? args, out string? parseError) || args is null)
         {
+            if (parseError is not null)
+            {
+                AnsiConsole.MarkupLine(
+                    palette.ErrorMarkup(Markup.Escape(parseError)));
+
+                return AskHumanResult.ParseFailed;
+            }
+
             return AskHumanResult.NotHandled;
         }
 
@@ -80,7 +91,6 @@ internal static class AskHumanToolCallStreamHandler
             catch (InvalidOperationException)
             {
 
-                // W4.1: was a silent SubmitFailed — tell the operator why the prompt could not be answered.
                 AnsiConsole.MarkupLine(
                     palette.ErrorMarkup(Markup.Escape("ask_human: no interactive input is available to answer the prompt.")));
 
@@ -105,8 +115,6 @@ internal static class AskHumanToolCallStreamHandler
 
         if (submitResult.IsFailure)
         {
-            // W4.1: surface the actual error code/message instead of a generic line so a failed
-            // submit (unknown/expired promptId, transport fault) is diagnosable.
             AnsiConsole.MarkupLine(
                 palette.ErrorMarkup(Markup.Escape(
                     $"Failed to submit response to Daemon ({submitResult.Error.Code}): {submitResult.Error.Message}")));
@@ -117,30 +125,92 @@ internal static class AskHumanToolCallStreamHandler
         return AskHumanResult.Handled;
     }
 
-    private static AskHumanParams? ParseArgs(string? data)
+    /// <summary>
+    /// Prefers structured <see cref="IntelligenceToolCallEvent.ArgumentsJson"/>; falls back to
+    /// raw JSON or legacy <c>ask_human: {json}</c> in <see cref="IntelligenceEvent.Data"/>.
+    /// </summary>
+    internal static bool TryParseAskHumanArgs(
+        IntelligenceEvent evt,
+        out AskHumanParams? args,
+        out string? errorMessage)
     {
-        if (string.IsNullOrEmpty(data))
+        args = null;
+
+        errorMessage = null;
+
+        string? payload = evt.ToolCall?.ArgumentsJson;
+
+        if (string.IsNullOrWhiteSpace(payload))
         {
-            return null;
+            payload = evt.Data;
         }
 
-        ReadOnlySpan<char> trimmed = data.AsSpan().Trim();
-
-        if (trimmed.Length < 2
-            || trimmed[0] != '{'
-            || trimmed[^1] != '}')
+        if (string.IsNullOrWhiteSpace(payload))
         {
-            return null;
+            return false;
+        }
+
+        string? json = ExtractJsonObject(payload);
+
+        if (json is null)
+        {
+            // Non-JSON status/exception lines are ignored (not a parse failure for ask_human).
+            return false;
         }
 
         try
         {
-            return JsonSerializer.Deserialize(trimmed.ToString(), McpJsonSerializerContext.Default.AskHumanParams);
+            args = JsonSerializer.Deserialize(json, McpJsonSerializerContext.Default.AskHumanParams);
+
+            if (args is null
+                || string.IsNullOrWhiteSpace(args.Question)
+                || string.IsNullOrWhiteSpace(args.PromptId))
+            {
+                errorMessage = "ask_human: malformed tool arguments (question and promptId are required).";
+
+                args = null;
+
+                return false;
+            }
+
+            return true;
         }
         catch (JsonException)
         {
+            errorMessage = "ask_human: malformed tool arguments (invalid JSON).";
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Accepts raw <c>{...}</c> or legacy <c>tool_name: {...}</c>. Rejects non-object payloads.
+    /// </summary>
+    internal static string? ExtractJsonObject(string data)
+    {
+        ReadOnlySpan<char> trimmed = data.AsSpan().Trim();
+
+        if (trimmed.Length < 2)
+        {
             return null;
         }
+
+        if (trimmed[0] == '{')
+        {
+            return trimmed[^1] == '}' ? trimmed.ToString() : null;
+        }
+
+        // Legacy FormatToolCallEventData: "ask_human: {...}"
+        int brace = trimmed.IndexOf('{');
+
+        if (brace < 0)
+        {
+            return null;
+        }
+
+        ReadOnlySpan<char> candidate = trimmed[brace..];
+
+        return candidate.Length >= 2 && candidate[^1] == '}' ? candidate.ToString() : null;
     }
 
 }

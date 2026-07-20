@@ -133,7 +133,7 @@ public static class SettingDescriptors
 
         new("intelligence.toolOutputCapBytes", ConfigSection.Intelligence, "Tool output cap (bytes)", "Hard cap on captured stdout/stderr for in-process execute_command and run_spell_script. Output beyond this is truncated.", SettingKind.Long, 65_536, 67_108_864, 65_536, ClampName: nameof(ArcanumSettingClamps.ToolOutputCapBytes)),
 
-        new("intelligence.maxToolInferenceRounds", ConfigSection.Intelligence, "Max tool inference rounds", "Maximum agentic tool rounds per inference turn. Beyond this the turn fails with Hub.ToolLoop.", SettingKind.Int, 1, 64, 1, ClampName: nameof(ArcanumSettingClamps.MaxToolInferenceRounds)),
+        new("intelligence.maxToolInferenceRounds", ConfigSection.Intelligence, "Max tool inference rounds", "Maximum agentic tool rounds per inference turn. Beyond this the turn fails with Hub.ToolLoop.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxToolInferenceRounds)),
 
         new("intelligence.tolerateToolFailures", ConfigSection.Intelligence, "Tolerate tool failures", "When true (default), an unexpected tool exception during a buffered turn is caught and synthesized into a tool result instead of failing the whole turn with Hub.Error. Streaming already tolerates failures unconditionally.", SettingKind.Bool),
 
