@@ -23,18 +23,23 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     private readonly SessionEntryPersistence _entryPersistence;
 
+    private readonly ISessionAttachmentStore _attachments;
+
     private readonly ILogger<GrimoireRepository> _logger;
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
     public GrimoireRepository(
         ArcanumDbContext db,
+        ISessionAttachmentStore attachments,
         ILogger<GrimoireRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions)
     {
         _db = db;
 
         _entryPersistence = new SessionEntryPersistence(db);
+
+        _attachments = attachments;
 
         _logger = logger;
 
@@ -381,11 +386,19 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     public async Task<int> PurgeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
-        using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        using IDisposable attachmentGate = await _attachments
+            .AcquireSessionGateAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
 
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        await SqliteBusyRetry.ExecuteAsync(
+            () => _attachments.DeleteRowsForSessionInAmbientTransactionAsync(sessionId, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
         await SqliteBusyRetry.ExecuteAsync(
             () => _db.Entries
@@ -400,6 +413,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
             cancellationToken).ConfigureAwait(false);
 
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!_attachments.TryDeleteSessionDirectory(sessionId))
+        {
+
+            _logger.LogWarning(
+                "Purged session {SessionId} from Grimoire but attachment directory cleanup failed; reconcile will retry.",
+                sessionId);
+
+        }
 
         return removed;
     }
@@ -548,7 +570,11 @@ public sealed class GrimoireRepository : IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
-        using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        using IDisposable attachmentGate = await _attachments
+            .AcquireSessionGateAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
 
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
@@ -577,6 +603,10 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             bool isUnsummarized = watermark is null
                 || entry.CreatedAt > new DateTimeOffset(watermark.Value, TimeSpan.Zero);
+
+            await SqliteBusyRetry.ExecuteAsync(
+                () => _attachments.ClearEntryIdsInAmbientTransactionAsync(sessionId, [entryId], cancellationToken),
+                cancellationToken).ConfigureAwait(false);
 
             int deleted = await SqliteBusyRetry.ExecuteAsync(
                 () => _db.Entries

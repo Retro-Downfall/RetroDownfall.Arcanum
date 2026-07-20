@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -40,9 +41,19 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// the handler — it short-circuits with a small <see cref="IdempotencyReplayResult"/> that replays
 /// the cached bytes verbatim.
 /// </para>
+///
+/// <para>
+/// Concurrent cache misses for the same key hash share one in-flight handler execution
+/// (keyed by the same SHA-256 used for store lookup). Waiters await the leader's
+/// <see cref="HttpResponse.OnCompleted"/> persist, then replay from the store.
+/// <see cref="PersistIfCapturedAsync"/> stores any finished response with a non-empty body
+/// that stayed within the byte cap — including non-2xx — matching prior OnCompleted semantics.
+/// </para>
 /// </summary>
 public static class IdempotencyEndpointFilters
 {
+
+    private static readonly ConcurrentDictionary<string, Task> InFlight = new(StringComparer.Ordinal);
 
     public static Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> ForBoundArgument<TRequest>(
         int argumentIndex,
@@ -158,7 +169,148 @@ public static class IdempotencyEndpointFilters
 
         }
 
+        TaskCompletionSource flightTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        if (InFlight.TryAdd(keyHash, flightTcs.Task))
+        {
+
+            try
+            {
+
+                return await ExecuteMissAsync(
+                        context,
+                        next,
+                        keyHash,
+                        security,
+                        store,
+                        logger,
+                        flightTcs)
+                    .ConfigureAwait(false);
+
+            }
+            catch (Exception ex)
+            {
+
+                // Leader failed before OnCompleted could run — unblock waiters and clear the slot.
+                _ = InFlight.TryRemove(new KeyValuePair<string, Task>(keyHash, flightTcs.Task));
+
+                _ = flightTcs.TrySetException(ex);
+
+                throw;
+
+            }
+
+        }
+
+        // Waiter: block until the leader's OnCompleted persist finishes, then replay.
+        if (InFlight.TryGetValue(keyHash, out Task? inFlightTask))
+        {
+
+            try
+            {
+
+                await inFlightTask.ConfigureAwait(false);
+
+            }
+            catch
+            {
+
+                // Leader faulted — fall through to independent execution / cache re-check below.
+
+            }
+
+        }
+
+        IdempotencyRecord? afterFlight;
+
+        try
+        {
+
+            afterFlight = await store.TryGetAsync(keyHash, notOlderThan, httpContext.RequestAborted)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Idempotency cache lookup failed after single-flight for hash {KeyHash}; executing independently.",
+                keyHash);
+
+            afterFlight = null;
+
+        }
+
+        if (afterFlight is not null)
+        {
+
+            return new IdempotencyReplayResult(
+                afterFlight.StatusCode,
+                afterFlight.ContentType,
+                afterFlight.ResponseBody);
+
+        }
+
+        // Leader did not cache (oversized, empty, persist failure, or already cleared) —
+        // execute independently without joining another flight wave.
+        return await ExecuteMissAsync(context, next, keyHash, security, store, logger, flightSignal: null)
+            .ConfigureAwait(false);
+
+    }
+
+    private static async Task<object?> ExecuteMissAsync(
+        EndpointFilterInvocationContext context,
+        EndpointFilterDelegate next,
+        string keyHash,
+        SecuritySettings security,
+        IIdempotencyStore store,
+        ILogger logger,
+        TaskCompletionSource? flightSignal)
+    {
+
+        // Re-check after winning the flight: a prior wave may have persisted while we waited to run.
+        int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(security.IdempotencyTtlHours);
+
+        DateTimeOffset notOlderThan = DateTimeOffset.UtcNow.AddHours(-ttlHours);
+
+        try
+        {
+
+            IdempotencyRecord? raced = await store
+                .TryGetAsync(keyHash, notOlderThan, context.HttpContext.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (raced is not null)
+            {
+
+                if (flightSignal is not null)
+                {
+
+                    _ = InFlight.TryRemove(new KeyValuePair<string, Task>(keyHash, flightSignal.Task));
+
+                    _ = flightSignal.TrySetResult();
+
+                }
+
+                return new IdempotencyReplayResult(raced.StatusCode, raced.ContentType, raced.ResponseBody);
+
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Idempotency cache re-check failed for hash {KeyHash}; proceeding with handler.",
+                keyHash);
+
+        }
+
         int maxCacheBytes = ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes(security.IdempotencyMaxResponseBytes);
+
+        HttpContext httpContext = context.HttpContext;
 
         Stream originalBody = httpContext.Response.Body;
 
@@ -166,7 +318,33 @@ public static class IdempotencyEndpointFilters
 
         httpContext.Response.Body = teeStream;
 
-        httpContext.Response.OnCompleted(() => PersistIfCapturedAsync(httpContext, store, keyHash, teeStream, logger));
+        // Persist via OnCompleted so IResult-returning handlers (body written after the filter
+        // returns) are captured. Signal single-flight waiters only after that persist attempt.
+        httpContext.Response.OnCompleted(async () =>
+        {
+
+            try
+            {
+
+                await PersistIfCapturedAsync(httpContext, store, keyHash, teeStream, logger)
+                    .ConfigureAwait(false);
+
+            }
+            finally
+            {
+
+                if (flightSignal is not null)
+                {
+
+                    _ = InFlight.TryRemove(new KeyValuePair<string, Task>(keyHash, flightSignal.Task));
+
+                    _ = flightSignal.TrySetResult();
+
+                }
+
+            }
+
+        });
 
         return await next(context).ConfigureAwait(false);
 

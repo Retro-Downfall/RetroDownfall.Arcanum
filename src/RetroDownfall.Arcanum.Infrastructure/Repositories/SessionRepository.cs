@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -17,6 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed class SessionRepository(
     ArcanumDbContext db,
+    ISessionAttachmentStore attachments,
     IOptionsMonitor<ArcanumSettings> optionsMonitor) : ISessionRepository
 {
 
@@ -442,33 +444,20 @@ public sealed class SessionRepository(
         if (entriesToCopy > maxEntries)
         {
 
-            // Checked before touching the change tracker — nothing to roll back on this path.
             return Result<Session>.Failure(new Error(
                 ErrorCodes.Session.TooManyEntries,
                 $"Session cannot exceed {maxEntries} entries; the source has {entriesToCopy} up to the requested cutoff."));
 
         }
 
+        // Allocate all ids in memory before any durable write.
+        Guid forkSessionId = Guid.NewGuid();
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        Session fork = new()
-        {
-            Id = Guid.NewGuid(),
-            CampaignId = request.CampaignId ?? source.CampaignId,
-            Title = string.IsNullOrWhiteSpace(request.Title) ? BuildForkTitle(source.Title) : request.Title.Trim(),
-            Status = "active",
-            CreatedAt = now,
-            UpdatedAt = now,
-            Summary = null,
-            LastSummarizedMessageAt = null,
-            // The fork has performed no inference of its own yet — token usage is attributed to the
-            // turns that actually produced it (on the source session), not to inheriting a transcript.
-            TotalTokensUsed = 0,
-            UnsummarizedEntryCount = entriesToCopy,
-            ForkedFromSessionId = sourceId,
-        };
+        Dictionary<Guid, Guid> entryIdMap = new();
 
-        db.Sessions.Add(fork);
+        List<Entry> entryCopies = [];
 
         await foreach (List<Entry> batch in ReadEntryBatchesAsync(sourceId, ct).ConfigureAwait(false))
         {
@@ -478,10 +467,14 @@ public sealed class SessionRepository(
             foreach (Entry sourceEntry in batch)
             {
 
-                Entry copy = new()
+                Guid newEntryId = Guid.NewGuid();
+
+                entryIdMap[sourceEntry.Id] = newEntryId;
+
+                entryCopies.Add(new Entry
                 {
-                    Id = Guid.NewGuid(),
-                    SessionId = fork.Id,
+                    Id = newEntryId,
+                    SessionId = forkSessionId,
                     Role = sourceEntry.Role,
                     Content = sourceEntry.Content,
                     ModelUsed = sourceEntry.ModelUsed,
@@ -489,9 +482,7 @@ public sealed class SessionRepository(
                     ToolCallId = sourceEntry.ToolCallId,
                     ToolName = sourceEntry.ToolName,
                     ToolArguments = sourceEntry.ToolArguments,
-                };
-
-                db.Entries.Add(copy);
+                });
 
                 if (cutoffEntry is not null && sourceEntry.Id == cutoffEntry.Id)
                 {
@@ -513,7 +504,92 @@ public sealed class SessionRepository(
 
         }
 
-        await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+        IReadOnlySet<Guid>? copiedSourceEntryIds = cutoffEntry is null
+            ? null
+            : entryIdMap.Keys.ToHashSet();
+
+        IReadOnlyList<SessionAttachmentRecord> sourceAttachments = await attachments
+            .ListBoundForForkAsync(sourceId, copiedSourceEntryIds, ct)
+            .ConfigureAwait(false);
+
+        List<SessionAttachmentForkCopyPlan> attachmentPlans = [];
+
+        foreach (SessionAttachmentRecord sourceAttachment in sourceAttachments)
+        {
+
+            Guid? newEntryId = sourceAttachment.EntryId is Guid sourceEntryId
+                && entryIdMap.TryGetValue(sourceEntryId, out Guid mapped)
+                    ? mapped
+                    : null;
+
+            attachmentPlans.Add(new SessionAttachmentForkCopyPlan(
+                sourceAttachment,
+                Guid.NewGuid(),
+                newEntryId));
+
+        }
+
+        // Filesystem first: copy + hash-verify before opening the DB write transaction.
+        await attachments.CopyBytesForForkAsync(forkSessionId, attachmentPlans, ct).ConfigureAwait(false);
+
+        Session fork = new()
+        {
+            Id = forkSessionId,
+            CampaignId = request.CampaignId ?? source.CampaignId,
+            Title = string.IsNullOrWhiteSpace(request.Title) ? BuildForkTitle(source.Title) : request.Title.Trim(),
+            Status = "active",
+            CreatedAt = now,
+            UpdatedAt = now,
+            Summary = null,
+            LastSummarizedMessageAt = null,
+            TotalTokensUsed = 0,
+            UnsummarizedEntryCount = entryCopies.Count,
+            ForkedFromSessionId = sourceId,
+        };
+
+        // Acquire source then fork session gates (stable Guid order to avoid deadlocks with concurrent purge).
+        Guid firstGate = sourceId.CompareTo(forkSessionId) <= 0 ? sourceId : forkSessionId;
+
+        Guid secondGate = firstGate == sourceId ? forkSessionId : sourceId;
+
+        using IDisposable gate1 = await attachments.AcquireSessionGateAsync(firstGate, ct).ConfigureAwait(false);
+
+        using IDisposable gate2 = await attachments.AcquireSessionGateAsync(secondGate, ct).ConfigureAwait(false);
+
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+
+        try
+        {
+
+            db.Sessions.Add(fork);
+
+            foreach (Entry copy in entryCopies)
+            {
+
+                db.Entries.Add(copy);
+
+            }
+
+            await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+
+            await attachments
+                .InsertForkRowsInAmbientTransactionAsync(forkSessionId, attachmentPlans, ct)
+                .ConfigureAwait(false);
+
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+
+        }
+        catch
+        {
+
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+            _ = attachments.TryDeleteSessionDirectory(forkSessionId);
+
+            throw;
+
+        }
 
         return Result<Session>.Success(fork);
 

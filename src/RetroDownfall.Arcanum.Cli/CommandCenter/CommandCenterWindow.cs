@@ -21,8 +21,6 @@ internal sealed class CommandCenterWindow : Window
 
     private const int BorderedHeaderWithBrandHeight = 2 + CommandCenterBrandBanner.BrandedContentRows + 1;
 
-    private const int BorderedInputHeight = 3;
-
     private readonly ObservableCollection<string> _logLines = new();
 
     private readonly ObservableCollection<string> _sessionLines = new();
@@ -42,6 +40,12 @@ internal sealed class CommandCenterWindow : Window
     private SessionLogBuffer? _boundLog;
 
     private IReadOnlyList<SessionListItem> _boundSessions = [];
+
+    private bool _layoutInProgress;
+
+    private bool _reserveComposerScrollbar;
+
+    private Action? _requestComposerLayout;
 
     public CommandCenterWindow()
     {
@@ -141,12 +145,20 @@ internal sealed class CommandCenterWindow : Window
         LogView.ValueChanged += (_, _) => SyncFollowTailFromSelection();
         TranscriptPane.Add(LogView);
 
-        Input = new TextField
+#pragma warning disable CS0618 // TextView obsolete in TG 2.4.17; Command Center still uses it for multiline composer.
+        Input = new TextView
         {
             CanFocus = true,
             BorderStyle = chrome,
             Title = "Composer",
             SchemeName = CommandCenterTheme.InputScheme,
+        };
+        ConfigureComposerTextView(Input);
+#pragma warning restore CS0618
+        Input.ContentsChanged += (_, _) =>
+        {
+            // Mark dirty via layout request only — ApplyAbsoluteLayout owns frame changes.
+            _requestComposerLayout?.Invoke();
         };
 
         Footer = new Label
@@ -209,7 +221,9 @@ internal sealed class CommandCenterWindow : Window
 
     public ListView LogView { get; }
 
-    public TextField Input { get; }
+#pragma warning disable CS0618
+    public TextView Input { get; }
+#pragma warning restore CS0618
 
     public Label Footer { get; }
 
@@ -246,11 +260,46 @@ internal sealed class CommandCenterWindow : Window
         return list[index].Id;
     }
 
-    public string GetComposerText() => Input.Text?.ToString() ?? string.Empty;
+    public string GetComposerText()
+    {
+        // Prefer live model lines so typing/paste is reflected before Text is set; preserve blank lines.
+        try
+        {
+            var lines = Input.GetAllLines();
+            if (lines is { Count: > 0 })
+            {
+                return JoinComposerLines(lines);
+            }
+        }
+        catch
+        {
+        }
+
+        return Input.Text?.ToString() ?? string.Empty;
+    }
 
     public bool ComposerHasText => !string.IsNullOrWhiteSpace(GetComposerText());
 
-    public void ClearComposer() => Input.Text = string.Empty;
+    public void ClearComposer()
+    {
+        Input.Text = string.Empty;
+        if (!_layoutInProgress)
+        {
+            ApplyAbsoluteLayout(_cols, _rows);
+        }
+    }
+
+    /// <summary>
+    /// Host wires this so ContentsChanged only marks dirty and requests UI-thread layout
+    /// (ApplyAbsoluteLayout owns frame changes).
+    /// </summary>
+    public void SetComposerLayoutRequest(Action? request) => _requestComposerLayout = request;
+
+    public void InsertComposerNewLine()
+    {
+        Input.InsertText("\n");
+        _requestComposerLayout?.Invoke();
+    }
 
     public void WireResize(IApplication app)
     {
@@ -634,6 +683,24 @@ internal sealed class CommandCenterWindow : Window
 
     public void ApplyAbsoluteLayout(int cols, int rows)
     {
+        if (_layoutInProgress)
+        {
+            return;
+        }
+
+        _layoutInProgress = true;
+        try
+        {
+            ApplyAbsoluteLayoutCore(cols, rows);
+        }
+        finally
+        {
+            _layoutInProgress = false;
+        }
+    }
+
+    private void ApplyAbsoluteLayoutCore(int cols, int rows)
+    {
         _cols = Math.Max(cols, 2);
         _rows = Math.Max(rows, 3);
 
@@ -660,10 +727,63 @@ internal sealed class CommandCenterWindow : Window
         Rights.Text = showBrand ? CommandCenterBrandBanner.RightsBlurb : string.Empty;
 
         int headerH = showBrand ? BorderedHeaderWithBrandHeight : BorderedHeaderCompactHeight;
-        int inputH = BorderedInputHeight;
         int footerH = FooterHeight;
 
-        if (headerH + inputH + footerH >= _rows - 2)
+        // First-pass viewport width estimate: full width minus left/right border.
+        int composerOuterW = _cols;
+        int viewportWidth = Math.Max(1, composerOuterW - ComposerLayout.BorderOverhead);
+        if (_reserveComposerScrollbar)
+        {
+            viewportWidth = Math.Max(1, viewportWidth - ComposerLayout.ScrollbarReservation);
+        }
+
+        string composerText = GetComposerText();
+        // Prefer the larger of cell-wrap count and TextView.Lines so we never under-size
+        // while the caret is on a trailing blank line the string join might under-count.
+        int lineFloor = 1;
+        try
+        {
+            lineFloor = Math.Max(1, Input.Lines);
+        }
+        catch
+        {
+        }
+
+        int wrapped = Math.Max(ComposerLayout.CountWrappedRows(composerText, Math.Max(1, viewportWidth)), lineFloor);
+        ComposerLayoutResult measure = ComposerLayout.Measure(
+            composerText,
+            viewportWidth + (_reserveComposerScrollbar ? ComposerLayout.ScrollbarReservation : 0),
+            _rows,
+            headerH,
+            footerH,
+            wrappedRowCount: wrapped);
+
+        // Stabilize scrollbar reservation to avoid width oscillation across layout passes.
+        if (measure.ReserveScrollbar != _reserveComposerScrollbar)
+        {
+            _reserveComposerScrollbar = measure.ReserveScrollbar;
+            viewportWidth = Math.Max(1, composerOuterW - ComposerLayout.BorderOverhead);
+            if (_reserveComposerScrollbar)
+            {
+                viewportWidth = Math.Max(1, viewportWidth - ComposerLayout.ScrollbarReservation);
+            }
+
+            wrapped = Math.Max(
+                ComposerLayout.CountWrappedRows(composerText, Math.Max(1, viewportWidth)),
+                lineFloor);
+            measure = ComposerLayout.Measure(
+                composerText,
+                viewportWidth + (_reserveComposerScrollbar ? ComposerLayout.ScrollbarReservation : 0),
+                _rows,
+                headerH,
+                footerH,
+                wrappedRowCount: wrapped);
+            _reserveComposerScrollbar = measure.ReserveScrollbar;
+        }
+
+        int inputH = measure.InputHeight;
+
+        if (headerH + inputH + footerH + ComposerLayout.MinBodyHeight > _rows)
         {
             showBrand = false;
             Banner.Visible = false;
@@ -671,7 +791,17 @@ internal sealed class CommandCenterWindow : Window
             Banner.Text = string.Empty;
             Rights.Text = string.Empty;
             headerH = Math.Min(BorderedHeaderCompactHeight, Math.Max(3, _rows / 5));
-            inputH = Math.Min(BorderedInputHeight, Math.Max(3, _rows / 5));
+            int tightWidth = Math.Max(1, _cols - ComposerLayout.BorderOverhead);
+            wrapped = Math.Max(ComposerLayout.CountWrappedRows(composerText, tightWidth), lineFloor);
+            measure = ComposerLayout.Measure(
+                composerText,
+                tightWidth,
+                _rows,
+                headerH,
+                footerH,
+                wrappedRowCount: wrapped);
+            inputH = measure.InputHeight;
+            _reserveComposerScrollbar = measure.ReserveScrollbar;
         }
 
         if (showBrand)
@@ -689,7 +819,17 @@ internal sealed class CommandCenterWindow : Window
 
         Header.Height = 1;
 
-        int bodyH = Math.Max(1, _rows - headerH - inputH - footerH);
+        int bodyH = Math.Max(ComposerLayout.MinBodyHeight, _rows - headerH - inputH - footerH);
+        // If body ate into composer due to MinBodyHeight, shrink composer content further.
+        int maxInputFromBody = Math.Max(
+            ComposerLayout.MinContentRows + ComposerLayout.BorderOverhead,
+            _rows - headerH - footerH - ComposerLayout.MinBodyHeight);
+        if (inputH > maxInputFromBody)
+        {
+            inputH = maxInputFromBody;
+            bodyH = Math.Max(ComposerLayout.MinBodyHeight, _rows - headerH - inputH - footerH);
+        }
+
         int sidebarW = showSidebar ? Math.Min(SidebarWidth, Math.Max(14, _cols / 4)) : 0;
         int transcriptW = Math.Max(1, _cols - sidebarW);
         _logContentWidth = Math.Max(8, transcriptW - 3);
@@ -742,6 +882,11 @@ internal sealed class CommandCenterWindow : Window
             RestoreLogViewport();
         }
 
+        // TextView may scroll to keep the caret visible while still at the old height
+        // (e.g. 2nd newline with 2 content rows → Viewport.Y=1). After we grow to fit,
+        // that offset sticks and hides the first line — pin to top when content fits.
+        SyncComposerScroll(contentFits: !measure.ReserveScrollbar);
+
         try
         {
             SetNeedsLayout();
@@ -749,6 +894,76 @@ internal sealed class CommandCenterWindow : Window
         catch
         {
         }
+    }
+
+    /// <summary>
+    /// Configures the composer TextView for soft-wrap. Terminal.Gui couples
+    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>,
+    /// so Enter stays as newline and <b>Ctrl+Enter</b> sends via the keymap.
+    /// </summary>
+#pragma warning disable CS0618
+    internal static void ConfigureComposerTextView(TextView input)
+#pragma warning restore CS0618
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        input.Multiline = true;
+        input.WordWrap = true;
+        // Leave EnterKeyAddsLine at its Multiline=true default (true). Setting it false
+        // clears Multiline/WordWrap in Terminal.Gui 2.4.17.
+    }
+
+    private void SyncComposerScroll(bool contentFits)
+    {
+        try
+        {
+            if (contentFits)
+            {
+                // Pin top so a pre-grow caret scroll (Viewport.Y>0) cannot hide earlier lines.
+                System.Drawing.Rectangle vp = Input.Viewport;
+                if (vp.Y != 0 || vp.X != 0)
+                {
+                    Input.ScrollTo(System.Drawing.Point.Empty);
+                }
+
+                return;
+            }
+
+            Input.PositionCursor();
+        }
+        catch
+        {
+        }
+    }
+
+    private static string JoinComposerLines(System.Collections.IList lines)
+    {
+        if (lines.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (i > 0)
+            {
+                _ = sb.Append('\n');
+            }
+
+            if (lines[i] is System.Collections.Generic.List<Cell> cells)
+            {
+                foreach (Cell cell in cells)
+                {
+                    _ = sb.Append(cell.Grapheme);
+                }
+            }
+            else if (lines[i] is string s)
+            {
+                _ = sb.Append(s);
+            }
+        }
+
+        return sb.ToString();
     }
 
     private void RefreshSessionList(CommandCenterState state)
@@ -818,7 +1033,7 @@ internal sealed class CommandCenterWindow : Window
             ? "Transcript ●"
             : "Transcript";
         Input.Title = state.FocusRegion == CommandCenterFocusRegion.Composer
-            ? "Composer ●  Enter send"
+            ? "Composer ●  Ctrl+Enter send · Enter newline"
             : "Composer";
     }
 

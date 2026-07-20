@@ -44,6 +44,14 @@ public sealed record SessionAttachmentIndexItem(
     SessionAttachmentKind Kind,
     long LatestByteLength);
 
+/// <summary>
+/// Preallocated fork attachment plan: new row identity + remapped entry, with source metadata for FS copy.
+/// </summary>
+public sealed record SessionAttachmentForkCopyPlan(
+    SessionAttachmentRecord Source,
+    Guid NewAttachmentId,
+    Guid? NewEntryId);
+
 public interface ISessionAttachmentStore
 {
 
@@ -72,6 +80,65 @@ public interface ISessionAttachmentStore
 
     Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Startup / periodic reconciliation: stale pending GC, bound orphans (missing sessions / missing files),
+    /// unreferenced temp/final files. Serializes with persist/promote/fork/purge via session and pending gates.
+    /// </summary>
+    Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default);
+
     Task ValidateReferencesAsync(Guid sessionId, IReadOnlyList<Guid> attachmentIds, int maxReferences, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Acquires the per-session attachment gate used by purge, fork, and bound reconciliation.
+    /// Caller must dispose the returned handle.
+    /// </summary>
+    Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes all <c>SessionAttachments</c> rows for <paramref name="sessionId"/>.
+    /// Must be called while <see cref="AcquireSessionGateAsync"/> is held and an EF ambient
+    /// transaction is open on the shared <c>ArcanumDbContext</c> connection (raw SQL enlists).
+    /// </summary>
+    Task DeleteRowsForSessionInAmbientTransactionAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Best-effort delete of <c>attachments/{sessionId}/</c> using <see cref="CancellationToken.None"/>.
+    /// Returns <c>false</c> when the directory could not be removed (logged by caller / recovered by reconcile).
+    /// </summary>
+    bool TryDeleteSessionDirectory(Guid sessionId);
+
+    /// <summary>
+    /// Sets <c>EntryId = NULL</c> for the given entry ids. Must run under the session gate and an ambient EF transaction.
+    /// </summary>
+    Task ClearEntryIdsInAmbientTransactionAsync(
+        Guid sessionId,
+        IReadOnlyList<Guid> entryIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Bound rows to copy for a fork. Full fork: every Bound row (incl. EntryId-null).
+    /// Cutoff: only rows whose non-null EntryId is in <paramref name="copiedSourceEntryIds"/>.
+    /// </summary>
+    Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
+        Guid sourceSessionId,
+        IReadOnlySet<Guid>? copiedSourceEntryIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Copies and hash-verifies attachment bytes into the fork session tree before the DB transaction.
+    /// On failure, deletes any partially written fork tree.
+    /// </summary>
+    Task CopyBytesForForkAsync(
+        Guid forkSessionId,
+        IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Inserts fork attachment rows. Must run under session gates and an ambient EF transaction.
+    /// </summary>
+    Task InsertForkRowsInAmbientTransactionAsync(
+        Guid forkSessionId,
+        IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+        CancellationToken cancellationToken = default);
 
 }

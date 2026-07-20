@@ -64,7 +64,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session created = await repository.CreateAsync(campaignId: null, title: "  Alpha thread  ", CancellationToken.None);
 
@@ -84,7 +84,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: null, CancellationToken.None);
 
@@ -123,7 +123,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Archive me", CancellationToken.None);
 
@@ -143,7 +143,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         SessionAnalytics before = await repository.GetAnalyticsAsync(CancellationToken.None);
 
@@ -186,7 +186,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             },
         };
 
-        SessionRepository repository = new(_db!, new TestOptionsMonitor<ArcanumSettings>(settings));
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), new TestOptionsMonitor<ArcanumSettings>(settings));
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Limited", CancellationToken.None);
 
@@ -244,7 +244,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             },
         };
 
-        SessionRepository repository = new(_db!, new TestOptionsMonitor<ArcanumSettings>(settings));
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), new TestOptionsMonitor<ArcanumSettings>(settings));
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Sized", CancellationToken.None);
 
@@ -276,7 +276,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Result<Entry> result = await repository.AddEntryAsync(
             Guid.NewGuid(),
@@ -304,7 +304,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Closed", CancellationToken.None);
 
@@ -338,7 +338,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Counter", CancellationToken.None);
 
@@ -382,7 +382,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Before patch", CancellationToken.None);
 
@@ -447,7 +447,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
-        SessionRepository repository = new(_db, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         List<Entry> recent = await repository.GetEntriesAscendingAsync(sessionId, takeLast: 2, CancellationToken.None);
 
@@ -483,7 +483,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
-        SessionRepository repository = new(_db, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         SessionQueryResult firstPage = await repository.QueryAsync(
             new SessionQueryRequest(Limit: 2),
@@ -533,7 +533,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
-        SessionRepository repository = new(_db, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         SessionQueryResult result = await repository.QueryAsync(
             new SessionQueryRequest(
@@ -576,7 +576,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
-        SessionRepository repository = new(_db, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         List<Entry> after = await repository.GetEntriesAfterAsync(
             sessionId,
@@ -621,7 +621,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
-        SessionRepository repository = new(_db, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         List<Entry> firstPage = await repository.GetEntriesAsync(
             sessionId,
@@ -649,7 +649,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session match = await repository.CreateAsync(campaignId: null, title: "Hidden chronicle", CancellationToken.None);
 
@@ -731,7 +731,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
-        SessionRepository repository = new(_db, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         SessionQueryResult byRole = await repository.QueryAsync(
             new SessionQueryRequest(Role: MessageRole.User, Limit: 50),
@@ -759,7 +759,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Export shape", CancellationToken.None);
 
@@ -827,7 +827,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             },
         };
 
-        SessionRepository repository = new(_db!, new TestOptionsMonitor<ArcanumSettings>(settings));
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), new TestOptionsMonitor<ArcanumSettings>(settings));
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Large export", CancellationToken.None);
 

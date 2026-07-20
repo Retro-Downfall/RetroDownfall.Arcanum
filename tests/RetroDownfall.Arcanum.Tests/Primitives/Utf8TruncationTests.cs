@@ -114,4 +114,27 @@ public sealed class Utf8TruncationTests
 
     }
 
+    [Fact]
+    public void TruncateUtf8BytesToCodepointBoundary_DoesNotSplitMultibyteSequence()
+    {
+
+        // "é" is C3 A9 in UTF-8 — truncating at 1 byte must drop the whole codepoint.
+        ReadOnlySpan<byte> utf8 = "aé"u8;
+
+        ReadOnlySpan<byte> truncated = Utf8Truncation.TruncateUtf8BytesToCodepointBoundary(utf8, 2);
+
+        Assert.Equal("a"u8, truncated);
+
+    }
+
+    [Fact]
+    public void TruncateUtf8BytesToCodepointBoundary_WithinBudget_ReturnsFullSpan()
+    {
+
+        ReadOnlySpan<byte> utf8 = "hello"u8;
+
+        Assert.True(utf8 == Utf8Truncation.TruncateUtf8BytesToCodepointBoundary(utf8, 80));
+
+    }
+
 }

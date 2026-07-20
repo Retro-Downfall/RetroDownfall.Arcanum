@@ -351,16 +351,14 @@ public sealed class ToolExecutionPipeline(
             && SessionAttachmentToolInjection.TryParseAttachArguments(fcc.Arguments, out string logicalName, out int? version))
         {
 
-            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-                settings.Value.Cli.MaxAttachFileSizeBytes);
-
             additionalContext = await SessionAttachmentToolInjection
                 .TryBuildContentsAsync(
                     sessionAttachmentStore,
                     ambientSessionId,
                     logicalName,
                     version,
-                    maxTextBytes,
+                    settings.Value,
+                    request.Model,
                     cancellationToken)
                 .ConfigureAwait(false);
 

@@ -115,45 +115,66 @@ internal static class SessionAttachmentAmbientSend
 
     private static JsonElement InjectOpaqueTokenIntoArcanumParams(JsonElement? paramsElement, string token)
     {
+        using var stream = new MemoryStream();
 
-        Dictionary<string, JsonElement> root = new(StringComparer.Ordinal);
-
-        Dictionary<string, JsonElement> args = new(StringComparer.Ordinal);
-
-        if (paramsElement is { ValueKind: JsonValueKind.Object } pe)
+        using (var writer = new Utf8JsonWriter(stream))
         {
-            foreach (JsonProperty property in pe.EnumerateObject())
-            {
-                if (string.Equals(property.Name, "arguments", StringComparison.Ordinal)
-                    && property.Value.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (JsonProperty arg in property.Value.EnumerateObject())
-                    {
-                        if (string.Equals(
-                                arg.Name,
-                                SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
-                                StringComparison.Ordinal))
-                        {
-                            continue;
-                        }
+            writer.WriteStartObject();
 
-                        args[arg.Name] = arg.Value.Clone();
+            bool wroteArguments = false;
+
+            if (paramsElement is { ValueKind: JsonValueKind.Object } pe)
+            {
+                foreach (JsonProperty property in pe.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, "arguments", StringComparison.Ordinal))
+                    {
+                        WriteArgumentsObjectWithToken(writer, property.Value, token);
+                        wroteArguments = true;
+                    }
+                    else
+                    {
+                        property.WriteTo(writer);
                     }
                 }
-                else
+            }
+
+            if (!wroteArguments)
+            {
+                WriteArgumentsObjectWithToken(writer, arguments: default, token);
+            }
+
+            writer.WriteEndObject();
+        }
+
+        using JsonDocument document = JsonDocument.Parse(stream.ToArray());
+
+        return document.RootElement.Clone();
+    }
+
+    private static void WriteArgumentsObjectWithToken(Utf8JsonWriter writer, JsonElement arguments, string token)
+    {
+        writer.WritePropertyName("arguments");
+        writer.WriteStartObject();
+
+        if (arguments.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty arg in arguments.EnumerateObject())
+            {
+                if (string.Equals(
+                        arg.Name,
+                        SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
+                        StringComparison.Ordinal))
                 {
-                    root[property.Name] = property.Value.Clone();
+                    continue;
                 }
+
+                arg.WriteTo(writer);
             }
         }
 
-        args[SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName] =
-            JsonSerializer.SerializeToElement(token);
-
-        root["arguments"] = JsonSerializer.SerializeToElement(args);
-
-        return JsonSerializer.SerializeToElement(root);
-
+        writer.WriteString(SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName, token);
+        writer.WriteEndObject();
     }
 
     private static string NormalizeArcanumRequestId(JsonElement? id)

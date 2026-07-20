@@ -464,6 +464,151 @@ public sealed class IdempotencyEndpointFilterTests
     }
 
     [SkippableFact]
+    public async Task PostPing_WithIdempotencyKey_AttachmentBearingTurn_SecondRequestReplaysWithoutReExecuting()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "attachment-first";
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Simulated attachment-bearing turn: AttachmentReferences present so the body hash
+        // includes attachment identity; FakeIntelligence still counts executions.
+        PingRequest request = new(
+            Prompt: "idempotent attachment ping",
+            SessionId: Guid.NewGuid(),
+            AttachmentReferences: [Guid.NewGuid()]);
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        _factory.FakeIntelligence.NextText = "attachment-second-should-never-be-seen";
+
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(firstBody, secondBody);
+
+        Assert.DoesNotContain("attachment-second-should-never-be-seen", secondBody);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    [SkippableFact]
+    public async Task PostPing_ConcurrentIdenticalIdempotencyKey_SharesSingleExecution()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "concurrent-shared";
+
+        TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _factory.FakeIntelligence.ExecuteGate = gate;
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        PingRequest request = new(Prompt: "concurrent idempotent ping");
+
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
+
+        HttpClient client1 = _factory.CreateAuthenticatedClient();
+
+        HttpClient client2 = _factory.CreateAuthenticatedClient();
+
+        async Task<HttpResponseMessage> SendAsync(HttpClient client)
+        {
+
+            HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+            return await client.SendAsync(req);
+
+        }
+
+        Task<HttpResponseMessage> firstTask = SendAsync(client1);
+
+        Task<HttpResponseMessage> secondTask = SendAsync(client2);
+
+        // Wait until the leader has entered the handler (behind the gate).
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+
+        while (_factory.FakeIntelligence.ExecutePromptCallCount < before + 1
+               && DateTimeOffset.UtcNow < deadline)
+        {
+
+            await Task.Delay(20);
+
+        }
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        // Give the waiter time to join the single-flight while the leader is still gated.
+        await Task.Delay(150);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        gate.SetResult();
+
+        HttpResponseMessage[] responses = await Task.WhenAll(firstTask, secondTask);
+
+        Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
+
+        string body0 = await responses[0].Content.ReadAsStringAsync();
+
+        string body1 = await responses[1].Content.ReadAsStringAsync();
+
+        Assert.Equal(body0, body1);
+
+        Assert.Contains("concurrent-shared", body0);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+        _factory.FakeIntelligence.ExecuteGate = null;
+
+    }
+
+    [SkippableFact]
     public async Task PostPing_ExpiredCacheEntry_ExecutesFreshInsteadOfReplayingStaleData()
     {
 

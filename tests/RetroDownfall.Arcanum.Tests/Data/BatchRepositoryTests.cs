@@ -186,6 +186,68 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ListByStatusAsync_returns_only_matching_status()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        await _repo!.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, now, null, null, null), CancellationToken.None);
+
+        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, now, null, null, null), CancellationToken.None);
+
+        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Validating, now, null, null, null), CancellationToken.None);
+
+        IReadOnlyList<BatchRecord> inProgress = await _repo.ListByStatusAsync(BatchStatuses.InProgress, CancellationToken.None);
+
+        Assert.Equal(2, inProgress.Count);
+
+        Assert.All(inProgress, b => Assert.Equal(BatchStatuses.InProgress, b.Status));
+
+    }
+
+    [SkippableFact]
+    public async Task TryCompareAndSetStatusAsync_updates_only_when_expected_matches()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid id = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new BatchRecord(id, Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null),
+            CancellationToken.None);
+
+        bool first = await _repo.TryCompareAndSetStatusAsync(
+            id,
+            BatchStatuses.InProgress,
+            BatchStatuses.Validating,
+            null,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.True(first);
+
+        bool second = await _repo.TryCompareAndSetStatusAsync(
+            id,
+            BatchStatuses.InProgress,
+            BatchStatuses.Failed,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            CancellationToken.None);
+
+        Assert.False(second);
+
+        BatchRecord? loaded = await _repo.GetByIdAsync(id, CancellationToken.None);
+
+        Assert.Equal(BatchStatuses.Validating, loaded!.Status);
+
+    }
+
+    [SkippableFact]
     public async Task Migration_creates_Batches_table()
     {
 

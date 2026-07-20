@@ -15,6 +15,7 @@ internal enum CommandCenterAction
     None,
     NoOp,
     Send,
+    InsertComposerNewLine,
     CancelTurn,
     ClearComposer,
     QuitHint,
@@ -131,7 +132,14 @@ internal static class CommandCenterKeymap
 
         if (focus == CommandCenterFocusRegion.Composer && chord.IsEnter)
         {
-            return CommandCenterAction.Send;
+            // Ctrl+Enter sends. Bare/Shift/Alt+Enter fall through so TextView can insert
+            // newlines (EnterKeyAddsLine must stay true for WordWrap).
+            if (chord.IsCtrl)
+            {
+                return CommandCenterAction.Send;
+            }
+
+            return CommandCenterAction.None;
         }
 
         if (focus == CommandCenterFocusRegion.Sessions)
@@ -247,6 +255,8 @@ internal readonly record struct KeyChord(
     bool IsEsc = false,
     bool IsTab = false,
     bool IsShift = false,
+    bool IsAlt = false,
+    bool IsCtrl = false,
     bool IsCtrlC = false,
     bool IsCtrlK = false,
     bool IsCtrlO = false,

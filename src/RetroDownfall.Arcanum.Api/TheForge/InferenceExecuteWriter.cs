@@ -132,22 +132,28 @@ internal static class InferenceExecuteWriter
         }
         catch (OperationCanceledException)
         {
-            // Global cancellation classification: client abort → stop cleanly (no error frame);
-            // wall-clock / other cancel → Hub.Timeout error frame when the socket is still writable.
+            // DESIGN / WizardIntelligenceProvider cancellation rule:
+            // 1) Client abort (RequestAborted) → stop cleanly (no error frame).
+            // 2) Inference wall-clock timeout (!caller cancel) → Hub.Timeout frame.
+            // 3) Host/caller cancellation → sanitized failure frame (not labeled timeout).
             if (httpContext.RequestAborted.IsCancellationRequested)
             {
                 return;
             }
 
+            string publicMessage = cancellationToken.IsCancellationRequested
+                ? PublicStreamFailureMessage
+                : PublicStreamTimeoutMessage;
+
             try
             {
-                IntelligenceEvent timeoutEvent = new(
+                IntelligenceEvent cancelEvent = new(
                     IntelligenceEventType.Error,
-                    PublicStreamTimeoutMessage);
+                    publicMessage);
 
                 eventBuffer.ResetWrittenCount();
                 jsonWriter.Reset();
-                JsonSerializer.Serialize(jsonWriter, timeoutEvent, ArcanumJsonContext.Default.IntelligenceEvent);
+                JsonSerializer.Serialize(jsonWriter, cancelEvent, ArcanumJsonContext.Default.IntelligenceEvent);
                 eventBuffer.Write(NewlineBytes);
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None)
                     .ConfigureAwait(false);

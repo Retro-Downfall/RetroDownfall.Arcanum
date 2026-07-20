@@ -188,7 +188,7 @@ The gates, in order:
 1. **Guardrails input filter** — `FilterGuardrailsInputAsync` → `Guardrails/GuardrailsPipeline.cs` `FilterInputAsync`. Scans concatenated message text for PII (email/SSN/credit card/phone via source-generated regexes), toxicity blocklist, and topic allow/block regex lists. Returns `ErrorCodes.Guardrails.PiiDetected` or `ErrorCodes.Guardrails.Blocked` on hit. Pass-through when `Arcanum:Guardrails:Enabled` is false.
 2. **Attached files validation** — `TryValidateAttachedFiles`.
 3. **Request bounds validation** — `PingRequestBoundsValidator.Validate`.
-4. **Scrying gate** — `ValidateScryingGate` — validates image foci attachments (size/count/MIME; vision-capable model).
+4. **Scrying gate** — `ValidateScryingGate` — validates image foci attachments (size/count/MIME; vision-capable model). Session attachment **re-attach** (user `AttachmentReferences` and model `attach_session_file`) shares the same Scrying/`SupportsVision` gates for images; oversize images are rejected, never truncated. `MaxReferencesPerTurn` is a **combined** budget for user refs + model tool injections; each logical key+version injects **once** per turn.
 5. **Empty prompt check** — skipped for stateless (`/v1`) message lists.
 6. **Budget gate** — `BudgetMonitor.CheckAsync` (`Intelligence/BudgetMonitor.cs`). Reads today's USD spend from the Grimoire; returns `ErrorCodes.Budget.Exceeded` (HTTP 429) when over the daily limit, and dispatches a Comm Link alert once per threshold per UTC day.
 
@@ -700,6 +700,7 @@ The sequence of events a streaming client sees for a typical multi-round tool tu
      - `WardResolved` — (only if the Ward gate triggers) allow/deny + reason
      - `ToolError` — (only if the tool failed and was tolerated)
      - `ToolResult` — the stringified result returned to the model
+     - *(session attachments)* successful `attach_session_file` injects `TextContent`/`DataContent` into the **next** round (inject-once; combined `MaxReferencesPerTurn` with user refs; images need Scrying + vision)
 6. (loop repeats with more `Token`s for the next round)
 7. `Result` — terminal: "Complete" with usage, finish reason, warnings
 8. Or `Error` — terminal: inference error, guardrails rejection, or validation failure

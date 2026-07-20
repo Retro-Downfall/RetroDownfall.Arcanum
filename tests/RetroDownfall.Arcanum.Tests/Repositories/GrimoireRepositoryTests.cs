@@ -670,6 +670,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         return new GrimoireRepository(
             _db!,
+            new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(settings));
 

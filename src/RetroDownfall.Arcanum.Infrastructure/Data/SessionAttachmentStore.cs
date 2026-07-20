@@ -3,6 +3,9 @@ using System.Data.Common;
 using System.Globalization;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -16,18 +19,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// <see cref="ArcanumPaths.AttachmentsDirectory"/> (or a test root); metadata in
 /// <c>SessionAttachments</c> via the scoped <see cref="ArcanumDbContext"/> connection.
 /// </summary>
-internal sealed class SessionAttachmentStore : ISessionAttachmentStore
+internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 {
 
     /// <summary>
-    /// Named gates shared by PersistNew, PromotePending, and pending GC.
-    /// Bound: <c>bound|{sessionId:N}|{logicalKey}</c>; pending turn: <c>pending|{turnId}</c>.
+    /// Named gates shared by PersistNew, PromotePending, fork, purge, and GC.
+    /// Session: <c>session|{sessionId:N}</c>; bound: <c>bound|{sessionId:N}|{logicalKey}</c>;
+    /// pending turn: <c>pending|{turnId}</c>.
     /// </summary>
     internal static readonly KeyedLock<string> AttachmentGates = new(StringComparer.Ordinal);
 
     private readonly ArcanumDbContext _db;
 
     private readonly IOptions<ArcanumSettings> _options;
+
+    private readonly ILogger _logger;
 
     private readonly string _attachmentsRoot;
 
@@ -41,12 +47,15 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
     public SessionAttachmentStore(
         ArcanumDbContext db,
         IOptions<ArcanumSettings> options,
-        string? attachmentsRoot = null)
+        string? attachmentsRoot = null,
+        ILogger<SessionAttachmentStore>? logger = null)
     {
 
         _db = db;
 
         _options = options;
+
+        _logger = logger ?? NullLogger<SessionAttachmentStore>.Instance;
 
         _attachmentsRoot = Path.GetFullPath(attachmentsRoot ?? ArcanumPaths.AttachmentsDirectory);
 
@@ -114,6 +123,19 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
         ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
 
         string contentSha256 = Convert.ToHexString(SHA256.HashData(bytes.Span));
+
+        IDisposable? sessionGate = null;
+
+        if (sessionId is not null)
+        {
+
+            sessionGate = await AttachmentGates
+                .AcquireAsync(SessionGateKey(sessionId.Value), cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        using IDisposable? sessionGateLease = sessionGate;
 
         string gateKey = sessionId is not null
             ? BoundGateKey(sessionId.Value, logicalKey)
@@ -231,6 +253,10 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
             throw new ArgumentException($"Unsafe pending turn id: {turnError}", nameof(pendingTurnId));
 
         }
+
+        using IDisposable sessionGate = await AttachmentGates
+            .AcquireAsync(SessionGateKey(sessionId), cancellationToken)
+            .ConfigureAwait(false);
 
         using IDisposable gate = await AttachmentGates
             .AcquireAsync(PendingTurnGateKey(validatedPendingTurnId), cancellationToken)
@@ -677,6 +703,12 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
+    public Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default) =>
+        ReconcileCoreAsync(pendingOlderThan, cancellationToken);
+
+    public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+        AttachmentGates.AcquireAsync(SessionGateKey(sessionId), cancellationToken);
+
     public async Task ValidateReferencesAsync(
         Guid sessionId,
         IReadOnlyList<Guid> attachmentIds,
@@ -727,11 +759,28 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
+    internal static string SessionGateKey(Guid sessionId) =>
+        "session|" + sessionId.ToString("N");
+
     internal static string BoundGateKey(Guid sessionId, string logicalKey) =>
         "bound|" + sessionId.ToString("N") + "|" + logicalKey;
 
     internal static string PendingTurnGateKey(string pendingTurnId) =>
         "pending|" + pendingTurnId;
+
+    private void EnlistAmbientTransaction(DbCommand cmd)
+    {
+
+        IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
+
+        if (ambient is not null)
+        {
+
+            cmd.Transaction = ambient.GetDbTransaction();
+
+        }
+
+    }
 
     private async Task InsertRowAsync(SessionAttachmentRecord record, CancellationToken cancellationToken)
     {
@@ -739,6 +788,8 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand cmd = connection.CreateCommand();
+
+        EnlistAmbientTransaction(cmd);
 
         cmd.CommandText =
             """
@@ -1034,13 +1085,17 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
             if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(turnId, out string safeTurnId, out _))
             {
 
+                _logger.LogWarning(
+                    "Leaving invalid _pending child name alone (no identity-checked delete): {TurnDir}",
+                    turnId);
+
                 continue;
 
             }
 
             string absoluteDir = Path.GetFullPath(dir);
 
-            if (!WorkspacePathPolicy.IsPathUnderWorkspace(_attachmentsRoot, absoluteDir))
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, absoluteDir, out _))
             {
 
                 continue;
@@ -1104,7 +1159,7 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
 
             string absolute = Path.GetFullPath(filePath);
 
-            if (!WorkspacePathPolicy.IsPathUnderWorkspace(_attachmentsRoot, absolute))
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, absolute, out _))
             {
 
                 continue;
@@ -1173,7 +1228,7 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
 
         string dir = Path.GetFullPath(Path.Combine(_attachmentsRoot, "_pending", safeTurnId));
 
-        if (!WorkspacePathPolicy.IsPathUnderWorkspace(_attachmentsRoot, dir))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, dir, out _))
         {
 
             return;
@@ -1337,7 +1392,7 @@ internal sealed class SessionAttachmentStore : ISessionAttachmentStore
 
         string combined = Path.GetFullPath(Path.Combine(_attachmentsRoot, relativePath));
 
-        if (!WorkspacePathPolicy.IsPathUnderWorkspace(_attachmentsRoot, combined))
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, combined, out _))
         {
 
             throw new InvalidOperationException("Attachment path escapes the attachments root.");

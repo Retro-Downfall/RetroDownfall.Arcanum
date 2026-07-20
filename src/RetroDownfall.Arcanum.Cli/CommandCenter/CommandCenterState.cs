@@ -158,7 +158,7 @@ internal sealed class CommandCenterState
                 CommandCenterFocusRegion.Transcript
                     => "PgUp/PgDn scroll · Home/End · Esc composer · Tab focus · F1 help",
                 _
-                    => "Enter send · Ctrl+K commands · Ctrl+O sessions · Ctrl+N new · Ctrl+R refresh · Ctrl+C cancel · Ctrl+Q quit · F1 · Tab",
+                    => "Ctrl+Enter send · Enter newline · Ctrl+K commands · Ctrl+O sessions · Ctrl+N new · Ctrl+R refresh · Ctrl+C cancel · Ctrl+Q quit · F1 · Tab",
             };
         }
     }

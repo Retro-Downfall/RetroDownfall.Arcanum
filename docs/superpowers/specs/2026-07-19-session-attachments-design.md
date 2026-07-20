@@ -94,7 +94,7 @@ Sanitize **both** `logicalKey` and `originalFileName`: strip separators/`../`/co
 | `LogicalKey`, `OriginalFileName`, `Version`, `RelativePath`, `ContentSha256`, `MimeType`, `ByteLength`, `Kind`, `CreatedAt` | as usual | as usual |
 
 - `GET /api/sessions/{id}/attachments` returns **`State = Bound`** rows only.
-- Startup GC: delete stale **pending rows** and matching `_pending/{turnId}` directories **together** when older than `PendingRetentionHours`.
+- Startup reconcile: stale pending GC (rows + `_pending/{turnId}` dirs older than `PendingRetentionHours`), plus missing-session / missing-file / unreferenced-file sweeps; invalid `_pending` names logged and left alone.
 
 Indexes: `(SessionId, LogicalKey, Version)`, `(SessionId, CreatedAt)`, `(EntryId)`, `(PendingTurnId)`, `(State)`.
 
@@ -123,9 +123,11 @@ Do **not** rely on CLI validation. Host enforces:
 - File/image size, count, MIME bounds (Cli + Scrying clamps as applicable).
 - Safe `logicalKey` / `originalFileName`.
 - Per-session byte and version caps (`MaxBytesPerSession`, `MaxVersionsPerLogicalKey`).
-- Max `AttachmentReferences` per turn (`MaxReferencesPerTurn`).
+- Max combined user `AttachmentReferences` + model `attach_session_file` per turn (`MaxReferencesPerTurn`).
 - Each referenced attachment **belongs to the request `SessionId`**.
 - If `SessionId` is null → **`AttachmentReferences` are invalid** (reject).
+- Image re-attach: `Arcanum:Scrying:Enabled` + model `SupportsVision`; oversize images **reject, never truncate**.
+- Inject resolved content **once** per logical key+version per turn.
 
 ---
 
@@ -144,7 +146,14 @@ Do **not** rely on CLI validation. Host enforces:
 ### Promotion
 
 Pre-bind: `_pending/{turnId}/` + `State = Pending`.  
-On `SessionBound` / first persisted user entry: atomic move + row update (`State = Bound`, `SessionId` set, `PendingTurnId` null) in one transaction.
+On `SessionBound` / first persisted user entry: **copy** bytes into the session tree, then update rows (`State = Bound`, `SessionId` set, `PendingTurnId` null, new `RelativePath`) in a DB transaction — not an atomic filesystem move.
+
+### Fork / purge / reconcile
+
+- **Fork:** pre-copy + hash-verify Bound attachments into the fork session tree, then insert `Session` / `Entries` / `SessionAttachments` in one EF ambient transaction (raw SQL enlisted). Full fork includes `EntryId`-null Bound rows; cutoff fork excludes them. New attachment ids; remapped `EntryId`s.
+- **Purge:** delete `SessionAttachments` + `Session` / `Entries` in one txn, then best-effort delete the session attachment directory (FS failure logged; reconcile recovers).
+- **Entry hard-delete:** same txn sets matching `EntryId = NULL` (Bound rows/bytes remain on the session).
+- **Reconcile** (startup): stale pending GC; missing session rows/dirs; missing-file rows deleted+logged; unreferenced temp/final files; invalid `_pending` child names logged and left alone.
 
 ---
 
@@ -183,7 +192,9 @@ After a **successful** tool call, a dedicated **post-tool path** (extend process
 | Kind | Injection |
 |------|-----------|
 | Text | Bounded `TextContent` / message text |
-| Image | `DataContent` so vision-capable models receive the image |
+| Image | `DataContent` so vision-capable models receive the image (requires `Scrying.Enabled` + `SupportsVision`; oversize → reject, never truncate) |
+
+Each logical key+version is injected **once** per turn. User refs + model tool calls share `MaxReferencesPerTurn`.
 
 Document and test this path explicitly. “Auto-add into current turn” means this injection, not a textual tool result alone.
 
@@ -212,7 +223,7 @@ Do **not** overload `/attach foo.txt` to mean either local path or session logic
 | Key | Role |
 |-----|------|
 | `Enabled` | Master switch |
-| `MaxReferencesPerTurn` | Cap on `AttachmentReferences` |
+| `MaxReferencesPerTurn` | Combined user `AttachmentReferences` + model `attach_session_file` turn budget |
 | `MaxVersionsPerLogicalKey` | Soft version cap (reject when exceeded) |
 | `MaxBytesPerSession` | Soft byte budget (reject when exceeded) |
 | `PendingRetentionHours` | GC age for `_pending` + pending rows |
@@ -250,9 +261,10 @@ Interactive local CLI only; never headless/unattended; `ProcessStartInfo` withou
 - Identical bytes → no v2; same id re-staged.
 - Changed bytes → v2; both Reveal correctly.
 - Resume lists bound attachments; does **not** auto-inject.
-- Model tool: successful call → **DataContent/TextContent** on next round (not text-only fake); current session only; attunement/Sanctum honored.
+- Model tool: successful call → **DataContent/TextContent** on next round (not text-only fake); inject-once; combined `MaxReferencesPerTurn`; current session only; attunement/Sanctum honored; images gated by Scrying + vision.
 - Index appears in system prompt within caps; hostile filenames neutralized.
-- `SessionBound` promotes pending (atomic); GC removes stale pending row+dir together.
+- `SessionBound` promotes pending (copy bytes then DB update); GC/reconcile removes stale pending row+dir together; missing-file rows / orphans cleaned; invalid `_pending` names left alone.
+- Fork copies Bound attachments (full incl. EntryId-null; cutoff excludes); purge clears rows then best-effort session dir.
 - Path-traversal names rejected; host rejects bad refs / null SessionId + refs.
 - Concurrent same-name attach → single coherent next version.
 - Command parser: `/attach` local-only; `/attachments add|reveal` for session refs.
@@ -267,6 +279,9 @@ Interactive local CLI only; never headless/unattended; `ProcessStartInfo` withou
 | Persist timing | Before model call; fail closed |
 | Host validation | Mandatory (CLI UX-only) |
 | Pending invariants | SessionId/PendingTurnId/State as above |
+| Promote | Copy bytes then DB Bound update (not FS move) |
+| Fork / purge / recon | Pre-copy+hash fork; purge txn then FS; reconcile orphans |
+| Turn budget | Combined user+model `MaxReferencesPerTurn`; inject-once |
 | Schema | Hand-authored SQL in MigrationOrder; raw SQL access |
 | Model tool | Internal MCP; attunement; explicit post-tool DataContent/TextContent injection |
 | Index | Metadata-only, bounded, hardened names |

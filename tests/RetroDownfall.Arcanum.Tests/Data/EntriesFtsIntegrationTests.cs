@@ -105,6 +105,7 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
         GrimoireRepository repository = new(
             _db,
+            new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(settings));
 
@@ -120,7 +121,7 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionRepository repository = new(_db!, _fixture.CreateOptionsMonitor());
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Hidden title", CancellationToken.None);
 

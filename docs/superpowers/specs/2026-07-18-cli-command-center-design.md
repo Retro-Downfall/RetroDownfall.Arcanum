@@ -27,7 +27,8 @@ All view mutations → Host / Window via `IApplication.Invoke`.
 - Header: model · session continuation line · API status · Generating…
 - Left sessions list (UpdatedAt desc); collapses under 100 cols → Ctrl+O filterable overlay picker
 - Center transcript (follow-tail when at bottom)
-- Composer + focus-aware footer hints
+- Composer (multiline TextView): soft-wrap; grows **1–10** content rows upward into the body, then internal scroll; effective max also respects header/footer + minimum body at the ≥80×12 floor
+- Focus-aware footer hints
 
 ## Sessions
 
@@ -43,7 +44,9 @@ All view mutations → Host / Window via `IApplication.Invoke`.
 
 ## Keyboard
 
-F1 help · Ctrl+K palette · Ctrl+O sessions · Ctrl+N new · Ctrl+R/F5 refresh · Tab focus · Esc overlay/composer · Ctrl+C cancel/clear/quit-hint · Ctrl+Q quit
+F1 help · Ctrl+K palette · Ctrl+O sessions · Ctrl+N new · Ctrl+R/F5 refresh · Tab focus · **Enter** newline (composer) · **Ctrl+Enter** send · Esc overlay/composer · Ctrl+C cancel/clear/quit-hint · Ctrl+Q quit
+
+Composer send ownership: **Ctrl+Enter** maps to `Send` via composer `KeyDown`. Bare Enter falls through to TextView (`EnterKeyAddsLine` stays **true** — required for `WordWrap`; Terminal.Gui clears `Multiline`/`WordWrap` when it is set false). `TextView.Accepting` is a no-op so it cannot double-submit.
 
 ## Slash (v2)
 

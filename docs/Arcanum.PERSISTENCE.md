@@ -184,12 +184,24 @@ Hand-authored migration `20260719180000_AddSessionAttachments` in `GrimoireSqlSc
 | `LogicalKey`, `OriginalFileName`, `Version`, `RelativePath`, `ContentSha256`, `MimeType`, `ByteLength`, `Kind`, `CreatedAt` | as usual | as usual |
 
 - `GET /api/sessions/{id}/attachments` returns **`State = Bound`** only.
-- Pre-bind: `_pending/{turnId}/` + `State = Pending`. On `SessionBound` / first persisted user entry: atomic promote (move bytes + row update to Bound) in one transaction.
+- Pre-bind: `_pending/{turnId}/` + `State = Pending`. On `SessionBound` / first persisted user entry: **promote** copies bytes into the session tree, then updates rows to Bound (`SessionId` set, `PendingTurnId` null, new `RelativePath`) in a DB transaction — not an atomic filesystem move.
 - Persist **before** model inference; failure fails the turn closed.
+- **Fork:** pre-copies + hash-verifies attachment bytes into the fork session tree, then inserts `Session` / `Entries` / `SessionAttachments` in one EF ambient transaction (raw SQL enlisted). On DB failure, the partial fork tree is deleted.
+- **Purge:** deletes `SessionAttachments` + `Session` / `Entries` in one transaction, then best-effort deletes `attachments/{sessionId}/` (not tied to request cancellation). FS failure is logged; reconcile recovers.
+- **Entry hard-delete:** in the same DB transaction as the entry delete, sets matching `SessionAttachments.EntryId = NULL` (bytes and rows remain Bound to the session).
 
-### Retention / GC
+### Retention / GC / reconcile
 
-`SessionAttachmentPendingGcHostedService` runs once at host startup: deletes stale **Pending** rows and matching `_pending/{turnId}` directories **together** when older than `Arcanum:Attachments:PendingRetentionHours` (default 24h, clamp 1–168). Soft caps `MaxBytesPerSession` / `MaxVersionsPerLogicalKey` reject new writes when exceeded (no background prune of bound files).
+`SessionAttachmentPendingGcHostedService` runs once at host startup via `ReconcileAsync`: stale **Pending** GC (rows + matching `_pending/{turnId}` dirs older than `Arcanum:Attachments:PendingRetentionHours`, default 24h, clamp 1–168), then:
+
+| Sweep | Behavior |
+|-------|----------|
+| Missing session rows / dirs | Bound rows whose `SessionId` has no `Sessions` row → delete rows, then best-effort session dir; orphan session dirs with no live session → delete dir |
+| Missing-file rows | Row whose file is gone (or `RelativePath` escapes root) → delete row + log |
+| Unreferenced temp/final files | Orphan files under the attachments tree with no matching row → delete |
+| Invalid `_pending` child names | Log warning and leave alone (no identity-checked delete) |
+
+Soft caps `MaxBytesPerSession` / `MaxVersionsPerLogicalKey` reject new writes when exceeded (no background prune of bound files).
 
 ### Privacy / uninstall / copy
 

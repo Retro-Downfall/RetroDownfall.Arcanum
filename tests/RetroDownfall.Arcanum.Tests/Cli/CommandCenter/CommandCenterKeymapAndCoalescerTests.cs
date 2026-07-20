@@ -82,7 +82,20 @@ public sealed class CommandCenterKeymapTests
     }
 
     [Fact]
-    public void Enter_in_composer_sends()
+    public void Enter_in_composer_falls_through_for_newline()
+    {
+        Assert.Equal(
+            CommandCenterAction.None,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Composer,
+                false,
+                false,
+                false,
+                new KeyChord(IsEnter: true)));
+    }
+
+    [Fact]
+    public void CtrlEnter_in_composer_sends()
     {
         Assert.Equal(
             CommandCenterAction.Send,
@@ -91,7 +104,33 @@ public sealed class CommandCenterKeymapTests
                 false,
                 false,
                 false,
-                new KeyChord(IsEnter: true)));
+                new KeyChord(IsEnter: true, IsCtrl: true)));
+    }
+
+    [Fact]
+    public void ShiftEnter_in_composer_falls_through_for_newline()
+    {
+        Assert.Equal(
+            CommandCenterAction.None,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Composer,
+                false,
+                false,
+                false,
+                new KeyChord(IsEnter: true, IsShift: true)));
+    }
+
+    [Fact]
+    public void AltEnter_in_composer_falls_through_for_newline()
+    {
+        Assert.Equal(
+            CommandCenterAction.None,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Composer,
+                false,
+                false,
+                false,
+                new KeyChord(IsEnter: true, IsAlt: true)));
     }
 
     [Fact]

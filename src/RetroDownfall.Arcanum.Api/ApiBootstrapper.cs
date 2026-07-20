@@ -360,6 +360,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<BatchProcessingService>();
 
+        services.AddSingleton<IBatchRecoveryService, BatchRecoveryService>();
+
         services.AddHostedService(static sp => sp.GetRequiredService<BatchProcessingService>());
 
         services.AddScoped<IProvingGroundsArbiter, ProvingGroundsArbiter>();

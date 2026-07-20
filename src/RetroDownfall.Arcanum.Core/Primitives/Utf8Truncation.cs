@@ -84,6 +84,35 @@ public static class Utf8Truncation
     }
 
     /// <summary>
+    /// Truncates an already-encoded UTF-8 byte span to at most <paramref name="maxBytes"/> without
+    /// splitting a multi-byte UTF-8 codepoint (continuation bytes <c>10xxxxxx</c> are walked back).
+    /// When <paramref name="maxBytes"/> is non-positive and the span is longer, returns an empty span.
+    /// </summary>
+    public static ReadOnlySpan<byte> TruncateUtf8BytesToCodepointBoundary(ReadOnlySpan<byte> utf8, int maxBytes)
+    {
+
+        if (utf8.Length <= maxBytes)
+        {
+            return utf8;
+        }
+
+        if (maxBytes <= 0)
+        {
+            return ReadOnlySpan<byte>.Empty;
+        }
+
+        int end = maxBytes;
+
+        while (end > 0 && (utf8[end] & 0xC0) == 0x80)
+        {
+            end--;
+        }
+
+        return utf8[..end];
+
+    }
+
+    /// <summary>
     /// Returns the largest character count from the start of <paramref name="text"/>, up to
     /// <paramref name="maxChars"/>, that does not split a surrogate pair at the boundary. Used to
     /// hard-cap outbound text by character count (for example against

@@ -103,8 +103,6 @@ internal static class CommandCenterTurnAttachmentBuilder
             workingPrompt = workingPrompt.Remove(match.Index, match.Length);
         }
 
-        workingPrompt = workingPrompt.Trim();
-
         foreach (string pre in preStagedPaths)
         {
             if (string.IsNullOrWhiteSpace(pre))

@@ -27,6 +27,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal sealed class BatchProcessingService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    IServiceProvider services,
     ILogger<BatchProcessingService> logger) : BackgroundService
 {
 
@@ -46,6 +47,22 @@ internal sealed class BatchProcessingService(
     // a second worker from picking the same batch up. This endpoint check just gives the operator a
     // clear 409 instead of a confusing reset-while-running.
     public bool IsBatchInFlight(Guid batchId) => _inFlight.ContainsKey(batchId);
+
+    /// <summary>
+    /// Reconcile DB-stranded <see cref="BatchStatuses.InProgress"/> rows before Kestrel accepts and
+    /// before <see cref="ExecuteAsync"/>'s poll loop starts picking up <see cref="BatchStatuses.Validating"/> work.
+    /// </summary>
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+
+        // Resolved here (not via ctor) to avoid a singleton cycle with BatchRecoveryService.
+        IBatchRecoveryService recovery = services.GetRequiredService<IBatchRecoveryService>();
+
+        await recovery.ReconcileStrandedAsync(cancellationToken).ConfigureAwait(false);
+
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+
+    }
 
     /// <summary>
     /// Test/ops hook: request expiry cancellation for an in-flight batch without deleting files

@@ -46,6 +46,120 @@ public sealed class InferenceExecuteWriterTests
     }
 
     [Fact]
+    public async Task WriteStreamAsync_RequestAborted_ReturnsCleanlyWithoutErrorFrame()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        MemoryStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        CancellationTokenSource requestAborted = new();
+
+        httpContext.RequestAborted = requestAborted.Token;
+
+        FakeIntelligenceProvider intelligence = new();
+
+        intelligence.NextStreamException = new OperationCanceledException(requestAborted.Token);
+
+        requestAborted.Cancel();
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, CancellationToken.None);
+
+        string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.DoesNotContain("error", output, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamTimeoutMessage, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteStreamAsync_InferenceTimeoutOce_WritesTimeoutFrame()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        MemoryStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        CancellationTokenSource requestAborted = new();
+
+        httpContext.RequestAborted = requestAborted.Token;
+
+        FakeIntelligenceProvider intelligence = new();
+
+        // Neither RequestAborted nor the caller token is cancelled — mirrors wall-clock
+        // expiry inside the hub (!callerToken.IsCancellationRequested).
+        intelligence.NextStreamException = new OperationCanceledException();
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, CancellationToken.None);
+
+        string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.Contains(InferenceExecuteWriter.PublicStreamTimeoutMessage, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteStreamAsync_HostCallerCancellation_WritesSanitizedFailureNotTimeout()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        MemoryStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        CancellationTokenSource requestAborted = new();
+
+        httpContext.RequestAborted = requestAborted.Token;
+
+        CancellationTokenSource hostCancel = new();
+
+        FakeIntelligenceProvider intelligence = new();
+
+        intelligence.NextStreamException = new OperationCanceledException(hostCancel.Token);
+
+        hostCancel.Cancel();
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, hostCancel.Token);
+
+        string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamTimeoutMessage, output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task WriteStreamAsync_NonOperationCanceledException_WritesSanitizedErrorFrameAndLogsException()
     {
         ServiceCollection services = new();

@@ -331,7 +331,7 @@ public static class SettingDescriptors
 
         new("attachments.enabled", ConfigSection.Attachments, "Enabled", "When true, session attachments (text + Scrying images) are persisted on disk with Grimoire metadata.", SettingKind.Bool),
 
-        new("attachments.maxReferencesPerTurn", ConfigSection.Attachments, "Max references per turn", "Maximum AttachmentReferences allowed on a single inference turn.", SettingKind.Int, 1, 32, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn)),
+        new("attachments.maxReferencesPerTurn", ConfigSection.Attachments, "Max references per turn", "Combined per-turn budget for user AttachmentReferences and model attach_session_file injections.", SettingKind.Int, 1, 32, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn)),
 
         new("attachments.maxVersionsPerLogicalKey", ConfigSection.Attachments, "Max versions per logical key", "Soft cap on versioned copies of the same logical attachment name within a session.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey)),
 

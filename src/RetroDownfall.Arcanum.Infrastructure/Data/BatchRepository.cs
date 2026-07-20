@@ -175,6 +175,41 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
     }
 
+    public async Task<IReadOnlyList<BatchRecord>> ListByStatusAsync(string status, CancellationToken cancellationToken = default)
+    {
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    SELECT "Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt", "OutputFileId", "ErrorFileId"
+                    FROM "Batches"
+                    WHERE "Status" = @status
+                    ORDER BY "CreatedAt" ASC
+                    """;
+
+                AddParameter(cmd, "@status", status);
+
+                List<BatchRecord> records = [];
+
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    records.Add(ReadRecord(reader));
+                }
+
+                return (IReadOnlyList<BatchRecord>)records;
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
     public Task UpdateStatusAsync(
         Guid id,
         string status,
@@ -214,6 +249,53 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
+
+    }
+
+    public async Task<bool> TryCompareAndSetStatusAsync(
+        Guid id,
+        string expectedStatus,
+        string newStatus,
+        DateTimeOffset? completedAt,
+        Guid? outputFileId,
+        Guid? errorFileId,
+        CancellationToken cancellationToken = default)
+    {
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    UPDATE "Batches"
+                    SET "Status" = @newStatus,
+                        "CompletedAt" = @completedAt,
+                        "OutputFileId" = @outputFileId,
+                        "ErrorFileId" = @errorFileId
+                    WHERE "Id" = @id AND "Status" = @expectedStatus
+                    """;
+
+                AddParameter(cmd, "@id", id.ToString());
+
+                AddParameter(cmd, "@expectedStatus", expectedStatus);
+
+                AddParameter(cmd, "@newStatus", newStatus);
+
+                AddParameter(cmd, "@completedAt", (object?)completedAt?.ToString("o", CultureInfo.InvariantCulture) ?? DBNull.Value);
+
+                AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
+
+                AddParameter(cmd, "@errorFileId", (object?)errorFileId?.ToString() ?? DBNull.Value);
+
+                int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                return rows == 1;
+            },
+            cancellationToken).ConfigureAwait(false);
 
     }
 

@@ -142,7 +142,16 @@ public sealed class SessionAttachmentToolInjectionTests
         ArcanumSettings settings = new()
         {
             Attachments = new AttachmentsSettings { Enabled = true, EnableModelAttachTool = true },
-            Cli = new CliSettings { MaxAttachFileSizeBytes = 1024 * 1024 },
+            Cli = new CliSettings { MaxAttachFileSizeBytes = 4096 * 4096 },
+            Scrying = new ScryingSettings { Enabled = true, MaxImageBytes = 4096 * 4096 },
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "test",
+                    Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                },
+            ],
         };
 
         ToolExecutionPipeline pipeline = CreatePipeline(settings, store);
@@ -169,7 +178,7 @@ public sealed class SessionAttachmentToolInjectionTests
             ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
                 .ProcessSingleToolCallAsync(
                     fcc,
-                    new PingRequest("hi", WorkingDirectory: "/tmp"),
+                    new PingRequest("hi", Model: "vision-model", WorkingDirectory: "/tmp"),
                     chatOptions,
                     activeSpell: null,
                     sessionId: sessionId.ToString("D"),
@@ -379,12 +388,72 @@ public sealed class SessionAttachmentToolInjectionTests
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        public Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task ValidateReferencesAsync(
             Guid sessionId,
             IReadOnlyList<Guid> attachmentIds,
             int maxReferences,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IDisposable>(EmptyDisposable.Instance);
+
+        public Task DeleteRowsForSessionInAmbientTransactionAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public bool TryDeleteSessionDirectory(Guid sessionId) => true;
+
+        public Task ClearEntryIdsInAmbientTransactionAsync(
+            Guid sessionId,
+            IReadOnlyList<Guid> entryIds,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
+            Guid sourceSessionId,
+            IReadOnlySet<Guid>? copiedSourceEntryIds,
+            CancellationToken cancellationToken = default)
+        {
+
+            IEnumerable<SessionAttachmentRecord> bound = Records.Where(r =>
+                r.SessionId == sourceSessionId && r.State == SessionAttachmentState.Bound);
+
+            if (copiedSourceEntryIds is not null)
+            {
+                bound = bound.Where(r => r.EntryId is { } eid && copiedSourceEntryIds.Contains(eid));
+            }
+
+            return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(bound.ToList());
+
+        }
+
+        public Task CopyBytesForForkAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task InsertForkRowsInAmbientTransactionAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        private sealed class EmptyDisposable : IDisposable
+        {
+
+            public static readonly EmptyDisposable Instance = new();
+
+            public void Dispose()
+            {
+            }
+
+        }
 
     }
 

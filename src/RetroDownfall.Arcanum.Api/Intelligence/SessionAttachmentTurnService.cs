@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -131,9 +132,6 @@ public static class SessionAttachmentTurnService
 
             if (request.AttachmentReferences is { Count: > 0 } && request.SessionId is { } refSessionId)
             {
-                long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-                    settings.Cli.MaxAttachFileSizeBytes);
-
                 foreach (Guid attachmentId in request.AttachmentReferences)
                 {
                     SessionAttachmentRecord? record = await store
@@ -165,10 +163,28 @@ public static class SessionAttachmentTurnService
 
                     if (record.Kind == SessionAttachmentKind.Image)
                     {
+                        string? imageError = SessionAttachmentToolInjection.ValidateImageAttach(
+                            record,
+                            bytes.Length,
+                            settings,
+                            request.Model);
+
+                        if (imageError is not null)
+                        {
+                            return new SessionAttachmentTurnPreparation(
+                                [],
+                                [],
+                                effectivePending,
+                                imageError);
+                        }
+
                         rehydrated.Add(new DataContent(bytes, record.MimeType));
                     }
                     else
                     {
+                        long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                            settings.Cli.MaxAttachFileSizeBytes);
+
                         string text = DecodeTextWithByteBound(bytes, maxTextBytes);
                         rehydrated.Add(new TextContent(text));
                     }
@@ -214,31 +230,19 @@ public static class SessionAttachmentTurnService
         if (span.Length > maxTextBytes && maxTextBytes > 0)
         {
             int limit = (int)Math.Min(maxTextBytes, int.MaxValue);
-            span = TruncateUtf8ToRuneBoundary(span, limit);
+            span = Utf8Truncation.TruncateUtf8BytesToCodepointBoundary(span, limit);
         }
 
         return Encoding.UTF8.GetString(span);
 
     }
 
-    /// <summary>Truncates UTF-8 bytes without splitting a multi-byte codepoint.</summary>
-    internal static ReadOnlySpan<byte> TruncateUtf8ToRuneBoundary(ReadOnlySpan<byte> utf8, int maxBytes)
-    {
-
-        if (utf8.Length <= maxBytes || maxBytes <= 0)
-        {
-            return utf8.Length <= maxBytes ? utf8 : utf8[..Math.Max(0, maxBytes)];
-        }
-
-        int end = maxBytes;
-        while (end > 0 && (utf8[end] & 0xC0) == 0x80)
-        {
-            end--;
-        }
-
-        return utf8[..end];
-
-    }
+    /// <summary>
+    /// Obsolete wrapper — prefer <see cref="Utf8Truncation.TruncateUtf8BytesToCodepointBoundary"/>.
+    /// </summary>
+    [Obsolete("Use Utf8Truncation.TruncateUtf8BytesToCodepointBoundary.")]
+    internal static ReadOnlySpan<byte> TruncateUtf8ToRuneBoundary(ReadOnlySpan<byte> utf8, int maxBytes) =>
+        Utf8Truncation.TruncateUtf8BytesToCodepointBoundary(utf8, maxBytes);
 
 }
 

@@ -376,16 +376,17 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             BatchExpiryHours = batchExpiryHours ?? 24,
         };
 
-        IServiceScopeFactory scopeFactory = BuildScopeFactory(intelligence);
+        ServiceProvider root = BuildServiceProvider(intelligence);
 
         return new BatchProcessingService(
-            scopeFactory,
+            root.GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Batches = batches }),
+            root,
             NullLogger<BatchProcessingService>.Instance);
 
     }
 
-    private IServiceScopeFactory BuildScopeFactory(IArcanumIntelligenceProvider intelligence)
+    private ServiceProvider BuildServiceProvider(IArcanumIntelligenceProvider intelligence)
     {
 
         ServiceCollection services = new();
@@ -398,7 +399,22 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         services.AddSingleton(intelligence);
 
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        services.AddSingleton<IBatchRecoveryService>(_ => new NoOpBatchRecoveryService());
+
+        return services.BuildServiceProvider();
+
+    }
+
+    private IServiceScopeFactory BuildScopeFactory(IArcanumIntelligenceProvider intelligence) =>
+        BuildServiceProvider(intelligence).GetRequiredService<IServiceScopeFactory>();
+
+    private sealed class NoOpBatchRecoveryService : IBatchRecoveryService
+    {
+
+        public Task ReconcileStrandedAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<BatchRecoveryResult> ResetStuckBatchAsync(Guid batchId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new BatchRecoveryResult(BatchRecoveryStatus.NotFound));
 
     }
 

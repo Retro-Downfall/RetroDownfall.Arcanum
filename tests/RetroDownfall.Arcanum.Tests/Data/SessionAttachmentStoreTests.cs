@@ -1,8 +1,10 @@
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -737,6 +739,305 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         await _store!.DeleteStalePendingAsync(TimeSpan.FromHours(24));
 
         Assert.False(File.Exists(orphanFile));
+
+    }
+
+    [SkippableFact]
+    public async Task ListBoundForForkAsync_full_includes_null_entry_cutoff_excludes()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid mappedEntryId = Guid.NewGuid();
+
+        Guid otherEntryId = Guid.NewGuid();
+
+        SessionAttachmentRecord unbound = await _store!.PersistNewAsync(
+            sessionId,
+            null,
+            entryId: null,
+            "unbound.txt",
+            "unbound.txt",
+            Encoding.UTF8.GetBytes("unbound"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord mapped = await _store.PersistNewAsync(
+            sessionId,
+            null,
+            mappedEntryId,
+            "mapped.txt",
+            "mapped.txt",
+            Encoding.UTF8.GetBytes("mapped"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord other = await _store.PersistNewAsync(
+            sessionId,
+            null,
+            otherEntryId,
+            "other.txt",
+            "other.txt",
+            Encoding.UTF8.GetBytes("other"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        IReadOnlyList<SessionAttachmentRecord> fullFork = await _store.ListBoundForForkAsync(
+            sessionId,
+            copiedSourceEntryIds: null);
+
+        Assert.Equal(3, fullFork.Count);
+
+        Assert.Contains(fullFork, r => r.Id == unbound.Id && r.EntryId is null);
+
+        Assert.Contains(fullFork, r => r.Id == mapped.Id);
+
+        Assert.Contains(fullFork, r => r.Id == other.Id);
+
+        HashSet<Guid> cutoff = [mappedEntryId];
+
+        IReadOnlyList<SessionAttachmentRecord> cutoffFork = await _store.ListBoundForForkAsync(
+            sessionId,
+            cutoff);
+
+        Assert.Single(cutoffFork);
+
+        Assert.Equal(mapped.Id, cutoffFork[0].Id);
+
+        Assert.DoesNotContain(cutoffFork, r => r.EntryId is null);
+
+        Assert.DoesNotContain(cutoffFork, r => r.Id == other.Id);
+
+    }
+
+    [SkippableFact]
+    public async Task CopyBytesForForkAsync_then_InsertForkRows_remaps_and_hash_matches()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sourceSessionId = Guid.NewGuid();
+
+        Guid forkSessionId = Guid.NewGuid();
+
+        Guid sourceEntryId = Guid.NewGuid();
+
+        Guid forkEntryId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sourceSessionId, "fork-source");
+
+        await EnsureSessionAsync(forkSessionId, "fork-dest");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("fork-bytes");
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            sourceSessionId,
+            null,
+            sourceEntryId,
+            "notes.txt",
+            "notes.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Guid newAttachmentId = Guid.NewGuid();
+
+        SessionAttachmentForkCopyPlan plan = new(source, newAttachmentId, forkEntryId);
+
+        try
+        {
+
+            await _store.CopyBytesForForkAsync(forkSessionId, [plan]);
+
+            using IDisposable gate = await _store.AcquireSessionGateAsync(forkSessionId);
+
+            await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+                await _db!.Database.BeginTransactionAsync();
+
+            await _store.InsertForkRowsInAmbientTransactionAsync(forkSessionId, [plan]);
+
+            await tx.CommitAsync();
+
+            IReadOnlyList<SessionAttachmentRecord> forked = await _store.ListBoundAsync(forkSessionId);
+
+            Assert.Single(forked);
+
+            SessionAttachmentRecord forkRow = forked[0];
+
+            Assert.Equal(newAttachmentId, forkRow.Id);
+
+            Assert.Equal(forkSessionId, forkRow.SessionId);
+
+            Assert.Equal(forkEntryId, forkRow.EntryId);
+
+            Assert.Equal(source.LogicalKey, forkRow.LogicalKey);
+
+            Assert.Equal(source.ContentSha256, forkRow.ContentSha256);
+
+            Assert.NotEqual(source.Id, forkRow.Id);
+
+            ReadOnlyMemory<byte> loaded = await _store.ReadBytesAsync(forkRow);
+
+            Assert.Equal(bytes, loaded.ToArray());
+
+            string hash = Convert.ToHexString(SHA256.HashData(loaded.Span));
+
+            Assert.Equal(source.ContentSha256, hash, ignoreCase: true);
+
+        }
+        finally
+        {
+
+            Assert.True(_store.TryDeleteSessionDirectory(forkSessionId));
+
+            Assert.False(Directory.Exists(Path.Combine(_attachmentsRoot, forkSessionId.ToString("N"))));
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task DeleteRowsForSession_under_gate_then_TryDeleteSessionDirectory_clears_all()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "purge-me");
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "purge.txt",
+            "purge.txt",
+            Encoding.UTF8.GetBytes("purge-bytes"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        string sessionDir = Path.Combine(_attachmentsRoot, sessionId.ToString("N"));
+
+        Assert.True(Directory.Exists(sessionDir));
+
+        Assert.True(File.Exists(Path.Combine(_attachmentsRoot, record.RelativePath)));
+
+        using (IDisposable gate = await _store.AcquireSessionGateAsync(sessionId))
+        {
+
+            await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+                await _db!.Database.BeginTransactionAsync();
+
+            await _store.DeleteRowsForSessionInAmbientTransactionAsync(sessionId);
+
+            await tx.CommitAsync();
+
+        }
+
+        Assert.True(_store.TryDeleteSessionDirectory(sessionId));
+
+        Assert.Null(await _store.GetByIdAsync(record.Id));
+
+        Assert.Empty(await _store.ListBoundAsync(sessionId));
+
+        Assert.False(Directory.Exists(sessionDir));
+
+    }
+
+    [SkippableFact]
+    public async Task ClearEntryIdsInAmbientTransactionAsync_nulls_EntryId()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "clear-entry");
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            sessionId,
+            null,
+            entryId,
+            "linked.txt",
+            "linked.txt",
+            Encoding.UTF8.GetBytes("linked"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.Equal(entryId, record.EntryId);
+
+        using IDisposable gate = await _store.AcquireSessionGateAsync(sessionId);
+
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await _db!.Database.BeginTransactionAsync();
+
+        await _store.ClearEntryIdsInAmbientTransactionAsync(sessionId, [entryId]);
+
+        await tx.CommitAsync();
+
+        SessionAttachmentRecord? cleared = await _store.GetByIdAsync(record.Id);
+
+        Assert.NotNull(cleared);
+
+        Assert.Null(cleared!.EntryId);
+
+        Assert.Equal(sessionId, cleared.SessionId);
+
+    }
+
+    [SkippableFact]
+    public async Task ReconcileAsync_deletes_row_whose_file_is_missing()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "reconcile-missing");
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "missing.txt",
+            "missing.txt",
+            Encoding.UTF8.GetBytes("will-delete-file"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        Assert.True(File.Exists(absolute));
+
+        File.Delete(absolute);
+
+        Assert.False(File.Exists(absolute));
+
+        await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+        Assert.Null(await _store.GetByIdAsync(record.Id));
+
+    }
+
+    private async Task EnsureSessionAsync(Guid sessionId, string title)
+    {
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Title = title,
+            Status = "active",
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+
+        await _db.SaveChangesAsync();
 
     }
 

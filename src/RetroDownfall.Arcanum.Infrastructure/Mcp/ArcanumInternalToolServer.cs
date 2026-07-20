@@ -929,7 +929,9 @@ internal sealed partial class ArcanumInternalToolServer
             writer.WriteEndObject();
         }
 
-        return JsonSerializer.Deserialize<JsonElement>(stream.ToArray());
+        using JsonDocument document = JsonDocument.Parse(stream.ToArray());
+
+        return document.RootElement.Clone();
 
     }
 

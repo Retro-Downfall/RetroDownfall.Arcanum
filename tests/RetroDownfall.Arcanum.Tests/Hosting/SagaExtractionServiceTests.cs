@@ -495,6 +495,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         services.AddScoped<IGrimoireRepository>(sp => new GrimoireRepository(
             sp.GetRequiredService<ArcanumDbContext>(),
+            new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(disabledSettings)));
 
@@ -606,6 +607,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         services.AddScoped<IGrimoireRepository>(sp => new GrimoireRepository(
             sp.GetRequiredService<ArcanumDbContext>(),
+            new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(settings)));
 

@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -14,18 +16,29 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public static class SessionAttachmentToolInjection
 {
 
+    /// <summary>
+    /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
+    /// inject-once, Scrying/vision for images, and size limits (images are rejected, never truncated).
+    /// </summary>
     public static async Task<IReadOnlyList<AIContent>?> TryBuildContentsAsync(
         ISessionAttachmentStore store,
         Guid sessionId,
         string logicalName,
         int? version,
-        long maxTextBytes,
+        ArcanumSettings settings,
+        string? requestModel,
         CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(settings);
 
         if (string.IsNullOrWhiteSpace(logicalName))
+        {
+            return null;
+        }
+
+        if (!SessionAttachmentTurnBudget.TryConsume())
         {
             return null;
         }
@@ -34,7 +47,14 @@ public static class SessionAttachmentToolInjection
             .GetByLogicalAsync(sessionId, logicalName.Trim(), version, cancellationToken)
             .ConfigureAwait(false);
 
-        if (record is null)
+        if (record is null
+            || record.State != SessionAttachmentState.Bound
+            || record.SessionId != sessionId)
+        {
+            return null;
+        }
+
+        if (!SessionAttachmentTurnBudget.TryMarkInjected(record.LogicalKey, record.Version))
         {
             return null;
         }
@@ -45,14 +65,62 @@ public static class SessionAttachmentToolInjection
 
         if (record.Kind == SessionAttachmentKind.Image)
         {
+            string? imageError = ValidateImageAttach(record, bytes.Length, settings, requestModel);
+
+            if (imageError is not null)
+            {
+                return null;
+            }
+
             string mime = string.IsNullOrWhiteSpace(record.MimeType) ? "image/*" : record.MimeType;
 
             return [new DataContent(bytes, mime)];
         }
 
-        string text = DecodeTextWithByteBound(bytes, maxTextBytes);
+        long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Cli.MaxAttachFileSizeBytes);
+
+        if (bytes.Length > maxTextBytes && maxTextBytes > 0)
+        {
+            // Text may be truncated at a UTF-8 boundary; images must never be truncated (rejected above).
+            string truncated = DecodeTextWithByteBound(bytes, maxTextBytes);
+
+            return [new TextContent(truncated)];
+        }
+
+        string text = Encoding.UTF8.GetString(bytes.Span);
 
         return [new TextContent(text)];
+
+    }
+
+    /// <summary>Shared image gate for user rehydrate and model inject.</summary>
+    public static string? ValidateImageAttach(
+        SessionAttachmentRecord record,
+        long byteLength,
+        ArcanumSettings settings,
+        string? requestModel)
+    {
+
+        ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
+
+        if (!scrying.Enabled)
+        {
+            return "Scrying is disabled; image attachments cannot be re-attached.";
+        }
+
+        if (!ProviderResolver.SupportsVision(settings, requestModel))
+        {
+            return $"Model '{requestModel ?? "(default)"}' does not support vision. Use a vision-capable model.";
+        }
+
+        long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes);
+
+        if (byteLength > maxImageBytes)
+        {
+            return $"Image attachment '{record.LogicalKey}' exceeds MaxImageBytes ({maxImageBytes}); images are rejected, never truncated.";
+        }
+
+        return null;
 
     }
 
@@ -181,7 +249,7 @@ public static class SessionAttachmentToolInjection
         if (span.Length > maxTextBytes && maxTextBytes > 0)
         {
             int limit = (int)Math.Min(maxTextBytes, int.MaxValue);
-            span = SessionAttachmentTurnService.TruncateUtf8ToRuneBoundary(span, limit);
+            span = Utf8Truncation.TruncateUtf8BytesToCodepointBoundary(span, limit);
         }
 
         return Encoding.UTF8.GetString(span);

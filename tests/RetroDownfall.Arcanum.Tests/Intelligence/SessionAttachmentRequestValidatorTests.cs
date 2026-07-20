@@ -214,6 +214,54 @@ public sealed class SessionAttachmentRequestValidatorTests
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IDisposable>(EmptyDisposable.Instance);
+
+        public Task DeleteRowsForSessionInAmbientTransactionAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public bool TryDeleteSessionDirectory(Guid sessionId) => true;
+
+        public Task ClearEntryIdsInAmbientTransactionAsync(
+            Guid sessionId,
+            IReadOnlyList<Guid> entryIds,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
+            Guid sourceSessionId,
+            IReadOnlySet<Guid>? copiedSourceEntryIds,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>([]);
+
+        public Task CopyBytesForForkAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task InsertForkRowsInAmbientTransactionAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        private sealed class EmptyDisposable : IDisposable
+        {
+
+            public static readonly EmptyDisposable Instance = new();
+
+            public void Dispose()
+            {
+            }
+
+        }
+
     }
 
 }

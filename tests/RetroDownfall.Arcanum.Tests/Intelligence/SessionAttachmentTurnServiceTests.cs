@@ -230,12 +230,26 @@ public sealed class SessionAttachmentTurnServiceTests
         PingRequest request = new(
             "hi",
             SessionId: sessionId,
+            Model: "vision-model",
             AttachmentReferences: [textId, imageId]);
+
+        ArcanumSettings settings = new()
+        {
+            Scrying = new ScryingSettings { Enabled = true, MaxImageBytes = 1024 * 1024 },
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "test",
+                    Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                },
+            ],
+        };
 
         SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
             request,
             store,
-            new ArcanumSettings(),
+            settings,
             turnSessionId: sessionId,
             turnEntryId: null,
             pendingTurnId: null);
@@ -405,6 +419,9 @@ public sealed class SessionAttachmentTurnServiceTests
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
+        public Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task ValidateReferencesAsync(
             Guid sessionId,
             IReadOnlyList<Guid> attachmentIds,
@@ -421,6 +438,63 @@ public sealed class SessionAttachmentTurnServiceTests
             }
 
             return Task.CompletedTask;
+
+        }
+
+        public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IDisposable>(EmptyDisposable.Instance);
+
+        public Task DeleteRowsForSessionInAmbientTransactionAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public bool TryDeleteSessionDirectory(Guid sessionId) => true;
+
+        public Task ClearEntryIdsInAmbientTransactionAsync(
+            Guid sessionId,
+            IReadOnlyList<Guid> entryIds,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
+            Guid sourceSessionId,
+            IReadOnlySet<Guid>? copiedSourceEntryIds,
+            CancellationToken cancellationToken = default)
+        {
+
+            IEnumerable<SessionAttachmentRecord> bound = Records.Values.Where(r =>
+                r.SessionId == sourceSessionId && r.State == SessionAttachmentState.Bound);
+
+            if (copiedSourceEntryIds is not null)
+            {
+                bound = bound.Where(r => r.EntryId is { } eid && copiedSourceEntryIds.Contains(eid));
+            }
+
+            return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(bound.ToList());
+
+        }
+
+        public Task CopyBytesForForkAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task InsertForkRowsInAmbientTransactionAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        private sealed class EmptyDisposable : IDisposable
+        {
+
+            public static readonly EmptyDisposable Instance = new();
+
+            public void Dispose()
+            {
+            }
 
         }
 

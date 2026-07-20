@@ -49,9 +49,7 @@ internal static partial class OpenAiV1Endpoints
 
     private static async Task<IResult> HandleResetBatchAsync(
         string id,
-        IBatchRepository batches,
-        IUploadedFileRepository files,
-        BatchProcessingService batchProcessingService,
+        IBatchRecoveryService batchRecovery,
         CancellationToken cancellationToken)
     {
 
@@ -62,82 +60,53 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        BatchRecord? record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false);
+        BatchRecoveryResult result = await batchRecovery.ResetStuckBatchAsync(batchId, cancellationToken).ConfigureAwait(false);
 
-        if (record is null)
+        switch (result.Status)
         {
 
-            return BatchNotFoundResult(id);
+            case BatchRecoveryStatus.NotFound:
+                return BatchNotFoundResult(id);
+
+            case BatchRecoveryStatus.NotStuck:
+                return JsonError(
+                    $"Batch '{id}' is not in a stuck state ({result.Record?.Status ?? "unknown"}); reset is only allowed for batches stuck in_progress.",
+                    "invalid_request_error",
+                    "invalid_state",
+                    "id",
+                    StatusCodes.Status409Conflict);
+
+            case BatchRecoveryStatus.InFlight:
+            case BatchRecoveryStatus.ConcurrentModification:
+                return JsonError(
+                    $"Batch '{id}' is currently being processed; wait for it to finish or fail before resetting.",
+                    "invalid_request_error",
+                    "invalid_state",
+                    "id",
+                    StatusCodes.Status409Conflict);
+
+            case BatchRecoveryStatus.InputMissing:
+                return JsonError(
+                    $"Batch '{id}' input file is missing; the batch cannot be safely reset.",
+                    "invalid_request_error",
+                    "not_found",
+                    "input_file_id",
+                    StatusCodes.Status400BadRequest);
+
+            case BatchRecoveryStatus.Succeeded:
+                break;
+
+            default:
+                return JsonError(
+                    $"Batch '{id}' could not be reset.",
+                    "server_error",
+                    "reset_failed",
+                    "id",
+                    StatusCodes.Status500InternalServerError);
 
         }
 
-        if (!BatchStatuses.IsStuck(record.Status))
-        {
-
-            return JsonError(
-                $"Batch '{id}' is not in a stuck state ({record.Status}); reset is only allowed for batches stuck in_progress.",
-                "invalid_request_error",
-                "invalid_state",
-                "id",
-                StatusCodes.Status409Conflict);
-
-        }
-
-        if (batchProcessingService.IsBatchInFlight(batchId))
-        {
-
-            return JsonError(
-                $"Batch '{id}' is currently being processed; wait for it to finish or fail before resetting.",
-                "invalid_request_error",
-                "invalid_state",
-                "id",
-                StatusCodes.Status409Conflict);
-
-        }
-
-        UploadedFileRecord? inputFile = await files.GetByIdAsync(record.InputFileId, cancellationToken).ConfigureAwait(false);
-
-        string inputFilePath = UploadedFileStorage.ResolvePath(record.InputFileId);
-
-        if (inputFile is null || !File.Exists(inputFilePath))
-        {
-
-            return JsonError(
-                $"Batch '{id}' input file is missing; the batch cannot be safely reset.",
-                "invalid_request_error",
-                "not_found",
-                "input_file_id",
-                StatusCodes.Status400BadRequest);
-
-        }
-
-        if (record.OutputFileId is { } outputFileId)
-        {
-
-            BatchProcessingService.TryDeleteFile(UploadedFileStorage.ResolvePath(outputFileId));
-
-            await files.DeleteAsync(outputFileId, cancellationToken).ConfigureAwait(false);
-
-        }
-
-        if (record.ErrorFileId is { } errorFileId)
-        {
-
-            BatchProcessingService.TryDeleteFile(UploadedFileStorage.ResolvePath(errorFileId));
-
-            await files.DeleteAsync(errorFileId, cancellationToken).ConfigureAwait(false);
-
-        }
-
-        await batches.UpdateStatusAsync(
-            batchId,
-            BatchStatuses.Validating,
-            null,
-            null,
-            null,
-            cancellationToken).ConfigureAwait(false);
-
-        record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false) ?? record;
+        BatchRecord record = result.Record!;
 
         OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(record, cancellationToken).ConfigureAwait(false);
 

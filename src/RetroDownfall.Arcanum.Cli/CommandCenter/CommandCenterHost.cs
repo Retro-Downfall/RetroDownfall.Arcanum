@@ -110,8 +110,9 @@ internal sealed class CommandCenterHost(
 
                 void SubmitFromInput()
                 {
-                    string text = window.Input.Text?.ToString() ?? string.Empty;
-                    window.Input.Text = string.Empty;
+                    // Sole entry into HandleSubmitAsync for composer send (see Accepting no-op below).
+                    string text = window.GetComposerText();
+                    window.ClearComposer();
                     _ = HandleSubmitAsync(text, state, uiChannel.Writer, app, window, linked);
                 }
 
@@ -120,10 +121,18 @@ internal sealed class CommandCenterHost(
                     _ = DispatchActionAsync(action, state, uiChannel.Writer, app, window, linked, SubmitFromInput);
                 }
 
+                // ContentsChanged only dirties; ApplyAbsoluteLayout owns frames (UI thread).
+                window.SetComposerLayoutRequest(() =>
+                {
+                    app.Invoke(() => window.ApplyAbsoluteLayout(
+                        Math.Max(window.Frame.Width, app.Driver?.Cols ?? 80),
+                        Math.Max(window.Frame.Height, app.Driver?.Rows ?? 24)));
+                });
+
                 window.Input.KeyDown += (_, e) =>
                 {
                     // Logical focus wins: Ctrl+O / Tab may set Sessions while TG focus
-                    // still lands on the TextField. Route those keys as Sessions — do not
+                    // still lands on the composer. Route those keys as Sessions — do not
                     // overwrite FocusRegion back to Composer (that made Esc quit and j/k type).
                     CommandCenterFocusRegion routeFocus =
                         state.FocusRegion is CommandCenterFocusRegion.Sessions
@@ -223,10 +232,12 @@ internal sealed class CommandCenterHost(
                     _ = TryMapAndHandle(e, CommandCenterFocusRegion.Overlay, state, window, HandleAction);
                 };
 
+                // Send ownership: Ctrl+Enter → CommandCenterAction.Send → SubmitFromInput.
+                // Bare Enter falls through to TextView (EnterKeyAddsLine=true, required for WordWrap).
+                // Accepting is a no-op so it cannot double-submit if raised.
                 window.Input.Accepting += (_, e) =>
                 {
                     e.Handled = true;
-                    SubmitFromInput();
                 };
 
                 app.Keyboard.KeyDown += (_, keyEvent) =>
@@ -372,6 +383,14 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.Send:
                 submitFromInput();
+                break;
+
+            case CommandCenterAction.InsertComposerNewLine:
+                app.Invoke(() =>
+                {
+                    window.InsertComposerNewLine();
+                    window.FocusInput();
+                });
                 break;
 
             case CommandCenterAction.CancelTurn:
@@ -807,7 +826,9 @@ internal sealed class CommandCenterHost(
                     "Ctrl+N New session",
                     "Ctrl+R / F5 Refresh",
                     "Tab / Shift+Tab Cycle focus",
-                    "Enter Send (composer) / Resume (sessions)",
+                    "Ctrl+Enter Send (composer)",
+                    "Enter Newline (composer)",
+                    "Enter Resume (sessions)",
                     "Ctrl+C Cancel turn / clear input / quit hint",
                     "Ctrl+Q Quit",
                     "Esc Close overlay / focus composer",
@@ -1002,15 +1023,14 @@ internal sealed class CommandCenterHost(
         CommandCenterWindow window,
         CancellationTokenSource linked)
     {
-        string trimmed = text.Trim();
-        if (trimmed.Length == 0)
+        if (!CommandCenterSubmitText.TryPrepare(text, out string payload, out bool isSlash))
         {
             return;
         }
 
         state.FooterHint = null;
 
-        if (ShellCommandParser.IsSlash(trimmed))
+        if (isSlash)
         {
             await RunGatedAsync(
                     state,
@@ -1019,7 +1039,7 @@ internal sealed class CommandCenterHost(
                     async () =>
                     {
                         ShellDispatchResult result = await dispatcher
-                            .DispatchAsync(trimmed, state, linked.Token)
+                            .DispatchAsync(payload, state, linked.Token)
                             .ConfigureAwait(false);
 
                         await ui.WriteAsync(
@@ -1057,7 +1077,7 @@ internal sealed class CommandCenterHost(
             turnCts = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
             state.TurnCts = turnCts;
             await chatRunner
-                .RunTurnAsync(trimmed, state, ui, turnCts.Token)
+                .RunTurnAsync(payload, state, ui, turnCts.Token)
                 .ConfigureAwait(false);
 
             await sessionWorkspace.RefreshSessionsAsync(state, linked.Token).ConfigureAwait(false);
@@ -1196,11 +1216,19 @@ internal sealed class CommandCenterHost(
         bool ctrl = key.IsCtrl;
         char? ch = TryGetChar(key);
         bool isLetter = ch is { } c && char.IsLetter(c);
+        // Ctrl/Shift/Alt+Enter may arrive as WithCtrl/WithShift/WithAlt rather than bare Key.Enter.
+        bool isEnter = key == Key.Enter
+            || key == Key.Enter.WithShift
+            || key == Key.Enter.WithAlt
+            || key == Key.Enter.WithCtrl
+            || (key.KeyCode & ~(KeyCode.ShiftMask | KeyCode.AltMask | KeyCode.CtrlMask)) == KeyCode.Enter;
         return new KeyChord(
-            IsEnter: key == Key.Enter,
+            IsEnter: isEnter,
             IsEsc: key == Key.Esc,
             IsTab: key == Key.Tab || key == Key.Tab.WithShift,
             IsShift: key.IsShift,
+            IsAlt: key.IsAlt,
+            IsCtrl: key.IsCtrl,
             IsCtrlC: key == Key.C.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.C),
             IsCtrlK: key == Key.K.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.K),
             IsCtrlO: key == Key.O.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.O),

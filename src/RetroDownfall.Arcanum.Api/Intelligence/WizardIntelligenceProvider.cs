@@ -324,6 +324,17 @@ public sealed class WizardIntelligenceProvider(
                 IsConnectivityFailure: false);
         }
 
+        AttachmentsSettings attachmentSettings = settings.Value.Attachments ?? new AttachmentsSettings();
+
+        int maxRefsPerTurn = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
+            attachmentSettings.MaxReferencesPerTurn);
+
+        int userRefCount = request.AttachmentReferences?.Count ?? 0;
+
+        SessionAttachmentTurnBudget.BeginTurn(maxRefsPerTurn, userRefCount);
+
+        try
+        {
         if (attachmentPrep.PendingTurnId is not null
             && grimoireTurn.SessionId is { } promoteSessionId)
         {
@@ -430,8 +441,8 @@ public sealed class WizardIntelligenceProvider(
             lexiconEntries: lexiconEntries,
             maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes),
             sessionAttachmentsIndex: attachmentPrep.IndexItems,
-            maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(settings.Value.Attachments.MaxIndexItemsInPrompt),
-            maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(settings.Value.Attachments.MaxIndexBytesInPrompt));
+            maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(attachmentSettings.MaxIndexItemsInPrompt),
+            maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(attachmentSettings.MaxIndexBytesInPrompt));
 
         List<AITool> toolSet = request.ForwardClientTools
             ? BuildClientForwardedToolSet(request)
@@ -466,8 +477,8 @@ public sealed class WizardIntelligenceProvider(
                     sagaMemories: sagaMemories,
                     lexiconEntries: lexiconEntries,
                     sessionAttachmentsIndex: attachmentPrep.IndexItems,
-                    maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(settings.Value.Attachments.MaxIndexItemsInPrompt),
-                    maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(settings.Value.Attachments.MaxIndexBytesInPrompt));
+                    maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(attachmentSettings.MaxIndexItemsInPrompt),
+                    maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(attachmentSettings.MaxIndexBytesInPrompt));
 
                 chatMessages = syncMessages;
 
@@ -821,6 +832,11 @@ public sealed class WizardIntelligenceProvider(
                             BuildInferenceFailureMessage(lease))),
                     IsConnectivityFailure: IsConnectivityFailure(ex, callerToken));
             }
+        }
+        }
+        finally
+        {
+            SessionAttachmentTurnBudget.EndTurn();
         }
         }
     }
@@ -1289,6 +1305,15 @@ public sealed class WizardIntelligenceProvider(
             yield break;
         }
 
+        AttachmentsSettings streamAttachmentSettings = settings.Value.Attachments ?? new AttachmentsSettings();
+
+        int streamMaxRefs = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
+            streamAttachmentSettings.MaxReferencesPerTurn);
+
+        SessionAttachmentTurnBudget.BeginTurn(
+            streamMaxRefs,
+            request.AttachmentReferences?.Count ?? 0);
+
         List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
 
         string? streamCodexContent = await CodexReader
@@ -1348,10 +1373,10 @@ public sealed class WizardIntelligenceProvider(
             inferenceToken).ConfigureAwait(false);
 
         int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
-            settings.Value.Attachments.MaxIndexItemsInPrompt);
+            streamAttachmentSettings.MaxIndexItemsInPrompt);
 
         int streamMaxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
-            settings.Value.Attachments.MaxIndexBytesInPrompt);
+            streamAttachmentSettings.MaxIndexBytesInPrompt);
 
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
             request,
@@ -1942,6 +1967,8 @@ public sealed class WizardIntelligenceProvider(
         }
         finally
         {
+            SessionAttachmentTurnBudget.EndTurn();
+
             await grimoireTurnWriter
                 .TryResolveInterruptedOnStreamExitAsync(
                     grimoireTurn,

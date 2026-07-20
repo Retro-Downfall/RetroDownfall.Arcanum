@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// One-shot startup GC for stale pending session attachments (rows + <c>_pending/{turnId}</c> directories).
+/// One-shot startup reconciliation for session attachments (stale pending, bound orphans, missing files).
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: IHostedService bootstrap; store GC covered by SessionAttachmentStoreTests.
 public sealed class SessionAttachmentPendingGcHostedService(
@@ -34,17 +34,17 @@ public sealed class SessionAttachmentPendingGcHostedService(
 
             ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
 
-            await store.DeleteStalePendingAsync(olderThan, cancellationToken).ConfigureAwait(false);
+            await store.ReconcileAsync(olderThan, cancellationToken).ConfigureAwait(false);
 
             logger.LogInformation(
-                "Session attachment pending GC completed (retention {RetentionHours}h).",
+                "Session attachment reconciliation completed (pending retention {RetentionHours}h).",
                 retentionHours);
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
 
-            logger.LogWarning(ex, "Session attachment pending GC failed; continuing startup.");
+            logger.LogWarning(ex, "Session attachment reconciliation failed; continuing startup.");
 
         }
 
