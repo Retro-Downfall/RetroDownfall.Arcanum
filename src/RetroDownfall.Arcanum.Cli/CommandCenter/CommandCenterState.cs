@@ -20,9 +20,19 @@ internal sealed class CommandCenterState
     public CommandCenterState(SessionLogBuffer log)
     {
         Log = log ?? throw new ArgumentNullException(nameof(log));
+        Incantations = new IncantationStore();
     }
 
     public SessionLogBuffer Log { get; }
+
+    public IncantationStore Incantations { get; }
+
+    /// <summary>Synthetic Thinking spinner; not a <see cref="SessionLogEntry"/>.</summary>
+    public bool ThinkingActive { get; set; }
+
+    public int ThinkingTick { get; set; }
+
+    public string ThinkingDisplay => ThinkingSpinner.Format(ThinkingTick);
 
     public Guid? SessionId { get; set; }
 
@@ -53,6 +63,11 @@ internal sealed class CommandCenterState
     /// (<see cref="PingRequest.AttachmentReferences"/>).
     /// </summary>
     public HashSet<Guid> StagedAttachmentReferences { get; } = [];
+
+    /// <summary>
+    /// Forbidden Arts the operator chose "always allow" for this Command Center run (in-memory).
+    /// </summary>
+    public HashSet<string> SessionAllowedArts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     private int _turnActive;
 
@@ -132,7 +147,11 @@ internal sealed class CommandCenterState
 
             string model = string.IsNullOrWhiteSpace(Model) ? "(default)" : Model!;
             string sessionLine = FormatSessionHeader();
-            string generating = Generating ? " · Generating… Ctrl+C cancel" : string.Empty;
+            string generating = ThinkingActive
+                ? $" · {ThinkingDisplay} Ctrl+C cancel"
+                : Generating
+                    ? " · Generating… Ctrl+C cancel"
+                    : string.Empty;
             string transient = string.IsNullOrWhiteSpace(TransientStatus)
                 ? string.Empty
                 : $" · {TransientStatus}";
@@ -156,7 +175,9 @@ internal sealed class CommandCenterState
                     when Overlay is CommandCenterOverlayKind.SessionPicker or CommandCenterOverlayKind.None
                     => "↑↓/jk select · Enter resume · type to filter · Esc composer · Ctrl+R refresh · F1 help",
                 CommandCenterFocusRegion.Transcript
-                    => "PgUp/PgDn scroll · Home/End · Esc composer · Tab focus · F1 help",
+                    => "↑↓ scroll · PgUp/PgDn · Home/End · Esc composer · Tab focus · F1 help",
+                CommandCenterFocusRegion.Incantations
+                    => "↑↓ scroll Incantations · PgUp/PgDn · Home/End · Esc composer · Tab focus · F1 help",
                 _
                     => "Ctrl+Enter send · Enter newline · Ctrl+K commands · Ctrl+O sessions · Ctrl+N new · Ctrl+R refresh · Ctrl+C cancel · Ctrl+Q quit · F1 · Tab",
             };
@@ -264,6 +285,7 @@ internal enum CommandCenterOverlayKind
     SessionPicker,
     QuitConfirm,
     DiscardConfirm,
+    WardConfirm,
 }
 
 internal enum CommandCenterUiUpdateKind
@@ -273,6 +295,7 @@ internal enum CommandCenterUiUpdateKind
     RefreshHeader,
     RefreshSidebar,
     RefreshFooter,
+    RefreshIncantations,
     FocusInput,
     FocusSessions,
     FocusTranscript,

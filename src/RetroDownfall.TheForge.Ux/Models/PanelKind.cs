@@ -32,4 +32,10 @@ public enum PanelKind
 
     WeaveInspector,
 
+    AuditBrowser,
+
+    FilesBatches,
+
+    Ledger,
+
 }

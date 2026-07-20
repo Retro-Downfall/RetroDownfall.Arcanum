@@ -7,6 +7,7 @@ internal enum CommandCenterFocusRegion
     Transcript,
     Sessions,
     Overlay,
+    Incantations,
 }
 
 /// <summary>Logical actions produced by the Command Center keymap.</summary>
@@ -39,6 +40,12 @@ internal enum CommandCenterAction
     PageTranscriptDown,
     JumpTranscriptHome,
     JumpTranscriptEnd,
+    ScrollIncantationsUp,
+    ScrollIncantationsDown,
+    PageIncantationsUp,
+    PageIncantationsDown,
+    JumpIncantationsHome,
+    JumpIncantationsEnd,
 }
 
 /// <summary>
@@ -127,6 +134,12 @@ internal static class CommandCenterKeymap
 
         if (chord.IsTab)
         {
+            // Modal overlays own the keyboard; don't cycle panes (would FocusInput and dismiss).
+            if (overlayOpen || focus == CommandCenterFocusRegion.Overlay)
+            {
+                return CommandCenterAction.NoOp;
+            }
+
             return chord.IsShift ? CommandCenterAction.CycleFocusPrev : CommandCenterAction.CycleFocusNext;
         }
 
@@ -217,6 +230,39 @@ internal static class CommandCenterKeymap
             }
         }
 
+        if (focus == CommandCenterFocusRegion.Incantations)
+        {
+            if (chord.IsUp)
+            {
+                return CommandCenterAction.ScrollIncantationsUp;
+            }
+
+            if (chord.IsDown)
+            {
+                return CommandCenterAction.ScrollIncantationsDown;
+            }
+
+            if (chord.IsPageUp)
+            {
+                return CommandCenterAction.PageIncantationsUp;
+            }
+
+            if (chord.IsPageDown)
+            {
+                return CommandCenterAction.PageIncantationsDown;
+            }
+
+            if (chord.IsHome)
+            {
+                return CommandCenterAction.JumpIncantationsHome;
+            }
+
+            if (chord.IsEnd)
+            {
+                return CommandCenterAction.JumpIncantationsEnd;
+            }
+        }
+
         if (focus == CommandCenterFocusRegion.Composer)
         {
             if (chord.IsPageUp)
@@ -244,6 +290,7 @@ internal static class CommandCenterKeymap
             CommandCenterOverlayKind.SessionPicker => CommandCenterAction.ResumeSelectedSession,
             CommandCenterOverlayKind.CommandPalette => CommandCenterAction.ExecutePaletteItem,
             CommandCenterOverlayKind.QuitConfirm or CommandCenterOverlayKind.DiscardConfirm
+                or CommandCenterOverlayKind.WardConfirm
                 => CommandCenterAction.ConfirmPending,
             _ => CommandCenterAction.NoOp,
         };

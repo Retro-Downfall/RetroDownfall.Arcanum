@@ -20,6 +20,8 @@ internal enum ShellCommandKind
     Tools,
     Mana,
     WardList,
+    WardAllow,
+    WardDeny,
     Keys,
     Attach,
     AttachmentsList,
@@ -127,6 +129,16 @@ internal sealed class ShellCommandParser
                 => new ParsedShellCommand(ShellCommandKind.SpellList, raw),
             "ward" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.WardList, raw),
+            "ward" when parts.Length >= 2 && parts[1].Equals("allow", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(
+                    ShellCommandKind.WardAllow,
+                    raw,
+                    Argument: parts.Length >= 3 ? parts[2] : null),
+            "ward" when parts.Length >= 2 && parts[1].Equals("deny", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(
+                    ShellCommandKind.WardDeny,
+                    raw,
+                    Argument: parts.Length >= 3 ? parts[2] : null),
             _ => Unknown(raw),
         };
     }

@@ -21,6 +21,10 @@ public static class DisabledSettingPaths
 
     public const string BudgetEnabled = "Arcanum:Budget:Enabled";
 
+    public const string InferenceAuditLogEnabled = "Arcanum:Host:AuditLog:Enabled";
+
+    public const string GuardrailsAuditLogEnabled = "Arcanum:Guardrails:AuditLog:Enabled";
+
     public static readonly string[] SessionDivination = [EmbeddingsEnabled, SessionSearchEnabled];
 
     public static readonly string[] WorkspaceDivination = [EmbeddingsEnabled, CodebaseRetrievalEnabled];
@@ -34,6 +38,10 @@ public static class DisabledSettingPaths
     public static readonly string[] SessionMemoryManagement = [AllowMemoryManagement];
 
     public static readonly string[] Budget = [BudgetEnabled];
+
+    public static readonly string[] InferenceAudit = [InferenceAuditLogEnabled];
+
+    public static readonly string[] GuardrailsAudit = [GuardrailsAuditLogEnabled];
 
     public static string JoinForClipboard(IReadOnlyList<string> paths) =>
         string.Join(Environment.NewLine, paths);

@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.TheForge.Core.Chronicle;
 using RetroDownfall.TheForge.Core.Models;
+using RetroDownfall.TheForge.Core.Models.OpenAi;
 
 namespace RetroDownfall.TheForge.Core.Serialization;
 
@@ -247,10 +248,15 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(SanctumConfig))]
 [JsonSerializable(typeof(ApiResponse<SanctumConfig>))]
 
-// The Foundry Floor (logs) / audit
+// The Foundry Floor (logs) / Audit Browser (inference + guardrails)
 [JsonSerializable(typeof(ApiResponse<LogQueryResult>))]
 [JsonSerializable(typeof(LogEntry))]
+[JsonSerializable(typeof(InferenceAuditRecord))]
+[JsonSerializable(typeof(InferenceAuditRecord[]))]
 [JsonSerializable(typeof(ApiResponse<InferenceAuditRecord[]>))]
+[JsonSerializable(typeof(GuardrailAuditRecord))]
+[JsonSerializable(typeof(GuardrailAuditRecord[]))]
+[JsonSerializable(typeof(ApiResponse<GuardrailAuditRecord[]>))]
 
 // The Servants' Quarters (daemon / Unseen Servant — read paths only for the alpha)
 [JsonSerializable(typeof(ApiResponse<DaemonJobInfo[]>))]
@@ -258,5 +264,18 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<DaemonExecutionSummary>))]
 [JsonSerializable(typeof(ApiResponse<DaemonExecutionSummary[]>))]
 [JsonSerializable(typeof(DaemonEvent))]
+
+// OpenAI-compatible /v1/files + /v1/batches (Phase 9 — bare wire shapes, not ApiResponse envelopes)
+[JsonSerializable(typeof(OpenAiErrorDetail))]
+[JsonSerializable(typeof(OpenAiErrorResponse))]
+[JsonSerializable(typeof(OpenAiFileObject))]
+[JsonSerializable(typeof(OpenAiFileListResponse))]
+[JsonSerializable(typeof(OpenAiFileDeleteResponse))]
+[JsonSerializable(typeof(OpenAiBatchRequest))]
+[JsonSerializable(typeof(OpenAiBatchObject))]
+[JsonSerializable(typeof(OpenAiBatchRequestCounts))]
+[JsonSerializable(typeof(OpenAiBatchListResponse))]
+[JsonSerializable(typeof(List<OpenAiFileObject>))]
+[JsonSerializable(typeof(List<OpenAiBatchObject>))]
 
 public partial class TheForgeJsonContext : JsonSerializerContext;

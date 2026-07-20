@@ -23,6 +23,7 @@ internal sealed class CommandCenterHost(
     CommandCenterChatRunner chatRunner,
     CommandCenterApp commandCenterApp,
     SessionWorkspaceService sessionWorkspace,
+    CommandCenterWardCoordinator wardCoordinator,
     ILogger<CommandCenterHost> logger) : ICommandCenterHost
 {
     public const string NoCommandCenterEnvVar = "ARCANUM_NO_COMMAND_CENTER";
@@ -48,6 +49,10 @@ internal sealed class CommandCenterHost(
     private PendingConfirm? _pendingConfirm;
 
     private readonly SemaphoreSlim _actionGate = new(1, 1);
+
+    private System.Threading.Timer? _thinkingTimer;
+
+    private int _thinkingCallbackQueued;
 
     public static bool IsCommandCenterDisabled()
     {
@@ -87,6 +92,48 @@ internal sealed class CommandCenterHost(
                 window.ApplyState(state, app);
                 window.FocusInput(app);
                 state.FocusRegion = CommandCenterFocusRegion.Composer;
+
+                wardCoordinator.SetUiCallbacks(
+                    onShow: request =>
+                    {
+                        app.Invoke(() =>
+                        {
+                            state.Overlay = CommandCenterOverlayKind.WardConfirm;
+                            state.FocusRegion = CommandCenterFocusRegion.Overlay;
+                            List<string> lines =
+                            [
+                                $"Forbidden art requires approval: {request.ToolName}",
+                                $"Ward: {request.WardId}",
+                            ];
+                            if (!string.IsNullOrWhiteSpace(request.ArgumentsPreview))
+                            {
+                                lines.Add(request.ArgumentsPreview!);
+                            }
+
+                            lines.Add(string.Empty);
+                            lines.Add("Enter = allow once");
+                            lines.Add("A = always allow this tool (this session)");
+                            lines.Add("Esc / D = deny");
+                            lines.Add("Or: /ward allow  |  /ward deny");
+
+                            window.ShowOverlay(
+                                CommandCenterOverlayKind.WardConfirm,
+                                lines,
+                                "Ward",
+                                showFilter: false);
+                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+                        });
+                    },
+                    onHide: () =>
+                    {
+                        app.Invoke(() =>
+                        {
+                            if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
+                            {
+                                CloseOverlay(state, window, app);
+                            }
+                        });
+                    });
 
                 using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 CancellationToken runToken = linked.Token;
@@ -137,9 +184,22 @@ internal sealed class CommandCenterHost(
                     CommandCenterFocusRegion routeFocus =
                         state.FocusRegion is CommandCenterFocusRegion.Sessions
                             or CommandCenterFocusRegion.Transcript
+                            or CommandCenterFocusRegion.Incantations
                             or CommandCenterFocusRegion.Overlay
                             ? state.FocusRegion
                             : CommandCenterFocusRegion.Composer;
+
+                    // Tab is owned exclusively by app.Keyboard — ignore here.
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        return;
+                    }
+
+                    // Modal overlays often fail to steal TG focus from TextView; handle keys here.
+                    if (TryHandleModalOverlayKey(e, state, window, app, HandleAction))
+                    {
+                        return;
+                    }
 
                     if (TryMapAndHandle(
                             e,
@@ -167,11 +227,31 @@ internal sealed class CommandCenterHost(
 
                 window.LogView.KeyDown += (_, e) =>
                 {
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        return;
+                    }
+
                     _ = TryMapAndHandle(e, CommandCenterFocusRegion.Transcript, state, window, HandleAction);
+                };
+
+                window.IncantationsView.KeyDown += (_, e) =>
+                {
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        return;
+                    }
+
+                    _ = TryMapAndHandle(e, CommandCenterFocusRegion.Incantations, state, window, HandleAction);
                 };
 
                 window.SessionsView.KeyDown += (_, e) =>
                 {
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        return;
+                    }
+
                     if (TryHandleSessionFilterChar(e, state, window, uiChannel.Writer, app))
                     {
                         return;
@@ -185,7 +265,7 @@ internal sealed class CommandCenterHost(
                     if (e == Key.Esc)
                     {
                         e.Handled = true;
-                        CloseOverlay(state, window, app);
+                        CloseOverlayAndFocusInput(state, window, app);
                         return;
                     }
 
@@ -222,10 +302,29 @@ internal sealed class CommandCenterHost(
 
                     if (e == Key.Esc
                         && state.Overlay is CommandCenterOverlayKind.QuitConfirm
-                            or CommandCenterOverlayKind.DiscardConfirm)
+                            or CommandCenterOverlayKind.DiscardConfirm
+                            or CommandCenterOverlayKind.WardConfirm)
                     {
                         e.Handled = true;
                         CancelPending(state, window, app);
+                        return;
+                    }
+
+                    if (state.Overlay == CommandCenterOverlayKind.WardConfirm
+                        && (e == Key.A || e == Key.A.WithShift))
+                    {
+                        e.Handled = true;
+                        _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
+                        CloseOverlayAndFocusInput(state, window, app);
+                        return;
+                    }
+
+                    if (state.Overlay == CommandCenterOverlayKind.WardConfirm
+                        && (e == Key.D || e == Key.D.WithShift))
+                    {
+                        e.Handled = true;
+                        _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
+                        CloseOverlayAndFocusInput(state, window, app);
                         return;
                     }
 
@@ -243,6 +342,26 @@ internal sealed class CommandCenterHost(
                 app.Keyboard.KeyDown += (_, keyEvent) =>
                 {
                     KeyChord chord = ToChord(keyEvent);
+
+                    // Single Tab routing path (do not also handle Tab on child KeyDown).
+                    if (chord.IsTab)
+                    {
+                        bool overlayOpen = state.Overlay != CommandCenterOverlayKind.None;
+                        CommandCenterAction tabAction = CommandCenterKeymap.Map(
+                            state.FocusRegion,
+                            state.IsStreaming,
+                            window.ComposerHasText,
+                            overlayOpen,
+                            chord);
+                        keyEvent.Handled = true;
+                        if (tabAction is CommandCenterAction.CycleFocusNext or CommandCenterAction.CycleFocusPrev)
+                        {
+                            HandleAction(tabAction);
+                        }
+
+                        return;
+                    }
+
                     bool globalChord = chord.IsCtrlC || chord.IsCtrlQ || chord.IsCtrlK || chord.IsCtrlO
                         || chord.IsCtrlN || chord.IsCtrlR || chord.IsF1 || chord.IsF5 || chord.IsEsc;
 
@@ -253,7 +372,14 @@ internal sealed class CommandCenterHost(
                         && !window.IsSessionsFocused
                         && (chord.IsEnter || chord.IsUp || chord.IsDown || chord.IsJ || chord.IsK);
 
-                    if (!globalChord && !sessionsNav)
+                    bool listNav = state.FocusRegion is CommandCenterFocusRegion.Transcript
+                            or CommandCenterFocusRegion.Incantations
+                        && !window.IsLogFocused
+                        && !window.IsIncantationsFocused
+                        && (chord.IsUp || chord.IsDown || chord.IsPageUp || chord.IsPageDown
+                            || chord.IsHome || chord.IsEnd);
+
+                    if (!globalChord && !sessionsNav && !listNav)
                     {
                         return;
                     }
@@ -277,10 +403,13 @@ internal sealed class CommandCenterHost(
                     }
                 };
 
+                StartThinkingTimer(app, window, state);
                 window.FocusInput(app);
                 app.Run(window);
 
+                StopThinkingTimer();
                 linked.Cancel();
+                wardCoordinator.SetUiCallbacks(null, null);
                 uiChannel.Writer.TryComplete();
                 try
                 {
@@ -478,7 +607,26 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.CloseOverlayOrFocusComposer:
-                CloseOverlay(state, window, app);
+                if (state.Overlay is CommandCenterOverlayKind.QuitConfirm
+                    or CommandCenterOverlayKind.DiscardConfirm
+                    or CommandCenterOverlayKind.WardConfirm)
+                {
+                    CancelPending(state, window, app);
+                }
+                else if (state.Overlay != CommandCenterOverlayKind.None)
+                {
+                    CloseOverlayAndFocusInput(state, window, app);
+                }
+                else
+                {
+                    state.FocusRegion = CommandCenterFocusRegion.Composer;
+                    app.Invoke(() =>
+                    {
+                        window.FocusInput();
+                        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+                    });
+                }
+
                 break;
 
             case CommandCenterAction.SessionSelectUp:
@@ -501,7 +649,7 @@ internal sealed class CommandCenterHost(
             case CommandCenterAction.ExecutePaletteItem:
             {
                 int idx = window.GetOverlaySelectedIndex();
-                CloseOverlay(state, window, app);
+                CloseOverlayAndFocusInput(state, window, app);
                 if (idx >= 0 && idx < PaletteActions.Length)
                 {
                     await RunPaletteActionAsync(
@@ -518,6 +666,13 @@ internal sealed class CommandCenterHost(
             }
 
             case CommandCenterAction.ConfirmPending:
+                if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
+                {
+                    _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Allow);
+                    CloseOverlayAndFocusInput(state, window, app);
+                    break;
+                }
+
                 await ConfirmPendingAsync(state, window, app, ui, linked).ConfigureAwait(false);
                 break;
 
@@ -549,6 +704,30 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.JumpTranscriptEnd:
                 window.ScrollLogEnd();
+                break;
+
+            case CommandCenterAction.ScrollIncantationsUp:
+                window.ScrollIncantationsUp();
+                break;
+
+            case CommandCenterAction.ScrollIncantationsDown:
+                window.ScrollIncantationsDown();
+                break;
+
+            case CommandCenterAction.PageIncantationsUp:
+                window.PageIncantationsUp();
+                break;
+
+            case CommandCenterAction.PageIncantationsDown:
+                window.PageIncantationsDown();
+                break;
+
+            case CommandCenterAction.JumpIncantationsHome:
+                window.ScrollIncantationsHome();
+                break;
+
+            case CommandCenterAction.JumpIncantationsEnd:
+                window.ScrollIncantationsEnd();
                 break;
         }
     }
@@ -716,7 +895,7 @@ internal sealed class CommandCenterHost(
     {
         PendingConfirm? pending = _pendingConfirm;
         _pendingConfirm = null;
-        CloseOverlay(state, window, app);
+        CloseOverlayAndFocusInput(state, window, app);
         if (pending is null)
         {
             return;
@@ -773,8 +952,13 @@ internal sealed class CommandCenterHost(
 
     private void CancelPending(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
+        if (state.Overlay == CommandCenterOverlayKind.WardConfirm)
+        {
+            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
+        }
+
         _pendingConfirm = null;
-        CloseOverlay(state, window, app);
+        CloseOverlayAndFocusInput(state, window, app);
     }
 
     private void RequestQuit(CommandCenterState state, CommandCenterWindow window, IApplication app)
@@ -783,6 +967,7 @@ internal sealed class CommandCenterHost(
         {
             _pendingConfirm = new PendingConfirm(PendingConfirmKind.Quit, null);
             state.Overlay = CommandCenterOverlayKind.QuitConfirm;
+            state.FocusRegion = CommandCenterFocusRegion.Overlay;
             app.Invoke(() =>
             {
                 window.ShowOverlay(
@@ -790,6 +975,7 @@ internal sealed class CommandCenterHost(
                     ["A turn is still generating.", "Enter = quit anyway", "Esc = cancel"],
                     "Quit?",
                     showFilter: false);
+                window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
             });
             return;
         }
@@ -802,6 +988,7 @@ internal sealed class CommandCenterHost(
     private static void ShowDiscardConfirm(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
         state.Overlay = CommandCenterOverlayKind.DiscardConfirm;
+        state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
         {
             window.ShowOverlay(
@@ -809,12 +996,14 @@ internal sealed class CommandCenterHost(
                 ["Discard unsent composer text?", "Enter = discard", "Esc = cancel"],
                 "Discard?",
                 showFilter: false);
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
     }
 
     private static void ShowHelpOverlay(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
         state.Overlay = CommandCenterOverlayKind.Help;
+        state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
         {
             window.ShowOverlay(
@@ -825,26 +1014,32 @@ internal sealed class CommandCenterHost(
                     "Ctrl+O Sessions",
                     "Ctrl+N New session",
                     "Ctrl+R / F5 Refresh",
-                    "Tab / Shift+Tab Cycle focus",
+                    "Tab / Shift+Tab Cycle focus (Composer→Sessions→Transcript→Incantations)",
                     "Ctrl+Enter Send (composer)",
                     "Enter Newline (composer)",
                     "Enter Resume (sessions)",
                     "Ctrl+C Cancel turn / clear input / quit hint",
                     "Ctrl+Q Quit",
                     "Esc Close overlay / focus composer",
-                    "PgUp/PgDn Transcript scroll",
+                    "PgUp/PgDn Transcript scroll (also from composer)",
+                    "↑↓/Home/End Scroll focused Transcript or Incantations",
                     "",
                     "Slash: /help /keys /session list|new|resume",
                     "Denied: /serve /daemon… /key…",
+                    "",
+                    "Incantations: tool calls by CallId (heavy args suppressed)",
+                    "Thinking ⠋ while waiting for first token",
                 ],
                 "Help",
                 showFilter: false);
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
     }
 
     private static void ShowPalette(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
         state.Overlay = CommandCenterOverlayKind.CommandPalette;
+        state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
         {
             window.ShowOverlay(
@@ -852,6 +1047,7 @@ internal sealed class CommandCenterHost(
                 PaletteActions,
                 "Commands",
                 showFilter: false);
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
     }
 
@@ -971,8 +1167,23 @@ internal sealed class CommandCenterHost(
         app.Invoke(() =>
         {
             window.HideOverlayVisual();
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+        });
+    }
+
+    private static void CloseOverlayAndFocusInput(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app)
+    {
+        state.Overlay = CommandCenterOverlayKind.None;
+        state.SessionFilter = string.Empty;
+        state.FooterHint = null;
+        state.FocusRegion = CommandCenterFocusRegion.Composer;
+        app.Invoke(() =>
+        {
+            window.HideOverlayVisual();
             window.FocusInput();
-            state.FocusRegion = CommandCenterFocusRegion.Composer;
             window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
     }
@@ -983,18 +1194,10 @@ internal sealed class CommandCenterHost(
         IApplication app,
         bool forward)
     {
-        CommandCenterFocusRegion[] order = window.SidebarVisible
-            ? [CommandCenterFocusRegion.Composer, CommandCenterFocusRegion.Sessions, CommandCenterFocusRegion.Transcript]
-            : [CommandCenterFocusRegion.Composer, CommandCenterFocusRegion.Transcript];
-
-        int idx = Array.IndexOf(order, state.FocusRegion);
-        if (idx < 0)
-        {
-            idx = 0;
-        }
-
-        idx = forward ? (idx + 1) % order.Length : (idx - 1 + order.Length) % order.Length;
-        state.FocusRegion = order[idx];
+        state.FocusRegion = CommandCenterFocusCycle.Next(
+            state.FocusRegion,
+            forward,
+            window.SidebarVisible);
         state.FooterHint = null;
         app.Invoke(() =>
         {
@@ -1006,13 +1209,77 @@ internal sealed class CommandCenterHost(
                 case CommandCenterFocusRegion.Transcript:
                     window.FocusLog();
                     break;
+                case CommandCenterFocusRegion.Incantations:
+                    window.FocusIncantations();
+                    break;
                 default:
                     window.FocusInput();
                     break;
             }
 
+            CommandCenterFocusRegion? actual = window.ResolveFocusedRegion();
+            if (actual is { } focused && focused != state.FocusRegion
+                && focused is not CommandCenterFocusRegion.Overlay)
+            {
+                state.FocusRegion = focused;
+            }
+
             window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
+    }
+
+    private void StartThinkingTimer(IApplication app, CommandCenterWindow window, CommandCenterState state)
+    {
+        StopThinkingTimer();
+        _thinkingTimer = new System.Threading.Timer(
+            _ =>
+            {
+                if (!state.ThinkingActive)
+                {
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref _thinkingCallbackQueued, 1, 0) != 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    app.Invoke(() =>
+                    {
+                        try
+                        {
+                            if (!state.ThinkingActive)
+                            {
+                                return;
+                            }
+
+                            state.ThinkingTick++;
+                            // Header + ThinkingLabel only — do not rebuild transcript (preserves scroll).
+                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshHeader);
+                        }
+                        finally
+                        {
+                            _ = Interlocked.Exchange(ref _thinkingCallbackQueued, 0);
+                        }
+                    });
+                }
+                catch
+                {
+                    _ = Interlocked.Exchange(ref _thinkingCallbackQueued, 0);
+                }
+            },
+            null,
+            dueTime: 100,
+            period: 100);
+    }
+
+    private void StopThinkingTimer()
+    {
+        System.Threading.Timer? timer = Interlocked.Exchange(ref _thinkingTimer, null);
+        timer?.Dispose();
+        _ = Interlocked.Exchange(ref _thinkingCallbackQueued, 0);
     }
 
     private async Task HandleSubmitAsync(
@@ -1111,6 +1378,83 @@ internal sealed class CommandCenterHost(
                 state.FocusRegion = CommandCenterFocusRegion.Composer;
             });
         }
+    }
+
+    private bool TryHandleModalOverlayKey(
+        Key e,
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app,
+        Action<CommandCenterAction> handle)
+    {
+        if (state.Overlay is CommandCenterOverlayKind.None or CommandCenterOverlayKind.SessionPicker)
+        {
+            return false;
+        }
+
+        state.FocusRegion = CommandCenterFocusRegion.Overlay;
+
+        if (e == Key.Enter)
+        {
+            e.Handled = true;
+            handle(CommandCenterKeymap.MapOverlayEnter(state.Overlay));
+            return true;
+        }
+
+        if (e == Key.Esc)
+        {
+            e.Handled = true;
+            if (state.Overlay is CommandCenterOverlayKind.QuitConfirm
+                or CommandCenterOverlayKind.DiscardConfirm
+                or CommandCenterOverlayKind.WardConfirm)
+            {
+                CancelPending(state, window, app);
+            }
+            else
+            {
+                CloseOverlayAndFocusInput(state, window, app);
+            }
+
+            return true;
+        }
+
+        if (state.Overlay == CommandCenterOverlayKind.WardConfirm
+            && (e == Key.A || e == Key.A.WithShift))
+        {
+            e.Handled = true;
+            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.AllowAlwaysThisTool);
+            CloseOverlayAndFocusInput(state, window, app);
+            return true;
+        }
+
+        if (state.Overlay == CommandCenterOverlayKind.WardConfirm
+            && (e == Key.D || e == Key.D.WithShift))
+        {
+            e.Handled = true;
+            _ = wardCoordinator.TryCompletePending(WardApprovalDecision.Deny);
+            CloseOverlayAndFocusInput(state, window, app);
+            return true;
+        }
+
+        if (TryMapAndHandle(
+                e,
+                CommandCenterFocusRegion.Overlay,
+                state,
+                window,
+                handle,
+                syncFocusRegion: false))
+        {
+            return true;
+        }
+
+        // Keep modal keys out of the composer TextView (letters would otherwise type).
+        if (!e.IsCtrl && !e.IsAlt && e != Key.Tab)
+        {
+            e.Handled = true;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryMapAndHandle(

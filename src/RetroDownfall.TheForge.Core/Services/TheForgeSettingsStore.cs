@@ -5,10 +5,16 @@ using RetroDownfall.TheForge.Core.Models;
 namespace RetroDownfall.TheForge.Core.Services;
 
 /// <summary>
-/// Atomic, owner-only writer for <c>forge.json</c>. Uses <see cref="TheForgeSettingsJsonContext"/> only.
+/// Atomic, owner-only writer for <c>the-forge.json</c>. Uses <see cref="TheForgeSettingsJsonContext"/> only.
 /// </summary>
 public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
 {
+
+    /// <summary>Settings filename under <c>~/.config/arcanum/</c>.</summary>
+    public const string FileName = "the-forge.json";
+
+    /// <summary>Pre-rename filename; moved to <see cref="FileName"/> on first launch when present.</summary>
+    public const string LegacyFileName = "forge.json";
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
@@ -26,6 +32,59 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
     }
 
     public string SettingsPath { get; }
+
+    /// <summary>
+    /// If <paramref name="settingsPath"/> is missing and <c>forge.json</c> exists beside it, renames
+    /// the legacy file into place. Returns true when a rename occurred.
+    /// </summary>
+    public static bool TryMigrateLegacyFile(string settingsPath)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(settingsPath);
+
+        if (File.Exists(settingsPath))
+        {
+
+            return false;
+
+        }
+
+        string? directory = Path.GetDirectoryName(settingsPath);
+
+        if (string.IsNullOrEmpty(directory))
+        {
+
+            return false;
+
+        }
+
+        string legacyPath = Path.Combine(directory, LegacyFileName);
+
+        if (!File.Exists(legacyPath))
+        {
+
+            return false;
+
+        }
+
+        try
+        {
+
+            Directory.CreateDirectory(directory);
+
+            File.Move(legacyPath, settingsPath);
+
+            return true;
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            return false;
+
+        }
+
+    }
 
     public async Task<TheForgeSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -113,7 +172,7 @@ public sealed class TheForgeSettingsStore : ITheForgeSettingsStore
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
 
-            _logger?.LogWarning(ex, "Corrupt or unreadable forge.json at {Path}; using defaults.", SettingsPath);
+            _logger?.LogWarning(ex, "Corrupt or unreadable the-forge.json at {Path}; using defaults.", SettingsPath);
 
             return new TheForgeSettings();
 

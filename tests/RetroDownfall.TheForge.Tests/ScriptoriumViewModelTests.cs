@@ -486,6 +486,15 @@ public class ScriptoriumViewModelTests
         public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
 
+        public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+
     }
 
     private sealed class NullTextInputDialogService : ITextInputDialogService

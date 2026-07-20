@@ -38,7 +38,7 @@ arcanum serve
 By default Arcanum listens on `http://localhost:5001` (loopback). When the Arcanum host uses
 `ListenAny` / `ARCANUM_HOST_ANY`, it binds **HTTPS-only** on `Arcanum:Host:Https:Port` (default
 5443) — set The Forge `BaseUrl` to `https://localhost:5443` (or your host/IP + HTTPS port). The Forge's
-`forge.json` (`BaseUrl`) must point at whatever scheme/host/port your instance actually binds to.
+`the-forge.json` (`BaseUrl`) must point at whatever scheme/host/port your instance actually binds to.
 Do not disable TLS certificate validation.
 
 ## Acquiring an API key
@@ -51,7 +51,7 @@ Every Arcanum `/api/*` route requires the `X-Arcanum-Key` header. The master key
 The Forge resolves a key in this order:
 
 1. OS credential store (`arcanum` / `master-api-key`).
-2. Legacy plaintext `apiKey` in `~/.config/arcanum/forge.json` — migrated into the OS store, then stripped.
+2. Legacy plaintext `apiKey` in `~/.config/arcanum/the-forge.json` — migrated into the OS store, then stripped.
 3. `THEFORGE_ARCANUM_KEY` environment variable (trimmed; empty/whitespace = absent). **Never logged. Never persisted.** Private-beta / automation override only.
 4. Shelling out to `arcanum key show` (stderr) — result persisted into the OS store when possible.
 5. Otherwise, a Whispers paste dialog; the pasted key is stored in the OS credential store when available.
@@ -60,7 +60,7 @@ The Forge resolves a key in this order:
    for `Security.MissingApiKey` or `Auth.Unauthorized` so you can clear that decline / override a bad
    env key and re-prompt.
 
-Do **not** keep the master key in `forge.json` going forward. To rotate, run `arcanum key set` (or
+Do **not** keep the master key in `the-forge.json` going forward. To rotate, run `arcanum key set` (or
 update the OS credential) and restart The Forge.
 
 **Linux:** install `libsecret` and ensure a Secret Service (e.g. gnome-keyring) is running. If the
@@ -71,14 +71,15 @@ presence and prints this guidance when Secret Service looks unavailable.
 
 ## Settings file
 
-`~/.config/arcanum/forge.json` — loaded with `reloadOnChange: true`, so most settings apply without
-restarting The Forge:
+`~/.config/arcanum/the-forge.json` — loaded with `reloadOnChange: true`, so most settings apply without
+restarting The Forge. On first launch after this rename, an existing `~/.config/arcanum/forge.json` is
+moved to `the-forge.json` automatically (only when the new file is absent).
 
 ```json
 {
   "baseUrl": "http://localhost:5001",
   "apiKey": null,
-  "theme": "dark",
+  "theme": "light",
   "lastCampaignId": null,
   "layoutState": null,
   "autoConnect": true,
@@ -90,8 +91,29 @@ When Arcanum is running with ListenAny (HTTPS-only), use e.g. `"baseUrl": "https
 
 `apiKey` is obsolete (legacy migrate-and-strip only); leave it `null`.
 
+**Theme.** Fresh installs default to `"light"`. An existing `the-forge.json` that already contains
+`"theme": "dark"` stays dark. Change theme live with **View → Theme → Light / Dark** (no restart;
+`ThemeApplicationService` applies the dictionary).
+
 `layoutState` holds a versioned JSON dock layout (`TheForgeDockLayoutDto`) when the operator has
 rearranged tool windows; `null` means use the default shell layout.
+
+### Campaigns (solution-level containers)
+
+A **Campaign** is The Forge’s solution-level working container (operator term stays **Campaign** —
+not Project/Solution). Identity is the campaign returned by Arcanum (id, name, absolute folder path,
+type, description) plus artifacts under that folder. The Forge remains a pure API client of a
+separately running `arcanum serve`; this release does **not** start or own the Arcanum daemon.
+There is **no** project/solution file discovery in The Forge.
+
+**File → New Campaign…** / **Open Campaign…** (also under **Campaign** and the Atelier zero-campaign
+CTA) create or focus campaigns through `POST`/`GET /api/campaigns`. On a **loopback** Arcanum base
+URL, Open/New may use a local folder picker; on a **remote** host, enter a path **on the Arcanum
+host** (local picker paths are not authoritative). Open matches existing campaigns client-side from
+`GET /api/campaigns` (no by-path route). Campaign export/import remains an explicit JSON-bundle
+workflow — not Open Campaign.
+
+`lastCampaignId` tracks the active campaign for The Anvil and menu authoring (New Spell / New Prompt).
 
 The Anvil status chip is **Connect / reconnect** (restarts the health poller when already connected).
 Health failures surface distinct status text: timed out, connection failed, unreachable, or API key
@@ -104,7 +126,7 @@ fails, The Anvil keeps last-known metrics and shows a subtle warning from `LastR
 Tool windows (Atelier, Gatehouse, Treasury, Arsenal, War Table, Output, Logs, Hearth) can be moved
 between the left, right, and bottom dock regions via each tool’s header **context menu** (Move Left /
 Move Right / Move Bottom / Hide) or restored from **View**. **View → Reset Window Layout** restores
-the default shell and persists it. Layout is stored in `~/.config/arcanum/forge.json` as `layoutState`
+the default shell and persists it. Layout is stored in `~/.config/arcanum/the-forge.json` as `layoutState`
 and restored on next launch. The Workbench stays the central document host; The Anvil stays a fixed
 status bar. Drag-and-drop docking is not required for this release — menu/context movement is the
 supported path.
@@ -125,12 +147,20 @@ The Hearth is The Forge's dockable terminal panel (View → **The Hearth**, defa
 runs local shell commands from a working directory that starts at your user home profile. Use the
 **Home** button to reset the working directory; use built-in `cd` (including `~`) to move around.
 
-Initial Git integration is available through The Hearth terminal: use `git status`, `git diff`, etc.
-directly until the dedicated Git UI (**The Ledger**) arrives.
-
-The Hearth supports command output streaming, `cd`, Stop, and Clear. It is not a full
-pseudo-terminal yet, so fully interactive terminal apps may not work correctly. Command execution is
+The Hearth supports command output streaming, `cd`, Stop, and Clear. It is **not a full
+pseudo-terminal (PTY)** — fully interactive terminal apps may not work correctly. Command execution is
 local desktop functionality — it does not call the Arcanum API or go through Sanctum/Wards.
+
+## The Ledger (Git UI)
+
+**The Ledger** (View → **The Ledger**, hidden by default) is The Forge's first dedicated Git UI.
+Select a registered workspace from the combo box, or paste a repository path and click **Use path**.
+Git never runs until a path is selected. The Ledger uses a dedicated `git` process runner (not The
+Hearth shell): branch, status, diff, stage/unstage, and commit. Broad actions (**Stage all**,
+**Unstage all**) ask for confirmation; **Commit** also confirms when many files are staged or the
+message is empty. Push, pull, reset, and rebase are not available in this phase. When Proving Grounds
+suites exist, **Pre-commit suite…** opens Proving Grounds; otherwise the button stays disabled with an
+explanation.
 
 ## Creating spells, prompts, and sessions
 
@@ -146,16 +176,20 @@ Floor and shown as inline status on the node.
 
 ### Campaign management
 
-Right-click the **Campaigns** root for **New Campaign** (name, path, type, description) or
-**Refresh**. Right-click a campaign for **Edit / Properties**, **Delete Campaign**, **Export
-Campaign**, and **Import into Campaign**, plus New Spell / Prompt / Session. Delete **unregisters**
-the campaign from Arcanum only — disk files remain; the confirmation says so and defaults to Cancel.
-Import targets an **existing** campaign (`POST /api/campaigns/{id}/import` with merge or replace):
-register the campaign first, then import a previously exported JSON bundle. Export writes a
+**File / Campaign** menus expose **New Campaign…**, **Open Campaign…**, **New Spell…**, **New
+Prompt…**, **Edit Campaign…**, and **Unregister Campaign…** (enabled when an active campaign is
+selected). Right-click the **Campaigns** root for **New Campaign…** or **Refresh**. Right-click a
+campaign for **Edit / Properties**, **Unregister Campaign**, **Export Campaign**, and **Import into
+Campaign**, plus New Spell / Prompt / Session. **Open** on a campaign opens its Codex and marks it
+active. **Open** on a workspace focuses Workspace Explorer and selects that workspace. Unregister
+removes the campaign from Arcanum only — disk files remain; the confirmation says so and defaults to
+Cancel. Import targets an **existing** campaign (`POST /api/campaigns/{id}/import` with merge or
+replace): create/open the campaign first, then import a previously exported JSON bundle. Export writes a
 `CampaignExportDto` JSON file (spell payloads use `spellJson`; legacy `skillJson` is accepted when
 reading older bundles). Path validation errors (`Campaign.InvalidPath`, `Campaign.PathNotAllowed`)
-appear as short Whispers and detailed Foundry Floor lines. A full campaign Settings editor and
-advanced import conflict wizards are not built yet.
+appear as short Whispers and detailed Foundry Floor lines. When connected with zero campaigns, The
+Atelier shows a New/Open Campaign onboarding strip beside the existing category roots. A full campaign
+Settings editor and advanced import conflict wizards are not built yet.
 
 ## The Scriptorium
 
@@ -358,6 +392,34 @@ paths**. The Forge never embeds or searches client-side; all inspection is read-
 explicit, confirmed reset. Requires Arcanum embeddings enabled server-side for the Divination tabs and
 re-index; the Index status route itself is always available.
 
+## Audit Browser
+
+**Audit Browser** (View → **Audit Browser**; hidden by default) queries the persisted inference and
+guardrails audit logs over `GET /api/audit` and `GET /api/guardrails/audit` (ApiResponse envelopes —
+not OpenAI-shaped errors). Filter by date range, model/stage/violation type, and session id. Empty
+results show an honest *“logging is disabled or no records are available”* state (the server returns
+an empty array when logging is off — not an error). Session ids open The Tome. Export the current page
+as JSON or CSV. Guardrails matched text is **always server-redacted** — The Forge never receives raw
+PII from that log. Enable paths: `Arcanum:Host:AuditLog:Enabled` and
+`Arcanum:Guardrails:AuditLog:Enabled` (Copy setting paths). A Guardrails **settings** panel remains
+deferred — edit `arcanum.json` or use The Compendium.
+
+## Files & Batches
+
+**Files & Batches** (View → **Files & Batches**; hidden by default, opens in the right dock) manages
+Arcanum's OpenAI-compatible file storage and batch jobs:
+
+- **Files** — upload (multipart), list with optional purpose filter, download content, delete.
+  JSONL preview is **bounded** (line + byte caps); use Download for the full payload — The Forge never
+  loads huge files fully into memory.
+- **Batches** — create from an `input_file_id` (`/v1/chat/completions`), list with optional status
+  filter, refresh detail, cancel, reset (Arcanum extension for stuck `in_progress`). Download output /
+  error JSONL when present. The list polls on a short interval while the tool is visible and Arcanum
+  is connected; polling stops on hide, disconnect, or close.
+
+These routes return OpenAI-shaped JSON (and OpenAI error envelopes), not The Forge's usual
+`ApiResponse` wrappers. Creating a Proving Grounds suite from a completed batch is deferred.
+
 ## The Codex
 
 **The Codex** is a Workbench document for `CODEX.md`. Open a campaign Codex from the Atelier campaign
@@ -393,7 +455,7 @@ The Forge is in **beta** (`0.1.0-beta`, inherited from [`Directory.Build.props`]
 Illumination)**, Phases **5–7 polish** (Spell Metadata Designer, Proving Grounds UI, campaign
 CRUD + import/export), and **RAG Phase 7 — The Weave Inspector**: Avalonia shell, Atelier, Spell editor, Tome, War Table,
 Gatehouse, Anvil, Visual Studio 2026 Fluent-inspired theming (Cascadia Mono / Segoe UI Variable,
-Dark/Light resource dictionaries, ManaBar, Icons, `forge.json` `Theme` swap), Atelier artifact
+Dark/Light resource dictionaries, ManaBar, Icons, `the-forge.json` `Theme` swap), Atelier artifact
 creation and **campaign New / Edit / Delete (unregister) / Export / Import**, The Scriptorium prompt
 editor, Milestone G operational panels — The Arsenal (MCP servers, Scrying Pool, Models & Providers)
 and The Treasury — **The Hearth** local terminal, **Milestone H Context and Memory** (Lore
@@ -401,11 +463,12 @@ Browser, The Archive, Divination, Workspace Explorer, Tome session memory contro
 **The Illumination** Markdig-backed markdown preview (Spell editor / The Codex Source·Split·Preview,
 Workspace Explorer Open Preview, standalone markdown tabs), **The Mirror** and **Spell Metadata
 Designer** in the Spell editor, and **The Proving Grounds** singleton Trial Workbench tab. The
-**inference IDE expansion** (§5.20 tracker) is implemented through **Phase 6**: **Comparison
+**inference IDE expansion** (§5.20 tracker) is implemented through **Phase 10**: **Comparison
 Workbench** (§5.20 phase 3), **Prompt Mirror** (§5.20 phase 4), **Inference Trace** inspector
-(§5.20 phase 5), and **Diagnostic MCP Invocation** (§5.19 — policy-constrained external MCP tool
-invoke in The Arsenal). See
-[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.19 and §6.
+(§5.20 phase 5), **Diagnostic MCP Invocation** (§5.19), **The Weave Inspector** (phase 7),
+**Audit Browser** (phase 8), **Files & Batches** (phase 9 — OpenAI `/v1/files` + `/v1/batches`),
+and **The Ledger** (phase 10). See
+[`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.7–§5.20 and §6.
 
 ### Markdown preview (The Illumination)
 
@@ -432,5 +495,5 @@ invoke in The Arsenal). See
   **Open Preview** to open a Workbench tab (preview-first).
 - The Scriptorium’s **Render** button remains server-side template render — not markdown preview.
 
-**Known gaps (honest UI):** The Arsenal exposes built-in tool invocation (`POST /api/tools/invoke`, Scrying Pool) and **policy-constrained external MCP** diagnostic invocation (`POST /api/mcp/tools/invoke`, Diagnostic MCP Invocation tab — internal server and Forbidden Arts blocked). Internal-tool diagnostics (e.g. testing `execute_command` capture/truncation) are not available from the diagnostic endpoint — they require the Wizard tool execution pipeline with a real campaign. No provider/config editing, budget/pricing editing, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; persistent suites are stored locally in `~/.config/arcanum/the-forge-trial-suites.json` (not Grimoire). Full prompt-version management beyond list/open, advanced import conflict wizards, full campaign Settings editing, and dedicated Git UI (The Ledger) are not built yet — use The Hearth for `git` commands. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** and **Open Compendium** where wired; use **View → Setup wizard…** / The Anvil for first-run connection guidance (Guardrails settings panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet. Planned inference-developer IDE expansion phases are tracked in [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.19.
+**Known gaps (honest UI):** The Arsenal exposes built-in tool invocation (`POST /api/tools/invoke`, Scrying Pool) and **policy-constrained external MCP** diagnostic invocation (`POST /api/mcp/tools/invoke`, Diagnostic MCP Invocation tab — internal server and Forbidden Arts blocked). Internal-tool diagnostics (e.g. testing `execute_command` capture/truncation) are not available from the diagnostic endpoint — they require the Wizard tool execution pipeline with a real campaign. No provider/config editing, budget/pricing editing, or model-metadata editing; no model/session token/cost breakdown. Campaign **New / Edit / Delete (unregister only) / Export / Import** and **New Spell / New Prompt / New Session** (plus top-level New Workspace Spell / New Prompt / New Session) are available. **The Mirror** (spell version list / fetch body / LCS compare / activate / create / update) and the **Spell Metadata Designer** (visual SPELL.json: version, dependencies, declared tools, schemas + raw editor) ship in the Spell editor — raw round-trip covers known metadata fields only; unknown JSON properties are not preserved through `UpdateSpellRequest`. **The Proving Grounds** is a singleton Workbench tab (Trial → Proving Grounds; Spell **Create Trial**; Scriptorium **Open in Proving Grounds**) for Trials — Spell / Prompt / ApprenticeGoal targets with Regex, JsonSchema, and Semantic Inquisitors; persistent suites are stored locally in `~/.config/arcanum/the-forge-trial-suites.json` (not Grimoire). Full prompt-version management beyond list/open, advanced import conflict wizards, and full campaign Settings editing remain gaps. **The Ledger** (View → The Ledger) is the dedicated Git UI (push/pull/reset/rebase deferred); The Hearth remains available for ad-hoc shell/`git` commands and is not a PTY. No client-side embeddings; disabled banners name exact `Arcanum:*` paths with **Copy setting paths** and **Open Compendium** where wired; use **View → Setup wizard…** / The Anvil for first-run connection guidance (Guardrails settings panel deferred). Advanced file diff/merge is not exposed. The Illumination: relative workspace images unresolved until a binary API; Mermaid graphs and native math deferred; Codex scroll sync incomplete; SVG/intranet remotes blocked. A true PTY Hearth remains a gap. Connect via **View → Connect to Arcanum** or the Anvil connection chip; disconnect from the View menu. Tool windows rearrange via context menu / View menu; OS floating windows are not implemented yet. Planned inference-developer IDE expansion phases are tracked in [`docs/TheForge.DESIGN.md`](TheForge.DESIGN.md) §5.19.
 

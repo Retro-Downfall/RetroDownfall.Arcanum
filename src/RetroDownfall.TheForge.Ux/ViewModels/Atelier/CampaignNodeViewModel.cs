@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -12,6 +13,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 /// <summary>
 /// Campaign branch. Lazy-loads campaign-scoped spells, prompts, sessions, CODEX.md, and Sanctum on
 /// first expansion; exposes New Spell / New Prompt / New Session plus Edit / Delete / Export / Import.
+/// Open marks the campaign active and opens its Codex.
 /// </summary>
 public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 {
@@ -19,6 +21,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
     private readonly IAtelierDataSource _dataSource;
 
     private readonly INavigationService _navigation;
+
+    private readonly IActiveCampaignService _activeCampaign;
 
     private readonly IArtifactCreationDataSource _creationDataSource;
 
@@ -44,6 +48,7 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
         CampaignDto campaign,
         IAtelierDataSource dataSource,
         INavigationService navigation,
+        IActiveCampaignService activeCampaign,
         IArtifactCreationDataSource creationDataSource,
         IArtifactCreationDialogService dialogService,
         FoundryFloorViewModel foundryFloor,
@@ -60,6 +65,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
         _dataSource = dataSource;
 
         _navigation = navigation;
+
+        _activeCampaign = activeCampaign;
 
         _creationDataSource = creationDataSource;
 
@@ -101,6 +108,8 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
     public CampaignDto Campaign => _campaign;
 
+    public override ICommand? PrimaryCommand => OpenCommand;
+
     public override IAsyncRelayCommand? NewSpellCommand { get; }
 
     public override IAsyncRelayCommand? NewPromptCommand { get; }
@@ -120,6 +129,16 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
     public override string? NewPromptLabel => "New Prompt";
 
     public override string? NewSessionLabel => "New Session";
+
+    [RelayCommand]
+    private async Task OpenAsync(CancellationToken cancellationToken)
+    {
+
+        await _activeCampaign.SetActiveCampaignAsync(_campaign, cancellationToken).ConfigureAwait(true);
+
+        _navigation.OpenDocument(DocumentKind.Codex, _campaign.Id.ToString("D"));
+
+    }
 
     [RelayCommand]
     private Task RefreshAsync(CancellationToken cancellationToken) => ReloadAsync(cancellationToken);
@@ -187,7 +206,7 @@ public sealed partial class CampaignNodeViewModel : AtelierNodeViewModel
 
         bool confirmed = await _confirmation
             .ConfirmAsync(
-                "Delete Campaign",
+                "Unregister Campaign",
                 $"Unregister campaign \"{_campaign.Name}\"? This removes it from the registry only — disk files remain.",
                 cancellationToken,
                 confirmIsDefault: false)

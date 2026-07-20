@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.ViewModels;
@@ -200,6 +201,8 @@ public class AtelierViewModelTests
         return new AtelierViewModel(
             dataSource,
             navigation,
+            new FakeActiveCampaignService(),
+            new NullCampaignCommandCoordinator(),
             new NullArtifactCreationDataSource(),
             new NullArtifactCreationDialogService(),
             new NullCampaignManagementDataSource(),
@@ -207,12 +210,42 @@ public class AtelierViewModelTests
             new NullConfirmationDialogService(),
             new NullArtifactFileDialogService(),
             new FakeWhispersService(),
-            foundryFloor);
+            foundryFloor,
+            new ConnectedArcanumConnection());
 
     }
 
     private static CampaignDto NewCampaign(string name, Guid? id = null) =>
         new(id ?? Guid.NewGuid(), name, $"/campaigns/{name}", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+    private sealed class ConnectedArcanumConnection : IArcanumConnection
+    {
+
+        public ConnectionState State => ConnectionState.Connected;
+
+        public HealthReportDto? LastReport => null;
+
+        public InstanceMetadataDto? LastMeta => null;
+
+        public string? LastErrorCode => null;
+
+        public string? LastErrorMessage => null;
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public void Connect()
+        {
+        }
+
+        public void Disconnect()
+        {
+        }
+
+    }
 
     private sealed class NullCampaignManagementDataSource : ICampaignManagementDataSource
     {
@@ -241,8 +274,15 @@ public class AtelierViewModelTests
     private sealed class NullCampaignDialogService : ICampaignDialogService
     {
 
-        public Task<NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken) =>
+        public Task<NewCampaignInputs?> PromptNewCampaignAsync(
+            NewCampaignDialogOptions? options = null,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<NewCampaignInputs?>(null);
+
+        public Task<string?> PromptOpenCampaignPathAsync(
+            bool allowLocalFolderBrowse,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
 
         public Task<EditCampaignInputs?> PromptEditCampaignAsync(CampaignDto existing, CancellationToken cancellationToken) =>
             Task.FromResult<EditCampaignInputs?>(null);

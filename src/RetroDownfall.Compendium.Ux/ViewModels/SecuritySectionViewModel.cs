@@ -20,6 +20,8 @@ public sealed partial class SecuritySectionViewModel : ObservableObject
 
     [ObservableProperty] private bool _wardAutoDenyInUnattendedMode;
 
+    [ObservableProperty] private bool _wardUnattendedMode;
+
     private SecuritySettings _securitySnapshot = new();
 
     private WardSettings _wardSnapshot = new();
@@ -45,6 +47,8 @@ public sealed partial class SecuritySectionViewModel : ObservableObject
 
         WardAutoDenyInUnattendedMode = ward.AutoDenyInUnattendedMode;
 
+        WardUnattendedMode = ward.UnattendedMode;
+
     }
 
     public SecuritySettings BuildSecurity() => _securitySnapshot with
@@ -68,6 +72,8 @@ public sealed partial class SecuritySectionViewModel : ObservableObject
         MaxActiveWards = WardMaxActiveWards,
 
         AutoDenyInUnattendedMode = WardAutoDenyInUnattendedMode,
+
+        UnattendedMode = WardUnattendedMode,
 
     };
 

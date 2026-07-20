@@ -32,7 +32,7 @@ public sealed class AskCommand(
     /// </summary>
     /// <param name="model">-m, The specific model to use for this inference request.</param>
     /// <param name="new">-n, Start a new session thread, clearing the previous session.</param>
-    /// <param name="unattended">Do not block for ask_human; auto-reply so the Mage proceeds without a live operator.</param>
+    /// <param name="unattended">Force unattended for this run (also true when <c>Arcanum:Ward:UnattendedMode</c> is set). Skips ask_human blocking and uses Ward auto-deny for Forbidden Arts.</param>
     /// <param name="campaign">-c, Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).</param>
     /// <param name="temperature">Sampling temperature 0-2 (lower = more deterministic).</param>
     /// <param name="topP">--top-p, Nucleus sampling cutoff 0-1.</param>
@@ -230,13 +230,17 @@ public sealed class AskCommand(
                 sessionId = session.GetLastSessionId();
             }
 
+            bool effectiveUnattended = OperatorFacingUnattendedMode.Resolve(
+                unattended,
+                arcanumSettings.Value.Ward);
+
             PingRequest ping = new(
                 promptText,
                 string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
                 cwd,
                 snapshot,
                 sessionId,
-                UnattendedMode: unattended,
+                UnattendedMode: effectiveUnattended,
                 ChronosyncDelta: chronosyncDelta,
                 Temperature: flags.Temperature,
                 TopP: flags.TopP,
@@ -278,7 +282,7 @@ public sealed class AskCommand(
                         AskHumanResult humanResult = await AskHumanToolCallStreamHandler
                             .TryHandleAskHumanAsync(
                                 evt,
-                                unattended,
+                                effectiveUnattended,
                                 cliEnvironment.IsInteractive,
                                 apiClient,
                                 palette,

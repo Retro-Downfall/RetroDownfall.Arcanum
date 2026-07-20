@@ -6,19 +6,19 @@ public static class DockLayoutDefaults
 
     public const int SchemaVersion = 1;
 
-    public const double DefaultLeftWidth = 260;
+    public const double DefaultLeftWidth = 280;
 
-    public const double DefaultRightWidth = 330;
+    public const double DefaultRightWidth = 440;
 
     public const double DefaultBottomHeight = 190;
 
-    public const double MinLeftWidth = 160;
+    public const double MinLeftWidth = 220;
 
     public const double MaxLeftWidth = 600;
 
-    public const double MinRightWidth = 180;
+    public const double MinRightWidth = 320;
 
-    public const double MaxRightWidth = 700;
+    public const double MaxRightWidth = 800;
 
     public const double MinBottomHeight = 100;
 
@@ -36,6 +36,9 @@ public static class DockLayoutDefaults
             [DockToolId.Archive] = DockRegion.Right,
             [DockToolId.Divination] = DockRegion.Right,
             [DockToolId.WeaveInspector] = DockRegion.Right,
+            [DockToolId.AuditBrowser] = DockRegion.Right,
+            [DockToolId.FilesBatches] = DockRegion.Right,
+            [DockToolId.Ledger] = DockRegion.Left,
         };
 
     public static IReadOnlyList<(string ToolId, string Title, string? IconKey, DockRegion Region, int Order)> Tools { get; } =
@@ -50,6 +53,9 @@ public static class DockLayoutDefaults
         (DockToolId.Archive, "The Archive", "IconSession", DockRegion.Hidden, 0),
         (DockToolId.Divination, "Divination", "IconSpell", DockRegion.Hidden, 0),
         (DockToolId.WeaveInspector, "The Weave Inspector", "IconCodex", DockRegion.Hidden, 0),
+        (DockToolId.AuditBrowser, "Audit Browser", "IconSession", DockRegion.Hidden, 0),
+        (DockToolId.FilesBatches, "Files & Batches", "IconWorkspace", DockRegion.Hidden, 0),
+        (DockToolId.Ledger, "The Ledger", "IconWorkspace", DockRegion.Hidden, 0),
         (DockToolId.Output, "Output", "IconSession", DockRegion.Bottom, 0),
         (DockToolId.Logs, "Logs", "IconCodex", DockRegion.Bottom, 1),
         (DockToolId.Hearth, "The Hearth", "IconSanctum", DockRegion.Bottom, 2),

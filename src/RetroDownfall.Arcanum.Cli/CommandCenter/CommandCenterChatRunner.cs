@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Wards;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -18,6 +19,7 @@ internal sealed class CommandCenterChatRunner(
     ArcanumApiClient apiClient,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     SessionWorkspaceService sessionWorkspace,
+    CommandCenterWardCoordinator wardCoordinator,
     ILogger<CommandCenterChatRunner> logger)
 {
     public async Task RunTurnAsync(
@@ -31,6 +33,8 @@ internal sealed class CommandCenterChatRunner(
 
         state.FooterHint = null;
         state.StreamingAssistantText = string.Empty;
+        state.ThinkingActive = true;
+        state.ThinkingTick = 0;
 
         // Snapshot staging at turn start — clear only this snapshot after terminal Result.
         string[] stagedPathSnapshot = state.StagedAttachmentPaths.ToArray();
@@ -73,7 +77,9 @@ internal sealed class CommandCenterChatRunner(
                 SessionId: state.SessionId,
                 AttachedFiles: attachments.AttachedFiles?.ToList(),
                 CliTerminalFormatting: true,
-                UnattendedMode: true,
+                UnattendedMode: OperatorFacingUnattendedMode.Resolve(
+                    cliUnattendedFlag: false,
+                    settingsMonitor.CurrentValue.Ward),
                 CampaignId: state.CampaignId,
                 ScryingFoci: attachments.ScryingFoci?.ToList(),
                 AttachmentReferences: attachmentReferences);
@@ -93,6 +99,7 @@ internal sealed class CommandCenterChatRunner(
                             break;
                         }
 
+                        StopThinking(state);
                         _ = assistant.Append(chunk);
                         state.StreamingAssistantText = assistant.ToString();
                         state.Log.UpdateStreaming(assistantEntry, state.StreamingAssistantText);
@@ -118,13 +125,52 @@ internal sealed class CommandCenterChatRunner(
                         break;
 
                     case IntelligenceEventType.ToolCall:
+                        await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        StopThinking(state);
+                        IngestToolCall(state, evt);
+                        await uiUpdates.WriteAsync(
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        await uiUpdates.WriteAsync(
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshHeader),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        break;
+
                     case IntelligenceEventType.ToolResult:
+                        await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        StopThinking(state);
+                        IngestToolResult(state, evt);
+                        await uiUpdates.WriteAsync(
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        break;
+
                     case IntelligenceEventType.ToolError:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
-                        string toolLine = string.IsNullOrWhiteSpace(evt.Data)
-                            ? evt.Message
-                            : $"{evt.Message}: {evt.Data}";
-                        state.Log.Append(SessionLogEntryKind.Tool, toolLine);
+                        StopThinking(state);
+                        IngestToolError(state, evt);
+                        // Tolerated tool failures stay in Incantations — not Transcript Error.
+                        await uiUpdates.WriteAsync(
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        break;
+
+                    case IntelligenceEventType.Warded:
+                        await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        await HandleWardedAsync(evt, state, uiUpdates, cancellationToken).ConfigureAwait(false);
+                        break;
+
+                    case IntelligenceEventType.WardResolved:
+                        await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        string resolved = evt.WardAllowed == true
+                            ? $"Ward allowed: {evt.WardToolName ?? evt.Message}"
+                            : $"Ward denied: {evt.WardToolName ?? evt.Message}"
+                              + (string.IsNullOrWhiteSpace(evt.WardReason) ? string.Empty : $" ({evt.WardReason})");
+                        state.Log.Append(SessionLogEntryKind.Status, resolved);
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog),
                                 cancellationToken)
@@ -202,6 +248,7 @@ internal sealed class CommandCenterChatRunner(
 
             state.Log.CompleteStreaming(assistantEntry, finalText);
             _ = state.Log.RemoveEphemeralGeneratingStatuses();
+            state.ThinkingActive = false;
             state.StreamingAssistantText = string.Empty;
             // Host owns turn gate (TryBeginTurn/EndTurn) and TurnCts lifetime.
 
@@ -231,4 +278,110 @@ internal sealed class CommandCenterChatRunner(
             }
         }
     }
+
+    private async Task HandleWardedAsync(
+        IntelligenceEvent evt,
+        CommandCenterState state,
+        ChannelWriter<CommandCenterUiUpdate> uiUpdates,
+        CancellationToken cancellationToken)
+    {
+        string wardId = evt.WardId ?? string.Empty;
+        string toolName = evt.WardToolName ?? evt.Message;
+        string argsPreview = CommandCenterWardCoordinator.FormatArgumentsPreview(evt.WardArguments);
+
+        state.Log.Append(
+            SessionLogEntryKind.Status,
+            string.IsNullOrEmpty(argsPreview)
+                ? $"Ward pending: {toolName} ({wardId})"
+                : $"Ward pending: {toolName} ({wardId}) — {argsPreview}");
+        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (string.IsNullOrWhiteSpace(wardId))
+        {
+            state.Log.Append(SessionLogEntryKind.Error, "Ward event missing wardId; cannot resolve.");
+            await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        bool allow;
+        if (state.SessionAllowedArts.Contains(toolName))
+        {
+            allow = true;
+            state.Log.Append(SessionLogEntryKind.Status, $"Auto-allowing {toolName} (session allow-list).");
+        }
+        else
+        {
+            WardApprovalDecision decision = await wardCoordinator
+                .RequestApprovalAsync(new WardApprovalRequest(wardId, toolName, argsPreview), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (decision == WardApprovalDecision.AllowAlwaysThisTool)
+            {
+                _ = state.SessionAllowedArts.Add(toolName);
+                allow = true;
+                state.Log.Append(
+                    SessionLogEntryKind.Status,
+                    $"Always allowing {toolName} for this Command Center session.");
+            }
+            else
+            {
+                allow = decision == WardApprovalDecision.Allow;
+            }
+        }
+
+        Result<WardResolutionDto> resolve = await apiClient
+            .ResolveWardAsync(wardId, allow, reason: null, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolve.IsFailure)
+        {
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                $"Failed to resolve ward {wardId}: {resolve.Error.Message}");
+        }
+        else
+        {
+            state.Log.Append(
+                SessionLogEntryKind.Status,
+                allow ? $"Submitted allow for ward {wardId}." : $"Submitted deny for ward {wardId}.");
+        }
+
+        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static void StopThinking(CommandCenterState state)
+    {
+        state.ThinkingActive = false;
+    }
+
+    private static void IngestToolCall(CommandCenterState state, IntelligenceEvent evt)
+    {
+        string? callId = evt.ToolCall?.CallId;
+        string name = evt.ToolCall?.Name ?? evt.Message;
+        string? args = evt.ToolCall?.ArgumentsJson
+            ?? (LooksLikeJsonObject(evt.Data) ? evt.Data : null);
+        _ = state.Incantations.UpsertCall(callId, name, args);
+    }
+
+    private static void IngestToolResult(CommandCenterState state, IntelligenceEvent evt)
+    {
+        string? callId = evt.ToolCall?.CallId;
+        string? name = evt.ToolCall?.Name ?? evt.Message;
+        string? result = evt.Data ?? evt.ToolCall?.ArgumentsJson;
+        _ = state.Incantations.UpsertResult(callId, name, result);
+    }
+
+    private static void IngestToolError(CommandCenterState state, IntelligenceEvent evt)
+    {
+        string? callId = evt.ToolCall?.CallId;
+        string? name = evt.ToolCall?.Name ?? evt.Message;
+        string? error = evt.Data ?? evt.Message;
+        _ = state.Incantations.UpsertError(callId, name, error);
+    }
+
+    private static bool LooksLikeJsonObject(string? text) =>
+        !string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("{");
 }

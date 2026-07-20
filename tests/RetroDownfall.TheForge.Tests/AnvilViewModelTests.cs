@@ -147,6 +147,26 @@ public class AnvilViewModelTests
 
     }
 
+    [Fact]
+    public void ConnectionStatusText_AuthErrorsWinOverConnectingState()
+    {
+
+        FakeArcanumConnection connection = new();
+
+        AnvilViewModel viewModel = Create(connection, new FakeAnvilDataSource(), new NavigationService());
+
+        connection.SetConnectingWithError("Security.MissingApiKey");
+
+        Assert.Equal(ConnectionState.Connecting, viewModel.ConnectionState);
+
+        Assert.Equal("API key required", viewModel.ConnectionStatusText);
+
+        Assert.True(viewModel.ShowEnterApiKey);
+
+        viewModel.Dispose();
+
+    }
+
     private static AnvilViewModel Create(
         IArcanumConnection connection,
         IAnvilDataSource dataSource,
@@ -160,6 +180,7 @@ public class AnvilViewModelTests
             new FakeCompendiumLauncher(),
             new FakeWhispersService(),
             new StaticOptionsMonitor(new TheForgeSettings()),
+            new FakeActiveCampaignService(),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AnvilViewModel>.Instance);
 
     private static WardDto NewWard() =>
@@ -234,6 +255,23 @@ public class AnvilViewModelTests
             LastErrorMessage = message;
 
             State = ConnectionState.Error;
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastErrorCode)));
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastErrorMessage)));
+
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State)));
+
+        }
+
+        public void SetConnectingWithError(string code, string? message = null)
+        {
+
+            LastErrorCode = code;
+
+            LastErrorMessage = message;
+
+            State = ConnectionState.Connecting;
 
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastErrorCode)));
 

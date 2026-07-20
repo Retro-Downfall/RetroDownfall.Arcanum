@@ -32,6 +32,53 @@
       <Setter Property="FontSize" Value="{DynamicResource ForgeUiFontSize}" />
       <Setter Property="Padding" Value="8,3" />
       <Setter Property="MinHeight" Value="24" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.anvil-chip">
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <!--
+      Link-style actions: Fluent paints Background on PART_ContentPresenter, so setters
+      must target /template/. Opt out with Classes="solid" or "anvil-chip".
+      Foreground stays royal blue in all interactive states.
+    -->
+    <Style Selector="Button:not(.solid):not(.anvil-chip)">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Padding" Value="4,2" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="FontSize" Value="{DynamicResource ForgeUiSecondaryFontSize}" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeLinkBrush}" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button:not(.solid):not(.anvil-chip) /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeLinkBrush}" />
+    </Style>
+    <Style Selector="Button:not(.solid):not(.anvil-chip):pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeLinkBrush}" />
+    </Style>
+    <Style Selector="Button:not(.solid):not(.anvil-chip):pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeLinkBrush}" />
+      <Setter Property="Opacity" Value="0.8" />
+    </Style>
+    <Style Selector="Button:not(.solid):not(.anvil-chip):disabled">
+      <Setter Property="Opacity" Value="0.45" />
+    </Style>
+    <Style Selector="Button:not(.solid):not(.anvil-chip):disabled /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource ForgeLinkBrush}" />
     </Style>
     <Style Selector="TextBox">
       <Setter Property="FontFamily" Value="{DynamicResource ForgeUiFontFamily}" />

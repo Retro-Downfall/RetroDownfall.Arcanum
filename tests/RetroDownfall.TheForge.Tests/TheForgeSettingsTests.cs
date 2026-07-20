@@ -16,7 +16,7 @@ public class TheForgeSettingsTests
 
         Assert.Null(settings.ApiKey);
 
-        Assert.Equal("dark", settings.Theme);
+        Assert.Equal("light", settings.Theme);
 
         Assert.Null(settings.LastCampaignId);
 

@@ -107,8 +107,8 @@ public sealed class ComposerLayoutTests
 
         Assert.True(effective >= ComposerLayout.MinContentRows);
         Assert.True(effective <= ComposerLayout.MaxContentRows);
-        // 12 - 3 - 1 - MinBody(3) - Border(2) = 3
-        Assert.Equal(3, effective);
+        // 12 - 3 - 1 - MinBody(6) - Border(2) = 0 → clamp to MinContentRows
+        Assert.Equal(ComposerLayout.MinContentRows, effective);
 
         ComposerLayoutResult result = ComposerLayout.Measure(
             string.Join('\n', Enumerable.Range(0, 20).Select(i => $"l{i}")),
@@ -117,8 +117,8 @@ public sealed class ComposerLayoutTests
             headerHeight: 3,
             footerHeight: 1);
 
-        Assert.Equal(3, result.ContentRows);
-        Assert.Equal(3 + ComposerLayout.BorderOverhead, result.InputHeight);
+        Assert.Equal(ComposerLayout.MinContentRows, result.ContentRows);
+        Assert.Equal(ComposerLayout.MinContentRows + ComposerLayout.BorderOverhead, result.InputHeight);
     }
 
     [Fact]

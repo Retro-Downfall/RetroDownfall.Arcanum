@@ -683,6 +683,66 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StreamPromptAsync_ForbiddenArt_YieldsWarded_BeforeWardResolves()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamToolCall("execute_command");
+        chat.EnqueueStreamTokens("done");
+
+        TaskCompletionSource wardEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<WardResolution> wardRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWard ward = new()
+        {
+            WardHandler = async _ =>
+            {
+                wardEntered.TrySetResult();
+                return await wardRelease.Task;
+            },
+        };
+
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateMcpTool("execute_command"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
+
+        List<IntelligenceEvent> seen = [];
+        TaskCompletionSource wardedSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task streamTask = Task.Run(async () =>
+        {
+            await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(
+                               BaseRequest() with
+                               {
+                                   Prompt = "run",
+                                   SkipSpellRouting = true,
+                                   UnattendedMode = false,
+                               },
+                               CancellationToken.None))
+            {
+                seen.Add(evt);
+                if (evt.Type == IntelligenceEventType.Warded)
+                {
+                    wardedSeen.TrySetResult();
+                }
+            }
+        });
+
+        await wardEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // While the server is blocked in WardAsync, the client must already have the warded frame
+        // (with wardId) so an operator can POST /api/wards/{id}.
+        Task completed = await Task.WhenAny(wardedSeen.Task, Task.Delay(TimeSpan.FromSeconds(2)));
+        Assert.Same(wardedSeen.Task, completed);
+        Assert.Contains(seen, static e => e.Type == IntelligenceEventType.Warded && !string.IsNullOrEmpty(e.WardId));
+
+        wardRelease.SetResult(new WardResolution(true, null, DateTimeOffset.UtcNow));
+        await streamTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Contains(seen, static e => e.Type == IntelligenceEventType.WardResolved);
+    }
+
+    [Fact]
     public async Task Scenario10_ContextCompression_TriggersWhenOverThreshold()
     {
         Guid sessionId = Guid.NewGuid();
@@ -4348,7 +4408,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public WardResolution NextResolution { get; init; } =
             new(true, null, DateTimeOffset.UtcNow);
 
+        /// <summary>
+        /// When set, invoked instead of returning <see cref="NextResolution"/> immediately.
+        /// </summary>
+        public Func<string, Task<WardResolution>>? WardHandler { get; set; }
+
         public int WardCallCount { get; private set; }
+
+        public string? LastWardId { get; private set; }
 
         public Task<WardResolution> WardAsync(
             string wardId,
@@ -4359,6 +4426,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken cancellationToken)
         {
             WardCallCount++;
+            LastWardId = wardId;
+
+            if (WardHandler is not null)
+            {
+                return WardHandler(wardId);
+            }
 
             return Task.FromResult(NextResolution);
         }

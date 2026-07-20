@@ -1,47 +1,30 @@
 using CommunityToolkit.Mvvm.Input;
-using RetroDownfall.Arcanum.Core.TheForge;
-using RetroDownfall.TheForge.Ux.Services;
-using RetroDownfall.TheForge.Ux.Services.Whispers;
-using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
+using RetroDownfall.TheForge.Ux.ViewModels;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 
 /// <summary>
-/// Campaigns root branch. Exposes New Campaign; children are campaign nodes supplied by a loader.
+/// Campaigns root branch. Exposes New Campaign via the shared coordinator; children are campaign nodes
+/// supplied by a loader.
 /// </summary>
 public sealed class CampaignsRootNodeViewModel : AtelierNodeViewModel
 {
 
     private readonly Func<CancellationToken, Task<IReadOnlyList<AtelierNodeViewModel>>> _loader;
 
-    private readonly ICampaignManagementDataSource _management;
+    private readonly ICampaignCommandCoordinator _campaignCommands;
 
-    private readonly ICampaignDialogService _campaignDialog;
-
-    private readonly IWhispersService _whispers;
-
-    private readonly FoundryFloorViewModel _foundryFloor;
-
-    private readonly Func<CancellationToken, Task> _refreshCampaigns;
+    private readonly Func<CancellationToken, Task> _afterCampaignsChanged;
 
     public CampaignsRootNodeViewModel(
-        ICampaignManagementDataSource management,
-        ICampaignDialogService campaignDialog,
-        IWhispersService whispers,
-        FoundryFloorViewModel foundryFloor,
-        Func<CancellationToken, Task> refreshCampaigns,
+        ICampaignCommandCoordinator campaignCommands,
+        Func<CancellationToken, Task> afterCampaignsChanged,
         Func<CancellationToken, Task<IReadOnlyList<AtelierNodeViewModel>>>? loader = null)
     {
 
-        _management = management;
+        _campaignCommands = campaignCommands;
 
-        _campaignDialog = campaignDialog;
-
-        _whispers = whispers;
-
-        _foundryFloor = foundryFloor;
-
-        _refreshCampaigns = refreshCampaigns;
+        _afterCampaignsChanged = afterCampaignsChanged;
 
         _loader = loader ?? (static _ => Task.FromResult<IReadOnlyList<AtelierNodeViewModel>>([]));
 
@@ -55,56 +38,16 @@ public sealed class CampaignsRootNodeViewModel : AtelierNodeViewModel
 
     public override IAsyncRelayCommand? NewCampaignCommand { get; }
 
-    public override string? NewCampaignLabel => "New Campaign";
+    public override string? NewCampaignLabel => "New Campaign…";
 
     private async Task NewCampaignAsync(CancellationToken cancellationToken)
     {
 
         LastError = null;
 
-        NewCampaignInputs? inputs = await _campaignDialog
-            .PromptNewCampaignAsync(cancellationToken)
-            .ConfigureAwait(true);
+        await _campaignCommands.NewCampaignAsync(cancellationToken).ConfigureAwait(true);
 
-        if (inputs is null)
-        {
-
-            return;
-
-        }
-
-        RegisterCampaignRequest request = new(
-            inputs.Name,
-            inputs.Path,
-            inputs.Type,
-            inputs.Description);
-
-        DataSourceResult<CampaignDto> result = await _management
-            .CreateAsync(request, cancellationToken)
-            .ConfigureAwait(true);
-
-        if (!result.Success || result.Data is null)
-        {
-
-            string detail = FormatCampaignError(result.ErrorCode, result.ErrorMessage, "Failed to create campaign.");
-
-            LastError = detail;
-
-            _foundryFloor.AppendLine($"Campaign create failed: {detail}");
-
-            _whispers.Show(WhisperSeverity.Error, "Campaign create failed.");
-
-            return;
-
-        }
-
-        StatusText = "Campaign created.";
-
-        _foundryFloor.AppendLine($"Campaign created: {result.Data.Name} ({result.Data.Id:D}).");
-
-        _whispers.Show(WhisperSeverity.Success, "Campaign created.");
-
-        await _refreshCampaigns(cancellationToken).ConfigureAwait(true);
+        await _afterCampaignsChanged(cancellationToken).ConfigureAwait(true);
 
     }
 

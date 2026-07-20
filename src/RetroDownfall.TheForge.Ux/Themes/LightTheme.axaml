@@ -7,6 +7,7 @@
   <SolidColorBrush x:Key="ForgeTextBrush" Color="#1A1A1A" />
   <SolidColorBrush x:Key="ForgeMutedTextBrush" Color="#666666" />
   <SolidColorBrush x:Key="ForgeAccentBrush" Color="#5649B0" />
+  <SolidColorBrush x:Key="ForgeLinkBrush" Color="#4169E1" />
   <SolidColorBrush x:Key="ForgeSuccessBrush" Color="#107C10" />
   <SolidColorBrush x:Key="ForgeErrorBrush" Color="#C50F1F" />
   <SolidColorBrush x:Key="ForgeWarningBrush" Color="#9A6700" />

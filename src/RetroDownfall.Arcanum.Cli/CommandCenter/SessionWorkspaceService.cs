@@ -147,9 +147,19 @@ internal sealed class SessionWorkspaceService(
             EntryDto[] chronological = descending.Reverse().ToArray();
             bool hadOlder = detail.EntryCount > chronological.Length;
 
-            List<(SessionLogEntryKind Kind, string Text)> mapped = chronological
-                .Select(static e => (SessionLogBuffer.MapEntryRole(e.Role), FormatEntryContent(e)))
-                .ToList();
+            List<(SessionLogEntryKind Kind, string Text)> mapped = [];
+            state.Incantations.Clear();
+            foreach (EntryDto e in chronological)
+            {
+                SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(e.Role);
+                if (kind == SessionLogEntryKind.Tool)
+                {
+                    IngestHistoryTool(state.Incantations, e);
+                    continue;
+                }
+
+                mapped.Add((kind, FormatEntryContent(e)));
+            }
 
             // Commit only after successful load.
             state.ApplySessionMeta(detail.Id, detail.Title, detail.Status, detail.EntryCount);
@@ -183,6 +193,7 @@ internal sealed class SessionWorkspaceService(
         if (clearTranscript)
         {
             state.Log.Clear();
+            state.Incantations.Clear();
             state.Log.Append(
                 SessionLogEntryKind.Status,
                 "New Session — first message will create it.");
@@ -240,6 +251,54 @@ internal sealed class SessionWorkspaceService(
         }
 
         return entry.Content ?? string.Empty;
+    }
+
+    private static void IngestHistoryTool(IncantationStore store, EntryDto entry)
+    {
+        string? callId = entry.ToolCallId;
+        string? toolName = entry.ToolName;
+        string content = entry.Content ?? string.Empty;
+
+        // Persisted tool-interaction: prefer structured fields; unparseable → safe summary.
+        bool hasStructure = !string.IsNullOrWhiteSpace(callId) || !string.IsNullOrWhiteSpace(toolName);
+        if (!hasStructure && string.IsNullOrWhiteSpace(content))
+        {
+            _ = store.AddFromHistory(
+                callId: null,
+                toolName: null,
+                argumentsJson: null,
+                resultOrContent: null,
+                isError: false,
+                unparseable: true);
+            return;
+        }
+
+        bool looksJson = content.TrimStart().StartsWith('{');
+        bool isError = entry.Role.Contains("error", StringComparison.OrdinalIgnoreCase)
+            || entry.Role.Contains("tool_error", StringComparison.OrdinalIgnoreCase);
+
+        if (!hasStructure && !looksJson)
+        {
+            _ = store.AddFromHistory(
+                callId,
+                toolName,
+                argumentsJson: null,
+                resultOrContent: null,
+                isError: false,
+                unparseable: true);
+            return;
+        }
+
+        string? args = looksJson && string.IsNullOrWhiteSpace(toolName) ? content : null;
+        string? result = looksJson ? null : content;
+        if (!string.IsNullOrWhiteSpace(toolName) && looksJson)
+        {
+            // Content may be args or result; treat as result when tool name known.
+            result = content;
+            args = null;
+        }
+
+        _ = store.AddFromHistory(callId, toolName, args, result, isError, unparseable: false);
     }
 
     private static bool IsArchivedStatus(string? status) =>

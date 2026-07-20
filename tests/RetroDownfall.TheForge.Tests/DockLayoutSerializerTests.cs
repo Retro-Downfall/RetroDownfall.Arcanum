@@ -60,7 +60,7 @@ public class DockLayoutSerializerTests
             null,
             null,
             260,
-            330,
+            440,
             190);
 
         TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
@@ -126,7 +126,7 @@ public class DockLayoutSerializerTests
             DockToolId.Gatehouse,
             null,
             260,
-            330,
+            440,
             190);
 
         TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);
@@ -151,7 +151,7 @@ public class DockLayoutSerializerTests
             null,
             null,
             260,
-            330,
+            440,
             190);
 
         TheForgeDockLayoutDto restored = DockLayoutSerializer.Normalize(dto);

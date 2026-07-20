@@ -12,11 +12,14 @@ using RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 using RetroDownfall.TheForge.Ux.ViewModels.Archive;
 using RetroDownfall.TheForge.Ux.ViewModels.Arsenal;
 using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
+using RetroDownfall.TheForge.Ux.ViewModels.AuditBrowser;
 using RetroDownfall.TheForge.Ux.ViewModels.Divination;
 using RetroDownfall.TheForge.Ux.ViewModels.Docking;
+using RetroDownfall.TheForge.Ux.ViewModels.FilesBatches;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
+using RetroDownfall.TheForge.Ux.ViewModels.Ledger;
 using RetroDownfall.TheForge.Ux.ViewModels.Lore;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
@@ -41,7 +44,17 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     private readonly IWorkbenchDocumentFactory _documentFactory;
 
+    private readonly ITheForgeSettingsStore _settingsStore;
+
+    private readonly IOptionsMonitor<TheForgeSettings> _settings;
+
+    private readonly ICampaignCommandCoordinator _campaignCommands;
+
+    private readonly IActiveCampaignService _activeCampaign;
+
     private readonly ILogger<MainViewModel>? _logger;
+
+    private IDisposable? _settingsThemeSubscription;
 
     private bool _atelierLoaded;
 
@@ -53,10 +66,35 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private ViewModelBase? _activeDocument;
 
+    [ObservableProperty]
+    private bool _isLightTheme;
+
     public ObservableCollection<ViewModelBase> OpenDocuments { get; } = [];
 
     /// <summary>True when no Workbench documents are open; drives the shell's empty-state overlay.</summary>
     public bool HasNoOpenDocuments => OpenDocuments.Count == 0;
+
+    public ICampaignCommandCoordinator CampaignCommands => _campaignCommands;
+
+    public string WorkbenchEmptyTitle => "The Workbench is ready.";
+
+    public string WorkbenchEmptyMessage
+    {
+        get
+        {
+            if (_activeCampaign.ActiveCampaign is { Path.Length: > 0 })
+            {
+                return "Open a spell from The Atelier, or create a new spell for the active campaign.";
+            }
+
+            if (Atelier.ShowZeroCampaignOnboarding)
+            {
+                return "Create or open a campaign to begin forging spells, prompts, and sessions.";
+            }
+
+            return "Select a campaign in The Atelier, then open or create a spell.";
+        }
+    }
 
     public DockLayoutViewModel DockLayout { get; }
 
@@ -86,6 +124,12 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     public WeaveInspectorViewModel WeaveInspector { get; }
 
+    public AuditBrowserViewModel AuditBrowser { get; }
+
+    public FilesBatchesViewModel FilesBatches { get; }
+
+    public LedgerViewModel Ledger { get; }
+
     public MainViewModel(
         IArcanumConnection connection,
         INavigationService navigation,
@@ -102,9 +146,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         DivinationViewModel divination,
         WorkspaceExplorerViewModel workspaceExplorer,
         WeaveInspectorViewModel weaveInspector,
+        AuditBrowserViewModel auditBrowser,
+        FilesBatchesViewModel filesBatches,
+        LedgerViewModel ledger,
         IWorkbenchDocumentFactory documentFactory,
         ITheForgeSettingsStore settingsStore,
         IOptionsMonitor<TheForgeSettings> settings,
+        ICampaignCommandCoordinator campaignCommands,
+        IActiveCampaignService activeCampaign,
         ILogger<MainViewModel>? logger = null)
     {
 
@@ -113,6 +162,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         _navigation = navigation;
 
         _logger = logger;
+
+        _settingsStore = settingsStore;
+
+        _settings = settings;
+
+        _campaignCommands = campaignCommands;
+
+        _activeCampaign = activeCampaign;
 
         Title = "The Forge — Inference IDE";
 
@@ -142,9 +199,24 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         WeaveInspector = weaveInspector;
 
+        AuditBrowser = auditBrowser;
+
+        FilesBatches = filesBatches;
+
+        Ledger = ledger;
+
         _documentFactory = documentFactory;
 
         _connectionState = connection.State;
+
+        IsLightTheme = string.Equals(settings.CurrentValue.Theme, "light", StringComparison.OrdinalIgnoreCase);
+
+        _settingsThemeSubscription = settings.OnChange(s =>
+        {
+            IsLightTheme = string.Equals(s.Theme, "light", StringComparison.OrdinalIgnoreCase);
+        });
+
+        _activeCampaign.ActiveCampaignChanged += OnActiveCampaignChanged;
 
         DockLayout = new DockLayoutViewModel(
             settingsStore,
@@ -181,7 +253,12 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         _navigation.ComparisonWorkbenchOpenRequested += OnComparisonWorkbenchOpenRequested;
 
+        _navigation.WorkspaceOpenRequested += OnWorkspaceOpenRequested;
+
     }
+
+    private void OnActiveCampaignChanged(object? sender, EventArgs e) =>
+        OnPropertyChanged(nameof(WorkbenchEmptyMessage));
 
     [RelayCommand]
     private void ResetWindowLayout() => DockLayout.ResetLayout();
@@ -226,6 +303,15 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     private void ShowWeaveInspector() => DockLayout.ShowTool(DockToolId.WeaveInspector);
 
     [RelayCommand]
+    private void ShowAuditBrowser() => DockLayout.ShowTool(DockToolId.AuditBrowser);
+
+    [RelayCommand]
+    private void ShowFilesBatches() => DockLayout.ShowTool(DockToolId.FilesBatches);
+
+    [RelayCommand]
+    private void ShowLedger() => DockLayout.ShowTool(DockToolId.Ledger);
+
+    [RelayCommand]
     private void OpenGlobalCodex() => _navigation.OpenDocument(DocumentKind.Codex, "global");
 
     [RelayCommand]
@@ -233,6 +319,44 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void OpenComparisonWorkbench() => _navigation.OpenOrFocusComparisonWorkbench();
+
+    [RelayCommand]
+    private async Task SetLightThemeAsync(CancellationToken cancellationToken)
+    {
+
+        await ApplyThemeAsync("light", cancellationToken).ConfigureAwait(true);
+
+    }
+
+    [RelayCommand]
+    private async Task SetDarkThemeAsync(CancellationToken cancellationToken)
+    {
+
+        await ApplyThemeAsync("dark", cancellationToken).ConfigureAwait(true);
+
+    }
+
+    private async Task ApplyThemeAsync(string theme, CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await _settingsStore
+                .SavePatchAsync(s => s with { Theme = theme }, cancellationToken)
+                .ConfigureAwait(true);
+
+            IsLightTheme = string.Equals(theme, "light", StringComparison.OrdinalIgnoreCase);
+
+        }
+        catch (Exception ex)
+        {
+
+            FoundryFloor.AppendLine($"Theme save failed: {ex.Message}");
+
+        }
+
+    }
 
     [RelayCommand]
     private void Connect()
@@ -288,6 +412,12 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         _navigation.ComparisonWorkbenchOpenRequested -= OnComparisonWorkbenchOpenRequested;
 
+        _navigation.WorkspaceOpenRequested -= OnWorkspaceOpenRequested;
+
+        _activeCampaign.ActiveCampaignChanged -= OnActiveCampaignChanged;
+
+        _settingsThemeSubscription?.Dispose();
+
         foreach (ViewModelBase document in OpenDocuments.ToArray())
         {
 
@@ -311,6 +441,10 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         Gatehouse.Dispose();
 
         Hearth.Dispose();
+
+        Ledger.Dispose();
+
+        FilesBatches.Dispose();
 
         Arsenal.Dispose();
 
@@ -352,6 +486,12 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         DockLayout.SetContent(DockToolId.WorkspaceExplorer, WorkspaceExplorer);
 
         DockLayout.SetContent(DockToolId.WeaveInspector, WeaveInspector);
+
+        DockLayout.SetContent(DockToolId.AuditBrowser, AuditBrowser);
+
+        DockLayout.SetContent(DockToolId.FilesBatches, FilesBatches);
+
+        DockLayout.SetContent(DockToolId.Ledger, Ledger);
 
     }
 
@@ -398,6 +538,21 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             rightSelected == DockToolId.WeaveInspector
             || bottomSelected == DockToolId.WeaveInspector
             || leftSelected == DockToolId.WeaveInspector;
+
+        AuditBrowser.IsVisible =
+            rightSelected == DockToolId.AuditBrowser
+            || bottomSelected == DockToolId.AuditBrowser
+            || leftSelected == DockToolId.AuditBrowser;
+
+        FilesBatches.IsVisible =
+            rightSelected == DockToolId.FilesBatches
+            || bottomSelected == DockToolId.FilesBatches
+            || leftSelected == DockToolId.FilesBatches;
+
+        Ledger.IsVisible =
+            rightSelected == DockToolId.Ledger
+            || bottomSelected == DockToolId.Ledger
+            || leftSelected == DockToolId.Ledger;
 
         bool foundryVisible = !DockLayout.Bottom.IsCollapsed
             && DockLayout.Bottom.Tools.Any(t =>
@@ -458,6 +613,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     {
 
         OnPropertyChanged(nameof(HasNoOpenDocuments));
+
+        OnPropertyChanged(nameof(WorkbenchEmptyMessage));
 
     }
 
@@ -546,6 +703,17 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     }
 
+    private async Task OnWorkspaceOpenRequested(string workspaceId, CancellationToken cancellationToken)
+    {
+
+        DockLayout.FocusTool(DockToolId.WorkspaceExplorer);
+
+        ApplyToolVisibility();
+
+        await WorkspaceExplorer.SelectWorkspaceAsync(workspaceId, cancellationToken).ConfigureAwait(true);
+
+    }
+
     private void OnPanelFocusRequested(PanelKind panel)
     {
 
@@ -563,6 +731,9 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             PanelKind.Divination => DockToolId.Divination,
             PanelKind.WorkspaceExplorer => DockToolId.WorkspaceExplorer,
             PanelKind.WeaveInspector => DockToolId.WeaveInspector,
+            PanelKind.AuditBrowser => DockToolId.AuditBrowser,
+            PanelKind.FilesBatches => DockToolId.FilesBatches,
+            PanelKind.Ledger => DockToolId.Ledger,
             _ => null,
         };
 

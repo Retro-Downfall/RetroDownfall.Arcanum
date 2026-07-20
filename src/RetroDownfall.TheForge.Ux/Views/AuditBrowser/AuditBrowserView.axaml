@@ -1,0 +1,116 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.AuditBrowser"
+             xmlns:models="using:RetroDownfall.Arcanum.Core.Intelligence.Models"
+             x:Class="RetroDownfall.TheForge.Ux.Views.AuditBrowser.AuditBrowserView"
+             x:DataType="vm:AuditBrowserViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="420" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <TabControl Grid.Row="2" SelectedIndex="{Binding ActiveTabIndex}">
+
+      <TabItem Header="Inference">
+        <Grid RowDefinitions="Auto,Auto,*">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding InferenceAuditPathsMessage}" Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="InferenceAudit" HorizontalAlignment="Left" />
+            <WrapPanel>
+              <TextBox Text="{Binding InferenceFromText}" Watermark="from (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceToText}" Watermark="to (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceModel}" Watermark="model…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceSessionId}" Watermark="sessionId…" MinWidth="180" Margin="0,0,6,6" />
+              <Button Content="Refresh" Command="{Binding RefreshInferenceCommand}" Margin="0,0,6,6" />
+              <Button Content="Export JSON" Command="{Binding ExportInferenceJsonCommand}" Margin="0,0,6,6" />
+              <Button Content="Export CSV" Command="{Binding ExportInferenceCsvCommand}" Margin="0,0,6,6" />
+            </WrapPanel>
+          </StackPanel>
+
+          <TextBlock Grid.Row="1" Text="{Binding InferenceEmptyMessage}" Opacity="0.7" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding HasNoInferenceRecords}" />
+
+          <ListBox Grid.Row="2" ItemsSource="{Binding InferenceRecords}" SelectedItem="{Binding SelectedInferenceRecord}" BorderThickness="0" IsVisible="{Binding !HasNoInferenceRecords}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:InferenceAuditRecord">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="2">
+                    <DockPanel LastChildFill="False">
+                      <TextBlock DockPanel.Dock="Left" Text="{Binding Timestamp}" FontWeight="SemiBold" />
+                      <Button DockPanel.Dock="Right" Content="Open in Tome" Command="{Binding $parent[UserControl].((vm:AuditBrowserViewModel)DataContext)?.OpenInferenceSessionCommand}" CommandParameter="{Binding}" IsVisible="{Binding SessionId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </DockPanel>
+                    <TextBlock Text="{Binding Model, StringFormat=Model: {0}}" Opacity="0.8" />
+                    <TextBlock Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}">
+                      <TextBlock.Text>
+                        <MultiBinding StringFormat="Tokens: {0}/{1}/{2} · {3} ms · tools: {4}">
+                          <Binding Path="PromptTokens" />
+                          <Binding Path="CompletionTokens" />
+                          <Binding Path="TotalTokens" />
+                          <Binding Path="LatencyMs" />
+                          <Binding Path="ToolCalls" />
+                        </MultiBinding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                    <TextBlock Text="{Binding SpellName, StringFormat=Spell: {0}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding SpellName, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Guardrails">
+        <Grid RowDefinitions="Auto,Auto,Auto,*">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="{Binding GuardrailsAuditPathsMessage}" Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="GuardrailsAudit" HorizontalAlignment="Left" />
+            <TextBlock Text="{Binding GuardrailsRedactionNote}" Opacity="0.65" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <WrapPanel>
+              <TextBox Text="{Binding GuardrailsFromText}" Watermark="from (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsToText}" Watermark="to (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsStage}" Watermark="stage…" MinWidth="100" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsViolationType}" Watermark="violationType…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsSessionId}" Watermark="sessionId…" MinWidth="180" Margin="0,0,6,6" />
+              <Button Content="Refresh" Command="{Binding RefreshGuardrailsCommand}" Margin="0,0,6,6" />
+              <Button Content="Export JSON" Command="{Binding ExportGuardrailsJsonCommand}" Margin="0,0,6,6" />
+              <Button Content="Export CSV" Command="{Binding ExportGuardrailsCsvCommand}" Margin="0,0,6,6" />
+            </WrapPanel>
+          </StackPanel>
+
+          <TextBlock Grid.Row="1" Text="{Binding GuardrailsEmptyMessage}" Opacity="0.7" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding HasNoGuardrailRecords}" />
+
+          <ListBox Grid.Row="3" ItemsSource="{Binding GuardrailRecords}" SelectedItem="{Binding SelectedGuardrailRecord}" BorderThickness="0" IsVisible="{Binding !HasNoGuardrailRecords}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:GuardrailAuditRecord">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="2">
+                    <DockPanel LastChildFill="False">
+                      <TextBlock DockPanel.Dock="Left" Text="{Binding Timestamp}" FontWeight="SemiBold" />
+                      <Button DockPanel.Dock="Right" Content="Open in Tome" Command="{Binding $parent[UserControl].((vm:AuditBrowserViewModel)DataContext)?.OpenGuardrailSessionCommand}" CommandParameter="{Binding}" IsVisible="{Binding SessionId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </DockPanel>
+                    <TextBlock Opacity="0.8">
+                      <TextBlock.Text>
+                        <MultiBinding StringFormat="{}{0} · {1}">
+                          <Binding Path="Stage" />
+                          <Binding Path="ViolationType" />
+                        </MultiBinding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                    <TextBlock Text="{Binding MatchedTextRedacted, StringFormat=Matched (redacted): {0}}" Opacity="0.65" TextWrapping="Wrap" IsVisible="{Binding MatchedTextRedacted, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    <TextBlock Text="{Binding Model, StringFormat=Model: {0}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding Model, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </TabItem>
+
+    </TabControl>
+  </Grid>
+</UserControl>

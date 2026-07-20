@@ -1,7 +1,6 @@
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Workspaces;
-using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Atelier;
@@ -32,6 +31,7 @@ public sealed partial class WorkspaceNodeViewModel : AtelierNodeViewModel
     public override ICommand? PrimaryCommand => OpenCommand;
 
     [RelayCommand]
-    private void Open() => _navigation.FocusPanel(PanelKind.WorkspaceExplorer);
+    private async Task OpenAsync(CancellationToken cancellationToken) =>
+        await _navigation.OpenWorkspaceAsync(Workspace.Id, cancellationToken).ConfigureAwait(true);
 
 }

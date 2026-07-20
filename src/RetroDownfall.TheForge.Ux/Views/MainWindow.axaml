@@ -47,10 +47,29 @@
 
     <DockPanel Grid.Row="0" LastChildFill="True" Margin="0,0,0,1">
       <Menu DockPanel.Dock="Left">
-        <MenuItem Header="_File" />
+        <MenuItem Header="_File">
+          <MenuItem Header="New Campaign…" Command="{Binding CampaignCommands.NewCampaignCommand}" />
+          <MenuItem Header="Open Campaign…" Command="{Binding CampaignCommands.OpenCampaignCommand}" />
+          <Separator />
+          <MenuItem Header="New Spell…" Command="{Binding CampaignCommands.NewSpellCommand}" />
+          <MenuItem Header="New Prompt…" Command="{Binding CampaignCommands.NewPromptCommand}" />
+          <Separator />
+          <MenuItem Header="Connect to Arcanum" Command="{Binding ConnectCommand}" />
+          <MenuItem Header="Disconnect" Command="{Binding DisconnectCommand}" />
+          <MenuItem Header="Setup wizard…" Command="{Binding Anvil.OpenSetupWizardCommand}" />
+        </MenuItem>
         <MenuItem Header="_Edit" />
         <MenuItem Header="_View">
           <MenuItem Header="Reset Window Layout" Command="{Binding ResetWindowLayoutCommand}" />
+          <Separator />
+          <MenuItem Header="Theme">
+            <MenuItem Header="Light"
+                      Command="{Binding SetLightThemeCommand}"
+                      IsChecked="{Binding IsLightTheme}" />
+            <MenuItem Header="Dark"
+                      Command="{Binding SetDarkThemeCommand}"
+                      IsChecked="{Binding !IsLightTheme}" />
+          </MenuItem>
           <Separator />
           <MenuItem Header="The Atelier" Command="{Binding ShowAtelierCommand}" />
           <MenuItem Header="The Gatehouse" Command="{Binding ShowGatehouseCommand}" />
@@ -65,6 +84,9 @@
           <MenuItem Header="Divination" Command="{Binding ShowDivinationCommand}" />
           <MenuItem Header="Workspace Explorer" Command="{Binding ShowWorkspaceExplorerCommand}" />
           <MenuItem Header="The Weave Inspector" Command="{Binding ShowWeaveInspectorCommand}" />
+          <MenuItem Header="Audit Browser" Command="{Binding ShowAuditBrowserCommand}" />
+          <MenuItem Header="Files &amp; Batches" Command="{Binding ShowFilesBatchesCommand}" />
+          <MenuItem Header="The Ledger" Command="{Binding ShowLedgerCommand}" />
           <MenuItem Header="The Codex" Command="{Binding OpenGlobalCodexCommand}" />
           <Separator />
           <MenuItem Header="Connect to Arcanum" Command="{Binding ConnectCommand}" />
@@ -72,8 +94,18 @@
           <MenuItem Header="Setup wizard…" Command="{Binding Anvil.OpenSetupWizardCommand}" />
           <MenuItem Header="Open Compendium" Command="{Binding Anvil.OpenCompendiumCommand}" />
         </MenuItem>
-        <MenuItem Header="_Campaign" />
-        <MenuItem Header="_Spell" />
+        <MenuItem Header="_Campaign">
+          <MenuItem Header="New Campaign…" Command="{Binding CampaignCommands.NewCampaignCommand}" />
+          <MenuItem Header="Open Campaign…" Command="{Binding CampaignCommands.OpenCampaignCommand}" />
+          <MenuItem Header="New Spell…" Command="{Binding CampaignCommands.NewSpellCommand}" />
+          <MenuItem Header="New Prompt…" Command="{Binding CampaignCommands.NewPromptCommand}" />
+          <Separator />
+          <MenuItem Header="Edit Campaign…" Command="{Binding CampaignCommands.EditCampaignCommand}" />
+          <MenuItem Header="Unregister Campaign…" Command="{Binding CampaignCommands.UnregisterCampaignCommand}" />
+        </MenuItem>
+        <MenuItem Header="_Spell">
+          <MenuItem Header="New Spell…" Command="{Binding CampaignCommands.NewSpellCommand}" />
+        </MenuItem>
         <MenuItem Header="_Apprentice" />
         <MenuItem Header="_Trial">
           <MenuItem Header="Proving Grounds" Command="{Binding OpenProvingGroundsCommand}" />
@@ -87,8 +119,8 @@
         <TextBlock Text="The Forge — Inference IDE" FontWeight="SemiBold" VerticalAlignment="Center" />
         <Border Padding="8,2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
           <StackPanel Orientation="Horizontal" Spacing="6">
-            <Ellipse Width="8" Height="8" Fill="{DynamicResource ForgeAccentBrush}" VerticalAlignment="Center" />
-            <TextBlock Text="{Binding ConnectionState}" VerticalAlignment="Center" />
+            <Ellipse Width="8" Height="8" Fill="{Binding Anvil.ConnectionIndicatorBrush}" VerticalAlignment="Center" />
+            <TextBlock Text="{Binding Anvil.ConnectionStatusText}" VerticalAlignment="Center" />
           </StackPanel>
         </Border>
       </StackPanel>

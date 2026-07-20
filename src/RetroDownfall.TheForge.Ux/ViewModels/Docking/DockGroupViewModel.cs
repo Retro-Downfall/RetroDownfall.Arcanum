@@ -38,7 +38,18 @@ public sealed partial class DockGroupViewModel : ObservableObject
 
     public bool IsCollapsed => Tools.Count == 0;
 
-    public double EffectiveSize => IsCollapsed ? 0 : Size;
+    public double EffectiveSize => IsCollapsed ? 0 : Math.Max(Size, RegionMinSize);
+
+    /// <summary>Min width/height for this region when visible; 0 when collapsed so empty regions take no space.</summary>
+    public double EffectiveMinSize => IsCollapsed ? 0 : RegionMinSize;
+
+    private double RegionMinSize => Region switch
+    {
+        DockRegion.Left => DockLayoutDefaults.MinLeftWidth,
+        DockRegion.Right => DockLayoutDefaults.MinRightWidth,
+        DockRegion.Bottom => DockLayoutDefaults.MinBottomHeight,
+        _ => 0,
+    };
 
     public void SelectNeighborOrDefault(DockToolViewModel? removed)
     {
@@ -70,6 +81,8 @@ public sealed partial class DockGroupViewModel : ObservableObject
 
         OnPropertyChanged(nameof(EffectiveSize));
 
+        OnPropertyChanged(nameof(EffectiveMinSize));
+
     }
 
     private void OnToolsChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -78,6 +91,8 @@ public sealed partial class DockGroupViewModel : ObservableObject
         OnPropertyChanged(nameof(IsCollapsed));
 
         OnPropertyChanged(nameof(EffectiveSize));
+
+        OnPropertyChanged(nameof(EffectiveMinSize));
 
         if (SelectedTool is not null && !Tools.Contains(SelectedTool))
         {

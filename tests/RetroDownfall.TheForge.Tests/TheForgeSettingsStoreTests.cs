@@ -110,6 +110,55 @@ public class TheForgeSettingsStoreTests
 
     }
 
+    [Fact]
+    public void TryMigrateLegacyFile_RenamesForgeJsonWhenTheForgeJsonAbsent()
+    {
+
+        string dir = Path.Combine(Path.GetTempPath(), $"forge-migrate-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(dir);
+
+        string legacy = Path.Combine(dir, TheForgeSettingsStore.LegacyFileName);
+
+        string modern = Path.Combine(dir, TheForgeSettingsStore.FileName);
+
+        try
+        {
+
+            File.WriteAllText(legacy, "{\"theme\":\"dark\"}");
+
+            Assert.True(TheForgeSettingsStore.TryMigrateLegacyFile(modern));
+
+            Assert.False(File.Exists(legacy));
+
+            Assert.True(File.Exists(modern));
+
+            Assert.False(TheForgeSettingsStore.TryMigrateLegacyFile(modern));
+
+        }
+        finally
+        {
+
+            TryDelete(legacy);
+
+            TryDelete(modern);
+
+            try
+            {
+
+                Directory.Delete(dir, recursive: true);
+
+            }
+            catch (IOException)
+            {
+
+                // Best-effort.
+            }
+
+        }
+
+    }
+
     private static void TryDelete(string path)
     {
 

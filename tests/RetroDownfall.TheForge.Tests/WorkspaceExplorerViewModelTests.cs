@@ -229,6 +229,40 @@ public class WorkspaceExplorerViewModelTests
 
     }
 
+    [Fact]
+    public async Task SelectWorkspaceAsync_LoadsThenSelectsMatchingId()
+    {
+
+        FakeWorkspaceExplorerDataSource dataSource = new()
+        {
+            Workspaces =
+            [
+                new WorkspaceInfo("ws-1", "Demo", "/workspaces/demo", WorkspaceType.Custom, DateTimeOffset.UtcNow, Persisted: true),
+            ],
+        };
+
+        WorkspaceExplorerViewModel viewModel = NewViewModel(dataSource);
+
+        await viewModel.SelectWorkspaceAsync("ws-1", CancellationToken.None);
+
+        Assert.Equal("ws-1", viewModel.SelectedWorkspace?.Id);
+
+    }
+
+    [Fact]
+    public async Task SelectWorkspaceAsync_WhenMissing_SurfacesError()
+    {
+
+        WorkspaceExplorerViewModel viewModel = NewViewModel(new FakeWorkspaceExplorerDataSource());
+
+        await viewModel.SelectWorkspaceAsync("missing", CancellationToken.None);
+
+        Assert.Null(viewModel.SelectedWorkspace);
+
+        Assert.Contains("not found", viewModel.LastError, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     private static WorkspaceExplorerViewModel NewViewModel(
         FakeWorkspaceExplorerDataSource dataSource,
         IConfirmationDialogService? confirmation = null,

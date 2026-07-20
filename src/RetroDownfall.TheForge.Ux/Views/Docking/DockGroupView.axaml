@@ -23,15 +23,21 @@
              xmlns:workspaceExplorerViews="using:RetroDownfall.TheForge.Ux.Views.WorkspaceExplorer"
              xmlns:weaveInspector="using:RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector"
              xmlns:weaveInspectorViews="using:RetroDownfall.TheForge.Ux.Views.WeaveInspector"
+             xmlns:auditBrowser="using:RetroDownfall.TheForge.Ux.ViewModels.AuditBrowser"
+             xmlns:auditBrowserViews="using:RetroDownfall.TheForge.Ux.Views.AuditBrowser"
+             xmlns:filesBatches="using:RetroDownfall.TheForge.Ux.ViewModels.FilesBatches"
+             xmlns:filesBatchesViews="using:RetroDownfall.TheForge.Ux.Views.FilesBatches"
+             xmlns:ledger="using:RetroDownfall.TheForge.Ux.ViewModels.Ledger"
+             xmlns:ledgerViews="using:RetroDownfall.TheForge.Ux.Views.Ledger"
              xmlns:converters="using:RetroDownfall.TheForge.Ux.Converters"
              x:Class="RetroDownfall.TheForge.Ux.Views.Docking.DockGroupView"
              x:DataType="dock:DockGroupViewModel">
   <UserControl.Resources>
     <converters:IconKeyToGeometryConverter x:Key="IconKeyToGeometryConverter" />
   </UserControl.Resources>
-
   <Border IsVisible="{Binding !IsCollapsed}"
-          BorderBrush="{DynamicResource ForgeBorderBrush}">
+          BorderBrush="{DynamicResource ForgeBorderBrush}"
+          BorderThickness="1">
     <TabControl ItemsSource="{Binding Tools}"
                 SelectedItem="{Binding SelectedTool}">
       <TabControl.ItemTemplate>
@@ -103,6 +109,15 @@
               </DataTemplate>
               <DataTemplate DataType="weaveInspector:WeaveInspectorViewModel">
                 <weaveInspectorViews:WeaveInspectorView />
+              </DataTemplate>
+              <DataTemplate DataType="auditBrowser:AuditBrowserViewModel">
+                <auditBrowserViews:AuditBrowserView />
+              </DataTemplate>
+              <DataTemplate DataType="filesBatches:FilesBatchesViewModel">
+                <filesBatchesViews:FilesBatchesView />
+              </DataTemplate>
+              <DataTemplate DataType="ledger:LedgerViewModel">
+                <ledgerViews:LedgerView />
               </DataTemplate>
               <DataTemplate DataType="dock:OutputToolContent">
                 <TextBlock Text="{Binding FoundryFloor.OutputEmptyState}" TextWrapping="Wrap" Margin="8" />

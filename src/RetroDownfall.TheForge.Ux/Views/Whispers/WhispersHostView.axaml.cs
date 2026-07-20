@@ -14,6 +14,9 @@ public partial class WhispersHostView : UserControl
 
         InitializeComponent();
 
+        // Local DataContext blocks inheriting MainWindow's MainViewModel before Initialize.
+        DataContext = null;
+
     }
 
     public void Initialize(IWhispersService whispersService)

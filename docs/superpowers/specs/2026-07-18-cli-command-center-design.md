@@ -24,11 +24,26 @@ All view mutations → Host / Window via `IApplication.Invoke`.
 
 ## Layout (v2)
 
-- Header: model · session continuation line · API status · Generating…
+- Header: model · session continuation line · API status · **Thinking ⠋** (synthetic, while waiting for first token/tool) or Generating…
 - Left sessions list (UpdatedAt desc); collapses under 100 cols → Ctrl+O filterable overlay picker
-- Center transcript (follow-tail when at bottom)
-- Composer (multiline TextView): soft-wrap; grows **1–10** content rows upward into the body, then internal scroll; effective max also respects header/footer + minimum body at the ≥80×12 floor
+- **Transcript** (follow-tail when at bottom): user/assistant/status/command/error — **not** tool lines
+- **Incantations** under Transcript (same width, ~⅓ body height, min frame **3**): CallId-keyed tool invocations; ToolCall creates, ToolResult/ToolError updates; tolerated failures stay here (not Transcript errors)
+- Composer (multiline TextView): soft-wrap; grows **1–10** content rows upward into the body, then internal scroll; effective max respects header/footer + **minimum body 6** (Transcript 3 + Incantations 3) at the ≥80×12 floor
 - Focus-aware footer hints
+- Independent Transcript / Incantations viewport + follow-tail; rebuild restores by entry id / CallId
+
+## Incantations formatting
+
+- Structured ingest only (`CallId`, `ToolName`, args, result, error, state). Formatter never parses `Tool: …` display strings.
+- Fail-closed heavy suppression (known heavy names + sensitive keys); summary keys limited to path/file/name/key/command/url/query-style metadata.
+- ≤3 content lines per CallId (cell-width wrap); HR separator **between** blocks, outside the 3-line budget.
+- Resume: parse tool-interaction fields; unparseable → generic safe summary (never raw text).
+
+## Thinking spinner
+
+- Synthetic display state (not a `SessionLogEntry`). TG UI-loop timer (~100ms); no full log rebuild per tick.
+- Start when turn claims generation; stop on first non-empty assistant token or tool event; clear on result/error/cancel/finally. `SessionBound` alone does not clear. Suppress only the exact redundant server generating status string.
+- Must not move a user-scrolled Transcript.
 
 ## Sessions
 
@@ -44,7 +59,11 @@ All view mutations → Host / Window via `IApplication.Invoke`.
 
 ## Keyboard
 
-F1 help · Ctrl+K palette · Ctrl+O sessions · Ctrl+N new · Ctrl+R/F5 refresh · Tab focus · **Enter** newline (composer) · **Ctrl+Enter** send · Esc overlay/composer · Ctrl+C cancel/clear/quit-hint · Ctrl+Q quit
+F1 help · Ctrl+K palette · Ctrl+O sessions · Ctrl+N new · Ctrl+R/F5 refresh · **Tab** / **Shift+Tab** cycle focus · **Enter** newline (composer) · **Ctrl+Enter** send · Esc overlay/composer · Ctrl+C cancel/clear/quit-hint · Ctrl+Q quit
+
+**Tab cycle (single routing path):** wide `Composer → Sessions → Transcript → Incantations`; narrow `Composer → Transcript → Incantations`; overlay open ⇒ Tab **NoOp**. After each transition, `FocusRegion` matches the TG focused control. `FocusInput` does not hide overlays; use `CloseOverlay` / `CloseOverlayAndFocusInput`.
+
+**Scroll:** Composer arrows = caret; Transcript / Incantations ↑↓ PgUp/PgDn Home/End scroll that pane only; Composer PgUp/PgDn may scroll Transcript. Sessions keep ↑↓/jk nav.
 
 Composer send ownership: **Ctrl+Enter** maps to `Send` via composer `KeyDown`. Bare Enter falls through to TextView (`EnterKeyAddsLine` stays **true** — required for `WordWrap`; Terminal.Gui clears `Multiline`/`WordWrap` when it is set false). `TextView.Accepting` is a no-op so it cannot double-submit.
 

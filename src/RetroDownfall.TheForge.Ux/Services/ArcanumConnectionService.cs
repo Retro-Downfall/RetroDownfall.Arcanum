@@ -1,3 +1,4 @@
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,7 +12,7 @@ namespace RetroDownfall.TheForge.Ux.Services;
 /// <summary>
 /// Singleton background poller for <c>GET /api/health</c>, registered once and started (when
 /// <see cref="TheForgeSettings.AutoConnect"/> is set) in DI so The Anvil's connection indicator reflects
-/// live server state throughout the app's lifetime. Reacts to <c>forge.json</c> changes (base URL,
+/// live server state throughout the app's lifetime. Reacts to <c>the-forge.json</c> changes (base URL,
 /// API key, AutoConnect toggle) via <see cref="IOptionsMonitor{TOptions}"/>.
 /// </summary>
 public sealed partial class ArcanumConnectionService : ObservableObject, IArcanumConnection, IDisposable
@@ -48,6 +49,12 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
     private int _consecutiveFailures;
 
+    /// <summary>
+    /// Last settings snapshot used for reconnect decisions. Layout/theme/campaign patches must not
+    /// restart the health poller.
+    /// </summary>
+    private TheForgeSettings _lastConnectionSettings;
+
     public ArcanumConnectionService(
         ArcanumApiClient apiClient,
         IOptionsMonitor<TheForgeSettings> settingsMonitor,
@@ -59,6 +66,8 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
         _settingsMonitor = settingsMonitor;
 
         _logger = logger;
+
+        _lastConnectionSettings = settingsMonitor.CurrentValue;
 
         _settingsChangeSubscription = settingsMonitor.OnChange(OnSettingsChanged);
 
@@ -87,7 +96,8 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
     /// <summary>
     /// Starts (or restarts) the health poll loop. Idempotent: if already polling, cancels the
-    /// previous loop and starts a fresh one (true reconnect).
+    /// previous loop and starts a fresh one (true reconnect). Always surfaces Connecting until the
+    /// next successful authenticated health poll — never claims Connected from a prior success.
     /// </summary>
     public void Connect()
     {
@@ -105,13 +115,16 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
         _pollCts = new CancellationTokenSource();
 
-        State = ConnectionState.Connecting;
-
         _consecutiveFailures = 0;
 
-        LastErrorCode = null;
+        PostToUi(() =>
+        {
+            State = ConnectionState.Connecting;
 
-        LastErrorMessage = null;
+            LastErrorCode = null;
+
+            LastErrorMessage = null;
+        });
 
         _ = PollLoopAsync(_pollCts.Token);
 
@@ -126,12 +139,25 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
         _pollCts = null;
 
-        State = ConnectionState.Disconnected;
+        PostToUi(() => State = ConnectionState.Disconnected);
 
     }
 
     private void OnSettingsChanged(TheForgeSettings settings)
     {
+
+        TheForgeSettings previous = _lastConnectionSettings;
+
+        _lastConnectionSettings = settings;
+
+        // the-forge.json also stores LayoutState, Theme, LastCampaignId, and may strip ApiKey after
+        // keychain migration. Reloading those must not call Connect().
+        if (ConnectionSettingsUnchanged(previous, settings))
+        {
+
+            return;
+
+        }
 
         if (settings.AutoConnect)
         {
@@ -147,6 +173,19 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
         }
 
     }
+
+    /// <summary>
+    /// True when BaseUrl and AutoConnect are unchanged. ApiKey is ignored: legacy plaintext keys
+    /// are stripped from the-forge.json into the keychain without needing a reconnect.
+    /// </summary>
+    internal static bool ConnectionSettingsUnchanged(TheForgeSettings previous, TheForgeSettings next) =>
+        previous.AutoConnect == next.AutoConnect
+        && string.Equals(previous.BaseUrl, next.BaseUrl, StringComparison.Ordinal);
+
+    /// <summary>Auth failures should flip The Anvil to Error immediately (not after three seeks).</summary>
+    internal static bool IsImmediateError(string? errorCode) =>
+        string.Equals(errorCode, "Security.MissingApiKey", StringComparison.Ordinal)
+        || string.Equals(errorCode, "Auth.Unauthorized", StringComparison.Ordinal);
 
     private async Task PollLoopAsync(CancellationToken cancellationToken)
     {
@@ -184,18 +223,37 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
                 .GetAsync("/api/health", TheForgeJsonContext.Default.ApiResponseHealthReportDto, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (response is { IsSuccess: true })
+            if (response is { IsSuccess: true, Data: { } report })
             {
 
-                _consecutiveFailures = 0;
+                if (report.Status == HealthStatus.Unhealthy)
+                {
 
-                LastReport = response.Data;
+                    PostToUi(() =>
+                    {
+                        LastErrorCode = "Health.Unhealthy";
 
-                LastErrorCode = null;
+                        LastErrorMessage = "Arcanum reported unhealthy.";
 
-                LastErrorMessage = null;
+                        RegisterFailure();
+                    });
 
-                State = ConnectionState.Connected;
+                    return;
+
+                }
+
+                PostToUi(() =>
+                {
+                    _consecutiveFailures = 0;
+
+                    LastReport = report;
+
+                    LastErrorCode = null;
+
+                    LastErrorMessage = null;
+
+                    State = ConnectionState.Connected;
+                });
 
                 try
                 {
@@ -207,7 +265,7 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
                     if (meta is { IsSuccess: true, Data: not null })
                     {
 
-                        LastMeta = meta.Data;
+                        PostToUi(() => LastMeta = meta.Data);
 
                     }
 
@@ -223,11 +281,18 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
             }
 
-            LastErrorCode = response?.Error?.Code ?? "Connection.Failed";
+            string code = response?.Error?.Code ?? "Connection.Failed";
 
-            LastErrorMessage = response?.Error?.Message ?? "Health check failed.";
+            string message = response?.Error?.Message ?? "Health check failed.";
 
-            RegisterFailure();
+            PostToUi(() =>
+            {
+                LastErrorCode = code;
+
+                LastErrorMessage = message;
+
+                RegisterFailure();
+            });
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -235,24 +300,35 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
             _logger.LogDebug(ex, "Health poll failed.");
 
+            string code;
+
+            string message;
+
             if (ex is TaskCanceledException or TimeoutException)
             {
 
-                LastErrorCode = "Connection.Timeout";
+                code = "Connection.Timeout";
 
-                LastErrorMessage = "The request to Arcanum timed out.";
+                message = "The request to Arcanum timed out.";
 
             }
             else
             {
 
-                LastErrorCode = "Connection.Failed";
+                code = "Connection.Failed";
 
-                LastErrorMessage = ex.Message;
+                message = ex.Message;
 
             }
 
-            RegisterFailure();
+            PostToUi(() =>
+            {
+                LastErrorCode = code;
+
+                LastErrorMessage = message;
+
+                RegisterFailure();
+            });
 
         }
 
@@ -263,9 +339,25 @@ public sealed partial class ArcanumConnectionService : ObservableObject, IArcanu
 
         _consecutiveFailures++;
 
-        State = _consecutiveFailures >= ConsecutiveFailuresBeforeError
+        State = IsImmediateError(LastErrorCode) || _consecutiveFailures >= ConsecutiveFailuresBeforeError
             ? ConnectionState.Error
             : ConnectionState.Connecting;
+
+    }
+
+    private static void PostToUi(Action action)
+    {
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+
+            action();
+
+            return;
+
+        }
+
+        Dispatcher.UIThread.Post(action);
 
     }
 

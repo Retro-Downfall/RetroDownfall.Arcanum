@@ -27,7 +27,7 @@ Windows/Linux private-beta builds are **unsigned by default**. Windows SmartScre
 4. Config / Grimoire live under the Arcanum data directory (typically `~/.local/share/arcanum` / `~/.config/arcanum` depending on platform helpers — see `arcanum doctor`)
 5. Launch The Forge / Compendium from their extracted folders (run the published app host binary)
 
-If Secret Service / libsecret is unavailable, The Forge may prompt for an API key or accept the process-only env override `THEFORGE_ARCANUM_KEY` (never written to `forge.json`).
+If Secret Service / libsecret is unavailable, The Forge may prompt for an API key or accept the process-only env override `THEFORGE_ARCANUM_KEY` (never written to `the-forge.json`).
 
 ## Windows quick start
 

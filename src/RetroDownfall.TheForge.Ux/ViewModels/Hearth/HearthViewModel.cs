@@ -9,7 +9,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Hearth;
 
 /// <summary>
 /// The Hearth — dockable local shell command runner. Does not call Arcanum APIs.
-/// Initial Git integration surface: run <c>git status</c>, <c>git diff</c>, etc. manually.
+/// Not a PTY. Prefer <c>The Ledger</c> for Git status/diff/stage/commit against a selected path.
 /// </summary>
 public sealed partial class HearthViewModel : ViewModelBase, IDisposable
 {

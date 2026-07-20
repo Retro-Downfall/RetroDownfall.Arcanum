@@ -1,7 +1,7 @@
 namespace RetroDownfall.TheForge.Core.Models;
 
 /// <summary>
-/// Persisted The Forge settings, round-tripped to <c>~/.config/arcanum/forge.json</c>
+/// Persisted The Forge settings, round-tripped to <c>~/.config/arcanum/the-forge.json</c>
 /// (<see cref="RetroDownfall.Arcanum.Core.Storage.ArcanumPaths.GrimoireDirectory"/>).
 ///
 /// Property-style (not positional) to match Arcanum's own <c>ArcanumSettings</c> convention: a real
@@ -19,7 +19,7 @@ public sealed record TheForgeSettings
 
     public string? ApiKey { get; init; }
 
-    public string Theme { get; init; } = "dark";
+    public string Theme { get; init; } = "light";
 
     public Guid? LastCampaignId { get; init; }
 

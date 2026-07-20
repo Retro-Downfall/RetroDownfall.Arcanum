@@ -13,21 +13,23 @@
     <Grid.RowDefinitions>
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
-      <RowDefinition Height="{Binding DockLayout.Bottom.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}" />
+      <RowDefinition Height="{Binding DockLayout.Bottom.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}"
+                      MinHeight="{Binding DockLayout.Bottom.EffectiveMinSize}" />
     </Grid.RowDefinitions>
 
     <Grid Grid.Row="0">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="{Binding DockLayout.Left.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}" />
+        <ColumnDefinition Width="{Binding DockLayout.Left.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}"
+                          MinWidth="{Binding DockLayout.Left.EffectiveMinSize}" />
         <ColumnDefinition Width="Auto" />
         <ColumnDefinition Width="*" />
         <ColumnDefinition Width="Auto" />
-        <ColumnDefinition Width="{Binding DockLayout.Right.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}" />
+        <ColumnDefinition Width="{Binding DockLayout.Right.EffectiveSize, Converter={StaticResource DoubleToGridLengthConverter}}"
+                          MinWidth="{Binding DockLayout.Right.EffectiveMinSize}" />
       </Grid.ColumnDefinitions>
 
       <dockViews:DockGroupView Grid.Column="0"
-                               DataContext="{Binding DockLayout.Left}"
-                               MinWidth="0" />
+                               DataContext="{Binding DockLayout.Left}" />
 
       <GridSplitter Grid.Column="1"
                     Width="5"
@@ -58,15 +60,25 @@
                   VerticalAlignment="Center"
                   Padding="24">
             <StackPanel Spacing="10">
-              <TextBlock Text="The Workbench is ready."
+              <TextBlock Text="{Binding WorkbenchEmptyTitle}"
                          FontSize="{DynamicResource ForgeTitleFontSize}"
                          FontWeight="SemiBold"
                          HorizontalAlignment="Center" />
-              <TextBlock Text="Open a spell, prompt, session, apprentice, trial, or config document to begin forging."
+              <TextBlock Text="{Binding WorkbenchEmptyMessage}"
                          Opacity="0.72"
                          TextAlignment="Center"
                          TextWrapping="Wrap"
                          MaxWidth="520" />
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
+                <Button Content="New Campaign…"
+                        Command="{Binding CampaignCommands.NewCampaignCommand}"
+                        IsVisible="{Binding Atelier.ShowZeroCampaignOnboarding}" />
+                <Button Content="Open Campaign…"
+                        Command="{Binding CampaignCommands.OpenCampaignCommand}"
+                        IsVisible="{Binding Atelier.ShowZeroCampaignOnboarding}" />
+                <Button Content="New Spell…"
+                        Command="{Binding CampaignCommands.NewSpellCommand}" />
+              </StackPanel>
             </StackPanel>
           </Border>
         </Grid>
@@ -78,8 +90,7 @@
                     IsVisible="{Binding !DockLayout.Right.IsCollapsed}" />
 
       <dockViews:DockGroupView Grid.Column="4"
-                               DataContext="{Binding DockLayout.Right}"
-                               MinWidth="0" />
+                               DataContext="{Binding DockLayout.Right}" />
     </Grid>
 
     <GridSplitter Grid.Row="1"
@@ -88,7 +99,6 @@
                   IsVisible="{Binding !DockLayout.Bottom.IsCollapsed}" />
 
     <dockViews:DockGroupView Grid.Row="2"
-                             DataContext="{Binding DockLayout.Bottom}"
-                             MinHeight="0" />
+                             DataContext="{Binding DockLayout.Bottom}" />
   </Grid>
 </UserControl>

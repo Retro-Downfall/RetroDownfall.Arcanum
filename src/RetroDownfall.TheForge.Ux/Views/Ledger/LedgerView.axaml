@@ -1,0 +1,108 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.Ledger"
+             xmlns:workspaces="using:RetroDownfall.Arcanum.Core.Workspaces"
+             x:Class="RetroDownfall.TheForge.Ux.Views.Ledger.LedgerView"
+             x:DataType="vm:LedgerViewModel">
+  <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto" Margin="4">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="360" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+      <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" Margin="0,0,6,0" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8"
+               IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,8">
+      <DockPanel LastChildFill="True">
+        <TextBlock DockPanel.Dock="Left" Text="Workspace" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,6,0" />
+        <ComboBox ItemsSource="{Binding Workspaces}" SelectedItem="{Binding SelectedWorkspace}" MinWidth="160" HorizontalAlignment="Stretch">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="workspaces:WorkspaceInfo">
+              <TextBlock>
+                <TextBlock.Text>
+                  <MultiBinding StringFormat="{}{0} — {1}">
+                    <Binding Path="Name" />
+                    <Binding Path="Path" />
+                  </MultiBinding>
+                </TextBlock.Text>
+              </TextBlock>
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+      </DockPanel>
+      <DockPanel LastChildFill="True">
+        <Button DockPanel.Dock="Right" Content="Use path" Command="{Binding UseManualPathCommand}" Margin="6,0,0,0" MinWidth="80" />
+        <TextBox Text="{Binding ManualRepositoryPath}" Watermark="Or paste a repository path…" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
+      </DockPanel>
+      <DockPanel LastChildFill="False">
+        <TextBlock DockPanel.Dock="Left" Text="{Binding BranchName, StringFormat=Branch: {0}}" Opacity="0.85" VerticalAlignment="Center"
+                   IsVisible="{Binding BranchName, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <TextBlock DockPanel.Dock="Left" Text="{Binding ActiveRepositoryPath}" Opacity="0.55" Margin="12,0,0,0" VerticalAlignment="Center"
+                   TextTrimming="CharacterEllipsis" MaxWidth="280"
+                   FontFamily="{DynamicResource ForgeCodeFontFamily}"
+                   FontSize="{DynamicResource ForgeCodeFontSize}"
+                   IsVisible="{Binding HasRepositoryPath}" />
+      </DockPanel>
+    </StackPanel>
+
+    <WrapPanel Grid.Row="3" Margin="0,0,0,8">
+      <Button Content="Stage selected" Command="{Binding StageSelectedCommand}" Margin="0,0,6,6" />
+      <Button Content="Unstage selected" Command="{Binding UnstageSelectedCommand}" Margin="0,0,6,6" />
+      <Button Content="Stage all…" Command="{Binding StageAllCommand}" Margin="0,0,6,6" />
+      <Button Content="Unstage all…" Command="{Binding UnstageAllCommand}" Margin="0,0,6,6" />
+      <Button Content="Open in editor" Command="{Binding OpenSelectedInEditorCommand}" IsEnabled="{Binding CanOpenSelectedInEditor}" Margin="0,0,6,6" />
+      <Button Content="Pre-commit suite…" Command="{Binding OpenPreCommitSuiteCommand}" Margin="0,0,6,6"
+              ToolTip.Tip="{Binding PreCommitExplanation}" />
+    </WrapPanel>
+
+    <Grid Grid.Row="4" ColumnDefinitions="*,*" RowDefinitions="*,*" IsVisible="{Binding HasRepositoryPath}">
+      <DockPanel Grid.Row="0" Grid.Column="0" Margin="0,0,4,4">
+        <TextBlock DockPanel.Dock="Top" Text="Staged" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <ListBox ItemsSource="{Binding StagedEntries}" SelectedItem="{Binding SelectedEntry}" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:GitStatusEntryViewModel">
+              <DockPanel LastChildFill="True" Margin="0,2">
+                <CheckBox DockPanel.Dock="Left" IsChecked="{Binding IsSelected}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Label}" FontFamily="{DynamicResource ForgeCodeFontFamily}" FontSize="{DynamicResource ForgeCodeFontSize}" TextTrimming="CharacterEllipsis" />
+              </DockPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+
+      <DockPanel Grid.Row="0" Grid.Column="1" Margin="4,0,0,4">
+        <TextBlock DockPanel.Dock="Top" Text="Unstaged" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <ListBox ItemsSource="{Binding UnstagedEntries}" SelectedItem="{Binding SelectedEntry}" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:GitStatusEntryViewModel">
+              <DockPanel LastChildFill="True" Margin="0,2">
+                <CheckBox DockPanel.Dock="Left" IsChecked="{Binding IsSelected}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Label}" FontFamily="{DynamicResource ForgeCodeFontFamily}" FontSize="{DynamicResource ForgeCodeFontSize}" TextTrimming="CharacterEllipsis" />
+              </DockPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+
+      <DockPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,4,0,0">
+        <TextBlock DockPanel.Dock="Top" Text="Diff" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <TextBox Text="{Binding DiffText}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                 FontFamily="{DynamicResource ForgeCodeFontFamily}" FontSize="{DynamicResource ForgeCodeFontSize}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+      </DockPanel>
+    </Grid>
+
+    <TextBlock Grid.Row="4" Text="{Binding EmptyState}" Opacity="0.7" TextWrapping="Wrap" Margin="8"
+               IsVisible="{Binding !HasRepositoryPath}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+
+    <DockPanel Grid.Row="5" Margin="0,8,0,0" LastChildFill="True" IsVisible="{Binding HasRepositoryPath}">
+      <Button DockPanel.Dock="Right" Content="Commit…" Command="{Binding CommitCommand}" Margin="8,0,0,0" MinWidth="80" />
+      <TextBox Text="{Binding CommitMessage}" Watermark="Commit message…" AcceptsReturn="False" />
+    </DockPanel>
+  </Grid>
+</UserControl>

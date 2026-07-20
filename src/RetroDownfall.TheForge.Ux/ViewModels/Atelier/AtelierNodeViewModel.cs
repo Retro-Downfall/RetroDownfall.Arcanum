@@ -44,6 +44,13 @@ public abstract partial class AtelierNodeViewModel : ObservableObject
     public virtual ICommand? PrimaryCommand => null;
 
     /// <summary>
+    /// Whether <see cref="PrimaryCommand"/> is non-null. Evaluates the polymorphic property —
+    /// actionable nodes must <c>override PrimaryCommand</c> (not hide it with a generated property).
+    /// Raise <c>PropertyChanged(nameof(HasPrimaryCommand))</c> if the primary command can change after construction.
+    /// </summary>
+    public bool HasPrimaryCommand => PrimaryCommand is not null;
+
+    /// <summary>
     /// Creation commands surfaced in the context menu. Base defaults are <c>null</c> so the menu
     /// items stay hidden. Creation-capable derived nodes override the ones they expose with manual
     /// get-only auto-properties initialized to <c>new AsyncRelayCommand(...)</c> — <b>not</b>

@@ -23,11 +23,29 @@ internal sealed class CommandCenterWindow : Window
 
     private readonly ObservableCollection<string> _logLines = new();
 
+    private readonly ObservableCollection<string> _incantationLines = new();
+
+    private readonly List<Guid?> _logLineAnchors = new();
+
+    private readonly List<string?> _incantationLineAnchors = new();
+
     private readonly ObservableCollection<string> _sessionLines = new();
 
     private readonly ObservableCollection<string> _overlayLines = new();
 
+    private bool _overlayShowFilter;
+
     private bool _followTail = true;
+
+    private bool _incantationsFollowTail = true;
+
+    private bool _refreshingLog;
+
+    private bool _refreshingIncantations;
+
+    private Guid? _preservedLogEntryId;
+
+    private string? _preservedIncantationCallId;
 
     private int _cols = 80;
 
@@ -35,9 +53,15 @@ internal sealed class CommandCenterWindow : Window
 
     private int _logContentWidth = 76;
 
+    private int _incantationContentWidth = 76;
+
     private int _preservedSelectedItem;
 
+    private int _preservedIncantationSelectedItem;
+
     private SessionLogBuffer? _boundLog;
+
+    private IncantationStore? _boundIncantations;
 
     private IReadOnlyList<SessionListItem> _boundSessions = [];
 
@@ -142,8 +166,55 @@ internal sealed class CommandCenterWindow : Window
             ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar,
         };
         LogView.SetSource(_logLines);
-        LogView.ValueChanged += (_, _) => SyncFollowTailFromSelection();
+        LogView.ValueChanged += (_, _) =>
+        {
+            if (!_refreshingLog)
+            {
+                SyncFollowTailFromSelection();
+            }
+        };
         TranscriptPane.Add(LogView);
+
+        ThinkingLabel = new Label
+        {
+            Text = string.Empty,
+            CanFocus = false,
+            Visible = false,
+            X = 0,
+            Y = Pos.AnchorEnd(1),
+            Width = Dim.Fill(),
+            Height = 1,
+            SchemeName = CommandCenterTheme.HeaderScheme,
+        };
+        TranscriptPane.Add(ThinkingLabel);
+
+        IncantationsPane = new FrameView
+        {
+            Title = "Incantations",
+            BorderStyle = chrome,
+            CanFocus = false,
+            SchemeName = CommandCenterTheme.SessionScheme,
+        };
+
+        IncantationsView = new ListView
+        {
+            CanFocus = true,
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            SchemeName = CommandCenterTheme.SessionScheme,
+            ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar,
+        };
+        IncantationsView.SetSource(_incantationLines);
+        IncantationsView.ValueChanged += (_, _) =>
+        {
+            if (!_refreshingIncantations)
+            {
+                SyncIncantationsFollowTailFromSelection();
+            }
+        };
+        IncantationsPane.Add(IncantationsView);
 
 #pragma warning disable CS0618 // TextView obsolete in TG 2.4.17; Command Center still uses it for multiline composer.
         Input = new TextView
@@ -201,7 +272,7 @@ internal sealed class CommandCenterWindow : Window
         OverlayList.SetSource(_overlayLines);
         OverlayPane.Add(OverlayFilter, OverlayList);
 
-        Add(HeaderPane, SessionsPane, TranscriptPane, Input, Footer, OverlayPane);
+        Add(HeaderPane, SessionsPane, TranscriptPane, IncantationsPane, Input, Footer, OverlayPane);
         ApplyAbsoluteLayout(80, 24);
     }
 
@@ -213,6 +284,8 @@ internal sealed class CommandCenterWindow : Window
 
     public Label Header { get; }
 
+    public Label ThinkingLabel { get; }
+
     public FrameView SessionsPane { get; }
 
     public ListView SessionsView { get; }
@@ -220,6 +293,10 @@ internal sealed class CommandCenterWindow : Window
     public FrameView TranscriptPane { get; }
 
     public ListView LogView { get; }
+
+    public FrameView IncantationsPane { get; }
+
+    public ListView IncantationsView { get; }
 
 #pragma warning disable CS0618
     public TextView Input { get; }
@@ -237,9 +314,45 @@ internal sealed class CommandCenterWindow : Window
 
     public bool FollowTail => _followTail;
 
+    public bool IncantationsFollowTail => _incantationsFollowTail;
+
     public bool IsLogFocused => LogView.HasFocus;
 
+    public bool IsIncantationsFocused => IncantationsView.HasFocus;
+
     public bool IsSessionsFocused => SessionsView.HasFocus || (OverlayPane.Visible && OverlayList.HasFocus);
+
+    public CommandCenterFocusRegion? ResolveFocusedRegion()
+    {
+        if (Input.HasFocus)
+        {
+            return CommandCenterFocusRegion.Composer;
+        }
+
+        if (SessionsView.HasFocus
+            || (OverlayPane.Visible && OverlayFilter.Visible && OverlayFilter.HasFocus)
+            || (OverlayPane.Visible && OverlayPane.Title is "Sessions" or "Sessions ●" && OverlayList.HasFocus))
+        {
+            return CommandCenterFocusRegion.Sessions;
+        }
+
+        if (OverlayPane.Visible && OverlayList.HasFocus)
+        {
+            return CommandCenterFocusRegion.Overlay;
+        }
+
+        if (LogView.HasFocus)
+        {
+            return CommandCenterFocusRegion.Transcript;
+        }
+
+        if (IncantationsView.HasFocus)
+        {
+            return CommandCenterFocusRegion.Incantations;
+        }
+
+        return null;
+    }
 
     public IReadOnlyList<string> GetLogLinesSnapshot() => _logLines.ToArray();
 
@@ -357,6 +470,7 @@ internal sealed class CommandCenterWindow : Window
             {
                 Header.Text = TruncateToWidth(state.HeaderText, Math.Max(8, _cols - 4));
                 Footer.Text = TruncateToWidth(state.FooterHints, Math.Max(8, _cols - 2));
+                UpdateThinkingLabel(state);
             }
 
             if (kind is CommandCenterUiUpdateKind.RefreshAll or CommandCenterUiUpdateKind.RefreshSidebar)
@@ -372,13 +486,13 @@ internal sealed class CommandCenterWindow : Window
                     _followTail = true;
                 }
 
-                if (!_followTail)
-                {
-                    _preservedSelectedItem = Math.Max(0, LogView.SelectedItem ?? 0);
-                }
+                RefreshLogLines(state.Log, preserveScroll: !forceFollowTail);
+            }
 
-                state.Log.CopyLinesTo(_logLines, _logContentWidth);
-                RestoreLogViewport();
+            if (kind is CommandCenterUiUpdateKind.RefreshAll or CommandCenterUiUpdateKind.RefreshIncantations)
+            {
+                _boundIncantations = state.Incantations;
+                RefreshIncantationLines(state.Incantations, preserveScroll: true);
             }
 
             UpdateFocusChrome(state);
@@ -399,7 +513,6 @@ internal sealed class CommandCenterWindow : Window
     {
         void Focus()
         {
-            HideOverlayVisual();
             Input.SetFocus();
         }
 
@@ -427,10 +540,35 @@ internal sealed class CommandCenterWindow : Window
             {
                 int last = _logLines.Count - 1;
                 LogView.SelectedItem = last;
-                // Keep follow-tail until the user scrolls away.
             }
 
             EnsureLogSelectionVisible();
+        }
+
+        if (app is not null)
+        {
+            app.Invoke(Focus);
+        }
+        else
+        {
+            Focus();
+        }
+    }
+
+    public void FocusIncantations(IApplication? app = null)
+    {
+        void Focus()
+        {
+            IncantationsView.SetFocus();
+            if (_incantationLines.Count == 0)
+            {
+                return;
+            }
+
+            if (_incantationsFollowTail)
+            {
+                IncantationsView.SelectedItem = _incantationLines.Count - 1;
+            }
         }
 
         if (app is not null)
@@ -525,6 +663,7 @@ internal sealed class CommandCenterWindow : Window
     {
         OverlayPane.Title = title;
         OverlayPane.Visible = true;
+        _overlayShowFilter = showFilter;
         OverlayFilter.Visible = showFilter;
         OverlayFilter.Text = string.Empty;
         OverlayList.Y = showFilter ? 1 : 0;
@@ -539,6 +678,9 @@ internal sealed class CommandCenterWindow : Window
         {
             OverlayList.SelectedItem = 0;
         }
+
+        // Recompute frame to content height before focusing (half-screen default is too tall for confirms).
+        ApplyAbsoluteLayout(_cols, _rows);
 
         if (showFilter)
         {
@@ -555,6 +697,7 @@ internal sealed class CommandCenterWindow : Window
         OverlayPane.Visible = false;
         OverlayFilter.Visible = false;
         OverlayFilter.Text = string.Empty;
+        _overlayShowFilter = false;
         _overlayLines.Clear();
     }
 
@@ -562,11 +705,16 @@ internal sealed class CommandCenterWindow : Window
     {
         OverlayPane.Title = "Sessions";
         OverlayPane.Visible = true;
+        _overlayShowFilter = true;
         OverlayFilter.Visible = true;
         OverlayList.Y = 1;
         OverlayList.Height = Dim.Fill(1);
+        ApplyAbsoluteLayout(_cols, _rows);
         OverlayFilter.SetFocus();
     }
+
+    public bool IsOverlayFocused =>
+        OverlayPane.Visible && (OverlayList.HasFocus || OverlayFilter.HasFocus);
 
     public int GetOverlaySelectedIndex() =>
         _overlayLines.Count == 0 ? -1 : Math.Clamp(OverlayList.SelectedItem ?? 0, 0, _overlayLines.Count - 1);
@@ -679,6 +827,126 @@ internal sealed class CommandCenterWindow : Window
         LogView.MoveEnd();
         _followTail = true;
         EnsureLogSelectionVisible();
+    }
+
+    public void ScrollIncantationsUp(int lines = 1)
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        _incantationsFollowTail = false;
+        for (int i = 0; i < Math.Max(1, lines); i++)
+        {
+            IncantationsView.MoveUp();
+        }
+
+        SyncIncantationsFollowTailFromSelection();
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    public void ScrollIncantationsDown(int lines = 1)
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < Math.Max(1, lines); i++)
+        {
+            IncantationsView.MoveDown();
+        }
+
+        SyncIncantationsFollowTailFromSelection();
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    public void PageIncantationsUp()
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        _incantationsFollowTail = false;
+        IncantationsView.MovePageUp();
+        SyncIncantationsFollowTailFromSelection();
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    public void PageIncantationsDown()
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        IncantationsView.MovePageDown();
+        SyncIncantationsFollowTailFromSelection();
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    public void ScrollIncantationsHome()
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        _incantationsFollowTail = false;
+        IncantationsView.MoveHome();
+        SyncIncantationsFollowTailFromSelection();
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    public void ScrollIncantationsEnd()
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        _incantationsFollowTail = true;
+        IncantationsView.MoveEnd();
+        SyncIncantationsFollowTailFromSelection();
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
     }
 
     public void ApplyAbsoluteLayout(int cols, int rows)
@@ -833,6 +1101,23 @@ internal sealed class CommandCenterWindow : Window
         int sidebarW = showSidebar ? Math.Min(SidebarWidth, Math.Max(14, _cols / 4)) : 0;
         int transcriptW = Math.Max(1, _cols - sidebarW);
         _logContentWidth = Math.Max(8, transcriptW - 3);
+        _incantationContentWidth = _logContentWidth;
+
+        int incantH = Math.Max(
+            ComposerLayout.MinIncantationsHeight,
+            bodyH / 3);
+        int transcriptH = bodyH - incantH;
+        if (transcriptH < ComposerLayout.MinTranscriptHeight)
+        {
+            transcriptH = ComposerLayout.MinTranscriptHeight;
+            incantH = Math.Max(ComposerLayout.MinIncantationsHeight, bodyH - transcriptH);
+        }
+
+        if (incantH + transcriptH > bodyH)
+        {
+            incantH = Math.Max(ComposerLayout.MinIncantationsHeight, bodyH - ComposerLayout.MinTranscriptHeight);
+            transcriptH = Math.Max(ComposerLayout.MinTranscriptHeight, bodyH - incantH);
+        }
 
         HeaderPane.X = 0;
         HeaderPane.Y = 0;
@@ -845,18 +1130,30 @@ internal sealed class CommandCenterWindow : Window
             SessionsPane.Y = headerH;
             SessionsPane.Width = sidebarW;
             SessionsPane.Height = bodyH;
+            SessionsPane.Visible = true;
 
             TranscriptPane.X = sidebarW;
             TranscriptPane.Y = headerH;
             TranscriptPane.Width = transcriptW;
-            TranscriptPane.Height = bodyH;
+            TranscriptPane.Height = transcriptH;
+
+            IncantationsPane.X = sidebarW;
+            IncantationsPane.Y = headerH + transcriptH;
+            IncantationsPane.Width = transcriptW;
+            IncantationsPane.Height = incantH;
         }
         else
         {
+            SessionsPane.Visible = false;
             TranscriptPane.X = 0;
             TranscriptPane.Y = headerH;
             TranscriptPane.Width = _cols;
-            TranscriptPane.Height = bodyH;
+            TranscriptPane.Height = transcriptH;
+
+            IncantationsPane.X = 0;
+            IncantationsPane.Y = headerH + transcriptH;
+            IncantationsPane.Width = _cols;
+            IncantationsPane.Height = incantH;
         }
 
         Input.X = 0;
@@ -869,8 +1166,15 @@ internal sealed class CommandCenterWindow : Window
         Footer.Width = _cols;
         Footer.Height = footerH;
 
-        int overlayW = Math.Min(_cols - 4, 60);
-        int overlayH = Math.Min(bodyH, Math.Max(8, _rows / 2));
+        int overlayW = OverlayLayout.MeasureWidth(_cols);
+        int overlayH = OverlayPane.Visible
+            ? OverlayLayout.MeasureHeight(
+                _overlayLines.Count,
+                _overlayShowFilter || OverlayFilter.Visible,
+                bodyH,
+                _rows,
+                headerH)
+            : OverlayLayout.MinHeight;
         OverlayPane.X = Math.Max(0, (_cols - overlayW) / 2);
         OverlayPane.Y = Math.Max(headerH, (_rows - overlayH) / 2);
         OverlayPane.Width = overlayW;
@@ -878,8 +1182,12 @@ internal sealed class CommandCenterWindow : Window
 
         if (_boundLog is not null)
         {
-            _boundLog.CopyLinesTo(_logLines, _logContentWidth);
-            RestoreLogViewport();
+            RefreshLogLines(_boundLog, preserveScroll: true);
+        }
+
+        if (_boundIncantations is not null)
+        {
+            RefreshIncantationLines(_boundIncantations, preserveScroll: true);
         }
 
         // TextView may scroll to keep the caret visible while still at the old height
@@ -1032,9 +1340,89 @@ internal sealed class CommandCenterWindow : Window
         TranscriptPane.Title = state.FocusRegion == CommandCenterFocusRegion.Transcript
             ? "Transcript ●"
             : "Transcript";
+        IncantationsPane.Title = state.FocusRegion == CommandCenterFocusRegion.Incantations
+            ? "Incantations ●"
+            : "Incantations";
         Input.Title = state.FocusRegion == CommandCenterFocusRegion.Composer
             ? "Composer ●  Ctrl+Enter send · Enter newline"
             : "Composer";
+
+        if (OverlayPane.Visible && !string.IsNullOrEmpty(OverlayPane.Title?.ToString()))
+        {
+            string raw = OverlayPane.Title.ToString()!;
+            string baseTitle = raw.EndsWith(" ●", StringComparison.Ordinal) ? raw[..^2] : raw;
+            OverlayPane.Title = state.FocusRegion == CommandCenterFocusRegion.Overlay
+                || (state.FocusRegion == CommandCenterFocusRegion.Sessions && baseTitle == "Sessions")
+                ? $"{baseTitle} ●"
+                : baseTitle;
+        }
+    }
+
+    private void UpdateThinkingLabel(CommandCenterState state)
+    {
+        if (state.ThinkingActive)
+        {
+            ThinkingLabel.Visible = true;
+            ThinkingLabel.Text = TruncateToWidth(state.ThinkingDisplay, Math.Max(8, _logContentWidth));
+        }
+        else
+        {
+            ThinkingLabel.Visible = false;
+            ThinkingLabel.Text = string.Empty;
+        }
+    }
+
+    private void RefreshLogLines(SessionLogBuffer log, bool preserveScroll)
+    {
+        if (preserveScroll && !_followTail)
+        {
+            int idx = Math.Clamp(LogView.SelectedItem ?? 0, 0, Math.Max(0, _logLineAnchors.Count - 1));
+            if (_logLineAnchors.Count > 0)
+            {
+                _preservedLogEntryId = _logLineAnchors[idx];
+            }
+
+            _preservedSelectedItem = idx;
+        }
+
+        _refreshingLog = true;
+        try
+        {
+            log.CopyLinesTo(_logLines, _logLineAnchors, _logContentWidth);
+            RestoreLogViewport();
+        }
+        finally
+        {
+            _refreshingLog = false;
+        }
+    }
+
+    private void RefreshIncantationLines(IncantationStore store, bool preserveScroll)
+    {
+        if (preserveScroll && !_incantationsFollowTail)
+        {
+            int idx = Math.Clamp(
+                IncantationsView.SelectedItem ?? 0,
+                0,
+                Math.Max(0, _incantationLineAnchors.Count - 1));
+            if (_incantationLineAnchors.Count > 0)
+            {
+                _preservedIncantationCallId = _incantationLineAnchors[idx];
+            }
+
+            _preservedIncantationSelectedItem = idx;
+        }
+
+        _refreshingIncantations = true;
+        try
+        {
+            store.CopyDisplayLinesTo(_incantationLines, _incantationLineAnchors, _incantationContentWidth);
+            RestoreIncantationsViewport();
+        }
+        finally
+        {
+            _refreshingIncantations = false;
+        }
     }
 
     private void RestoreLogViewport()
@@ -1049,6 +1437,23 @@ internal sealed class CommandCenterWindow : Window
             int last = _logLines.Count - 1;
             LogView.SelectedItem = last;
             _preservedSelectedItem = last;
+            _preservedLogEntryId = _logLineAnchors.Count > last ? _logLineAnchors[last] : null;
+        }
+        else if (_preservedLogEntryId is { } entryId)
+        {
+            int found = -1;
+            for (int i = 0; i < _logLineAnchors.Count; i++)
+            {
+                if (_logLineAnchors[i] == entryId)
+                {
+                    found = i;
+                    break;
+                }
+            }
+
+            int idx = found >= 0 ? found : Math.Clamp(_preservedSelectedItem, 0, _logLines.Count - 1);
+            LogView.SelectedItem = idx;
+            _preservedSelectedItem = idx;
         }
         else
         {
@@ -1060,6 +1465,55 @@ internal sealed class CommandCenterWindow : Window
         EnsureLogSelectionVisible();
     }
 
+    private void RestoreIncantationsViewport()
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        if (_incantationsFollowTail)
+        {
+            int last = _incantationLines.Count - 1;
+            IncantationsView.SelectedItem = last;
+            _preservedIncantationSelectedItem = last;
+            _preservedIncantationCallId =
+                _incantationLineAnchors.Count > last ? _incantationLineAnchors[last] : null;
+        }
+        else if (_preservedIncantationCallId is { } callId)
+        {
+            int found = -1;
+            for (int i = 0; i < _incantationLineAnchors.Count; i++)
+            {
+                if (string.Equals(_incantationLineAnchors[i], callId, StringComparison.Ordinal))
+                {
+                    found = i;
+                    break;
+                }
+            }
+
+            int idx = found >= 0
+                ? found
+                : Math.Clamp(_preservedIncantationSelectedItem, 0, _incantationLines.Count - 1);
+            IncantationsView.SelectedItem = idx;
+            _preservedIncantationSelectedItem = idx;
+        }
+        else
+        {
+            int clamped = Math.Clamp(_preservedIncantationSelectedItem, 0, _incantationLines.Count - 1);
+            IncantationsView.SelectedItem = clamped;
+            _preservedIncantationSelectedItem = clamped;
+        }
+
+        try
+        {
+            IncantationsView.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
     private void SyncFollowTailFromSelection()
     {
         if (_logLines.Count == 0)
@@ -1069,7 +1523,29 @@ internal sealed class CommandCenterWindow : Window
 
         int selected = LogView.SelectedItem ?? 0;
         _preservedSelectedItem = Math.Max(0, selected);
+        if (selected >= 0 && selected < _logLineAnchors.Count)
+        {
+            _preservedLogEntryId = _logLineAnchors[selected];
+        }
+
         _followTail = selected >= _logLines.Count - 1;
+    }
+
+    private void SyncIncantationsFollowTailFromSelection()
+    {
+        if (_incantationLines.Count == 0)
+        {
+            return;
+        }
+
+        int selected = IncantationsView.SelectedItem ?? 0;
+        _preservedIncantationSelectedItem = Math.Max(0, selected);
+        if (selected >= 0 && selected < _incantationLineAnchors.Count)
+        {
+            _preservedIncantationCallId = _incantationLineAnchors[selected];
+        }
+
+        _incantationsFollowTail = selected >= _incantationLines.Count - 1;
     }
 
     private void EnsureLogSelectionVisible()

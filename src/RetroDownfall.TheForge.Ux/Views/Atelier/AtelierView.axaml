@@ -4,7 +4,7 @@
              xmlns:controls="using:RetroDownfall.TheForge.Ux.Views.Controls"
              x:Class="RetroDownfall.TheForge.Ux.Views.Atelier.AtelierView"
              x:DataType="vm:AtelierViewModel">
-  <Grid RowDefinitions="Auto,*">
+  <Grid RowDefinitions="Auto,*,Auto">
     <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
       <StackPanel Grid.Column="0" Spacing="2">
         <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
@@ -15,7 +15,8 @@
 
     <Grid Grid.Row="1">
       <controls:SpellTreeView />
-      <Border HorizontalAlignment="Center" VerticalAlignment="Center" Padding="12">
+      <Border HorizontalAlignment="Center" VerticalAlignment="Center" Padding="12"
+              IsVisible="{Binding EmptyState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
         <TextBlock Text="{Binding EmptyState}" TextWrapping="Wrap" TextAlignment="Center" Opacity="0.72" MaxWidth="220" />
       </Border>
       <Border IsVisible="{Binding IsLoading}" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="12">
@@ -25,5 +26,39 @@
         </StackPanel>
       </Border>
     </Grid>
+
+    <Border Grid.Row="2"
+            IsVisible="{Binding ShowZeroCampaignOnboarding}"
+            Margin="0,8,0,0"
+            Padding="10"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource ForgeBorderBrush}"
+            Background="{DynamicResource ForgeSurfaceBrush}">
+      <StackPanel Spacing="8">
+        <TextBlock Text="No campaigns yet"
+                   FontWeight="SemiBold" />
+        <TextBlock Text="{Binding ZeroCampaignMessage}"
+                   TextWrapping="Wrap"
+                   Opacity="0.8" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="New Campaign…"
+                  Command="{Binding CampaignCommands.NewCampaignCommand}" />
+          <Button Content="Open Campaign…"
+                  Command="{Binding CampaignCommands.OpenCampaignCommand}" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="2"
+            IsVisible="{Binding ShowDisconnectedGuidance}"
+            Margin="0,8,0,0"
+            Padding="10"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource ForgeBorderBrush}"
+            Background="{DynamicResource ForgeSurfaceBrush}">
+      <TextBlock Text="{Binding DisconnectedGuidanceMessage}"
+                 TextWrapping="Wrap"
+                 Opacity="0.8" />
+    </Border>
   </Grid>
 </UserControl>

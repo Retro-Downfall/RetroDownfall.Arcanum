@@ -153,7 +153,7 @@ public sealed class TheForgeApiKeyProvider : ITheForgeApiKeyProvider
             {
 
                 _logger.LogWarning(
-                    "No master API key found in the OS credential store, forge.json, {EnvVar}, or `arcanum key show`.",
+                    "No master API key found in the OS credential store, the-forge.json, {EnvVar}, or `arcanum key show`.",
                     ApiKeyResolver.EnvironmentVariableName);
 
                 return null;

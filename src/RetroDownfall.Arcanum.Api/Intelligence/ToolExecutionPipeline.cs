@@ -238,7 +238,8 @@ public sealed class ToolExecutionPipeline(
         string? sessionId,
         TurnContext turnContext,
         bool suppressInvocationFailures,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null)
     {
 
         string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
@@ -263,7 +264,8 @@ public sealed class ToolExecutionPipeline(
                     sessionId,
                     turnContext,
                     argsSnapshot,
-                    cancellationToken)
+                    cancellationToken,
+                    liveWardEmit)
                     .ConfigureAwait(false);
 
                 RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
@@ -320,7 +322,8 @@ public sealed class ToolExecutionPipeline(
                     sessionId,
                     turnContext,
                     argsSnapshot,
-                    cancellationToken)
+                    cancellationToken,
+                    liveWardEmit)
                     .ConfigureAwait(false);
 
                 RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
@@ -601,7 +604,8 @@ public sealed class ToolExecutionPipeline(
         string? sessionId,
         TurnContext turnContext,
         string argsSnapshot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null)
     {
 
         string toolName = fcc.Name ?? string.Empty;
@@ -642,7 +646,7 @@ public sealed class ToolExecutionPipeline(
 
         var wardEvents = new List<IntelligenceEvent>(2);
 
-        wardEvents.Add(new IntelligenceEvent(
+        IntelligenceEvent wardedEvent = new(
             IntelligenceEventType.Warded,
             toolName,
             null,
@@ -653,7 +657,9 @@ public sealed class ToolExecutionPipeline(
             wardArguments,
             null,
             null,
-            wardTimestamp));
+            wardTimestamp);
+
+        await EmitWardEventAsync(wardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 
         int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds);
 
@@ -678,7 +684,7 @@ public sealed class ToolExecutionPipeline(
 
         DateTimeOffset resolvedTimestamp = DateTimeOffset.UtcNow;
 
-        wardEvents.Add(new IntelligenceEvent(
+        IntelligenceEvent resolvedEvent = new(
             IntelligenceEventType.WardResolved,
             toolName,
             null,
@@ -689,7 +695,9 @@ public sealed class ToolExecutionPipeline(
             null,
             resolution.Allowed,
             resolution.Reason,
-            resolvedTimestamp));
+            resolvedTimestamp);
+
+        await EmitWardEventAsync(resolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Allowed)
         {
@@ -1107,6 +1115,21 @@ public sealed class ToolExecutionPipeline(
 
     private static bool IsWardCandidate(string toolName, bool campaignRequiresWard, WardSettings wardSettings) =>
         RequiresWardForTool(toolName, campaignRequiresWard, wardSettings);
+
+    private static async Task EmitWardEventAsync(
+        IntelligenceEvent wardEvent,
+        List<IntelligenceEvent> buffered,
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit,
+        CancellationToken cancellationToken)
+    {
+        if (liveWardEmit is not null)
+        {
+            await liveWardEmit(wardEvent, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        buffered.Add(wardEvent);
+    }
 
     private static bool IsForbiddenArt(
         PingRequest request,

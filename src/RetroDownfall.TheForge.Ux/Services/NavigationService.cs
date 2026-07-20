@@ -38,6 +38,13 @@ public interface INavigationService
     /// <summary>Opens or focuses Comparison Workbench.</summary>
     void OpenOrFocusComparisonWorkbench();
 
+    /// <summary>
+    /// Focuses Workspace Explorer and selects the workspace with the given id after ensuring the list is loaded.
+    /// </summary>
+    event Func<string, CancellationToken, Task>? WorkspaceOpenRequested;
+
+    Task OpenWorkspaceAsync(string workspaceId, CancellationToken cancellationToken = default);
+
 }
 
 public sealed class NavigationService : INavigationService
@@ -53,6 +60,8 @@ public sealed class NavigationService : INavigationService
 
     public event Action? ComparisonWorkbenchOpenRequested;
 
+    public event Func<string, CancellationToken, Task>? WorkspaceOpenRequested;
+
     public void OpenDocument(DocumentKind kind, string id, string? workspace = null) =>
         DocumentOpenRequested?.Invoke(kind, id, WorkspacePathHelper.ForApi(workspace));
 
@@ -65,5 +74,21 @@ public sealed class NavigationService : INavigationService
         ProvingGroundsOpenRequested?.Invoke(prefill) ?? false;
 
     public void OpenOrFocusComparisonWorkbench() => ComparisonWorkbenchOpenRequested?.Invoke();
+
+    public Task OpenWorkspaceAsync(string workspaceId, CancellationToken cancellationToken = default)
+    {
+
+        Func<string, CancellationToken, Task>? handler = WorkspaceOpenRequested;
+
+        if (handler is null)
+        {
+
+            return Task.CompletedTask;
+
+        }
+
+        return handler(workspaceId, cancellationToken);
+
+    }
 
 }

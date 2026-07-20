@@ -10,7 +10,7 @@ namespace RetroDownfall.TheForge.Core.Services;
 /// (same identity Arcanum writes at bootstrap). Resolution order:
 /// <list type="number">
 /// <item>OS keychain (<see cref="ArcanumCredentialIdentity"/>).</item>
-/// <item>Legacy plaintext <c>forge.json</c> <see cref="TheForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
+/// <item>Legacy plaintext <c>the-forge.json</c> <see cref="TheForgeSettings.ApiKey"/> — migrated into the keychain then stripped.</item>
 /// <item><c>THEFORGE_ARCANUM_KEY</c> environment variable (trim; empty/whitespace = absent; never persisted).</item>
 /// <item>Optional shell-out to <c>arcanum key show</c> — result persisted into the keychain when possible.</item>
 /// <item>Otherwise <see langword="null"/> — caller prompts the user to paste and calls <see cref="PersistAsync"/>.</item>
@@ -52,7 +52,7 @@ public sealed class ApiKeyResolver
     }
 
     /// <summary>
-    /// Resolves the API key from the OS store (with legacy forge.json / env / CLI fallbacks). Returns
+    /// Resolves the API key from the OS store (with legacy the-forge.json / env / CLI fallbacks). Returns
     /// a null <see cref="ApiKeyResolution.Key"/> when no source yields a key; callers should prompt
     /// the user to paste one and call <see cref="PersistAsync"/>.
     /// </summary>
@@ -90,7 +90,7 @@ public sealed class ApiKeyResolver
             if (migrate.Status == OsCredentialStoreStatus.Ok)
             {
 
-                _logger.LogInformation("Migrated forge.json apiKey into the OS credential store; stripping plaintext cache.");
+                _logger.LogInformation("Migrated the-forge.json apiKey into the OS credential store; stripping plaintext cache.");
 
                 await StripForgeJsonApiKeyAsync(currentSettings, cancellationToken).ConfigureAwait(false);
 
@@ -99,7 +99,7 @@ public sealed class ApiKeyResolver
             }
 
             _logger.LogWarning(
-                "Could not migrate forge.json apiKey into the OS store ({Message}); using in-memory value only.",
+                "Could not migrate the-forge.json apiKey into the OS store ({Message}); using in-memory value only.",
                 migrate.Message);
 
             return new ApiKeyResolution(legacy, IsSessionOnly: true);
@@ -150,7 +150,7 @@ public sealed class ApiKeyResolver
 
     /// <summary>
     /// Persists a pasted (or otherwise obtained) key into the OS credential store. Also strips any
-    /// legacy plaintext <c>apiKey</c> from <c>forge.json</c>.
+    /// legacy plaintext <c>apiKey</c> from <c>the-forge.json</c>.
     /// </summary>
     public async Task PersistAsync(TheForgeSettings currentSettings, string apiKey, CancellationToken cancellationToken)
     {

@@ -45,12 +45,11 @@ public partial class App : Application
 
             MainViewModel mainViewModel = services.GetRequiredService<MainViewModel>();
 
-            MainWindow mainWindow = new()
-            {
-                DataContext = mainViewModel,
-            };
-
+            // Initialize Whispers before assigning MainViewModel so WhispersHostView
+            // does not briefly inherit MainViewModel (compiled binding expects IWhispersService).
+            MainWindow mainWindow = new();
             mainWindow.Initialize(services.GetRequiredService<IWhispersService>());
+            mainWindow.DataContext = mainViewModel;
 
             desktop.MainWindow = mainWindow;
 

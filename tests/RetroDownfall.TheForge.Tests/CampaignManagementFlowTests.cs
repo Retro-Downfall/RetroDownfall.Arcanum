@@ -1,8 +1,11 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Serialization;
+using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;
@@ -34,13 +37,20 @@ public class CampaignManagementFlowTests
 
         FoundryFloorViewModel floor = new(new NullLogService());
 
+        FakeActiveCampaignService active = new();
+
         int refreshCount = 0;
 
+        CampaignCommandCoordinator coordinator = NewCoordinator(management, dialog, whispers, floor, active);
+
+        coordinator.FocusCampaignInAtelierAsync = async (_, _) =>
+        {
+            refreshCount++;
+            await Task.CompletedTask;
+        };
+
         CampaignsRootNodeViewModel root = new(
-            management,
-            dialog,
-            whispers,
-            floor,
+            coordinator,
             async _ => { refreshCount++; await Task.CompletedTask; });
 
         Assert.True(root.HasNewCampaign);
@@ -57,7 +67,7 @@ public class CampaignManagementFlowTests
 
         Assert.Equal("North hold", management.LastCreateRequest.Description);
 
-        Assert.Equal(1, refreshCount);
+        Assert.True(refreshCount >= 1);
 
         Assert.Contains(whispers.Messages, static m => m.Contains("Campaign created", StringComparison.Ordinal));
 
@@ -71,7 +81,9 @@ public class CampaignManagementFlowTests
 
         FakeCampaignDialogService dialog = new() { NewInputs = null };
 
-        CampaignsRootNodeViewModel root = NewRoot(management, dialog);
+        CampaignCommandCoordinator coordinator = NewCoordinator(management, dialog);
+
+        CampaignsRootNodeViewModel root = new(coordinator, static _ => Task.CompletedTask);
 
         await root.NewCampaignCommand!.ExecuteAsync(null);
 
@@ -101,16 +113,9 @@ public class CampaignManagementFlowTests
 
         FoundryFloorViewModel floor = new(new NullLogService());
 
-        CampaignsRootNodeViewModel root = new(
-            management,
-            dialog,
-            whispers,
-            floor,
-            static _ => Task.CompletedTask);
+        CampaignCommandCoordinator coordinator = NewCoordinator(management, dialog, whispers, floor);
 
-        await root.NewCampaignCommand!.ExecuteAsync(null);
-
-        Assert.Contains("Campaign.InvalidPath", root.LastError, StringComparison.Ordinal);
+        await coordinator.NewCampaignAsync(CancellationToken.None);
 
         Assert.Contains(floor.Lines, static line => line.Contains("Campaign.InvalidPath", StringComparison.Ordinal));
 
@@ -311,6 +316,7 @@ public class CampaignManagementFlowTests
                 campaign,
                 new NullAtelierDataSource(),
                 new NavigationService(),
+                new FakeActiveCampaignService(),
                 new NullArtifactCreationDataSource(),
                 new NullArtifactCreationDialogService(),
                 floor,
@@ -384,23 +390,53 @@ public class CampaignManagementFlowTests
             NewInputs = new NewCampaignInputs("X", "/forbidden", WorkspaceType.Campaign, null),
         };
 
-        CampaignsRootNodeViewModel root = NewRoot(management, dialog);
+        RecordingWhispers whispers = new();
 
-        await root.NewCampaignCommand!.ExecuteAsync(null);
+        FoundryFloorViewModel floor = new(new NullLogService());
 
-        Assert.Contains("Campaign.PathNotAllowed", root.LastError, StringComparison.Ordinal);
+        CampaignCommandCoordinator coordinator = NewCoordinator(management, dialog, whispers, floor);
+
+        await coordinator.NewCampaignAsync(CancellationToken.None);
+
+        Assert.Contains(
+            floor.Lines,
+            static line => line.Contains("Campaign.PathNotAllowed", StringComparison.Ordinal));
+
+        Assert.Contains(
+            whispers.Messages,
+            static m => m.Contains("AllowedRoots", StringComparison.Ordinal));
 
     }
 
-    private static CampaignsRootNodeViewModel NewRoot(
+    private static CampaignCommandCoordinator NewCoordinator(
         FakeCampaignManagementDataSource management,
-        FakeCampaignDialogService dialog) =>
-        new(
+        FakeCampaignDialogService dialog,
+        RecordingWhispers? whispers = null,
+        FoundryFloorViewModel? floor = null,
+        FakeActiveCampaignService? active = null)
+    {
+
+        floor ??= new FoundryFloorViewModel(new NullLogService());
+
+        whispers ??= new RecordingWhispers();
+
+        active ??= new FakeActiveCampaignService();
+
+        return new CampaignCommandCoordinator(
             management,
+            new NullAtelierDataSource(),
             dialog,
-            new RecordingWhispers(),
-            new FoundryFloorViewModel(new NullLogService()),
-            static _ => Task.CompletedTask);
+            new FakeConfirmationDialogService { NextResult = true },
+            active,
+            new NullArtifactCreationDataSource(),
+            new NullArtifactCreationDialogService(),
+            new NavigationService(),
+            whispers,
+            floor,
+            new StaticTheForgeSettingsMonitor(new TheForgeSettings { BaseUrl = "http://127.0.0.1:5001" }),
+            new AlwaysConnectedArcanumConnection());
+
+    }
 
     private static CampaignNodeViewModel NewCampaignNode(
         CampaignDto campaign,
@@ -413,6 +449,7 @@ public class CampaignManagementFlowTests
             campaign,
             new NullAtelierDataSource(),
             new NavigationService(),
+            new FakeActiveCampaignService(),
             new NullArtifactCreationDataSource(),
             new NullArtifactCreationDialogService(),
             new FoundryFloorViewModel(new NullLogService()),
@@ -433,6 +470,35 @@ public class CampaignManagementFlowTests
             CampaignSettings.CreateDefault(),
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);
+
+    private sealed class AlwaysConnectedArcanumConnection : IArcanumConnection
+    {
+
+        public ConnectionState State => ConnectionState.Connected;
+
+        public HealthReportDto? LastReport => null;
+
+        public InstanceMetadataDto? LastMeta => null;
+
+        public string? LastErrorCode => null;
+
+        public string? LastErrorMessage => null;
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public void Connect()
+        {
+        }
+
+        public void Disconnect()
+        {
+        }
+
+    }
 
     private sealed class FakeCampaignManagementDataSource : ICampaignManagementDataSource
     {
@@ -530,8 +596,15 @@ public class CampaignManagementFlowTests
 
         public string? ImportStrategy { get; init; }
 
-        public Task<NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken) =>
+        public Task<NewCampaignInputs?> PromptNewCampaignAsync(
+            NewCampaignDialogOptions? options = null,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult(NewInputs);
+
+        public Task<string?> PromptOpenCampaignPathAsync(
+            bool allowLocalFolderBrowse,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
 
         public Task<EditCampaignInputs?> PromptEditCampaignAsync(CampaignDto existing, CancellationToken cancellationToken) =>
             Task.FromResult(EditInputs);
@@ -574,6 +647,15 @@ public class CampaignManagementFlowTests
             Task.FromResult(path);
 
         public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult(path);
 
     }

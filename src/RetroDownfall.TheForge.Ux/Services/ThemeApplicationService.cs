@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using Microsoft.Extensions.Options;
 using RetroDownfall.TheForge.Core.Models;
 
@@ -26,12 +27,29 @@ public sealed class ThemeApplicationService : IDisposable
 
         Apply(settings.CurrentValue.Theme);
 
+        // OptionsMonitor may raise OnChange on a background thread (config file reload).
         _subscription = settings.OnChange(s => Apply(s.Theme));
 
     }
 
     public void Apply(string? theme)
     {
+
+        if (_disposed)
+        {
+
+            return;
+
+        }
+
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+
+            Dispatcher.UIThread.Post(() => Apply(theme));
+
+            return;
+
+        }
 
         Application? app = Application.Current;
 

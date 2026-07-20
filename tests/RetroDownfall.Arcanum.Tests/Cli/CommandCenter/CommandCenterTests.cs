@@ -31,10 +31,20 @@ public sealed class ShellCommandParserTests
     [InlineData("/session new", "SessionNew")]
     [InlineData("/spell list", "SpellList")]
     [InlineData("/ward list", "WardList")]
+    [InlineData("/ward allow", "WardAllow")]
+    [InlineData("/ward deny", "WardDeny")]
     public void Parses_allowlisted_commands(string input, string expectedKind)
     {
         ParsedShellCommand parsed = _parser.Parse(input);
         Assert.Equal(Enum.Parse<ShellCommandKind>(expectedKind), parsed.Kind);
+    }
+
+    [Fact]
+    public void Ward_allow_captures_optional_id()
+    {
+        ParsedShellCommand parsed = _parser.Parse("/ward allow abc-123");
+        Assert.Equal(ShellCommandKind.WardAllow, parsed.Kind);
+        Assert.Equal("abc-123", parsed.Argument);
     }
 
     [Fact]
@@ -345,6 +355,7 @@ public sealed class ShellCommandDispatcherTests
             new ShellCommandParser(),
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
+            new CommandCenterWardCoordinator(),
             NullLogger<ShellCommandDispatcher>.Instance);
     }
 

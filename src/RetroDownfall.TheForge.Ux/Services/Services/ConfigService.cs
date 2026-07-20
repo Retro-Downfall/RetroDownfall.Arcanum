@@ -4,7 +4,7 @@ using RetroDownfall.TheForge.Core.Serialization;
 
 namespace RetroDownfall.TheForge.Ux.Services.Services;
 
-/// <summary>Wraps <c>GET/PUT/POST /api/config[/validate]</c> — the Arcanum-side settings surface (distinct from The Forge's own <c>forge.json</c>).</summary>
+/// <summary>Wraps <c>GET/PUT/POST /api/config[/validate]</c> — the Arcanum-side settings surface (distinct from The Forge's own <c>the-forge.json</c>).</summary>
 public sealed class ConfigService
 {
 

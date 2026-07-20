@@ -8,6 +8,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -229,7 +230,7 @@ public sealed class WizardIntelligenceProvider(
 
                 lastFailure = Result<PromptTurnResult>.Failure(new Error(
                     ErrorCodes.Hub.Error,
-                    BuildInferenceFailureMessage(provider)));
+                    BuildInferenceFailureMessage(provider, ex)));
 
                 if (!isConnectivityFailure || isLastAttempt)
                 {
@@ -829,7 +830,7 @@ public sealed class WizardIntelligenceProvider(
                     Result<PromptTurnResult>.Failure(
                         new Error(
                             ErrorCodes.Hub.Error,
-                            BuildInferenceFailureMessage(lease))),
+                            BuildInferenceFailureMessage(lease, ex))),
                     IsConnectivityFailure: IsConnectivityFailure(ex, callerToken));
             }
         }
@@ -1063,7 +1064,7 @@ public sealed class WizardIntelligenceProvider(
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider));
+                    BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure));
 
                 yield break;
             }
@@ -1126,7 +1127,7 @@ public sealed class WizardIntelligenceProvider(
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
-                    BuildInferenceFailureMessage(candidateProvider));
+                    BuildInferenceFailureMessage(candidateProvider, moveNextFailure));
 
                 yield break;
             }
@@ -1568,7 +1569,7 @@ public sealed class WizardIntelligenceProvider(
 
                             logger.LogError(ex, "Streaming read failed for model {ModelName}.", targetModel);
 
-                            inferenceError = BuildInferenceFailureMessage(lease);
+                            inferenceError = BuildInferenceFailureMessage(lease, ex);
 
                             // Matches the buffered inference path (AttemptBufferedInferenceAsync):
                             // only a genuine connectivity failure should trigger provider fallback.
@@ -1720,17 +1721,43 @@ public sealed class WizardIntelligenceProvider(
                             null,
                             new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
 
-                        ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
-                            .ProcessSingleToolCallAsync(
-                                fcc,
-                                request,
-                                streamChatOptions,
-                                streamActiveSpell,
-                                grimoireTurn.SessionId?.ToString(),
-                                streamTurnContext,
-                                suppressInvocationFailures: true,
-                                inferenceToken)
-                            .ConfigureAwait(false);
+                        Channel<IntelligenceEvent> liveWards = Channel.CreateUnbounded<IntelligenceEvent>();
+
+                        async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
+                        {
+                            try
+                            {
+                                return await toolExecutionPipeline
+                                    .ProcessSingleToolCallAsync(
+                                        fcc,
+                                        request,
+                                        streamChatOptions,
+                                        streamActiveSpell,
+                                        grimoireTurn.SessionId?.ToString(),
+                                        streamTurnContext,
+                                        suppressInvocationFailures: true,
+                                        inferenceToken,
+                                        liveWardEmit: async (wardEvent, ct) =>
+                                        {
+                                            await liveWards.Writer.WriteAsync(wardEvent, ct).ConfigureAwait(false);
+                                        })
+                                    .ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                liveWards.Writer.TryComplete();
+                            }
+                        }
+
+                        Task<ToolExecutionPipeline.ProcessedToolCall> processTask = ProcessWithLiveWardsAsync();
+
+                        await foreach (IntelligenceEvent wardEvent in liveWards.Reader.ReadAllAsync(inferenceToken)
+                                           .ConfigureAwait(false))
+                        {
+                            yield return wardEvent;
+                        }
+
+                        ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
 
                         foreach (IntelligenceEvent wardEvent in processed.WardEvents)
                         {
@@ -3678,18 +3705,11 @@ public sealed class WizardIntelligenceProvider(
 
     }
 
-    private static string BuildInferenceFailureMessage(ChatClientLease lease) =>
-        BuildInferenceFailureMessage(lease.Provider);
+    private static string BuildInferenceFailureMessage(ChatClientLease lease, Exception? ex = null) =>
+        BuildInferenceFailureMessage(lease.Provider, ex);
 
-    private static string BuildInferenceFailureMessage(ProviderSettings provider)
-    {
-
-        // W3.5: do NOT embed provider.Endpoint — this message surfaces to clients via the
-        // native /api inference envelopes and the raw endpoint URL can leak internal hostnames/paths.
-        // The operator-chosen provider name is retained; endpoint detail stays in server logs.
-        return $"Provider '{provider.Name}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
-
-    }
+    private static string BuildInferenceFailureMessage(ProviderSettings provider, Exception? ex = null) =>
+        InferenceProviderFailureMessage.Build(provider.Name, ex);
 
     /// <summary>
     /// Classifies an exception observed during lease construction or inference as a connectivity

@@ -17,11 +17,14 @@ internal sealed class SessionLogEntry
 {
     public SessionLogEntry(SessionLogEntryKind kind, string text, bool streaming = false)
     {
+        Id = Guid.NewGuid();
         Kind = kind;
         Text = text ?? string.Empty;
         Streaming = streaming;
         CreatedUtc = DateTimeOffset.UtcNow;
     }
+
+    public Guid Id { get; }
 
     public SessionLogEntryKind Kind { get; }
 
@@ -237,27 +240,48 @@ internal sealed class SessionLogBuffer
         }
     }
 
-    public void CopyLinesTo(ObservableCollection<string> target, int wrapWidth = 0)
+    public void CopyLinesTo(ObservableCollection<string> target, int wrapWidth = 0) =>
+        CopyLinesTo(target, lineAnchors: null, wrapWidth);
+
+    /// <summary>
+    /// Copies transcript lines excluding <see cref="SessionLogEntryKind.Tool"/>.
+    /// When <paramref name="lineAnchors"/> is provided, each line is tagged with the source entry id.
+    /// </summary>
+    public void CopyLinesTo(
+        ObservableCollection<string> target,
+        List<Guid?>? lineAnchors,
+        int wrapWidth = 0)
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        string[] lines;
+        List<(Guid Id, string Line)> expanded = new();
         lock (_gate)
         {
-            // ListView is one row per item — expand embedded newlines and soft-wrap to pane width.
-            IEnumerable<string> raw = _entries
-                .SelectMany(static e => FormatEntry(e).Replace("\r\n", "\n", StringComparison.Ordinal)
-                    .Split('\n'));
+            foreach (SessionLogEntry e in _entries)
+            {
+                if (e.Kind == SessionLogEntryKind.Tool)
+                {
+                    continue;
+                }
 
-            lines = wrapWidth > 1
-                ? raw.SelectMany(line => WrapLine(line, wrapWidth)).ToArray()
-                : raw.ToArray();
+                IEnumerable<string> raw = FormatEntry(e).Replace("\r\n", "\n", StringComparison.Ordinal)
+                    .Split('\n');
+                IEnumerable<string> lines = wrapWidth > 1
+                    ? raw.SelectMany(line => WrapLine(line, wrapWidth))
+                    : raw;
+                foreach (string line in lines)
+                {
+                    expanded.Add((e.Id, line));
+                }
+            }
         }
 
         target.Clear();
-        foreach (string line in lines)
+        lineAnchors?.Clear();
+        foreach ((Guid id, string line) in expanded)
         {
             target.Add(line);
+            lineAnchors?.Add(id);
         }
     }
 

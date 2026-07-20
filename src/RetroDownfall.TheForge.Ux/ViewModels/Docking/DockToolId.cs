@@ -30,6 +30,12 @@ public static class DockToolId
 
     public const string WeaveInspector = "weaveInspector";
 
+    public const string AuditBrowser = "auditBrowser";
+
+    public const string FilesBatches = "filesBatches";
+
+    public const string Ledger = "ledger";
+
     public static IReadOnlyList<string> All { get; } =
     [
         Atelier,
@@ -45,6 +51,9 @@ public static class DockToolId
         Divination,
         WorkspaceExplorer,
         WeaveInspector,
+        AuditBrowser,
+        FilesBatches,
+        Ledger,
     ];
 
 }

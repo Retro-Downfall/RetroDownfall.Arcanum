@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -11,7 +12,7 @@ using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 namespace RetroDownfall.TheForge.Ux.Services;
 
 /// <summary>
-/// Whispers-style modals for campaign New / Edit / Import-strategy. UI-only — tests fake
+/// Whispers-style modals for campaign New / Edit / Import-strategy / Open path. UI-only — tests fake
 /// <see cref="ICampaignDialogService"/>.
 /// </summary>
 public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
@@ -25,7 +26,9 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
         WorkspaceType.Custom,
     ];
 
-    public Task<NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken)
+    public Task<NewCampaignInputs?> PromptNewCampaignAsync(
+        NewCampaignDialogOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
 
         if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop
@@ -36,25 +39,50 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
 
         }
 
+        NewCampaignDialogOptions opts = options ?? new NewCampaignDialogOptions();
+
         return Dispatcher.UIThread.InvokeAsync(async () =>
         {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            TextBox nameBox = new() { Watermark = "Name (required)" };
+            TextBox nameBox = new()
+            {
+                Watermark = "Name (required)",
+                Text = opts.PrefillName ?? string.Empty,
+            };
 
-            TextBox pathBox = new() { Watermark = "Absolute path (required)" };
+            TextBox pathBox = new()
+            {
+                Watermark = opts.PathFieldLabel ?? "Absolute path (required)",
+                Text = opts.PrefillPath ?? string.Empty,
+            };
 
-            TextBox descBox = new() { Watermark = "Description (optional)" };
+            TextBox descBox = new()
+            {
+                Watermark = "Description (optional)",
+                Text = opts.PrefillDescription ?? string.Empty,
+            };
 
             ComboBox typeBox = new()
             {
                 ItemsSource = TypeOptions,
-                SelectedIndex = 0,
                 MinWidth = 280,
             };
 
+            int typeIndex = opts.PrefillType is { } prefillType
+                ? Array.IndexOf(TypeOptions, prefillType)
+                : 0;
+
+            typeBox.SelectedIndex = typeIndex >= 0 ? typeIndex : 0;
+
             TextBlock error = new() { TextWrapping = TextWrapping.Wrap };
+
+            Button browse = new()
+            {
+                Content = "Browse…",
+                IsVisible = opts.AllowLocalFolderBrowse,
+            };
 
             Button ok = new() { Content = "Create", IsDefault = true };
 
@@ -62,11 +90,30 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
 
             TaskCompletionSource<NewCampaignInputs?> tcs = new();
 
+            string intro = opts.IntroText
+                ?? (opts.AllowLocalFolderBrowse
+                    ? "Create a campaign. Choose a local folder or type an absolute path."
+                    : "Create a campaign. Enter the absolute path on the Arcanum host.");
+
+            string pathLabel = opts.PathFieldLabel
+                ?? (opts.AllowLocalFolderBrowse ? "Path" : "Path on Arcanum host");
+
+            DockPanel pathRow = new()
+            {
+                LastChildFill = true,
+            };
+
+            pathRow.Children.Add(browse);
+
+            DockPanel.SetDock(browse, Dock.Right);
+
+            pathRow.Children.Add(pathBox);
+
             Window dialog = new()
             {
                 Title = "New Campaign",
-                Width = 460,
-                Height = 420,
+                Width = 480,
+                Height = 440,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 CanResize = false,
                 Content = new StackPanel
@@ -77,13 +124,13 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
                     {
                         new TextBlock
                         {
-                            Text = "Register a campaign root. Path must exist and be allowed by Arcanum.",
+                            Text = intro,
                             TextWrapping = TextWrapping.Wrap,
                         },
                         new TextBlock { Text = "Name" },
                         nameBox,
-                        new TextBlock { Text = "Path" },
-                        pathBox,
+                        new TextBlock { Text = pathLabel },
+                        pathRow,
                         new TextBlock { Text = "Type" },
                         typeBox,
                         new TextBlock { Text = "Description" },
@@ -98,6 +145,33 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
                         },
                     },
                 },
+            };
+
+            browse.Click += async (_, _) =>
+            {
+
+                IReadOnlyList<IStorageFolder> folders = await dialog.StorageProvider
+                    .OpenFolderPickerAsync(new FolderPickerOpenOptions
+                    {
+                        Title = "Select campaign folder",
+                        AllowMultiple = false,
+                    })
+                    .ConfigureAwait(true);
+
+                if (folders.Count > 0 && folders[0].TryGetLocalPath() is { } localPath)
+                {
+
+                    pathBox.Text = localPath;
+
+                    if (string.IsNullOrWhiteSpace(nameBox.Text))
+                    {
+
+                        nameBox.Text = CampaignPathComparer.ProposeNameFromPath(localPath, loopback: true) ?? string.Empty;
+
+                    }
+
+                }
+
             };
 
             ok.Click += (_, _) =>
@@ -120,7 +194,125 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
                     ? selected
                     : WorkspaceType.Campaign;
 
-                tcs.TrySetResult(new NewCampaignInputs(name, path, type, descBox.Text?.Trim()));
+                tcs.TrySetResult(new NewCampaignInputs(name, path, type, string.IsNullOrWhiteSpace(descBox.Text) ? null : descBox.Text.Trim()));
+
+                dialog.Close();
+
+            };
+
+            cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+
+            dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+            await dialog.ShowDialog(desktop.MainWindow).ConfigureAwait(true);
+
+            return await tcs.Task.ConfigureAwait(true);
+
+        });
+
+    }
+
+    public Task<string?> PromptOpenCampaignPathAsync(
+        bool allowLocalFolderBrowse,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null)
+        {
+
+            return Task.FromResult<string?>(null);
+
+        }
+
+        return Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (allowLocalFolderBrowse)
+            {
+
+                IReadOnlyList<IStorageFolder> folders = await desktop.MainWindow.StorageProvider
+                    .OpenFolderPickerAsync(new FolderPickerOpenOptions
+                    {
+                        Title = "Open Campaign folder",
+                        AllowMultiple = false,
+                    })
+                    .ConfigureAwait(true);
+
+                if (folders.Count == 0)
+                {
+
+                    return null;
+
+                }
+
+                return folders[0].TryGetLocalPath();
+
+            }
+
+            TextBox pathBox = new()
+            {
+                Watermark = "Absolute path on the Arcanum host",
+                MinWidth = 360,
+            };
+
+            TextBlock error = new() { TextWrapping = TextWrapping.Wrap };
+
+            Button ok = new() { Content = "Open", IsDefault = true };
+
+            Button cancel = new() { Content = "Cancel", IsCancel = true };
+
+            TaskCompletionSource<string?> tcs = new();
+
+            Window dialog = new()
+            {
+                Title = "Open Campaign",
+                Width = 480,
+                Height = 240,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+                Content = new StackPanel
+                {
+                    Margin = new Thickness(16),
+                    Spacing = 10,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "Enter the absolute path of the campaign folder on the Arcanum host.",
+                            TextWrapping = TextWrapping.Wrap,
+                        },
+                        new TextBlock { Text = "Path on Arcanum host" },
+                        pathBox,
+                        error,
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            HorizontalAlignment = HorizontalAlignment.Right,
+                            Spacing = 8,
+                            Children = { cancel, ok },
+                        },
+                    },
+                },
+            };
+
+            ok.Click += (_, _) =>
+            {
+
+                string path = pathBox.Text?.Trim() ?? string.Empty;
+
+                if (string.IsNullOrEmpty(path))
+                {
+
+                    error.Text = "Path is required.";
+
+                    return;
+
+                }
+
+                tcs.TrySetResult(path);
 
                 dialog.Close();
 

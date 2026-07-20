@@ -8,6 +8,7 @@ using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Markdown;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.TheForge.Ux.Services.Git;
 using RetroDownfall.TheForge.Ux.Services.Services;
 using RetroDownfall.TheForge.Ux.Services.Terminal;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
@@ -18,12 +19,15 @@ using RetroDownfall.TheForge.Ux.ViewModels.Atelier;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
 using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
+using RetroDownfall.TheForge.Ux.ViewModels.Ledger;
 using RetroDownfall.TheForge.Ux.ViewModels.Setup;
 using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using RetroDownfall.TheForge.Ux.ViewModels.Archive;
+using RetroDownfall.TheForge.Ux.ViewModels.AuditBrowser;
 using RetroDownfall.TheForge.Ux.ViewModels.Divination;
+using RetroDownfall.TheForge.Ux.ViewModels.FilesBatches;
 using RetroDownfall.TheForge.Ux.ViewModels.Lore;
 using RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector;
 using RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
@@ -31,7 +35,7 @@ using RetroDownfall.TheForge.Ux.ViewModels.WorkspaceExplorer;
 namespace RetroDownfall.TheForge.Ux;
 
 /// <summary>
-/// Builds the app-wide <see cref="ServiceProvider"/>: <c>forge.json</c> configuration (with
+/// Builds the app-wide <see cref="ServiceProvider"/>: <c>the-forge.json</c> configuration (with
 /// <c>reloadOnChange: true</c> so <see cref="IOptionsMonitor{TOptions}"/> subscribers see live edits),
 /// the Arcanum HTTP client stack, every per-route service, navigation, and root ViewModels.
 /// </summary>
@@ -43,10 +47,12 @@ internal static class ServiceCollectionConfigurator
 
         ServiceCollection services = new();
 
-        string forgeJsonPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "forge.json");
+        string settingsPath = Path.Combine(ArcanumPaths.GrimoireDirectory, TheForgeSettingsStore.FileName);
+
+        _ = TheForgeSettingsStore.TryMigrateLegacyFile(settingsPath);
 
         IConfiguration configuration = new ConfigurationBuilder()
-            .AddJsonFile(forgeJsonPath, optional: true, reloadOnChange: true)
+            .AddJsonFile(settingsPath, optional: true, reloadOnChange: true)
             .Build();
 
         services.AddSingleton(configuration);
@@ -54,7 +60,7 @@ internal static class ServiceCollectionConfigurator
         services.AddOptions<TheForgeSettings>().Bind(configuration);
 
         services.AddSingleton<ITheForgeSettingsStore>(sp => new TheForgeSettingsStore(
-            forgeJsonPath,
+            settingsPath,
             sp.GetService<ILogger<TheForgeSettingsStore>>()));
 
         string trialSuitesPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "the-forge-trial-suites.json");
@@ -141,6 +147,8 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<ArcanumApiClient>();
 
+        services.AddSingleton<OpenAiCompatApiClient>();
+
         services.AddSingleton<ArcanumSseClient>();
 
         services.AddSingleton<ArcanumConnectionService>();
@@ -148,6 +156,10 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<IArcanumConnection>(sp => sp.GetRequiredService<ArcanumConnectionService>());
 
         services.AddSingleton<INavigationService, NavigationService>();
+
+        services.AddSingleton<IActiveCampaignService, ActiveCampaignService>();
+
+        services.AddSingleton<ICampaignCommandCoordinator, CampaignCommandCoordinator>();
 
         services.AddSingleton<IAtelierDataSource, AtelierDataSource>();
 
@@ -201,6 +213,10 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IWeaveInspectorDataSource, WeaveInspectorDataSource>();
 
+        services.AddSingleton<IAuditBrowserDataSource, AuditBrowserDataSource>();
+
+        services.AddSingleton<IFilesBatchesDataSource, FilesBatchesDataSource>();
+
         services.AddSingleton<ICodexDataSource, CodexDataSource>();
 
         services.AddSingleton<ITrialDataSource, TrialDataSource>();
@@ -222,6 +238,8 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<ITerminalShellResolver, TerminalShellResolver>();
 
         services.AddSingleton<ITerminalCommandRunner, TerminalCommandRunner>();
+
+        services.AddSingleton<IGitProcessRunner, GitProcessRunner>();
 
         RegisterRouteServices(services);
 
@@ -270,6 +288,12 @@ internal static class ServiceCollectionConfigurator
         services.AddTransient<WorkspaceExplorerViewModel>();
 
         services.AddTransient<WeaveInspectorViewModel>();
+
+        services.AddTransient<AuditBrowserViewModel>();
+
+        services.AddTransient<FilesBatchesViewModel>();
+
+        services.AddTransient<LedgerViewModel>();
 
     }
 
@@ -323,6 +347,8 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<LogService>();
 
         services.AddSingleton<AuditService>();
+
+        services.AddSingleton<FilesBatchesService>();
 
         services.AddSingleton<DaemonService>();
 

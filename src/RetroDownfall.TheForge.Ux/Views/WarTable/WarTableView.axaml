@@ -92,13 +92,13 @@
               <TextBlock Text="{Binding Status}" Opacity="0.75" />
               <TextBlock Text="{Binding Goal}" TextWrapping="Wrap" />
               <TextBlock Text="{Binding WorkspacePath}" Opacity="0.65" TextWrapping="Wrap" />
-              <StackPanel Orientation="Horizontal" Spacing="4">
-                <Button Content="Start" Command="{Binding StartCommand}" />
-                <Button Content="Pause" Command="{Binding PauseCommand}" />
-                <Button Content="Resume" Command="{Binding ResumeCommand}" />
-                <Button Content="Cancel" Command="{Binding CancelCommand}" />
-                <Button Content="Reweave" Command="{Binding ReweaveCommand}" />
-              </StackPanel>
+              <WrapPanel Orientation="Horizontal">
+                <Button Content="Start" Command="{Binding StartCommand}" Margin="0,0,6,4" />
+                <Button Content="Pause" Command="{Binding PauseCommand}" Margin="0,0,6,4" />
+                <Button Content="Resume" Command="{Binding ResumeCommand}" Margin="0,0,6,4" />
+                <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,6,4" />
+                <Button Content="Reweave" Command="{Binding ReweaveCommand}" Margin="0,0,6,4" />
+              </WrapPanel>
               <TextBox Text="{Binding InterveneGuidance}"
                        Watermark="Intervene guidance…"
                        MinHeight="40" />

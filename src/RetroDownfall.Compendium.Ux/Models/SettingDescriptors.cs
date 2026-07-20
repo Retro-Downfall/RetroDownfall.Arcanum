@@ -279,6 +279,8 @@ public static class SettingDescriptors
 
         new("ward.autoDenyInUnattendedMode", ConfigSection.Security, "Auto-deny in unattended mode", "When true and the host is unattended, Ward approvals are auto-denied instead of hanging.", SettingKind.Bool),
 
+        new("ward.unattendedMode", ConfigSection.Security, "Unattended mode", "Default for operator-facing chat (Command Center, ask/chat without --unattended). When true, Forbidden Arts follow auto-deny instead of placing wards. Daemons and other headless paths always run unattended.", SettingKind.Bool),
+
         // ===== Security — API key =====
 
         new("security.maxApiKeyHeaderUtf16Chars", ConfigSection.Security, "Max API key header chars", "Maximum UTF-16 char length accepted in the X-Arcanum-Key / Authorization header.", SettingKind.Int, 128, 8192, 16, ClampName: nameof(ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars)),

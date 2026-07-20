@@ -191,6 +191,7 @@ public sealed class CommandCenterKeymapTests
     [InlineData(nameof(CommandCenterOverlayKind.CommandPalette), nameof(CommandCenterAction.ExecutePaletteItem))]
     [InlineData(nameof(CommandCenterOverlayKind.QuitConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.DiscardConfirm), nameof(CommandCenterAction.ConfirmPending))]
+    [InlineData(nameof(CommandCenterOverlayKind.WardConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.None), nameof(CommandCenterAction.NoOp))]
     public void Overlay_Enter_is_explicit_by_kind(string kindName, string expectedName)
     {
@@ -210,6 +211,33 @@ public sealed class CommandCenterKeymapTests
                 false,
                 overlayOpen: true,
                 new KeyChord(IsEnter: true)));
+    }
+
+    [Fact]
+    public void Tab_with_overlay_open_is_noop()
+    {
+        Assert.Equal(
+            CommandCenterAction.NoOp,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Composer,
+                false,
+                false,
+                overlayOpen: true,
+                new KeyChord(IsTab: true)));
+    }
+
+    [Fact]
+    public void OverlayLayout_MeasureHeight_fits_short_confirm()
+    {
+        int height = OverlayLayout.MeasureHeight(
+            contentRows: 7,
+            showFilter: false,
+            bodyHeight: 40,
+            terminalRows: 50,
+            headerHeight: 3);
+
+        Assert.Equal(9, height); // 2 border + 7 lines
+        Assert.True(height < 25);
     }
 
     [Fact]

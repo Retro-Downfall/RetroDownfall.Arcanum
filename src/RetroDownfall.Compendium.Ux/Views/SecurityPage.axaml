@@ -67,6 +67,10 @@
                                      Maximum="500"
                                      Increment="1" />
 
+            <controls:LabeledToggle Label="Unattended mode"
+                                    Description="Default for operator-facing chat (Command Center, ask/chat without --unattended). When true, Forbidden Arts follow auto-deny instead of placing wards. Daemons and other headless paths always run unattended."
+                                    IsOn="{Binding Security.WardUnattendedMode, Mode=TwoWay}" />
+
             <controls:LabeledToggle Label="Auto-deny in unattended mode"
                                     Description="When true and the host is unattended, Ward approvals are auto-denied instead of hanging."
                                     IsOn="{Binding Security.WardAutoDenyInUnattendedMode, Mode=TwoWay}" />

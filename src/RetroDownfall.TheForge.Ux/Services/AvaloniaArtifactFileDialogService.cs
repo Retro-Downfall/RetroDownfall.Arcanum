@@ -19,6 +19,16 @@ public sealed class AvaloniaArtifactFileDialogService : IArtifactFileDialogServi
         Patterns = new[] { "*.json" },
     };
 
+    private static readonly FilePickerFileType CsvFileType = new("CSV files")
+    {
+        Patterns = new[] { "*.csv" },
+    };
+
+    private static readonly FilePickerFileType AnyFileType = new("All files")
+    {
+        Patterns = new[] { "*.*" },
+    };
+
     public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken)
     {
 
@@ -47,6 +57,49 @@ public sealed class AvaloniaArtifactFileDialogService : IArtifactFileDialogServi
                     FileTypeChoices = new[] { JsonFileType },
 
                     SuggestedFileType = JsonFileType,
+                }).ConfigureAwait(true);
+
+            if (file is null)
+            {
+
+                return null;
+
+            }
+
+            return file.TryGetLocalPath();
+
+        });
+
+    }
+
+    public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken)
+    {
+
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null)
+        {
+
+            return Task.FromResult<string?>(null);
+
+        }
+
+        return Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IStorageFile? file = await desktop.MainWindow.StorageProvider.SaveFilePickerAsync(
+                new FilePickerSaveOptions
+                {
+                    Title = "Save CSV",
+
+                    SuggestedFileName = suggestedFileName,
+
+                    DefaultExtension = "csv",
+
+                    FileTypeChoices = new[] { CsvFileType },
+
+                    SuggestedFileType = CsvFileType,
                 }).ConfigureAwait(true);
 
             if (file is null)
@@ -96,6 +149,90 @@ public sealed class AvaloniaArtifactFileDialogService : IArtifactFileDialogServi
             }
 
             return files[0].TryGetLocalPath();
+
+        });
+
+    }
+
+    public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken)
+    {
+
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null)
+        {
+
+            return Task.FromResult<string?>(null);
+
+        }
+
+        return Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IReadOnlyList<IStorageFile> files = await desktop.MainWindow.StorageProvider.OpenFilePickerAsync(
+                new FilePickerOpenOptions
+                {
+                    Title = "Upload file",
+
+                    AllowMultiple = false,
+
+                    FileTypeFilter = new[] { AnyFileType },
+                }).ConfigureAwait(true);
+
+            if (files.Count == 0)
+            {
+
+                return null;
+
+            }
+
+            return files[0].TryGetLocalPath();
+
+        });
+
+    }
+
+    public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken)
+    {
+
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null)
+        {
+
+            return Task.FromResult<string?>(null);
+
+        }
+
+        string extension = string.IsNullOrWhiteSpace(defaultExtension) ? "bin" : defaultExtension.TrimStart('.');
+
+        return Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IStorageFile? file = await desktop.MainWindow.StorageProvider.SaveFilePickerAsync(
+                new FilePickerSaveOptions
+                {
+                    Title = "Save file",
+
+                    SuggestedFileName = suggestedFileName,
+
+                    DefaultExtension = extension,
+
+                    FileTypeChoices = new[] { AnyFileType },
+
+                    SuggestedFileType = AnyFileType,
+                }).ConfigureAwait(true);
+
+            if (file is null)
+            {
+
+                return null;
+
+            }
+
+            return file.TryGetLocalPath();
 
         });
 

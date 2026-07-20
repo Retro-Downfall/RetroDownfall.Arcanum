@@ -3,7 +3,7 @@ namespace RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Core.Models;
 
 /// <summary>
-/// Round-trips <c>forge.json</c> with source-generated JSON. Path is injectable for tests.
+/// Round-trips <c>the-forge.json</c> with source-generated JSON. Path is injectable for tests.
 /// </summary>
 public interface ITheForgeSettingsStore
 {

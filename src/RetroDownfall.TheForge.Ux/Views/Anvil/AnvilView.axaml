@@ -17,8 +17,11 @@
               BorderThickness="0"
               ToolTip.Tip="Connect / reconnect to Arcanum (also under View menu)">
         <StackPanel Orientation="Horizontal" Spacing="6">
-          <Ellipse Width="8" Height="8" Fill="{DynamicResource ForgeAccentBrush}" VerticalAlignment="Center" />
-          <TextBlock Text="{Binding ConnectionStatusText}" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" VerticalAlignment="Center" />
+          <Ellipse Width="8" Height="8" Fill="{Binding ConnectionIndicatorBrush}" VerticalAlignment="Center" />
+          <TextBlock Text="{Binding ConnectionStatusText}"
+                     FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                     VerticalAlignment="Center"
+                     ToolTip.Tip="{Binding ConnectionStatusText}" />
         </StackPanel>
       </Button>
       <Button Classes="anvil-chip"

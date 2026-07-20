@@ -112,6 +112,10 @@ public static class ServiceCollectionExtensions
                 options,
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
 
+        // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
+        // here so the CLI chronosync path cannot drift from AddArcanumInfrastructure.
+        services.AddScoped<ISessionAttachmentStore, SessionAttachmentStore>();
+
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
 
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();

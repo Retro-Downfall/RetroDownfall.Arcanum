@@ -83,6 +83,7 @@ public class AnvilSetupActionsTests
             launcher ?? new FakeCompendiumLauncher(),
             whispers ?? new FakeWhispersService(),
             new StaticOptionsMonitor(new TheForgeSettings()),
+            new FakeActiveCampaignService(),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<AnvilViewModel>.Instance);
 
     private sealed class EmptyAnvilDataSource : IAnvilDataSource

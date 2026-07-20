@@ -1,0 +1,121 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.FilesBatches"
+             xmlns:openai="using:RetroDownfall.TheForge.Core.Models.OpenAi"
+             x:Class="RetroDownfall.TheForge.Ux.Views.FilesBatches.FilesBatchesView"
+             x:DataType="vm:FilesBatchesViewModel">
+  <Grid RowDefinitions="Auto,Auto,*">
+
+    <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
+      <TextBlock DockPanel.Dock="Left" Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" Opacity="0.6" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="420" />
+      <TextBlock DockPanel.Dock="Right" Text="Busy…" Opacity="0.65" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding IsBusy}" />
+    </DockPanel>
+
+    <TextBlock Grid.Row="1" Text="{Binding LastError}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,8" IsVisible="{Binding LastError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <TabControl Grid.Row="2" SelectedIndex="{Binding ActiveTabIndex}">
+
+      <TabItem Header="Files">
+        <Grid RowDefinitions="Auto,Auto,*,Auto">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="OpenAI-compatible /v1/files — upload, list, download, delete. Large content is streamed; JSONL preview is bounded." Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <WrapPanel>
+              <TextBox Text="{Binding FilePurposeFilter}" Watermark="purpose filter…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding UploadPurpose}" Watermark="upload purpose…" MinWidth="120" Margin="0,0,6,6" />
+              <Button Content="Refresh" Command="{Binding RefreshFilesCommand}" Margin="0,0,6,6" />
+              <Button Content="Upload…" Command="{Binding UploadFileCommand}" Margin="0,0,6,6" />
+              <Button Content="Download…" Command="{Binding DownloadSelectedFileCommand}" Margin="0,0,6,6" />
+              <Button Content="Delete…" Command="{Binding DeleteSelectedFileCommand}" Margin="0,0,6,6" />
+              <Button Content="Preview JSONL" Command="{Binding PreviewSelectedFileCommand}" Margin="0,0,6,6" />
+            </WrapPanel>
+          </StackPanel>
+
+          <TextBlock Grid.Row="1" Text="No uploaded files." Opacity="0.7" Margin="0,0,0,8" IsVisible="{Binding HasNoFiles}" />
+
+          <ListBox Grid.Row="2" ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile}" BorderThickness="0" IsVisible="{Binding !HasNoFiles}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="openai:OpenAiFileObject">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="2">
+                    <TextBlock Text="{Binding Filename}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Id}" Opacity="0.75" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                    <TextBlock Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}">
+                      <TextBlock.Text>
+                        <MultiBinding StringFormat="{}{0} bytes · purpose: {1} · created_at: {2}">
+                          <Binding Path="Bytes" />
+                          <Binding Path="Purpose" />
+                          <Binding Path="CreatedAt" />
+                        </MultiBinding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+
+          <StackPanel Grid.Row="3" Margin="0,8,0,0" Spacing="4" IsVisible="{Binding SelectedFile, Converter={x:Static ObjectConverters.IsNotNull}}">
+            <TextBlock Text="JSONL preview (bounded — download for full data)" FontWeight="SemiBold" />
+            <TextBlock Text="Preview truncated. Download the file for the full payload." Opacity="0.7" IsVisible="{Binding JsonlPreviewTruncated}" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <TextBox Text="{Binding JsonlPreviewText}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="100" MaxHeight="220" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
+          </StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Batches">
+        <Grid RowDefinitions="Auto,Auto,*,Auto">
+          <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
+            <TextBlock Text="OpenAI-compatible /v1/batches — create, list, detail, cancel, reset. Polls while this tool is visible and Arcanum is connected." Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <TextBlock Text="{Binding SuiteFromBatchDeferredNote}" Opacity="0.65" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+            <WrapPanel>
+              <TextBox Text="{Binding BatchStatusFilter}" Watermark="status filter…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding CreateBatchInputFileId}" Watermark="input_file_id…" MinWidth="220" Margin="0,0,6,6" />
+              <Button Content="Refresh" Command="{Binding RefreshBatchesCommand}" Margin="0,0,6,6" />
+              <Button Content="Create batch" Command="{Binding CreateBatchCommand}" Margin="0,0,6,6" />
+              <Button Content="Detail" Command="{Binding RefreshSelectedBatchCommand}" Margin="0,0,6,6" />
+              <Button Content="Cancel…" Command="{Binding CancelSelectedBatchCommand}" Margin="0,0,6,6" />
+              <Button Content="Reset…" Command="{Binding ResetSelectedBatchCommand}" Margin="0,0,6,6" />
+              <Button Content="Download output…" Command="{Binding DownloadBatchOutputCommand}" Margin="0,0,6,6" />
+              <Button Content="Download errors…" Command="{Binding DownloadBatchErrorCommand}" Margin="0,0,6,6" />
+            </WrapPanel>
+          </StackPanel>
+
+          <TextBlock Grid.Row="1" Text="No batches." Opacity="0.7" Margin="0,0,0,8" IsVisible="{Binding HasNoBatches}" />
+
+          <ListBox Grid.Row="2" ItemsSource="{Binding Batches}" SelectedItem="{Binding SelectedBatch}" BorderThickness="0" IsVisible="{Binding !HasNoBatches}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="openai:OpenAiBatchObject">
+                <Border Margin="0,0,0,6" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}">
+                  <StackPanel Spacing="2">
+                    <DockPanel LastChildFill="False">
+                      <TextBlock DockPanel.Dock="Left" Text="{Binding Id}" FontWeight="SemiBold" />
+                      <TextBlock DockPanel.Dock="Right" Text="{Binding Status}" Opacity="0.8" />
+                    </DockPanel>
+                    <TextBlock Text="{Binding InputFileId, StringFormat=input: {0}}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                    <TextBlock Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}">
+                      <TextBlock.Text>
+                        <MultiBinding StringFormat="requests: {0} total / {1} completed / {2} failed">
+                          <Binding Path="RequestCounts.Total" />
+                          <Binding Path="RequestCounts.Completed" />
+                          <Binding Path="RequestCounts.Failed" />
+                        </MultiBinding>
+                      </TextBlock.Text>
+                    </TextBlock>
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+
+          <StackPanel Grid.Row="3" Margin="0,8,0,0" Spacing="2" IsVisible="{Binding SelectedBatch, Converter={x:Static ObjectConverters.IsNotNull}}">
+            <TextBlock Text="{Binding SelectedBatch.Endpoint, StringFormat=Endpoint: {0}}" Opacity="0.75" />
+            <TextBlock Text="{Binding SelectedBatch.OutputFileId, StringFormat=output_file_id: {0}}" Opacity="0.75" IsVisible="{Binding SelectedBatch.OutputFileId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <TextBlock Text="{Binding SelectedBatch.ErrorFileId, StringFormat=error_file_id: {0}}" Opacity="0.75" IsVisible="{Binding SelectedBatch.ErrorFileId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+          </StackPanel>
+        </Grid>
+      </TabItem>
+
+    </TabControl>
+  </Grid>
+</UserControl>

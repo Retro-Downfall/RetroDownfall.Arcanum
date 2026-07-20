@@ -456,6 +456,8 @@ internal static class MainViewModelFactory
             new RetroDownfall.TheForge.Ux.ViewModels.Atelier.AtelierViewModel(
                 new NullAtelierDataSource(),
                 navigation,
+                new FakeActiveCampaignService(),
+                new NullCampaignCommandCoordinator(),
                 new NullArtifactCreationDataSource(),
                 new NullArtifactCreationDialogService(),
                 new NullCampaignManagementDataSource(),
@@ -463,7 +465,8 @@ internal static class MainViewModelFactory
                 new NullConfirmationDialogService(),
                 new NullArtifactFileDialogService(),
                 new FakeWhispersService(),
-                foundryFloor),
+                foundryFloor,
+                connection),
             new RetroDownfall.TheForge.Ux.ViewModels.WarTable.WarTableViewModel(new NullWarTableDataSource()),
             new RetroDownfall.TheForge.Ux.ViewModels.Gatehouse.GatehouseViewModel(new NullGatehouseDataSource(), new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(
@@ -490,6 +493,7 @@ internal static class MainViewModelFactory
                 new FakeCompendiumLauncher(),
                 new FakeWhispersService(),
                 new StaticTheForgeSettingsMonitor(),
+                new FakeActiveCampaignService(),
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<RetroDownfall.TheForge.Ux.ViewModels.Anvil.AnvilViewModel>.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.Lore.LoreBrowserViewModel(new NullLoreDataSource(), foundryFloor),
             new RetroDownfall.TheForge.Ux.ViewModels.Archive.SagaArchiveViewModel(new NullSagaArchiveDataSource(), foundryFloor, new NullConfirmationDialogService(), new FakeClipboardService(), new FakeWhispersService(), connection),
@@ -520,6 +524,28 @@ internal static class MainViewModelFactory
                 new FakeClipboardService(),
                 new FakeWhispersService(),
                 connection),
+            new RetroDownfall.TheForge.Ux.ViewModels.AuditBrowser.AuditBrowserViewModel(
+                new NullAuditBrowserDataSource(),
+                navigation,
+                foundryFloor,
+                new NullArtifactFileDialogService(),
+                new FakeClipboardService(),
+                new FakeWhispersService()),
+            new RetroDownfall.TheForge.Ux.ViewModels.FilesBatches.FilesBatchesViewModel(
+                new NullFilesBatchesDataSource(),
+                connection,
+                foundryFloor,
+                new NullArtifactFileDialogService(),
+                new NullConfirmationDialogService(),
+                new FakeWhispersService()),
+            new RetroDownfall.TheForge.Ux.ViewModels.Ledger.LedgerViewModel(
+                new NullGitProcessRunner(),
+                new NullWorkspaceExplorerDataSource(),
+                new NullConfirmationDialogService(),
+                navigation,
+                new InMemoryTrialSuiteStore(),
+                foundryFloor,
+                new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Workbench.WorkbenchDocumentFactory(
                 new NullSpellEditorDataSource(),
                 new NullPromptEditorDataSource(),
@@ -539,7 +565,9 @@ internal static class MainViewModelFactory
                 new FakeClipboardService(),
                 new FakeWhispersService()),
             settingsStore,
-            new StaticTheForgeSettingsMonitor());
+            new StaticTheForgeSettingsMonitor(),
+            new NullCampaignCommandCoordinator(),
+            new FakeActiveCampaignService());
 
     }
 
@@ -661,7 +689,14 @@ internal sealed class NoopApiKeyProvider : RetroDownfall.TheForge.Core.Services.
 internal sealed class StaticTheForgeSettingsMonitor : Microsoft.Extensions.Options.IOptionsMonitor<RetroDownfall.TheForge.Core.Models.TheForgeSettings>
 {
 
-    public RetroDownfall.TheForge.Core.Models.TheForgeSettings CurrentValue { get; } = new();
+    public StaticTheForgeSettingsMonitor(RetroDownfall.TheForge.Core.Models.TheForgeSettings? settings = null)
+    {
+
+        CurrentValue = settings ?? new();
+
+    }
+
+    public RetroDownfall.TheForge.Core.Models.TheForgeSettings CurrentValue { get; }
 
     public RetroDownfall.TheForge.Core.Models.TheForgeSettings Get(string? name) => CurrentValue;
 
@@ -788,6 +823,22 @@ internal sealed class NullTerminalCommandRunner : RetroDownfall.TheForge.Ux.Serv
 
 }
 
+internal sealed class NullGitProcessRunner : RetroDownfall.TheForge.Ux.Services.Git.IGitProcessRunner
+{
+
+    public Task<RetroDownfall.TheForge.Ux.Services.Git.GitProcessResult> RunAsync(
+        string workingDirectory,
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(
+            RetroDownfall.TheForge.Ux.Services.Git.GitProcessResult.Completed(
+                0,
+                string.Empty,
+                string.Empty,
+                arguments));
+
+}
+
 internal sealed class NullPromptEditorDataSource : RetroDownfall.TheForge.Ux.ViewModels.Workbench.IPromptEditorDataSource
 {
 
@@ -893,8 +944,15 @@ internal sealed class NullCampaignManagementDataSource : RetroDownfall.TheForge.
 internal sealed class NullCampaignDialogService : RetroDownfall.TheForge.Ux.ViewModels.Atelier.ICampaignDialogService
 {
 
-    public Task<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken) =>
+    public Task<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewCampaignInputs?> PromptNewCampaignAsync(
+        RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewCampaignDialogOptions? options = null,
+        CancellationToken cancellationToken = default) =>
         Task.FromResult<RetroDownfall.TheForge.Ux.ViewModels.Atelier.NewCampaignInputs?>(null);
+
+    public Task<string?> PromptOpenCampaignPathAsync(
+        bool allowLocalFolderBrowse,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
 
     public Task<RetroDownfall.TheForge.Ux.ViewModels.Atelier.EditCampaignInputs?> PromptEditCampaignAsync(CampaignDto existing, CancellationToken cancellationToken) =>
         Task.FromResult<RetroDownfall.TheForge.Ux.ViewModels.Atelier.EditCampaignInputs?>(null);
@@ -1017,6 +1075,52 @@ internal sealed class NullWeaveInspectorDataSource : RetroDownfall.TheForge.Ux.V
 
     public Task<DataSourceResult<EmbeddingsResetResult>> ResetEmbeddingsAsync(string scope, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<EmbeddingsResetResult>(null, true, null, null));
+
+}
+
+internal sealed class NullAuditBrowserDataSource : RetroDownfall.TheForge.Ux.ViewModels.AuditBrowser.IAuditBrowserDataSource
+{
+
+    public Task<DataSourceResult<InferenceAuditRecord[]>> QueryInferenceAsync(DateTimeOffset? from, DateTimeOffset? to, string? model, string? sessionId, int? limit, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<InferenceAuditRecord[]>([], true, null, null));
+
+    public Task<DataSourceResult<GuardrailAuditRecord[]>> QueryGuardrailsAsync(DateTimeOffset? from, DateTimeOffset? to, string? stage, string? violationType, string? sessionId, int? limit, CancellationToken cancellationToken) =>
+        Task.FromResult(new DataSourceResult<GuardrailAuditRecord[]>([], true, null, null));
+
+}
+
+internal sealed class NullFilesBatchesDataSource : RetroDownfall.TheForge.Ux.ViewModels.FilesBatches.IFilesBatchesDataSource
+{
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiFileListResponse>> ListFilesAsync(string? purpose, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiFileListResponse>.Ok(new([], "list")));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiFileObject>> UploadFileAsync(string filePath, string purpose, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiFileObject>.Fail("test", "not used"));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiFileDeleteResponse>> DeleteFileAsync(string fileId, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiFileDeleteResponse>.Fail("test", "not used"));
+
+    public Task<OpenAiResult<bool>> DownloadFileContentAsync(string fileId, string destinationPath, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<bool>.Fail("test", "not used"));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Ux.Services.JsonlPreviewResult>> PreviewFileJsonlAsync(string fileId, int maxLines, int maxBytes, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Ux.Services.JsonlPreviewResult>.Ok(new([], false, 0)));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchListResponse>> ListBatchesAsync(string? status, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchListResponse>.Ok(new([], false, "list")));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>> GetBatchAsync(string batchId, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>.Fail("test", "not used"));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>> CreateBatchAsync(string inputFileId, string? endpoint, string? completionWindow, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>.Fail("test", "not used"));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>> CancelBatchAsync(string batchId, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>.Fail("test", "not used"));
+
+    public Task<OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>> ResetBatchAsync(string batchId, CancellationToken cancellationToken) =>
+        Task.FromResult(OpenAiResult<RetroDownfall.TheForge.Core.Models.OpenAi.OpenAiBatchObject>.Fail("test", "not used"));
 
 }
 

@@ -219,6 +219,7 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Ward:TimeoutSeconds` | `int` | `120` | 10 – 600 | Max seconds an active ward waits for operator resolution before auto-denying. |
 | `Arcanum:Ward:MaxActiveWards` | `int` | `50` | 1 – 500 | Maximum simultaneously-pending wards before new Forbidden Art requests are auto-denied. |
 | `Arcanum:Ward:AutoDenyInUnattendedMode` | `bool` | `true` | — | When `true` and `PingRequest.UnattendedMode` is `true`, Forbidden Arts are denied immediately without placing a ward (prevents daemon jobs from hanging). |
+| `Arcanum:Ward:UnattendedMode` | `bool` | `false` | — | Default for operator-facing surfaces (Command Center; `ask`/`chat` without `--unattended`). Headless paths (daemons, apprentices, OpenAI-compat, Campaign Logger, etc.) always force unattended and ignore this setting. |
 | `Arcanum:Apprentices:Enabled` | `bool` | `true` | — | When `false`, **`ApprenticeService`** does not start or resume Apprentices (§5.7). |
 | `Arcanum:Apprentices:MaxConcurrentApprentices` | `int` | `5` | 1 – 50 | Maximum Apprentices executing concurrently. Excess starts queue until a slot frees. |
 | `Arcanum:Apprentices:StepTimeoutMinutes` | `int` | `30` | 5 – 120 | Per-step execution timeout for **`StreamPromptAsync`**. |
@@ -1910,7 +1911,7 @@ See §8.23 for the full `ErrorCodes` → HTTP status catalog used by `ArcanumErr
 
 The environment variable always wins. Recognized values: `1` or `true` (force all-interfaces bind), `0` or `false` (force loopback), or any other string that `bool.TryParse` accepts. When the env var is unset, empty, or unrecognized, `ArcanumEnvironment.IsHostAnyEnabled` falls back to the configuration property (`Arcanum:Host:ListenAny`). This preserves the historical container-friendly override while making the binding visible in `arcanum.json` for first-party operators. The effective value is exposed via **`GET /api/meta`** (`ListenAny` on `InstanceMetadataDto`).
 
-**HTTPS-only any-IP:** When the effective bind is all-interfaces, Kestrel binds **only** `ListenAnyIP` on `Arcanum:Host:Https:Port` with TLS. `Host:Https:Enabled` and a loadable certificate are required; plaintext any-IP HTTP is refused. Local CLI clients resolve `https://localhost:{HttpsPort}`; Forge `forge.json` `BaseUrl` must match. Doctor probes the HTTPS health URL (and surfaces cert-trust / SAN guidance on failure).
+**HTTPS-only any-IP:** When the effective bind is all-interfaces, Kestrel binds **only** `ListenAnyIP` on `Arcanum:Host:Https:Port` with TLS. `Host:Https:Enabled` and a loadable certificate are required; plaintext any-IP HTTP is refused. Local CLI clients resolve `https://localhost:{HttpsPort}`; Forge `the-forge.json` `BaseUrl` must match. Doctor probes the HTTPS health URL (and surfaces cert-trust / SAN guidance on failure).
 
 **First-run acknowledgement:** When `ListenAny` is enabled from configuration (not via `ARCANUM_HOST_ANY`), interactive `arcanum serve` prompts once and writes `~/.config/arcanum/.listen-any-acknowledged`. Non-interactive hosts must set `ARCANUM_LISTEN_ANY_ACK=1`. Container operators using `ARCANUM_HOST_ANY` skip the prompt but still receive the security banner.
 

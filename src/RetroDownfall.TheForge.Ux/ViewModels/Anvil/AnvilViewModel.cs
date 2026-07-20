@@ -38,6 +38,8 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
     private readonly IOptionsMonitor<TheForgeSettings> _settings;
 
+    private readonly IActiveCampaignService _activeCampaign;
+
     private readonly ILogger<AnvilViewModel> _logger;
 
     private readonly IDisposable? _settingsSubscription;
@@ -82,6 +84,7 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
         ICompendiumLauncher compendiumLauncher,
         IWhispersService whispers,
         IOptionsMonitor<TheForgeSettings> settings,
+        IActiveCampaignService activeCampaign,
         ILogger<AnvilViewModel> logger)
     {
 
@@ -101,6 +104,8 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
         _settings = settings;
 
+        _activeCampaign = activeCampaign;
+
         _logger = logger;
 
         Title = "The Anvil";
@@ -109,25 +114,67 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
         _connection.PropertyChanged += OnConnectionPropertyChanged;
 
-        ApplyCampaignFromSettings(_settings.CurrentValue);
+        ApplyActiveCampaignDisplay();
 
-        _settingsSubscription = _settings.OnChange(ApplyCampaignFromSettings);
+        _activeCampaign.ActiveCampaignChanged += (_, _) => ApplyActiveCampaignDisplay();
+
+        _settingsSubscription = _settings.OnChange(_ => ApplyActiveCampaignDisplay());
 
         StartRefreshLoop();
 
     }
 
-    public string ConnectionStatusText => ConnectionState switch
+    public string ConnectionStatusText
     {
-        ConnectionState.Connected => "Arcanum connected",
-        ConnectionState.Connecting => "Seeking Arcanum...",
-        ConnectionState.Error when IsMissingApiKey => "API key required",
-        ConnectionState.Error when IsUnauthorizedApiKey => "API key rejected",
-        ConnectionState.Error when IsTimeout => "Arcanum timed out",
-        ConnectionState.Error when IsConnectionFailed => "Arcanum connection failed",
-        ConnectionState.Error => "Arcanum unreachable",
-        _ => "Arcanum disconnected",
-    };
+        get
+        {
+            // Auth failures must win even if State briefly lags on Connecting.
+            if (IsMissingApiKey)
+            {
+                return "API key required";
+            }
+
+            if (IsUnauthorizedApiKey)
+            {
+                return "API key rejected";
+            }
+
+            return ConnectionState switch
+            {
+                ConnectionState.Connected => "Arcanum connected",
+                ConnectionState.Connecting => "Seeking Arcanum...",
+                ConnectionState.Error when IsTimeout => "Arcanum timed out",
+                ConnectionState.Error when IsConnectionFailed => "Arcanum connection failed",
+                ConnectionState.Error when IsUnhealthy => "Arcanum unhealthy",
+                ConnectionState.Error => "Arcanum unreachable",
+                _ => "Arcanum disconnected",
+            };
+        }
+    }
+
+    /// <summary>Status-dot brush: success / warning / error / muted.</summary>
+    public Avalonia.Media.IBrush ConnectionIndicatorBrush
+    {
+        get
+        {
+            if (ConnectionState == ConnectionState.Connected && !IsMissingApiKey && !IsUnauthorizedApiKey)
+            {
+                return ThemeBrush("ForgeSuccessBrush");
+            }
+
+            if (IsMissingApiKey || IsUnauthorizedApiKey || ConnectionState == ConnectionState.Error)
+            {
+                return ThemeBrush("ForgeErrorBrush");
+            }
+
+            if (ConnectionState == ConnectionState.Connecting)
+            {
+                return ThemeBrush("ForgeWarningBrush");
+            }
+
+            return ThemeBrush("ForgeMutedTextBrush");
+        }
+    }
 
     public bool ShowEnterApiKey => IsMissingApiKey || IsUnauthorizedApiKey;
 
@@ -142,6 +189,27 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
     private bool IsConnectionFailed =>
         string.Equals(_connection.LastErrorCode, "Connection.Failed", StringComparison.Ordinal);
+
+    private bool IsUnhealthy =>
+        string.Equals(_connection.LastErrorCode, "Health.Unhealthy", StringComparison.Ordinal);
+
+    private static Avalonia.Media.IBrush ThemeBrush(string key)
+    {
+
+        if (Avalonia.Application.Current?.TryGetResource(
+                key,
+                Avalonia.Application.Current.ActualThemeVariant,
+                out object? value) == true
+            && value is Avalonia.Media.IBrush brush)
+        {
+
+            return brush;
+
+        }
+
+        return Avalonia.Media.Brushes.Gray;
+
+    }
 
     [RelayCommand]
     private void FocusConnection() => _navigation.FocusPanel(PanelKind.Anvil);
@@ -356,35 +424,59 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     private void OnConnectionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
 
-        if (e.PropertyName is nameof(IArcanumConnection.State)
+        if (e.PropertyName is not (nameof(IArcanumConnection.State)
             or nameof(IArcanumConnection.LastErrorCode)
-            or nameof(IArcanumConnection.LastErrorMessage))
+            or nameof(IArcanumConnection.LastErrorMessage)))
         {
 
-            ConnectionState = _connection.State;
+            return;
 
-            OnPropertyChanged(nameof(ConnectionStatusText));
+        }
 
-            OnPropertyChanged(nameof(ShowEnterApiKey));
+        if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+        {
 
-            if (e.PropertyName == nameof(IArcanumConnection.State)
-                && ConnectionState == ConnectionState.Connected)
-            {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => OnConnectionPropertyChanged(sender, e));
 
-                TaskUtilities.FireAndForget(RefreshAsync(CancellationToken.None), _logger);
+            return;
 
-            }
+        }
+
+        ConnectionState = _connection.State;
+
+        OnPropertyChanged(nameof(ConnectionStatusText));
+
+        OnPropertyChanged(nameof(ConnectionIndicatorBrush));
+
+        OnPropertyChanged(nameof(ShowEnterApiKey));
+
+        if (e.PropertyName == nameof(IArcanumConnection.State)
+            && ConnectionState == ConnectionState.Connected)
+        {
+
+            TaskUtilities.FireAndForget(RefreshAsync(CancellationToken.None), _logger);
 
         }
 
     }
 
-    private void ApplyCampaignFromSettings(TheForgeSettings settings)
+    private void ApplyActiveCampaignDisplay()
     {
 
-        ActiveCampaignName = settings.LastCampaignId is { } id
-            ? $"Campaign {id:D}"
-            : "No campaign";
+        CampaignDto? campaign = _activeCampaign.ActiveCampaign;
+
+        if (campaign is null)
+        {
+
+            ActiveCampaignName = "No campaign";
+
+            return;
+
+        }
+
+        ActiveCampaignName = string.IsNullOrEmpty(campaign.Path)
+            ? $"Campaign {campaign.Id:D}"
+            : campaign.Name;
 
     }
 
@@ -392,6 +484,8 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     {
 
         OnPropertyChanged(nameof(ConnectionStatusText));
+
+        OnPropertyChanged(nameof(ConnectionIndicatorBrush));
 
         OnPropertyChanged(nameof(ShowEnterApiKey));
 

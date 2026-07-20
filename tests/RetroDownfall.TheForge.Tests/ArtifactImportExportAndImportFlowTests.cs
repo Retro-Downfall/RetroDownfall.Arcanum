@@ -91,6 +91,15 @@ public class ArtifactImportExportHelperTests
         public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
             Task.FromResult(path);
 
+        public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
     }
 
 }
@@ -254,6 +263,15 @@ public class SpellPromptImportFlowTests
             Task.FromResult(path);
 
         public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(path);
+
+        public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult(path);
 
     }

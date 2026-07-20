@@ -29,4 +29,11 @@ public sealed record WardSettings
 
     public bool AutoDenyInUnattendedMode { get; set; } = true;
 
+    /// <summary>
+    /// Default unattended flag for operator-facing callers (Command Center, <c>ask</c>/<c>chat</c>
+    /// without <c>--unattended</c>). Headless paths (daemons, apprentices, OpenAI-compat, etc.)
+    /// always force unattended and ignore this setting.
+    /// </summary>
+    public bool UnattendedMode { get; set; }
+
 }

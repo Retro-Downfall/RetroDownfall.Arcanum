@@ -7,7 +7,7 @@
   <UserControl.Resources>
     <converters:IconKeyToGeometryConverter x:Key="IconKeyToGeometryConverter" />
   </UserControl.Resources>
-  <TreeView ItemsSource="{Binding Roots}">
+  <TreeView ItemsSource="{Binding Roots}" SelectedItem="{Binding SelectedNode}">
     <TreeView.Styles>
       <Style Selector="TreeViewItem" x:DataType="atelier:AtelierNodeViewModel">
         <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
@@ -25,10 +25,10 @@
           </StackPanel>
           <Border.ContextMenu>
             <ContextMenu>
-              <MenuItem Header="Open" Command="{Binding PrimaryCommand}" />
+              <MenuItem Header="Open" Command="{Binding PrimaryCommand}" IsVisible="{Binding HasPrimaryCommand}" />
               <MenuItem Header="{Binding NewCampaignLabel}" Command="{Binding NewCampaignCommand}" IsVisible="{Binding HasNewCampaign}" />
               <MenuItem Header="Edit / Properties" Command="{Binding EditCampaignCommand}" IsVisible="{Binding HasEditCampaign}" />
-              <MenuItem Header="Delete Campaign" Command="{Binding DeleteCampaignCommand}" IsVisible="{Binding HasDeleteCampaign}" />
+              <MenuItem Header="Unregister Campaign" Command="{Binding DeleteCampaignCommand}" IsVisible="{Binding HasDeleteCampaign}" />
               <MenuItem Header="Export Campaign" Command="{Binding ExportCampaignCommand}" IsVisible="{Binding HasExportCampaign}" />
               <MenuItem Header="Import into Campaign" Command="{Binding ImportCampaignCommand}" IsVisible="{Binding HasImportCampaign}" />
               <MenuItem Header="{Binding NewSpellLabel}" Command="{Binding NewSpellCommand}" IsVisible="{Binding HasNewSpell}" />

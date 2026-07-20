@@ -22,6 +22,7 @@ internal sealed class ShellCommandDispatcher(
     ShellCommandParser parser,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     SessionWorkspaceService sessionWorkspace,
+    CommandCenterWardCoordinator wardCoordinator,
     ILogger<ShellCommandDispatcher> logger)
 {
     public async Task<ShellDispatchResult> DispatchAsync(
@@ -41,6 +42,7 @@ internal sealed class ShellCommandDispatcher(
 
             case ShellCommandKind.Clear:
                 state.Log.Clear();
+                state.Incantations.Clear();
                 state.Log.Append(SessionLogEntryKind.Status, "Log cleared.");
                 return ShellDispatchResult.Continue;
 
@@ -171,6 +173,14 @@ internal sealed class ShellCommandDispatcher(
                     SessionLogEntryKind.Command,
                     await FormatWardsAsync(cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.WardAllow:
+                return await ResolveWardSlashAsync(state, parsed.Argument, allow: true, cancellationToken)
+                    .ConfigureAwait(false);
+
+            case ShellCommandKind.WardDeny:
+                return await ResolveWardSlashAsync(state, parsed.Argument, allow: false, cancellationToken)
+                    .ConfigureAwait(false);
 
             case ShellCommandKind.Keys:
                 state.Log.Append(SessionLogEntryKind.Command, BuildKeysHelp());
@@ -552,6 +562,8 @@ internal sealed class ShellCommandDispatcher(
                 "  /attachments reveal <name> [vN]  Reveal attachment file in OS file manager",
                 "  /spell list           List spells",
                 "  /ward list            List open wards",
+                "  /ward allow [id]      Allow pending ward (id optional when prompted)",
+                "  /ward deny [id]       Deny pending ward (id optional when prompted)",
                 "  /exit | /quit         Leave Command Center",
                 "",
                 "Ctrl+K opens the command palette. F1 shows shortcuts.",
@@ -637,6 +649,84 @@ internal sealed class ShellCommandDispatcher(
                 string id = w.WardId.Length > 8 ? w.WardId[..8] : w.WardId;
                 return $"- {id}  {w.ToolName}  expires={w.ExpiresAt:u}";
             }));
+    }
+
+    private async Task<ShellDispatchResult> ResolveWardSlashAsync(
+        CommandCenterState state,
+        string? idArgument,
+        bool allow,
+        CancellationToken cancellationToken)
+    {
+        WardApprovalRequest? pending = wardCoordinator.PendingRequest;
+        string? wardId = idArgument;
+
+        if (string.IsNullOrWhiteSpace(wardId))
+        {
+            wardId = pending?.WardId;
+        }
+
+        if (string.IsNullOrWhiteSpace(wardId))
+        {
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                "No ward id. Use `/ward list`, then `/ward allow <id>` or `/ward deny <id>`.");
+            return ShellDispatchResult.Continue;
+        }
+
+        wardId = wardId.Trim();
+
+        // Prefer completing the in-turn prompt so ChatRunner submits the resolve once.
+        if (pending is not null
+            && (string.IsNullOrWhiteSpace(idArgument)
+                || pending.WardId.StartsWith(wardId, StringComparison.OrdinalIgnoreCase)
+                || wardId.StartsWith(pending.WardId, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(pending.WardId, wardId, StringComparison.OrdinalIgnoreCase)))
+        {
+            WardApprovalDecision decision = allow ? WardApprovalDecision.Allow : WardApprovalDecision.Deny;
+            if (wardCoordinator.TryCompletePending(decision))
+            {
+                state.Log.Append(
+                    SessionLogEntryKind.Status,
+                    allow ? $"Allowing ward {pending.WardId}…" : $"Denying ward {pending.WardId}…");
+                return ShellDispatchResult.Continue;
+            }
+        }
+
+        // Prefix match against active wards when the operator pasted a short id.
+        if (wardId.Length < 36)
+        {
+            Result<WardDto[]> listed = await apiClient.GetWardsAsync(cancellationToken).ConfigureAwait(false);
+            if (listed.IsSuccess)
+            {
+                WardDto[] matches = (listed.Value ?? [])
+                    .Where(w => w.WardId.StartsWith(wardId, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (matches.Length == 1)
+                {
+                    wardId = matches[0].WardId;
+                }
+                else if (matches.Length > 1)
+                {
+                    state.Log.Append(SessionLogEntryKind.Error, "Ambiguous ward id prefix; use the full id.");
+                    return ShellDispatchResult.Continue;
+                }
+            }
+        }
+
+        Result<WardResolutionDto> resolve = await apiClient
+            .ResolveWardAsync(wardId, allow, reason: null, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolve.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, resolve.Error.Message);
+            return ShellDispatchResult.Continue;
+        }
+
+        state.Log.Append(
+            SessionLogEntryKind.Status,
+            allow ? $"Ward {wardId} allowed." : $"Ward {wardId} denied.");
+        return ShellDispatchResult.Continue;
     }
 
     private async Task<string> FormatModelsAsync(CancellationToken cancellationToken)

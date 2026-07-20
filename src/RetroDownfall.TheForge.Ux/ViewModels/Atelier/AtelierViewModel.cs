@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.FoundryFloor;
@@ -19,6 +21,10 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     private readonly INavigationService _navigation;
 
+    private readonly IActiveCampaignService _activeCampaign;
+
+    private readonly ICampaignCommandCoordinator _campaignCommands;
+
     private readonly IArtifactCreationDataSource _creationDataSource;
 
     private readonly IArtifactCreationDialogService _dialogService;
@@ -35,12 +41,21 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
     private readonly FoundryFloorViewModel _foundryFloor;
 
+    private readonly IArcanumConnection _connection;
+
+    private int _campaignCount;
+
     [ObservableProperty]
     private bool _isLoading;
+
+    [ObservableProperty]
+    private AtelierNodeViewModel? _selectedNode;
 
     public AtelierViewModel(
         IAtelierDataSource dataSource,
         INavigationService navigation,
+        IActiveCampaignService activeCampaign,
+        ICampaignCommandCoordinator campaignCommands,
         IArtifactCreationDataSource creationDataSource,
         IArtifactCreationDialogService dialogService,
         ICampaignManagementDataSource campaignManagement,
@@ -48,12 +63,17 @@ public sealed partial class AtelierViewModel : ViewModelBase
         IConfirmationDialogService confirmation,
         IArtifactFileDialogService fileDialog,
         IWhispersService whispers,
-        FoundryFloorViewModel foundryFloor)
+        FoundryFloorViewModel foundryFloor,
+        IArcanumConnection connection)
     {
 
         _dataSource = dataSource;
 
         _navigation = navigation;
+
+        _activeCampaign = activeCampaign;
+
+        _campaignCommands = campaignCommands;
 
         _creationDataSource = creationDataSource;
 
@@ -71,15 +91,60 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
         _foundryFloor = foundryFloor;
 
+        _connection = connection;
+
         Title = "The Atelier";
+
+        _campaignCommands.FocusCampaignInAtelierAsync = FocusCampaignAsync;
+
+        _connection.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(IArcanumConnection.State))
+            {
+                OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+                OnPropertyChanged(nameof(ShowDisconnectedGuidance));
+            }
+        };
 
     }
 
     public ObservableCollection<AtelierNodeViewModel> Roots { get; } = [];
 
+    public ICampaignCommandCoordinator CampaignCommands => _campaignCommands;
+
+    /// <summary>
+    /// Zero-campaign onboarding when connected — coexists with Workspaces / Global / Sessions roots.
+    /// </summary>
+    public bool ShowZeroCampaignOnboarding =>
+        _connection.State == ConnectionState.Connected
+        && Roots.Count > 0
+        && _campaignCount == 0
+        && !IsLoading;
+
+    public bool ShowDisconnectedGuidance =>
+        _connection.State != ConnectionState.Connected && Roots.Count > 0 && !IsLoading;
+
+    public string ZeroCampaignMessage =>
+        "A Campaign is the top-level workspace for spells, prompts, sessions, and Codex content.";
+
+    public string DisconnectedGuidanceMessage =>
+        "Connect to Arcanum to load campaigns, or open Setup to configure the connection.";
+
     public string EmptyState => Roots.Count == 0
         ? "Refresh The Atelier to reveal campaigns, workspaces, spells, prompts, and sessions."
         : string.Empty;
+
+    partial void OnSelectedNodeChanged(AtelierNodeViewModel? value)
+    {
+
+        if (value is CampaignNodeViewModel campaignNode)
+        {
+
+            _ = _activeCampaign.SetActiveCampaignAsync(campaignNode.Campaign);
+
+        }
+
+    }
 
     [RelayCommand]
     public async Task RefreshAsync(CancellationToken cancellationToken)
@@ -102,13 +167,100 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
             Roots.Add(CreateSessionsRoot());
 
+            await UpdateCampaignCountAsync(cancellationToken).ConfigureAwait(true);
+
             OnPropertyChanged(nameof(EmptyState));
+
+            OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+
+            OnPropertyChanged(nameof(ShowDisconnectedGuidance));
 
         }
         finally
         {
 
             IsLoading = false;
+
+            OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+
+            OnPropertyChanged(nameof(ShowDisconnectedGuidance));
+
+        }
+
+    }
+
+    /// <summary>
+    /// Reloads the Campaigns branch and selects/expands the campaign with the given id.
+    /// When <paramref name="campaignId"/> is <see cref="Guid.Empty"/>, only refreshes the branch.
+    /// </summary>
+    public async Task FocusCampaignAsync(Guid campaignId, CancellationToken cancellationToken = default)
+    {
+
+        if (Roots.Count == 0)
+        {
+
+            await RefreshAsync(cancellationToken).ConfigureAwait(true);
+
+        }
+
+        AtelierNodeViewModel? campaignsRoot = Roots.FirstOrDefault(static r => r.Label == "Campaigns");
+
+        if (campaignsRoot is null)
+        {
+
+            return;
+
+        }
+
+        await campaignsRoot.ReloadAsync(cancellationToken).ConfigureAwait(true);
+
+        campaignsRoot.IsExpanded = true;
+
+        await UpdateCampaignCountAsync(cancellationToken).ConfigureAwait(true);
+
+        OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+
+        if (campaignId == Guid.Empty)
+        {
+
+            return;
+
+        }
+
+        CampaignNodeViewModel? node = campaignsRoot.Children
+            .OfType<CampaignNodeViewModel>()
+            .FirstOrDefault(c => c.Campaign.Id == campaignId);
+
+        if (node is null)
+        {
+
+            return;
+
+        }
+
+        _activeCampaign.HydrateIfMatching(node.Campaign);
+
+        await _activeCampaign.SetActiveCampaignAsync(node.Campaign, cancellationToken).ConfigureAwait(true);
+
+        SelectedNode = node;
+
+        node.IsExpanded = true;
+
+    }
+
+    private async Task UpdateCampaignCountAsync(CancellationToken cancellationToken)
+    {
+
+        IReadOnlyList<CampaignDto> campaigns = await _dataSource
+            .GetCampaignsAsync(cancellationToken)
+            .ConfigureAwait(true);
+
+        _campaignCount = campaigns.Count;
+
+        foreach (CampaignDto campaign in campaigns)
+        {
+
+            _activeCampaign.HydrateIfMatching(campaign);
 
         }
 
@@ -120,10 +272,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
         CampaignsRootNodeViewModel? root = null;
 
         root = new CampaignsRootNodeViewModel(
-            _campaignManagement,
-            _campaignDialog,
-            _whispers,
-            _foundryFloor,
+            _campaignCommands,
             async ct =>
             {
                 if (root is not null)
@@ -131,33 +280,57 @@ public sealed partial class AtelierViewModel : ViewModelBase
 
                     await root.ReloadAsync(ct).ConfigureAwait(true);
 
+                    await UpdateCampaignCountAsync(ct).ConfigureAwait(true);
+
+                    OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+
                 }
             },
-            async ct => (await _dataSource.GetCampaignsAsync(ct).ConfigureAwait(true))
-                .OrderBy(static campaign => campaign.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(campaign => new CampaignNodeViewModel(
-                    campaign,
-                    _dataSource,
-                    _navigation,
-                    _creationDataSource,
-                    _dialogService,
-                    _foundryFloor,
-                    _campaignManagement,
-                    _campaignDialog,
-                    _confirmation,
-                    _fileDialog,
-                    _whispers,
-                    async refreshCt =>
-                    {
-                        if (root is not null)
+            async ct =>
+            {
+                IReadOnlyList<CampaignDto> campaigns = (await _dataSource.GetCampaignsAsync(ct).ConfigureAwait(true))
+                    .OrderBy(static campaign => campaign.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                _campaignCount = campaigns.Count;
+
+                foreach (CampaignDto campaign in campaigns)
+                {
+
+                    _activeCampaign.HydrateIfMatching(campaign);
+
+                }
+
+                return campaigns
+                    .Select(campaign => new CampaignNodeViewModel(
+                        campaign,
+                        _dataSource,
+                        _navigation,
+                        _activeCampaign,
+                        _creationDataSource,
+                        _dialogService,
+                        _foundryFloor,
+                        _campaignManagement,
+                        _campaignDialog,
+                        _confirmation,
+                        _fileDialog,
+                        _whispers,
+                        async refreshCt =>
                         {
+                            if (root is not null)
+                            {
 
-                            await root.ReloadAsync(refreshCt).ConfigureAwait(true);
+                                await root.ReloadAsync(refreshCt).ConfigureAwait(true);
 
-                        }
-                    }))
-                .Cast<AtelierNodeViewModel>()
-                .ToArray());
+                                await UpdateCampaignCountAsync(refreshCt).ConfigureAwait(true);
+
+                                OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+
+                            }
+                        }))
+                    .Cast<AtelierNodeViewModel>()
+                    .ToArray();
+            });
 
         return root;
 

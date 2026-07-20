@@ -16,8 +16,14 @@ internal static class ComposerLayout
     /// <summary>Top + bottom border chrome for the bordered composer pane.</summary>
     public const int BorderOverhead = 2;
 
-    /// <summary>Minimum transcript/sessions body height (rows) that must remain visible.</summary>
-    public const int MinBodyHeight = 3;
+    /// <summary>
+    /// Minimum combined height for Transcript + Incantations bordered panes (3 + 3).
+    /// </summary>
+    public const int MinBodyHeight = 6;
+
+    public const int MinTranscriptHeight = 3;
+
+    public const int MinIncantationsHeight = 3;
 
     /// <summary>Reserved column when content exceeds the visible content rows (vertical scrollbar).</summary>
     public const int ScrollbarReservation = 1;
@@ -136,6 +142,28 @@ internal static class ComposerLayout
 
         return Math.Max(1, total);
     }
+
+    /// <summary>Total cell width of <paramref name="text"/> starting at column 0.</summary>
+    public static int MeasureCellWidth(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        int col = 0;
+        var enumerator = StringInfo.GetTextElementEnumerator(text);
+        while (enumerator.MoveNext())
+        {
+            col += MeasureGraphemeCellWidth(enumerator.GetTextElement(), col);
+        }
+
+        return col;
+    }
+
+    /// <summary>Cell width of one grapheme cluster at <paramref name="column"/>.</summary>
+    public static int MeasureGraphemeCellWidth(string grapheme, int column) =>
+        MeasureGraphemeWidth(grapheme, column);
 
     private static int CountSoftWrappedRows(ReadOnlySpan<char> line, int width)
     {

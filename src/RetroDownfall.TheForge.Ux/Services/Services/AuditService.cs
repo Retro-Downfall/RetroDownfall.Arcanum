@@ -4,7 +4,11 @@ using RetroDownfall.TheForge.Core.Serialization;
 
 namespace RetroDownfall.TheForge.Ux.Services.Services;
 
-/// <summary>Wraps <c>GET /api/audit</c> — the persisted inference audit log query surface (The Scrying Pool).</summary>
+/// <summary>
+/// Wraps the read-only audit query surfaces: <c>GET /api/audit</c> (inference turns) and
+/// <c>GET /api/guardrails/audit</c> (guardrail violations). Both return empty arrays — not errors —
+/// when their respective audit logs are disabled server-side.
+/// </summary>
 public sealed class AuditService
 {
 
@@ -17,7 +21,7 @@ public sealed class AuditService
 
     }
 
-    public Task<ApiResponse<InferenceAuditRecord[]>?> QueryAsync(
+    public Task<ApiResponse<InferenceAuditRecord[]>?> QueryInferenceAsync(
         DateTimeOffset? from,
         DateTimeOffset? to,
         string? model,
@@ -35,6 +39,39 @@ public sealed class AuditService
             ("limit", limit?.ToString()));
 
         return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseInferenceAuditRecordArray, cancellationToken);
+
+    }
+
+    /// <summary>Backward-compatible alias for <see cref="QueryInferenceAsync"/>.</summary>
+    public Task<ApiResponse<InferenceAuditRecord[]>?> QueryAsync(
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? model,
+        string? sessionId,
+        int? limit,
+        CancellationToken cancellationToken) =>
+        QueryInferenceAsync(from, to, model, sessionId, limit, cancellationToken);
+
+    public Task<ApiResponse<GuardrailAuditRecord[]>?> QueryGuardrailsAsync(
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? stage,
+        string? violationType,
+        string? sessionId,
+        int? limit,
+        CancellationToken cancellationToken)
+    {
+
+        string path = QueryStringBuilder.Build(
+            "/api/guardrails/audit",
+            ("from", from?.ToString("O")),
+            ("to", to?.ToString("O")),
+            ("stage", stage),
+            ("violationType", violationType),
+            ("sessionId", sessionId),
+            ("limit", limit?.ToString()));
+
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseGuardrailAuditRecordArray, cancellationToken);
 
     }
 

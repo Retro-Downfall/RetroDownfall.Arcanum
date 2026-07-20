@@ -332,6 +332,54 @@ public sealed partial class WorkspaceExplorerViewModel : ViewModelBase
 
     }
 
+    /// <summary>
+    /// Ensures the workspace list is loaded, then selects the workspace with the given id.
+    /// Surfaces an honest error when the id is still absent after refresh.
+    /// </summary>
+    public async Task SelectWorkspaceAsync(string workspaceId, CancellationToken cancellationToken = default)
+    {
+
+        if (string.IsNullOrWhiteSpace(workspaceId))
+        {
+
+            LastError = "Workspace id is required.";
+
+            StatusText = "Workspace not found.";
+
+            _whispers.Show(WhisperSeverity.Warning, "Workspace not found.");
+
+            return;
+
+        }
+
+        await RefreshWorkspacesAsync(cancellationToken).ConfigureAwait(true);
+
+        WorkspaceInfo? match = Workspaces.FirstOrDefault(w =>
+            string.Equals(w.Id, workspaceId, StringComparison.Ordinal));
+
+        if (match is null)
+        {
+
+            LastError = $"Workspace '{workspaceId}' was not found after refresh.";
+
+            StatusText = "Workspace not found.";
+
+            _foundryFloor.AppendLine($"Workspace Explorer: {LastError}");
+
+            _whispers.Show(WhisperSeverity.Warning, "Workspace not found.");
+
+            return;
+
+        }
+
+        SelectedWorkspace = match;
+
+        StatusText = $"Selected {match.Name}.";
+
+        _loaded = true;
+
+    }
+
     [RelayCommand]
     public async Task RefreshDirectoryAsync(CancellationToken cancellationToken)
     {

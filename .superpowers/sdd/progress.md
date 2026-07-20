@@ -14,7 +14,10 @@
 - Final verification: solution build + Forge tests 360/360 + non-Api Arcanum sidecar tests 459/459
 - Phase 6 (Diagnostic MCP Invocation workbench): complete — `DiagnosticMcpInvocationViewModel` + `POST /api/mcp/tools/invoke` (policy-constrained external-only); TheForge.DESIGN §5.19; tracker §5.20 Phase 6 = implemented
 - Phase 7 (RAG / The Weave inspector): complete — backend `GET /api/workspaces/{id}/files/index/status` + `/files/chunks` (`IWorkspaceIndexInspectorService`, registry-only, clamped, 500-char preview cap, source-gen) + The Forge "The Weave Inspector" dock tool (`WeaveInspectorViewModel`: Index status/chunk browser/re-index/destructive embeddings reset with strong confirmation, Workspace Divination cross-link, Saga Divination with per-memory similarities, Session Divination → The Tome); Arcanum.DESIGN §21.7 + §5.20 tracker Phase 7 = implemented
-- Final verification (Phase 7): solution build 0 warnings/0 errors; Arcanum.Tests WorkspaceIndexInspectorEndpointTests 11/11; TheForge.Tests 425/425 (incl. WeaveInspectorViewModelTests 13/13)
+- Phase 8 (Audit Browser): complete — dock tool `auditBrowser` over `GET /api/audit` + `GET /api/guardrails/audit` (ApiResponse); filters; session → The Tome; CSV/JSON export; honest empty/disabled copy; guardrails redaction note; `IAuditBrowserDataSource` + `AuditBrowserViewModelTests`; Guardrails settings panel remains deferred
+- Phase 9 (Files & Batches): complete — dock tool `filesBatches`; OpenAI-shaped `/v1/files` + `/v1/batches` via dedicated compat client (multipart upload, streamed download, bounded JSONL preview, OpenAI error envelope); poll while visible+connected; suite-from-batch deferred
+- Phase 10 (The Ledger): complete — dock tool `ledger`; dedicated `IGitProcessRunner` (FileName=git, ArgumentList, bounded IO); branch/status/diff/stage/unstage/commit with confirms; pre-commit suite button when trial suites exist; push/pull/reset/rebase deferred
+- Final verification (Phases 8–10): TheForge.Tests 461/461 passed; DESIGN §5.20 Phases 8–10 = implemented
 
 # CLI banner sword + blue heading
 - Worktree: .tmp/worktrees/cli-banner-sword-blue (feature/cli-banner-sword-blue)

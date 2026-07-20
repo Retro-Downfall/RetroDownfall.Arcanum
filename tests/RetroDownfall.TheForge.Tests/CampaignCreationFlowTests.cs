@@ -232,6 +232,7 @@ public class CampaignCreationFlowTests
             campaign,
             new NullAtelierDataSource(),
             navigation,
+            new FakeActiveCampaignService(),
             creation,
             dialog,
             foundryFloor,
@@ -271,8 +272,15 @@ public class CampaignCreationFlowTests
     private sealed class NullCampaignDialogService : ICampaignDialogService
     {
 
-        public Task<NewCampaignInputs?> PromptNewCampaignAsync(CancellationToken cancellationToken) =>
+        public Task<NewCampaignInputs?> PromptNewCampaignAsync(
+            NewCampaignDialogOptions? options = null,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<NewCampaignInputs?>(null);
+
+        public Task<string?> PromptOpenCampaignPathAsync(
+            bool allowLocalFolderBrowse,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
 
         public Task<EditCampaignInputs?> PromptEditCampaignAsync(CampaignDto existing, CancellationToken cancellationToken) =>
             Task.FromResult<EditCampaignInputs?>(null);
@@ -302,6 +310,15 @@ public class CampaignCreationFlowTests
 
         public Task<string?> PickOpenJsonPathAsync(CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveCsvPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+        public Task<string?> PickOpenAnyPathAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
+        public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(null);
+
 
     }
 
