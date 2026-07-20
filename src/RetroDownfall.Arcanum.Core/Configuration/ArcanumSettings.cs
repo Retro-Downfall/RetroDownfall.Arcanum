@@ -67,6 +67,8 @@ public sealed record ArcanumSettings
 
     public FilesSettings Files { get; set; } = new();
 
+    public AttachmentsSettings Attachments { get; set; } = new();
+
     public BatchesSettings Batches { get; set; } = new();
 
     public PricingSettings Pricing { get; set; } = new();

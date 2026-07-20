@@ -1,8 +1,9 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -13,6 +14,20 @@ namespace RetroDownfall.Arcanum.Api.TheForge;
 
 internal static class InferenceExecuteWriter
 {
+
+    /// <summary>
+    /// Client-visible NDJSON Error text for wall-clock inference timeout (aligned with
+    /// WizardIntelligenceProvider.PublicInferenceTimeoutMessage / Hub.Timeout).
+    /// </summary>
+    internal const string PublicStreamTimeoutMessage =
+        "Inference timed out. Increase Arcanum:Intelligence:InferenceTimeoutSeconds or retry with a shorter prompt.";
+
+    /// <summary>
+    /// Client-visible NDJSON Error text for caught streaming exceptions (not intentional
+    /// provider Error events). Keep in sync with WizardIntelligenceProvider.PublicInferenceFailureMessage.
+    /// </summary>
+    internal const string PublicStreamFailureMessage =
+        "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.";
 
     private static readonly byte[] NewlineBytes = "\n"u8.ToArray();
 
@@ -89,6 +104,10 @@ internal static class InferenceExecuteWriter
         // dead socket.
         bool responseStarted = false;
 
+        ILogger logger = httpContext.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger(typeof(InferenceExecuteWriter).FullName ?? nameof(InferenceExecuteWriter));
+
         try
         {
             await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct, auditContext).ConfigureAwait(false))
@@ -113,7 +132,30 @@ internal static class InferenceExecuteWriter
         }
         catch (OperationCanceledException)
         {
+            // Global cancellation classification: client abort → stop cleanly (no error frame);
+            // wall-clock / other cancel → Hub.Timeout error frame when the socket is still writable.
+            if (httpContext.RequestAborted.IsCancellationRequested)
+            {
+                return;
+            }
 
+            try
+            {
+                IntelligenceEvent timeoutEvent = new(
+                    IntelligenceEventType.Error,
+                    PublicStreamTimeoutMessage);
+
+                eventBuffer.ResetWrittenCount();
+                jsonWriter.Reset();
+                JsonSerializer.Serialize(jsonWriter, timeoutEvent, ArcanumJsonContext.Default.IntelligenceEvent);
+                eventBuffer.Write(NewlineBytes);
+                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
+            {
+            }
         }
         catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
         {
@@ -129,10 +171,24 @@ internal static class InferenceExecuteWriter
 
             // Emit a terminal error frame whenever the client is still writable — including
             // after partial output — so native NDJSON clients always observe a terminal Error.
+            // Full exception detail stays in logs; the client frame is sanitized (W3.5).
+
+            logger.LogError(
+                ex,
+                "Stream inference failed (responseStarted={ResponseStarted}, model={Model}).",
+                responseStarted,
+                request.Model);
+
+            // ServeCommand clears MEL providers; Serilog is the durable sink for operators.
+            Serilog.Log.Error(
+                ex,
+                "Stream inference failed (responseStarted={ResponseStarted}, model={Model}).",
+                responseStarted,
+                request.Model);
 
             IntelligenceEvent errorEvent = new(
                 IntelligenceEventType.Error,
-                "An internal error occurred during inference streaming.");
+                PublicStreamFailureMessage);
 
             eventBuffer.ResetWrittenCount();
 
@@ -161,14 +217,7 @@ internal static class InferenceExecuteWriter
             catch (Exception writeEx)
             {
 
-                Debug.WriteLine($"Failed to write stream error frame: {writeEx.Message}");
-
-            }
-
-            if (ex is not OperationCanceledException)
-            {
-
-                Debug.WriteLine($"Stream inference failed (responseStarted={responseStarted}): {ex.Message}");
+                logger.LogWarning(writeEx, "Failed to write stream error frame after inference failure.");
 
             }
 

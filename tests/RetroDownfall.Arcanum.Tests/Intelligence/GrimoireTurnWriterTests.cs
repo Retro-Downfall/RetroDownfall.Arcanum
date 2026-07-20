@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -102,13 +104,161 @@ public sealed class GrimoireTurnWriterTests
             "test-model",
             CancellationToken.None);
 
-        await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
+        bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
+
+        Assert.True(ok);
 
         Assert.True(handle.IsFinalized);
 
         Assert.Equal(1, grimoire.FinalizeCallCount);
 
         Assert.Equal(1, grimoire.EntryByIdPublishCount);
+
+    }
+
+    [Fact]
+    public async Task TryFinalizeBufferedAssistantEntryAsync_DbFailure_ReturnsFalse_InterruptsAndMarksFinalized()
+    {
+
+        TrackingGrimoireRepository grimoire = new() { FinalizeThrows = true };
+
+        CapturingLogger logger = new();
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+
+            AssistantEntryId = Guid.NewGuid(),
+
+            SessionId = Guid.NewGuid(),
+
+        };
+
+        bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
+
+        Assert.False(ok);
+
+        Assert.True(handle.IsFinalized);
+
+        Assert.Equal(1, grimoire.DiscardCallCount);
+
+        Assert.Contains(
+            logger.Entries,
+            e => e.Exception is InvalidOperationException && e.Message.Contains("could not finalize", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task TryFinalizeBufferedAssistantEntryAsync_HubPublishFailureAfterDbSuccess_ReturnsTrue()
+    {
+
+        TrackingGrimoireRepository grimoire = new()
+        {
+
+            EntryByIdThrows = true,
+
+            ReturnEntryOnLookup = true,
+
+        };
+
+        CapturingLogger logger = new();
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+
+        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+            new PingRequest(
+                Prompt: "hello",
+                Model: "test-model",
+                WorkingDirectory: string.Empty,
+                SessionId: Guid.NewGuid()),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
+
+        Assert.True(ok);
+
+        Assert.True(handle.IsFinalized);
+
+        Assert.Equal(1, grimoire.FinalizeCallCount);
+
+        Assert.Equal(0, grimoire.DiscardCallCount);
+
+        Assert.Contains(
+            logger.Entries,
+            e => e.Level == LogLevel.Warning
+                && e.Message.Contains("could not publish finalized", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task TryFinalizeBufferedAssistantEntryAsync_DbAndCleanupBothFail_PreservesOriginalFailurePath()
+    {
+
+        TrackingGrimoireRepository grimoire = new()
+        {
+
+            FinalizeThrows = true,
+
+            DiscardThrows = true,
+
+        };
+
+        CapturingLogger logger = new();
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+
+            AssistantEntryId = Guid.NewGuid(),
+
+            SessionId = Guid.NewGuid(),
+
+        };
+
+        bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
+
+        Assert.False(ok);
+
+        Assert.True(handle.IsFinalized);
+
+        Assert.Contains(
+            logger.Entries,
+            e => e.Exception is InvalidOperationException
+                && e.Message.Contains("could not finalize", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(
+            logger.Entries,
+            e => e.Exception is InvalidOperationException
+                && e.Message.Contains("after finalize failure", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task TryBeginBufferedAssistantReplyAsync_OperationCanceled_Rethrows()
+    {
+
+        TrackingGrimoireRepository grimoire = new() { BeginThrowsCanceled = true };
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+
+        using CancellationTokenSource cts = new();
+
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            writer.TryBeginBufferedAssistantReplyAsync(
+                new PingRequest(
+                    Prompt: "hello",
+                    Model: "test-model",
+                    WorkingDirectory: string.Empty,
+                    SessionId: Guid.NewGuid()),
+                "hello",
+                "test-model",
+                cts.Token));
 
     }
 
@@ -204,11 +354,116 @@ public sealed class GrimoireTurnWriterTests
 
     }
 
+    [Fact]
+    public async Task TryBeginBufferedAssistantReplyAsync_RethrowsOperationCanceledException()
+    {
+
+        TrackingGrimoireRepository grimoire = new()
+        {
+
+            BeginThrows = new OperationCanceledException("begin cancelled"),
+
+        };
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            writer.TryBeginBufferedAssistantReplyAsync(
+                new PingRequest(
+                    Prompt: "hello",
+                    Model: "test-model",
+                    WorkingDirectory: string.Empty,
+                    SessionId: Guid.NewGuid()),
+                "hello",
+                "test-model",
+                CancellationToken.None));
+
+    }
+
+    [Fact]
+    public async Task TryBeginBufferedAssistantReplyAsync_SwallowsNonCancellationPersistenceFailure()
+    {
+
+        TrackingGrimoireRepository grimoire = new()
+        {
+
+            BeginThrows = new InvalidOperationException("db down"),
+
+        };
+
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+
+        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+            new PingRequest(
+                Prompt: "hello",
+                Model: "test-model",
+                WorkingDirectory: string.Empty,
+                SessionId: Guid.NewGuid()),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.Null(handle.AssistantEntryId);
+
+        Assert.Null(handle.SessionId);
+
+    }
+
     private static GrimoireTurnWriter CreateWriter(IGrimoireRepository grimoire) =>
+        CreateWriter(grimoire, NullLogger<GrimoireTurnWriter>.Instance);
+
+    private static GrimoireTurnWriter CreateWriter(
+        IGrimoireRepository grimoire,
+        ILogger<GrimoireTurnWriter> logger) =>
         new(
             grimoire,
             new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SessionEventHub>.Instance),
-            NullLogger<GrimoireTurnWriter>.Instance);
+            logger);
+
+    private sealed class CapturingLogger : ILogger<GrimoireTurnWriter>
+    {
+
+        private readonly List<(LogLevel Level, string Message, Exception? Exception)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message, Exception? Exception)> Entries
+        {
+
+            get
+            {
+
+                lock (_entries)
+                {
+
+                    return _entries.ToList();
+
+                }
+
+            }
+
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+
+            lock (_entries)
+            {
+
+                _entries.Add((logLevel, formatter(state, exception), exception));
+
+            }
+
+        }
+
+    }
 
     private sealed class TrackingGrimoireRepository : IGrimoireRepository
     {
@@ -227,6 +482,18 @@ public sealed class GrimoireTurnWriterTests
 
         public CancellationToken LastDiscardToken { get; private set; }
 
+        public Exception? BeginThrows { get; init; }
+
+        public bool BeginThrowsCanceled { get; init; }
+
+        public bool FinalizeThrows { get; init; }
+
+        public bool DiscardThrows { get; init; }
+
+        public bool EntryByIdThrows { get; init; }
+
+        public bool ReturnEntryOnLookup { get; init; }
+
         public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
             Guid? sessionId,
             string prompt,
@@ -236,6 +503,22 @@ public sealed class GrimoireTurnWriterTests
 
             BeginCallCount++;
 
+            if (BeginThrowsCanceled)
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                throw new OperationCanceledException(cancellationToken);
+
+            }
+
+            if (BeginThrows is not null)
+            {
+
+                throw BeginThrows;
+
+            }
+
             return Task.FromResult((FixedSessionId ?? sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
 
         }
@@ -244,6 +527,13 @@ public sealed class GrimoireTurnWriterTests
         {
 
             FinalizeCallCount++;
+
+            if (FinalizeThrows)
+            {
+
+                throw new InvalidOperationException("finalize failed");
+
+            }
 
             return Task.CompletedTask;
 
@@ -255,6 +545,13 @@ public sealed class GrimoireTurnWriterTests
             DiscardCallCount++;
 
             LastDiscardToken = cancellationToken;
+
+            if (DiscardThrows)
+            {
+
+                throw new InvalidOperationException("discard failed");
+
+            }
 
             return Task.CompletedTask;
 
@@ -292,7 +589,26 @@ public sealed class GrimoireTurnWriterTests
 
             EntryByIdPublishCount++;
 
-            return Task.FromResult<GrimoireEntryDto?>(null);
+            if (EntryByIdThrows)
+            {
+
+                throw new InvalidOperationException("hub lookup failed");
+
+            }
+
+            if (!ReturnEntryOnLookup)
+            {
+
+                return Task.FromResult<GrimoireEntryDto?>(null);
+
+            }
+
+            return Task.FromResult<GrimoireEntryDto?>(new GrimoireEntryDto(
+                entryId,
+                MessageRole.Assistant,
+                "content",
+                "test-model",
+                DateTimeOffset.UtcNow));
 
         }
 

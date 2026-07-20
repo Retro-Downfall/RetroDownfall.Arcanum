@@ -329,6 +329,22 @@ public static class SettingDescriptors
 
         new("files.allowedMimeTypes", ConfigSection.Files, "Allowed upload MIME types", "Allowed Content-Type values for POST /v1/files uploads. Empty (default) means no operator-configured restriction.", SettingKind.StringArray),
 
+        new("attachments.enabled", ConfigSection.Attachments, "Enabled", "When true, session attachments (text + Scrying images) are persisted on disk with Grimoire metadata.", SettingKind.Bool),
+
+        new("attachments.maxReferencesPerTurn", ConfigSection.Attachments, "Max references per turn", "Maximum AttachmentReferences allowed on a single inference turn.", SettingKind.Int, 1, 32, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn)),
+
+        new("attachments.maxVersionsPerLogicalKey", ConfigSection.Attachments, "Max versions per logical key", "Soft cap on versioned copies of the same logical attachment name within a session.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey)),
+
+        new("attachments.maxBytesPerSession", ConfigSection.Attachments, "Max bytes per session", "Soft byte budget for all attachment files in a single session.", SettingKind.Long, 1024 * 1024, 10L * 1024 * 1024 * 1024, 1024 * 1024, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxBytesPerSession)),
+
+        new("attachments.pendingRetentionHours", ConfigSection.Attachments, "Pending retention (hours)", "Age after which stale pending attachment rows and _pending directories are garbage-collected.", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsPendingRetentionHours)),
+
+        new("attachments.maxIndexItemsInPrompt", ConfigSection.Attachments, "Max index items in prompt", "Maximum attachment index entries injected into the system prompt.", SettingKind.Int, 1, 200, 1, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt)),
+
+        new("attachments.maxIndexBytesInPrompt", ConfigSection.Attachments, "Max index bytes in prompt", "Maximum UTF-16 budget for the Session Attachments Index block in the system prompt.", SettingKind.Int, 256, 64_000, 256, ClampName: nameof(ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt)),
+
+        new("attachments.enableModelAttachTool", ConfigSection.Attachments, "Enable model attach tool", "When true, advertises the internal MCP attach_session_file tool for the current session.", SettingKind.Bool),
+
         new("batches.maxConcurrentBatches", ConfigSection.Batches, "Max concurrent batches", "Maximum number of /v1/batches processed concurrently across the whole server.", SettingKind.Int, 1, 20, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxConcurrentBatches)),
 
         new("batches.maxRequestsPerBatch", ConfigSection.Batches, "Max requests per batch", "Maximum JSONL request lines accepted in a single /v1/batches input file.", SettingKind.Int, 1, 1_000_000, 1, ClampName: nameof(ArcanumSettingClamps.BatchesMaxRequestsPerBatch)),

@@ -188,15 +188,20 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
                 listDirectoryMaxPaths: 64,
                 intelligenceSettings: intelligenceSettings,
                 maxFileReadSizeBytes: 1024 * 1024,
-                conclaveEnabled: false,
-                sagaEnabled: false,
-                a2aClientEnabled: false,
-                maxJsonRpcLineBytes: 2_097_152,
-                logger: NullLogger<ArcanumInternalToolServer>.Instance);
+            conclaveEnabled: false,
+            sagaEnabled: false,
+            a2aClientEnabled: false,
+            attachmentsToolEnabled: false,
+            maxJsonRpcLineBytes: 2_097_152,
+            logger: NullLogger<ArcanumInternalToolServer>.Instance);
 
         _ = Task.Run(() => server.RunAsync(CancellationToken.None));
 
-        ChannelClientTransport clientTransport = new(toServer, fromServer, maxJsonRpcLineBytes: 2_097_152);
+        ChannelClientTransport clientTransport = new(
+            toServer,
+            fromServer,
+            maxJsonRpcLineBytes: 2_097_152,
+            ambientConnectionKey: server.AmbientConnectionKey);
 
         return (clientTransport, server);
     }

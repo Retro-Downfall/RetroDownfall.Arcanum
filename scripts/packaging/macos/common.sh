@@ -95,6 +95,59 @@ sign_app_bundle() {
   codesign --verify --strict --deep --verbose=4 "$app_path"
 }
 
+# Sign a flat publish/stage directory (CLI zip): nested Mach-Os first, main executable last.
+# Discovers regular files via `file`; verifies each with codesign --verify --strict --verbose=2.
+sign_publish_dir() {
+  local dir="$1"
+  local entitlements="${2:-}"
+  local main_name="${3:-arcanum}"
+  local main_path="$dir/$main_name"
+
+  if [[ ! -d "$dir" ]]; then
+    echo "error: sign_publish_dir: not a directory: $dir" >&2
+    exit 1
+  fi
+  if [[ ! -f "$main_path" ]]; then
+    echo "error: sign_publish_dir: main executable not found: $main_path" >&2
+    exit 1
+  fi
+
+  require_cmd file
+  require_cmd codesign
+
+  local -a nested=()
+  local file
+  while IFS= read -r -d '' file; do
+    if [[ "$file" == "$main_path" ]]; then
+      continue
+    fi
+    if file -b "$file" | grep -q 'Mach-O'; then
+      nested+=("$file")
+    fi
+  done < <(find "$dir" -type f -print0)
+
+  # Deepest paths first so nested dylibs are signed before dependents / main.
+  # Use NUL-delimited sort so paths with spaces are not word-split.
+  if ((${#nested[@]} > 0)); then
+    local sorted=()
+    while IFS= read -r -d '' file; do
+      sorted+=("$file")
+    done < <(printf '%s\0' "${nested[@]}" | awk 'BEGIN{RS="\0";ORS="\0"} {print length($0), $0}' | sort -nzr | cut -z -d' ' -f2-)
+    nested=("${sorted[@]}")
+  fi
+
+  local path
+  for path in "${nested[@]+"${nested[@]}"}"; do
+    echo "==> Signing nested Mach-O: $path"
+    codesign_item "$path" "$entitlements"
+    codesign --verify --strict --verbose=2 "$path"
+  done
+
+  echo "==> Signing main executable: $main_path"
+  codesign_item "$main_path" "$entitlements"
+  codesign --verify --strict --verbose=2 "$main_path"
+}
+
 notarize_submit() {
   local archive="$1"
   xcrun notarytool submit "$archive" \

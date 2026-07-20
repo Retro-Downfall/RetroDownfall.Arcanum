@@ -195,6 +195,42 @@ internal static class SessionEndpoints
             })
         .WithName("GetSessionEntries");
 
+        apiGroup.MapGet(
+            "/sessions/{id:guid}/attachments",
+            async (
+                Guid id,
+                ISessionRepository repo,
+                ISessionAttachmentStore store,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Session? session = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (session is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionAttachmentDto[]>.FromResult(
+                            Result<SessionAttachmentDto[]>.Failure(
+                                new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                IReadOnlyList<SessionAttachmentRecord> bound = await store
+                    .ListBoundAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                SessionAttachmentDto[] dtos = bound.Select(SessionMapping.ToAttachmentDto).ToArray();
+
+                return Results.Ok(
+                    ApiResponse<SessionAttachmentDto[]>.FromResult(
+                        Result<SessionAttachmentDto[]>.Success(dtos),
+                        traceId));
+            })
+        .WithName("GetSessionAttachments");
+
         apiGroup.MapPost(
             "/sessions/{id:guid}/entries",
             async (Guid id, AppendEntryRequest? request, ISessionRepository repo, SessionEventHub eventHub, HttpContext ctx) =>

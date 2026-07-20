@@ -84,7 +84,8 @@ internal static class ChildProcessSandboxRoots
             }
             catch (Exception)
             {
-
+                // Invalid/unresolvable path — skip this root candidate.
+                System.Diagnostics.Debug.WriteLine("ChildProcessSandboxRoots: skipped unresolvable script parent path.");
             }
 
         }
@@ -242,7 +243,8 @@ internal static class ChildProcessSandboxRoots
             }
             catch (Exception)
             {
-
+                // Symlink resolution failed — keep the unresolved path.
+                System.Diagnostics.Debug.WriteLine("ChildProcessSandboxRoots: symlink resolution failed; keeping path as-is.");
             }
 
             if (full is "/" or "\\")
@@ -264,7 +266,8 @@ internal static class ChildProcessSandboxRoots
         }
         catch (Exception)
         {
-
+            // Invalid/unresolvable path — skip this root candidate.
+            System.Diagnostics.Debug.WriteLine("ChildProcessSandboxRoots: skipped unresolvable sandbox root path.");
         }
 
     }

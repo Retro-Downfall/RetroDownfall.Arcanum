@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 namespace RetroDownfall.Arcanum.Core.TheForge;
@@ -115,3 +116,19 @@ public sealed record CompactResult(
     int EntriesRemoved);
 
 public sealed record SessionEntryCountDto(int Count);
+
+/// <summary>
+/// Bound session attachment metadata for <c>GET /api/sessions/{id}/attachments</c>
+/// (list + Reveal). Does not include pending rows or file bytes.
+/// </summary>
+public sealed record SessionAttachmentDto(
+    Guid Id,
+    string LogicalKey,
+    string OriginalFileName,
+    int Version,
+    string RelativePath,
+    string MimeType,
+    long ByteLength,
+    SessionAttachmentKind Kind,
+    string ContentSha256,
+    DateTimeOffset CreatedAt);

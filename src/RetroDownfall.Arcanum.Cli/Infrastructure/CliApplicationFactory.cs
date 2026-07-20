@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Configuration;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
@@ -105,6 +106,20 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IArcanumServeLauncher, ArcanumServeLauncher>();
 
+        services.AddSingleton<ILastSessionStore, CliLastSessionStore>();
+
+        services.AddTransient<SessionWorkspaceService>();
+
+        services.AddSingleton<ShellCommandParser>();
+
+        services.AddTransient<ShellCommandDispatcher>();
+
+        services.AddTransient<CommandCenterChatRunner>();
+
+        services.AddTransient<CommandCenterApp>();
+
+        services.AddTransient<ICommandCenterHost, CommandCenterHost>();
+
         services.AddArcanumEyeOfTheWorld();
 
         services.AddArcanumDaemonManagement();
@@ -176,7 +191,25 @@ internal static class CliApplicationFactory
         // JsonSerializerOptions is supplied.
         ConsoleApp.JsonSerializerOptions = CliJsonArrayContext.Default.Options;
 
-        string[] mergedArgs = ApplyDefaultCommand(RepeatableOptionMerger.Merge(args));
+        string[] merged = RepeatableOptionMerger.Merge(args);
+
+        if (merged.Length == 0)
+        {
+            ICliEnvironment env = serviceProvider.GetRequiredService<ICliEnvironment>();
+
+            if (env.IsInteractive && !CommandCenterHost.IsCommandCenterDisabled())
+            {
+                ICommandCenterHost host = serviceProvider.GetRequiredService<ICommandCenterHost>();
+
+                return await host.RunAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            WriteBareUsage();
+
+            return 0;
+        }
+
+        string[] mergedArgs = ApplyDefaultCommand(merged);
 
         var app = ConsoleApp.Create();
 
@@ -229,21 +262,39 @@ internal static class CliApplicationFactory
     }
 
     /// <summary>
-    /// Bare <c>arcanum</c> (no command) opens the interactive chat REPL — the primary UX.
-    /// Explicit help/version and every named command still behave as before.
+    /// Named empty-args default is retired: bare interactive <c>arcanum</c> opens the Command Center.
+    /// This method remains for non-empty arg rewriting only (identity today).
     /// </summary>
     internal static string[] ApplyDefaultCommand(string[] mergedArgs)
     {
 
         ArgumentNullException.ThrowIfNull(mergedArgs);
 
-        if (mergedArgs.Length == 0)
-        {
-            return ["chat"];
-        }
-
         return mergedArgs;
 
+    }
+
+    internal static void WriteBareUsage()
+    {
+        Console.WriteLine(
+            """
+            Arcanum CLI
+
+              arcanum                 Open the Command Center (interactive TTY)
+              arcanum <command> …     Run a direct command (script-safe, no TUI)
+
+            Examples:
+              arcanum chat
+              arcanum ask "hello"
+              arcanum doctor
+              arcanum campaign list
+
+            Escape hatches:
+              ARCANUM_NO_COMMAND_CENTER=1   Print this usage instead of the TUI
+              ARCANUM_NO_AUTO_SERVE=1       Disable auto-start of `arcanum serve`
+
+            Run `arcanum --help` for the full command list.
+            """);
     }
 
     public static void ConfigureAnsiConsoleForEnvironment(IConfiguration configuration)

@@ -1,6 +1,7 @@
 using A2A;
 
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -106,7 +107,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(TimeProvider.System);
 
-        services.AddDbContext<ArcanumDbContext>();
+        services.AddDbContext<ArcanumDbContext>((sp, options) =>
+            ArcanumDbContextOptionsConfigurator.Configure(
+                options,
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
 
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
 
@@ -252,6 +256,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SpellWeaveCache>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
 
+        // One-shot pending attachment GC; runs after Grimoire schema bootstrap above.
+        services.AddHostedService<SessionAttachmentPendingGcHostedService>();
+
         // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until their feature
         // flags are enabled (Arcanum:Embeddings:SessionSearchEnabled / CodebaseRetrievalEnabled), so
         // registering them unconditionally is safe on the hot path. Registered after
@@ -274,13 +281,22 @@ public static class ServiceCollectionExtensions
 
         services.AddHostedService<ArcanumSecurityStartupChecks>();
 
-        services.AddDbContextPool<ArcanumDbContext>(_ => { }, poolSize: 32);
+        // Options must be fully configured here — pooled contexts reject OnConfiguring mutations
+        // (including AddInterceptors). Passphrase is set by GrimoireDatabaseHostedService before
+        // the first request resolves a context from the pool.
+        services.AddDbContextPool<ArcanumDbContext>(
+            (sp, options) => ArcanumDbContextOptionsConfigurator.Configure(
+                options,
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>()),
+            poolSize: 32);
 
         services.AddScoped<IUnseenServantWatermarkStore, UnseenServantWatermarkStore>();
 
         services.AddScoped<IIdempotencyStore, IdempotencyStore>();
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
+
+        services.AddScoped<ISessionAttachmentStore, SessionAttachmentStore>();
 
         services.AddScoped<IBatchRepository, BatchRepository>();
 

@@ -12,7 +12,10 @@
 
     <IsTrimmable>true</IsTrimmable>
 
-    <PublishAot>true</PublishAot>
+    <!-- PublishAot belongs on the executable host at publish time, not on this library.
+         Leaving it true here stamped AOT feature switches into local Debug hosts and
+         broke EF LINQ (no precompiled queries). -->
+    <PublishAot>false</PublishAot>
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 

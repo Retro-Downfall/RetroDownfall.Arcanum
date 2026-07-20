@@ -38,4 +38,14 @@ public sealed class ArcanumPathsTests
 
     }
 
+    [Fact]
+    public void AttachmentsDirectory_IsUnderGrimoireDirectory()
+    {
+
+        string expected = Path.Combine(ArcanumPaths.GrimoireDirectory, "attachments");
+
+        Assert.Equal(expected, ArcanumPaths.AttachmentsDirectory);
+
+    }
+
 }

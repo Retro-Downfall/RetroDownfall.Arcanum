@@ -1,11 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
-using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -43,21 +41,15 @@ public sealed class ArcanumDbContext(
     {
         _ = secretStore;
 
-        optionsBuilder.AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
-
+        // DbContext pooling forbids modifying options here. Host/CLI DI registers options via
+        // ArcanumDbContextOptionsConfigurator; this path is only a fallback for design-time /
+        // manual construction when options were not preconfigured.
         if (optionsBuilder.IsConfigured)
         {
             return;
         }
 
-        string dbPath = ArcanumPaths.GrimoireDatabaseFile;
-        string connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = dbPath,
-            Password = passphraseSource.Passphrase,
-        }.ToString();
-        optionsBuilder.UseSqlite(connectionString);
-        optionsBuilder.UseModel(ArcanumDbContextModel.Instance);
+        ArcanumDbContextOptionsConfigurator.Configure(optionsBuilder, passphraseSource);
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

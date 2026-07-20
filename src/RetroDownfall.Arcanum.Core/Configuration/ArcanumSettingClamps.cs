@@ -101,6 +101,18 @@ public static class ArcanumSettingClamps
 
     public static long FilesMaxUploadSizeBytes(long value) => Math.Clamp(value, 1024L * 1024L, 10L * 1024L * 1024L * 1024L);
 
+    public static int AttachmentsMaxReferencesPerTurn(int value) => Math.Clamp(value, 1, 32);
+
+    public static int AttachmentsMaxVersionsPerLogicalKey(int value) => Math.Clamp(value, 1, 100);
+
+    public static long AttachmentsMaxBytesPerSession(long value) => Math.Clamp(value, 1024L * 1024L, 10L * 1024L * 1024L * 1024L);
+
+    public static int AttachmentsPendingRetentionHours(int value) => Math.Clamp(value, 1, 168);
+
+    public static int AttachmentsMaxIndexItemsInPrompt(int value) => Math.Clamp(value, 1, 200);
+
+    public static int AttachmentsMaxIndexBytesInPrompt(int value) => Math.Clamp(value, 256, 64_000);
+
     public static int BatchesMaxConcurrentBatches(int value) => Math.Clamp(value, 1, 20);
 
     public static int BatchesMaxRequestsPerBatch(int value) => Math.Clamp(value, 1, 1_000_000);

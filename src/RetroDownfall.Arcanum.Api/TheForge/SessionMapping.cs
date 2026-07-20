@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
@@ -29,5 +30,18 @@ internal static class SessionMapping
             session.Summary,
             session.TotalTokensUsed,
             session.ForkedFromSessionId);
+
+    public static SessionAttachmentDto ToAttachmentDto(SessionAttachmentRecord record) =>
+        new(
+            record.Id,
+            record.LogicalKey,
+            record.OriginalFileName,
+            record.Version,
+            record.RelativePath,
+            record.MimeType,
+            record.ByteLength,
+            record.Kind,
+            record.ContentSha256,
+            record.CreatedAt);
 
 }

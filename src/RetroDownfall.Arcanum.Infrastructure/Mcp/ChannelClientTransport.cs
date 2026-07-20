@@ -20,8 +20,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed class ChannelClientTransport(
     ChannelWriter<string> toServer,
     ChannelReader<string> fromServer,
-    int maxJsonRpcLineBytes) : IClientTransport
+    int maxJsonRpcLineBytes,
+    string? ambientConnectionKey = null) : IClientTransport
 {
+
+    private readonly string _ambientConnectionKey = string.IsNullOrWhiteSpace(ambientConnectionKey)
+        ? Guid.NewGuid().ToString("N")
+        : ambientConnectionKey;
 
     /// <inheritdoc />
     public string Name => "arcanum-internal (in-process)";
@@ -29,7 +34,7 @@ internal sealed class ChannelClientTransport(
     /// <inheritdoc />
     public Task<ITransport> ConnectAsync(CancellationToken cancellationToken = default)
     {
-        ChannelSessionTransport session = new(toServer, fromServer, maxJsonRpcLineBytes);
+        ChannelSessionTransport session = new(toServer, fromServer, maxJsonRpcLineBytes, _ambientConnectionKey);
 
         session.Start();
 
@@ -52,6 +57,8 @@ internal sealed class ChannelClientTransport(
 
         private readonly int _maxJsonRpcLineBytes;
 
+        private readonly string _ambientConnectionKey;
+
         private readonly Channel<JsonRpcMessage> _inbound = Channel.CreateUnbounded<JsonRpcMessage>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
 
@@ -63,13 +70,19 @@ internal sealed class ChannelClientTransport(
 
         private volatile bool _disposed;
 
-        public ChannelSessionTransport(ChannelWriter<string> toServer, ChannelReader<string> fromServer, int maxJsonRpcLineBytes)
+        public ChannelSessionTransport(
+            ChannelWriter<string> toServer,
+            ChannelReader<string> fromServer,
+            int maxJsonRpcLineBytes,
+            string ambientConnectionKey)
         {
             _toServer = toServer;
 
             _fromServer = fromServer;
 
             _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
+
+            _ambientConnectionKey = ambientConnectionKey;
         }
 
         /// <inheritdoc />
@@ -87,6 +100,8 @@ internal sealed class ChannelClientTransport(
         public async Task SendMessageAsync(JsonRpcMessage message, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+
+            SessionAttachmentAmbientSend.BindSdkToolsCall(_ambientConnectionKey, message);
 
             string json = JsonSerializer.Serialize(message, JsonRpcMessageTypeInfo);
 

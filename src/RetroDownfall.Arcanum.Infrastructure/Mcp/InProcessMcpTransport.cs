@@ -37,6 +37,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
     private readonly ILogger? _logger;
 
+    private readonly string _ambientConnectionKey;
+
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -49,12 +51,16 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
     internal CancellationToken LifetimeCancellation => _lifetimeCts.Token;
 
+    /// <summary>Per-connection key shared with the paired <see cref="ArcanumInternalToolServer"/>.</summary>
+    internal string AmbientConnectionKey => _ambientConnectionKey;
+
     internal InProcessMcpTransport(
         ChannelWriter<string> toServer,
         ChannelReader<string> fromServer,
         int maxJsonRpcLineBytes,
         McpJsonSerializerContext? jsonContext = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        string? ambientConnectionKey = null)
     {
         ArgumentNullException.ThrowIfNull(toServer);
 
@@ -76,6 +82,10 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         _json = jsonContext ?? McpJsonSerializerContext.Default;
 
         _logger = logger;
+
+        _ambientConnectionKey = string.IsNullOrWhiteSpace(ambientConnectionKey)
+            ? Guid.NewGuid().ToString("N")
+            : ambientConnectionKey;
 
         BoundedChannelOptions envelopeOptions = new(ChannelCapacity)
         {
@@ -120,6 +130,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool conclaveEnabled,
         bool sagaEnabled,
         bool a2aClientEnabled,
+        bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -137,6 +148,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             conclaveEnabled,
             sagaEnabled,
             a2aClientEnabled,
+            attachmentsToolEnabled,
             maxJsonRpcLineBytes,
             logger,
             jsonContext);
@@ -146,7 +158,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             serverToClient.Reader,
             maxJsonRpcLineBytes,
             jsonContext,
-            logger);
+            logger,
+            server.AmbientConnectionKey);
 
         return (transport, server);
     }
@@ -169,6 +182,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool conclaveEnabled,
         bool sagaEnabled,
         bool a2aClientEnabled,
+        bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -186,6 +200,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             conclaveEnabled,
             sagaEnabled,
             a2aClientEnabled,
+            attachmentsToolEnabled,
             maxJsonRpcLineBytes,
             logger,
             jsonContext);
@@ -206,6 +221,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool conclaveEnabled,
         bool sagaEnabled,
         bool a2aClientEnabled,
+        bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger,
         McpJsonSerializerContext? jsonContext)
@@ -238,6 +254,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             SingleReader = true,
         });
 
+        string ambientConnectionKey = Guid.NewGuid().ToString("N");
+
         ArcanumInternalToolServer server = new(
             clientToServer.Reader,
             serverToClient.Writer,
@@ -253,7 +271,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             conclaveEnabled,
             sagaEnabled,
             a2aClientEnabled,
+            attachmentsToolEnabled,
             maxJsonRpcLineBytes,
+            ambientConnectionKey,
             logger,
             jsonContext);
 
@@ -286,11 +306,40 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        JsonRpcRequest toSend = SessionAttachmentAmbientSend.ApplyAmbientBinding(_ambientConnectionKey, request);
+
         await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            string json = JsonSerializer.Serialize(request, _json.JsonRpcRequest);
+            string json = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest);
+
+            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+
+            await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Test seam: write a request after applying opaque-token ambient binding only (skips request-id map).
+    /// </summary>
+    internal async Task WriteRequestWithOpaqueAmbientAsync(
+        JsonRpcRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        JsonRpcRequest toSend = SessionAttachmentAmbientSend.ApplyOpaqueTokenBindingOnly(request);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            string json = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest);
 
             McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
 

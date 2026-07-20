@@ -2,7 +2,9 @@
 
 Arcanum's primary persistent store is the **Grimoire**, an encrypted SQLite (SQLCipher) database managed through EF Core with a compiled model, AOT-safe source-generated JSON contexts, and embedded hand-authored SQL migrations. This document tracks which operational state lives in the Grimoire, which still lives in memory, and the conventions each subsystem follows when it moves from one to the other.
 
-One deliberately **non-Grimoire** persisted artifact exists alongside it: the **persisted inference audit log** (`Arcanum:Host:AuditLog`, disabled by default, DESIGN.md §8.26) — plain dated JSONL files (`~/.config/arcanum/audit-YYYYMMDD.jsonl` by default), not a SQLite table. It records operational metadata about completed inference turns (model, tokens, latency, tool activity), not conversation content, and is intentionally kept out of the encrypted Grimoire so operators can `tail`/`grep`/ship it with standard log tooling without needing the Grimoire's decryption key. It is out of scope for the rest of this document, which covers only Grimoire-backed state.
+One deliberately **non-Grimoire** persisted artifact exists alongside it: the **persisted inference audit log** (`Arcanum:Host:AuditLog`, disabled by default, DESIGN.md §8.26) — plain dated JSONL files (`~/.config/arcanum/audit-YYYYMMDD.jsonl` by default), not a SQLite table. It records operational metadata about completed inference turns (model, tokens, latency, tool activity), and is intentionally kept out of the encrypted Grimoire so operators can `tail`/`grep`/ship it with standard log tooling without needing the Grimoire's decryption key.
+
+**Session attachment bytes** follow the same split as OpenAI `/v1/files`: metadata in the Grimoire (`SessionAttachments`), raw bytes on disk under `~/.config/arcanum/attachments/` — **not** SQLCipher-encrypted (see §13). The audit log remains out of scope for the rest of this document's Grimoire-backed state tables; attachment metadata is in-scope below.
 
 This is a living document. It is updated each time an in-memory subsystem gains Grimoire persistence (see `docs/Arcanum.DESIGN.md` §2.2 for the tracked backlog of remaining amnesiac gaps).
 
@@ -18,10 +20,11 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 | **Sanctum breach history** (per-campaign audit trail: tool, breach type, description, JSON details) | `SanctumBreaches` | Existing — replaces the former in-memory ring buffer (`SanctumBreachStore`, retired) |
 | **Idempotency-Key cache** (cached responses for replayed side-effecting inference requests; DESIGN.md §11.17) | `IdempotencyKeys` | Existing — TTL-expired rows swept hourly by `UnseenServantService` |
 | **Uploaded file metadata** (`POST /v1/files`; DESIGN.md §11.20) | `UploadedFiles` | Existing — row is metadata only; file bytes live on disk under `ArcanumPaths.FilesDirectory`, named by a fresh GUID (never the client filename) |
+| **Session attachment metadata** (Command Center + host; DESIGN.md §10.2.5) | `SessionAttachments` | Existing — hand-authored SQL migration `20260719180000_AddSessionAttachments`; raw SQL via `ISessionAttachmentStore` / `SessionAttachmentStore`. Bytes under `ArcanumPaths.AttachmentsDirectory` (original filenames preserved under version folders). **Not** part of the compiled EF model. |
 | **Batch job metadata** (`/v1/batches`; DESIGN.md §11.21) | `Batches` | Existing — no request-count columns; `GET` computes `request_counts` on the fly by reading the input/output/error files off disk (all three are themselves `UploadedFiles` rows) |
 | **Session accumulated cost** (USD spend per session, updated atomically with `TotalTokensUsed`) | `Sessions.TotalCostUsd` | Existing — `NUMERIC NOT NULL DEFAULT 0` column on the existing `Sessions` table (precision 18, scale 8) |
 | **Budget alerts** (per-threshold-per-UTC-day alert dispatch log; prevents duplicate Comm Link notifications) | `BudgetAlerts` | Existing — unique index `IX_BudgetAlerts_Threshold_Date` on `(Threshold, date(AlertedAt))` enforces one alert per threshold per day at the database level; `BudgetAlertRepository.RecordAlertAsync` swallows the resulting `SQLITE_CONSTRAINT` and returns `false` for duplicate inserts. `BudgetMonitor` inserts the alert row *before* dispatching the Comm Link notification, so the unique index is the dedup authority under concurrent turns (no check-then-insert race). Decimal columns (`SpendUsd`, `DailyLimitUsd`) are bound as `decimal`, not strings. |
-|| **Embedding reset** (`POST /api/embeddings/reset`) | `entry_embeddings`, `entry_embeddings_vec`, `workspace_file_embeddings`, `workspace_file_embeddings_vec`, `workspace_file_chunks`, `saga_memory_embeddings`, `saga_memory_embeddings_vec`, `saga_memories`, `saga_extraction_watermarks` | Existing — raw-SQL tables created by `WeaveSchemaInitializer`; cleared by `EmbeddingsResetService` in a single transaction per scope (`all`, `entry`, `workspaceFile`, `saga`) |
+| **Embedding reset** (`POST /api/embeddings/reset`) | `entry_embeddings`, `entry_embeddings_vec`, `workspace_file_embeddings`, `workspace_file_embeddings_vec`, `workspace_file_chunks`, `saga_memory_embeddings`, `saga_memory_embeddings_vec`, `saga_memories`, `saga_extraction_watermarks` | Existing — raw-SQL tables created by `WeaveSchemaInitializer`; cleared by `EmbeddingsResetService` in a single transaction per scope (`all`, `entry`, `workspaceFile`, `saga`) |
 | **Entry pinning** (`IsPinned` flag on conversation entries; pinned entries survive read-time context compression and are included in inference context even when older than the compression watermark) | `Entries.IsPinned` | Existing — `INTEGER NOT NULL DEFAULT 0` column on `Entries` with index `IX_Entries_SessionId_IsPinned`; compiled EF model regenerated with `dotnet ef dbcontext optimize` |
 | Apprentice Chronicle (lifecycle/execution events) | — | Deferred (in-memory bounded channel, `ChronicleHub`) |
 | Active Wards | — | **Not persisted by design** (see §7) |
@@ -145,4 +148,55 @@ Prompt caching is provider-managed for OpenAI-compatible endpoints. Arcanum read
 
 ## 12. EF migration snapshot drift
 
-The EF Core `InitialCreate` migration C# file and `ArcanumDbContextModelSnapshot.cs` are intentionally **stale** — `Sessions.TotalCostUsd` (precision 18, scale 8), `Entries.IsPinned`, `Session.ForkedFromSessionId` (with index), and several additive tables (`UnseenServantWatermarks`, `SanctumBreaches`, `IdempotencyKeys`, `UploadedFiles`, `Batches`, `BudgetAlerts`) were added via hand-authored SQL migrations (Section 3) and the compiled EF model (`src/RetroDownfall.Arcanum.Infrastructure/Generated/`), not via `dotnet ef migrations add`. The `ArcanumDbContextModelSnapshot.cs` was hand-edited to include `Session.TotalCostUsd` and `Session.ForkedFromSessionId` (with `HasIndex`) so `dotnet ef migrations add` produces an empty migration rather than a spurious "add column" migration. The compiled model is canonical; the EF migration snapshot exists only for `dotnet ef` tooling compatibility and would need full regeneration (via `dotnet ef migrations add InitialCreate` against a clean `Data/Migrations/` folder) only if `dotnet ef` tooling is ever needed again. Runtime behavior is unaffected — `GrimoireSqlSchemaMigrator` applies the authoritative SQL migrations, and the compiled model handles all EF-tracked entities.
+The EF Core `InitialCreate` migration C# file and `ArcanumDbContextModelSnapshot.cs` are intentionally **stale** — `Sessions.TotalCostUsd` (precision 18, scale 8), `Entries.IsPinned`, `Session.ForkedFromSessionId` (with index), and several additive tables (`UnseenServantWatermarks`, `SanctumBreaches`, `IdempotencyKeys`, `UploadedFiles`, `Batches`, `BudgetAlerts`) were added via hand-authored SQL migrations (Section 3) and the compiled EF model (`src/RetroDownfall.Arcanum.Infrastructure/Generated/`), not via `dotnet ef migrations add`. **`SessionAttachments`** is likewise a hand-authored SQL migration but is **not** on the compiled EF model (raw SQL only — see §13). The `ArcanumDbContextModelSnapshot.cs` was hand-edited to include `Session.TotalCostUsd` and `Session.ForkedFromSessionId` (with `HasIndex`) so `dotnet ef migrations add` produces an empty migration rather than a spurious "add column" migration. The compiled model is canonical; the EF migration snapshot exists only for `dotnet ef` tooling compatibility and would need full regeneration (via `dotnet ef migrations add InitialCreate` against a clean `Data/Migrations/` folder) only if `dotnet ef` tooling is ever needed again. Runtime behavior is unaffected — `GrimoireSqlSchemaMigrator` applies the authoritative SQL migrations, and the compiled model handles all EF-tracked entities.
+
+## 13. Session attachments (`attachments/` + `SessionAttachments`)
+
+**Purpose:** durable text + Scrying image attachments for Command Center sessions (DESIGN.md §10.2.5). `arcanum chat` staging remains ephemeral in this pass.
+
+### On-disk layout
+
+Root: `ArcanumPaths.AttachmentsDirectory` → `~/.config/arcanum/attachments/` (next to `arcanum.db`).
+
+```text
+attachments/
+  _pending/{turnId}/
+    {logicalKey}/v1/{originalFileName}
+  {sessionId:N}/
+    {logicalKey}/
+      v1/{originalFileName}
+      v2/{originalFileName}
+```
+
+Owner-only permissions on `attachments/` and every session / `_pending` subtree. Logical keys and original filenames are sanitized (no path separators / `../` / control chars); built paths are revalidated to stay under `AttachmentsDirectory` before I/O.
+
+### Table invariants (`SessionAttachments`)
+
+Hand-authored migration `20260719180000_AddSessionAttachments` in `GrimoireSqlSchemaMigrator.MigrationOrder`. Access: raw SQL through scoped `ArcanumDbContext` + `SqliteBusyRetry` (`SessionAttachmentStore`) — **not** an EF `DbSet`.
+
+| Column | Bound | Pending |
+|--------|-------|---------|
+| `Id` | set | set |
+| `SessionId` | **NOT NULL** | **NULL** |
+| `EntryId` | set when user entry known (nullable until bound) | **NULL** |
+| `PendingTurnId` | **NULL** | **NOT NULL** |
+| `State` | `'Bound'` | `'Pending'` |
+| `LogicalKey`, `OriginalFileName`, `Version`, `RelativePath`, `ContentSha256`, `MimeType`, `ByteLength`, `Kind`, `CreatedAt` | as usual | as usual |
+
+- `GET /api/sessions/{id}/attachments` returns **`State = Bound`** only.
+- Pre-bind: `_pending/{turnId}/` + `State = Pending`. On `SessionBound` / first persisted user entry: atomic promote (move bytes + row update to Bound) in one transaction.
+- Persist **before** model inference; failure fails the turn closed.
+
+### Retention / GC
+
+`SessionAttachmentPendingGcHostedService` runs once at host startup: deletes stale **Pending** rows and matching `_pending/{turnId}` directories **together** when older than `Arcanum:Attachments:PendingRetentionHours` (default 24h, clamp 1–168). Soft caps `MaxBytesPerSession` / `MaxVersionsPerLogicalKey` reject new writes when exceeded (no background prune of bound files).
+
+### Privacy / uninstall / copy
+
+| Layer | Protection |
+|-------|------------|
+| Grimoire metadata | SQLCipher-encrypted |
+| Attachment **bytes** | Owner-perm files only — **not** SQLCipher |
+| OS encryption / backup | Operator responsibility |
+
+Deleting or resetting only `arcanum.db` leaves orphan bytes under `attachments/`. For full conversation continuity (or a clean uninstall), copy or remove `~/.config/arcanum/attachments` together with the database. Distinct from `/v1/files` opaque `files/{guid}` storage.

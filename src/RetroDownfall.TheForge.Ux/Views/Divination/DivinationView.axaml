@@ -39,7 +39,7 @@
                   <StackPanel Spacing="3">
                     <DockPanel LastChildFill="False">
                       <TextBlock DockPanel.Dock="Left" Text="{Binding SessionTitle}" FontWeight="SemiBold" />
-                      <Button DockPanel.Dock="Right" Content="Open" Command="{Binding $parent[UserControl].DataContext.OpenSessionResultCommand}" CommandParameter="{Binding}" />
+                      <Button DockPanel.Dock="Right" Content="Open" Command="{Binding $parent[UserControl].((vm:DivinationViewModel)DataContext)?.OpenSessionResultCommand}" CommandParameter="{Binding}" />
                     </DockPanel>
                     <TextBlock Text="{Binding EntryContentPreview}" TextWrapping="Wrap" MaxLines="3" Opacity="0.85" />
                     <TextBlock Text="{Binding Similarity, StringFormat=Similarity: {0:0.00}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />

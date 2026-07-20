@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -5,15 +6,14 @@ using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
-public sealed class CliSessionManager(IThemePalette palette)
+public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionManager>? logger = null)
 {
-
     private int _corruptionWarned;
 
     private string SessionFilePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
 
-    public Guid? GetLastSessionId()
+    public Guid? GetLastSessionId(bool quiet = false)
     {
         try
         {
@@ -34,25 +34,25 @@ public sealed class CliSessionManager(IThemePalette palette)
                 return id;
             }
 
-            WarnOnceSessionCorruption(text);
+            WarnOnceSessionCorruption(text, quiet);
 
             return null;
         }
-        catch (IOException)
+        catch (IOException ex)
         {
-            WarnSessionIo();
+            WarnSessionIo(ex, quiet);
 
             return null;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            WarnSessionIo();
+            WarnSessionIo(ex, quiet);
 
             return null;
         }
     }
 
-    public void SaveSessionId(Guid id)
+    public void SaveSessionId(Guid id, bool quiet = false)
     {
         try
         {
@@ -91,17 +91,17 @@ public sealed class CliSessionManager(IThemePalette palette)
                 throw;
             }
         }
-        catch (IOException)
+        catch (IOException ex)
         {
-            WarnSessionIo();
+            WarnSessionIo(ex, quiet);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            WarnSessionIo();
+            WarnSessionIo(ex, quiet);
         }
     }
 
-    public void ClearSession()
+    public void ClearSession(bool quiet = false)
     {
         try
         {
@@ -110,20 +110,28 @@ public sealed class CliSessionManager(IThemePalette palette)
                 File.Delete(SessionFilePath);
             }
         }
-        catch (IOException)
+        catch (IOException ex)
         {
-            WarnSessionIo();
+            WarnSessionIo(ex, quiet);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            WarnSessionIo();
+            WarnSessionIo(ex, quiet);
         }
     }
 
-    private void WarnSessionIo() =>
-        AnsiConsole.MarkupLine(palette.MutedMarkup(Markup.Escape("Warning: Could not save/load session state.")));
+    private void WarnSessionIo(Exception ex, bool quiet)
+    {
+        if (quiet)
+        {
+            logger?.LogDebug(ex, "Could not save/load CLI session state (quiet).");
+            return;
+        }
 
-    private void WarnOnceSessionCorruption(string actual)
+        AnsiConsole.MarkupLine(palette.MutedMarkup(Markup.Escape("Warning: Could not save/load session state.")));
+    }
+
+    private void WarnOnceSessionCorruption(string actual, bool quiet)
     {
         if (Interlocked.Exchange(ref _corruptionWarned, 1) != 0)
         {
@@ -132,11 +140,18 @@ public sealed class CliSessionManager(IThemePalette palette)
 
         string preview = actual.Length > 40 ? actual[..40] + "\u2026" : actual;
 
+        if (quiet)
+        {
+            logger?.LogDebug(
+                "cli-session.txt does not contain a valid session id (got: '{Preview}'). Quiet path; no Spectre output.",
+                preview);
+            return;
+        }
+
         AnsiConsole.MarkupLine(
             palette.ErrorLabelMarkup(
                 Markup.Escape("Warning:"),
                 Markup.Escape(
                     $"cli-session.txt does not contain a valid session id (got: '{preview}'). The file will be replaced on the next /resume or new turn.")));
     }
-
 }

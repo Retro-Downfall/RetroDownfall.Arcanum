@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 {
 
-    private const int ExpectedMigrationCount = 4;
+    private const int ExpectedMigrationCount = 6;
 
     private readonly GrimoireFixture _fixture;
 
@@ -106,6 +106,20 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ApplyPendingAsync_creates_SessionAttachments_table()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SqliteConnection connection = await OpenConnectionAsync();
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+
+        Assert.True(await TableExistsAsync(connection, "SessionAttachments", CancellationToken.None));
+
+    }
+
+    [SkippableFact]
     public async Task ApplyPendingAsync_foreign_key_check_passes()
     {
 
@@ -156,7 +170,7 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
 
-        const string lastMigrationId = "20260706040200_AddEntriesIsPinned";
+        const string lastMigrationId = "20260719190000_AddSessionAttachmentUniqueIndexes";
 
         await using (SqliteCommand deleteHistory = connection.CreateCommand())
         {
@@ -172,12 +186,21 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         }
 
-        await using (SqliteCommand dropIndex = connection.CreateCommand())
+        await using (SqliteCommand dropBound = connection.CreateCommand())
         {
 
-            dropIndex.CommandText = """DROP INDEX IF EXISTS "IX_Entries_SessionId_IsPinned";""";
+            dropBound.CommandText = """DROP INDEX IF EXISTS UX_SessionAttachments_Bound;""";
 
-            _ = await dropIndex.ExecuteNonQueryAsync(CancellationToken.None);
+            _ = await dropBound.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        await using (SqliteCommand dropPending = connection.CreateCommand())
+        {
+
+            dropPending.CommandText = """DROP INDEX IF EXISTS UX_SessionAttachments_Pending;""";
+
+            _ = await dropPending.ExecuteNonQueryAsync(CancellationToken.None);
 
         }
 
@@ -185,18 +208,25 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         Assert.Equal(ExpectedMigrationCount, await CountAppliedMigrationsAsync(connection, CancellationToken.None));
 
-        await using SqliteCommand verifyIndex = connection.CreateCommand();
+        Assert.True(await IndexExistsAsync(connection, "UX_SessionAttachments_Bound", CancellationToken.None));
 
-        verifyIndex.CommandText = """
-            SELECT 1
-            FROM sqlite_master
-            WHERE type = 'index' AND name = 'IX_Entries_SessionId_IsPinned'
-            LIMIT 1;
-            """;
+        Assert.True(await IndexExistsAsync(connection, "UX_SessionAttachments_Pending", CancellationToken.None));
 
-        object? indexRow = await verifyIndex.ExecuteScalarAsync(CancellationToken.None);
+    }
 
-        Assert.NotNull(indexRow);
+    [SkippableFact]
+    public async Task ApplyPendingAsync_creates_session_attachment_partial_unique_indexes()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SqliteConnection connection = await OpenConnectionAsync();
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+
+        Assert.True(await IndexExistsAsync(connection, "UX_SessionAttachments_Bound", CancellationToken.None));
+
+        Assert.True(await IndexExistsAsync(connection, "UX_SessionAttachments_Pending", CancellationToken.None));
 
     }
 
@@ -283,6 +313,26 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
             """;
 
         cmd.Parameters.AddWithValue("$tableName", tableName);
+
+        object? result = await cmd.ExecuteScalarAsync(cancellationToken);
+
+        return result is not null && result != DBNull.Value;
+
+    }
+
+    private static async Task<bool> IndexExistsAsync(SqliteConnection connection, string indexName, CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'index' AND name = $indexName
+            LIMIT 1;
+            """;
+
+        cmd.Parameters.AddWithValue("$indexName", indexName);
 
         object? result = await cmd.ExecuteScalarAsync(cancellationToken);
 

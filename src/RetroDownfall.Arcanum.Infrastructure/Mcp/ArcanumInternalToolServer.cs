@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -24,8 +25,6 @@ internal sealed partial class ArcanumInternalToolServer
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
-
-    private static readonly JsonElement NullId = JsonDocument.Parse("null").RootElement.Clone();
 
     private readonly ChannelReader<string> _fromClient;
 
@@ -73,6 +72,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _readSagaSchema;
 
+    private readonly JsonElement _attachSessionFileSchema;
+
     private readonly JsonElement _adjustInitiativeSchema;
 
     private readonly JsonElement _useCommlinkSchema;
@@ -91,6 +92,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly bool _sagaEnabled;
 
+    private readonly bool _attachmentsToolEnabled;
+
     private readonly bool _a2aClientEnabled;
 
     /// <summary>
@@ -107,6 +110,20 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly string _executeCommandToolDescription;
 
+    private readonly string _ambientConnectionKey;
+
+    /// <summary>Per-connection key shared with the paired client transport for ambient session binding.</summary>
+    internal string AmbientConnectionKey => _ambientConnectionKey;
+
+    /// <summary>Serializes concurrent JSON-RPC response writes onto <see cref="_toClient"/>.</summary>
+    private readonly SemaphoreSlim _responseWriteLock = new(1, 1);
+
+    /// <summary>
+    /// Test seam: when set, <see cref="HandleLineAsync"/> throws after a request id is known so
+    /// <see cref="HandleLineSafelyAsync"/> can be asserted for sanitized error responses.
+    /// </summary>
+    internal Func<string, Exception?>? LineHandlerFaultForTesting { get; set; }
+
     internal ArcanumInternalToolServer(
         ChannelReader<string> fromClient,
         ChannelWriter<string> toClient,
@@ -122,7 +139,9 @@ internal sealed partial class ArcanumInternalToolServer
         bool conclaveEnabled,
         bool sagaEnabled,
         bool a2aClientEnabled,
+        bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
+        string? ambientConnectionKey = null,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
     {
@@ -189,9 +208,15 @@ internal sealed partial class ArcanumInternalToolServer
 
         _sagaEnabled = sagaEnabled;
 
+        _attachmentsToolEnabled = attachmentsToolEnabled;
+
         _a2aClientEnabled = a2aClientEnabled;
 
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
+
+        _ambientConnectionKey = string.IsNullOrWhiteSpace(ambientConnectionKey)
+            ? Guid.NewGuid().ToString("N")
+            : ambientConnectionKey;
 
         _readFileChunkSchema = BuildReadFileChunkSchema();
 
@@ -212,6 +237,8 @@ internal sealed partial class ArcanumInternalToolServer
         _searchArchivesSchema = BuildSearchArchivesSchema();
 
         _readSagaSchema = BuildReadSagaSchema();
+
+        _attachSessionFileSchema = BuildAttachSessionFileSchema();
 
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
@@ -305,7 +332,12 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Arcanum internal MCP server failed handling one line.");
+            _logger?.LogError(ex, "Arcanum internal MCP server failed handling one line.");
+
+            if (TryExtractJsonRpcRequestId(line, out JsonElement requestId))
+            {
+                await WriteSanitizedInternalErrorAsync(requestId, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -319,28 +351,41 @@ internal sealed partial class ArcanumInternalToolServer
                 "Arcanum internal MCP server rejected an inbound JSON-RPC line exceeding {MaxBytes} UTF-8 bytes.",
                 _maxJsonRpcLineBytes);
 
-            JsonRpcResponse error = new()
+            if (TryExtractJsonRpcRequestId(line, out JsonElement oversizedId))
             {
-                Id = NullId,
 
-                Error = new JsonRpcError
+                JsonRpcResponse error = new()
                 {
-                    Code = -32600,
+                    Id = oversizedId,
 
-                    Message = "Request line exceeds maximum UTF-8 byte budget.",
+                    Error = new JsonRpcError
+                    {
+                        Code = -32600,
 
-                    Data = null,
-                },
+                        Message = "Request line exceeds maximum UTF-8 byte budget.",
 
-                Result = null,
-            };
+                        Data = null,
+                    },
 
-            string wire = JsonSerializer.Serialize(error, _json.JsonRpcResponse);
+                    Result = null,
+                };
 
-            await _toClient.WriteAsync(wire + "\n", cancellationToken).ConfigureAwait(false);
+                await WriteResponseAsync(error, cancellationToken).ConfigureAwait(false);
+
+            }
 
             return;
 
+        }
+
+        if (LineHandlerFaultForTesting is not null)
+        {
+            Exception? fault = LineHandlerFaultForTesting(line);
+
+            if (fault is not null)
+            {
+                throw fault;
+            }
         }
 
         using JsonDocument doc = JsonDocument.Parse(line, McpSecurityLimits.JsonDocumentOptions);
@@ -383,9 +428,7 @@ internal sealed partial class ArcanumInternalToolServer
                 _ => BuildMethodNotFoundResponse(rpcId, request.Method),
             };
 
-            string wire = JsonSerializer.Serialize(response, _json.JsonRpcResponse);
-
-            await _toClient.WriteAsync(wire + "\n", cancellationToken).ConfigureAwait(false);
+            await WriteResponseAsync(response, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -395,22 +438,87 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "Arcanum internal MCP error building response for method {Method}.", request.Method);
 
-            JsonRpcResponse err = new()
-            {
-                Id = rpcId,
-                Error = new JsonRpcError
-                {
-                    Code = -32603,
-                    Message = "Internal error.",
-                    Data = null,
-                },
-                Result = null,
-            };
+            await WriteSanitizedInternalErrorAsync(rpcId, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
-            string wire = JsonSerializer.Serialize(err, _json.JsonRpcResponse);
+    private async Task WriteSanitizedInternalErrorAsync(JsonElement requestId, CancellationToken cancellationToken)
+    {
+
+        JsonRpcResponse err = new()
+        {
+            Id = requestId,
+            Error = new JsonRpcError
+            {
+                Code = -32603,
+                Message = "Internal error.",
+                Data = null,
+            },
+            Result = null,
+        };
+
+        await WriteResponseAsync(err, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task WriteResponseAsync(JsonRpcResponse response, CancellationToken cancellationToken)
+    {
+
+        string wire = JsonSerializer.Serialize(response, _json.JsonRpcResponse);
+
+        await _responseWriteLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
 
             await _toClient.WriteAsync(wire + "\n", cancellationToken).ConfigureAwait(false);
+
         }
+        finally
+        {
+
+            _responseWriteLock.Release();
+
+        }
+
+    }
+
+    private static bool TryExtractJsonRpcRequestId(string line, out JsonElement requestId)
+    {
+
+        requestId = default;
+
+        try
+        {
+
+            using JsonDocument doc = JsonDocument.Parse(line, McpSecurityLimits.JsonDocumentOptions);
+
+            if (!doc.RootElement.TryGetProperty("id", out JsonElement idProp))
+            {
+
+                return false;
+
+            }
+
+            if (idProp.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+
+                return false;
+
+            }
+
+            requestId = idProp.Clone();
+
+            return true;
+
+        }
+        catch (JsonException)
+        {
+
+            return false;
+
+        }
+
     }
 
     /// <summary>
@@ -620,6 +728,18 @@ internal sealed partial class ArcanumInternalToolServer
                 });
         }
 
+        if (_attachmentsToolEnabled)
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "attach_session_file",
+                    Description =
+                        "Re-attach a bound session attachment (text or image) into the next model turn by logical name. Uses the current session only; optional version selects a specific revision (latest when omitted). Content is injected multimodally after the tool result — do not expect image bytes in the tool text.",
+                    InputSchema = _attachSessionFileSchema,
+                });
+        }
+
         McpToolsListResultWire body = new() { Tools = tools.ToArray() };
 
         JsonElement result = JsonSerializer.SerializeToElement(body, _json.McpToolsListResultWire);
@@ -670,6 +790,11 @@ internal sealed partial class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("Saga is disabled in configuration."));
         }
 
+        if (call.Name == "attach_session_file" && !_attachmentsToolEnabled)
+        {
+            return BuildToolsCallResponse(rpcId, ToolError("Session attachment model tool is disabled in configuration."));
+        }
+
         if (call.Name == "cast_sending" && !_conclaveEnabled)
         {
             return BuildToolsCallResponse(rpcId, ToolError("The Conclave is disabled; cross-Apprentice delegation is not available."));
@@ -686,8 +811,16 @@ internal sealed partial class ArcanumInternalToolServer
 
         _inFlightToolCalls[requestKey] = toolScope;
 
+        Guid? previousAmbient = SessionAttachmentToolAmbient.CurrentSessionId;
+
         try
         {
+            JsonElement toolArguments = call.Arguments;
+
+            Guid? resolvedSession = ResolveAmbientSessionForToolsCall(requestKey, ref toolArguments);
+
+            SessionAttachmentToolAmbient.CurrentSessionId = resolvedSession;
+
             if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
             {
 
@@ -695,7 +828,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             }
 
-            McpToolsCallResultWire result = await handler(call.Arguments, toolScope.Token).ConfigureAwait(false);
+            McpToolsCallResultWire result = await handler(toolArguments, toolScope.Token).ConfigureAwait(false);
 
             return BuildToolsCallResponse(rpcId, result);
         }
@@ -710,8 +843,94 @@ internal sealed partial class ArcanumInternalToolServer
         }
         finally
         {
+            SessionAttachmentToolAmbient.CurrentSessionId = previousAmbient;
+
+            SessionAttachmentToolAmbient.UnbindRequest(_ambientConnectionKey, requestKey);
+
             _inFlightToolCalls.TryRemove(requestKey, out _);
         }
+    }
+
+    /// <summary>
+    /// Resolves the inference session for this tools/call via request-id map (preferred) or host
+    /// opaque token (fallback). Strips the opaque token from <paramref name="arguments"/> before
+    /// tool logic so it is never visible to handlers.
+    /// </summary>
+    private Guid? ResolveAmbientSessionForToolsCall(string requestKey, ref JsonElement arguments)
+    {
+
+        Guid? session = null;
+
+        if (SessionAttachmentToolAmbient.TryResolveRequest(_ambientConnectionKey, requestKey, out Guid byRequest))
+        {
+            session = byRequest;
+        }
+
+        arguments = StripOpaqueInvocationToken(arguments, out string? opaqueToken);
+
+        if (opaqueToken is not null)
+        {
+            if (session is null
+                && SessionAttachmentToolAmbient.TryTakeOpaqueToken(opaqueToken, out Guid byToken))
+            {
+                session = byToken;
+            }
+            else
+            {
+                // Model-supplied or already-resolved junk — never persist; drop the binding if any.
+                SessionAttachmentToolAmbient.ForgetOpaqueToken(opaqueToken);
+            }
+        }
+
+        return session;
+
+    }
+
+    private static JsonElement StripOpaqueInvocationToken(JsonElement arguments, out string? opaqueToken)
+    {
+
+        opaqueToken = null;
+
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return arguments;
+        }
+
+        if (!arguments.TryGetProperty(
+                SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
+                out JsonElement tokenElement))
+        {
+            return arguments;
+        }
+
+        opaqueToken = tokenElement.ValueKind == JsonValueKind.String
+            ? tokenElement.GetString()
+            : tokenElement.ToString();
+
+        using var stream = new MemoryStream();
+
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+
+            foreach (JsonProperty property in arguments.EnumerateObject())
+            {
+                if (string.Equals(
+                        property.Name,
+                        SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                property.WriteTo(writer);
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return JsonSerializer.Deserialize<JsonElement>(stream.ToArray());
+
     }
 
     private JsonRpcResponse BuildToolsCallResponse(JsonElement rpcId, McpToolsCallResultWire result)

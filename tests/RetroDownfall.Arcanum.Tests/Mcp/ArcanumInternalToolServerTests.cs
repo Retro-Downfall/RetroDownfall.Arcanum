@@ -114,7 +114,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             intelligenceSettings: allFeatures,
             conclaveEnabled: true,
             sagaEnabled: true,
-            a2aClientEnabled: true);
+            a2aClientEnabled: true,
+            attachmentsToolEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
 
@@ -396,7 +397,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         Assert.Contains("exceeds maximum UTF-8 byte budget", response.Error.Message, StringComparison.OrdinalIgnoreCase);
 
-        Assert.Equal(JsonValueKind.Null, response.Id.ValueKind);
+        // Oversized lines still carry a parseable JSON-RPC id when present; echo it (Wave 2 MCP error rule).
+        Assert.Equal(JsonValueKind.Number, response.Id.ValueKind);
 
     }
 
@@ -995,6 +997,59 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task LineHandler_exception_with_request_id_returns_sanitized_internal_error()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        const string secret = "super-secret-exception-detail";
+
+        session.Server.LineHandlerFaultForTesting = _ => new InvalidOperationException(secret);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", parameters: null);
+
+        Assert.NotNull(response.Error);
+
+        Assert.Equal(-32603, response.Error!.Code);
+
+        Assert.Equal("Internal error.", response.Error.Message);
+
+        Assert.DoesNotContain(secret, response.Error.Message, StringComparison.Ordinal);
+
+        Assert.Null(response.Error.Data);
+
+        string wire = JsonSerializer.Serialize(response, McpJsonSerializerContext.Default.JsonRpcResponse);
+
+        Assert.DoesNotContain(secret, wire, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task LineHandler_exception_on_notification_writes_no_response()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        session.Server.LineHandlerFaultForTesting = _ => new InvalidOperationException("should-not-leak");
+
+        string notification =
+            """{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}""";
+
+        JsonRpcResponse? leaked = await session.SendRawLineWithTimeoutAsync(
+            notification,
+            TimeSpan.FromMilliseconds(300));
+
+        Assert.Null(leaked);
+
+        session.Server.LineHandlerFaultForTesting = null;
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", parameters: null);
+
+        Assert.Null(response.Error);
+
+    }
+
     private async Task<TestMcpSession> CreateSessionAsync(
         bool configureWorkspace = true,
         IntelligenceSettings? intelligenceSettings = null,
@@ -1003,6 +1058,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         bool conclaveEnabled = false,
         bool sagaEnabled = false,
         bool a2aClientEnabled = false,
+        bool attachmentsToolEnabled = false,
         IA2AClientService? a2aClientService = null)
     {
 
@@ -1063,6 +1119,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             conclaveEnabled: conclaveEnabled,
             sagaEnabled: sagaEnabled,
             a2aClientEnabled: a2aClientEnabled,
+            attachmentsToolEnabled: attachmentsToolEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance);
 

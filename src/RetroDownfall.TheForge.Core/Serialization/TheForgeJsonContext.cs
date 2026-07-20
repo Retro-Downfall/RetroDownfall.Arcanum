@@ -119,6 +119,7 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<EntryDto>))]
 [JsonSerializable(typeof(EntryDto))]
 [JsonSerializable(typeof(PingRequest))]
+[JsonSerializable(typeof(List<Guid>))]
 [JsonSerializable(typeof(IntelligenceEvent))]
 
 // Sessions — memory management (Milestone H — Context and Memory)

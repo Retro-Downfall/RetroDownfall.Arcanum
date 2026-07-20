@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.TheForge;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -188,6 +189,45 @@ public sealed class SessionMappingTests
         Assert.Equal("rolled up", dto.Summary);
 
         Assert.Equal(42, dto.TotalTokensUsed);
+    }
+
+    [Fact]
+    public void ToAttachmentDto_MapsBoundRecordFields()
+    {
+        Guid id = Guid.NewGuid();
+
+        Guid sessionId = Guid.NewGuid();
+
+        DateTimeOffset createdAt = DateTimeOffset.Parse("2026-07-19T18:00:00Z");
+
+        SessionAttachmentRecord record = new(
+            id,
+            sessionId,
+            EntryId: null,
+            PendingTurnId: null,
+            SessionAttachmentState.Bound,
+            "notes",
+            "notes.txt",
+            2,
+            $"{sessionId:N}/notes/v2/notes.txt",
+            "deadbeef",
+            "text/plain",
+            42,
+            SessionAttachmentKind.Text,
+            createdAt);
+
+        SessionAttachmentDto dto = SessionMapping.ToAttachmentDto(record);
+
+        Assert.Equal(id, dto.Id);
+        Assert.Equal("notes", dto.LogicalKey);
+        Assert.Equal("notes.txt", dto.OriginalFileName);
+        Assert.Equal(2, dto.Version);
+        Assert.Equal($"{sessionId:N}/notes/v2/notes.txt", dto.RelativePath);
+        Assert.Equal("text/plain", dto.MimeType);
+        Assert.Equal(42, dto.ByteLength);
+        Assert.Equal(SessionAttachmentKind.Text, dto.Kind);
+        Assert.Equal("deadbeef", dto.ContentSha256);
+        Assert.Equal(createdAt, dto.CreatedAt);
     }
 
 }

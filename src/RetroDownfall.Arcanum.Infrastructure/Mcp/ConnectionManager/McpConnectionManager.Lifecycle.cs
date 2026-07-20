@@ -449,8 +449,16 @@ public sealed partial class McpConnectionManager
         _pendingTransportEndedTasks[handlerTask] = 0;
 
         _ = handlerTask.ContinueWith(
-            static (completed, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(completed, out _),
-            _pendingTransportEndedTasks,
+            completed =>
+            {
+                _ = _pendingTransportEndedTasks.TryRemove(completed, out _);
+                if (completed.IsFaulted && completed.Exception is not null)
+                {
+                    logger.LogWarning(
+                        completed.Exception.GetBaseException(),
+                        "MCP transport-ended handler faulted.");
+                }
+            },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
@@ -493,6 +501,10 @@ public sealed partial class McpConnectionManager
 
         bool a2aClientEnabled = conclave.Enabled && a2a.Enabled && a2a.ClientEnabled;
 
+        AttachmentsSettings attachments = settings.CurrentValue.Attachments ?? new AttachmentsSettings();
+
+        bool attachmentsToolEnabled = attachments.Enabled && attachments.EnableModelAttachTool;
+
         (ChannelWriter<string> toServer, ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
                 humanPromptRegistry,
@@ -507,6 +519,7 @@ public sealed partial class McpConnectionManager
                 conclave.Enabled,
                 sagaEnabled,
                 a2aClientEnabled,
+                attachmentsToolEnabled,
                 GetClampedMcpMaxJsonRpcLineBytes(),
                 logger: null);
 
@@ -514,11 +527,15 @@ public sealed partial class McpConnectionManager
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).
         // On setup failure before a client is attached, the finally block completes the channel so
         // the server task cannot orphan forever.
-        Task serverTask = Task.Run(() => server.RunAsync(CancellationToken.None), CancellationToken.None);
+        Task serverTask = Task.Run(() => server.RunAsync(_hostLifetimeCts.Token), CancellationToken.None);
 
         ObserveInternalServerTask(serverTask);
 
-        ChannelClientTransport clientTransport = new(toServer, fromServer, GetClampedMcpMaxJsonRpcLineBytes());
+        ChannelClientTransport clientTransport = new(
+            toServer,
+            fromServer,
+            GetClampedMcpMaxJsonRpcLineBytes(),
+            server.AmbientConnectionKey);
 
         SdkMcpClientWrapper? client = null;
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using RetroDownfall.Arcanum.Cli.Services;
 using Spectre.Console;
 using Spectre.Console.Rendering;
@@ -15,22 +16,24 @@ internal static class ArcanumBannerRenderer
 
     private const string TipText = "/help for slash commands  -  /exit to quit  -  Ctrl+C to cancel a turn";
 
-    private const string TitleArt =
-        """
-         _    ____   ____    _    _   _ _   _ __  __
-        / \  |  _ \ / ___|  / \  | \ | | | | |  \/  |
-        ○═╪/═_═\═|═|_)═|═|═════/═_═\═|══\|═|═|═|═|═|\/|═|══>
-        / ___ \|  _ <| |___ / ___ \| |\  | |_| | |  | |
-        /_/   \_\_| \_\\____/_/   \_\_| \_|\___/|_|  |_|
-        """;
+    /// <summary>
+    /// Spectre default-font Figlet for <c>ARCANUM</c> (fixed glyph so we can paint a column gradient).
+    /// </summary>
+    private static readonly string[] FigletArcanumLines =
+    [
+        @"     _      ____     ____      _      _   _   _   _   __  __ ",
+        @"    / \    |  _ \   / ___|    / \    | \ | | | | | | |  \/  |",
+        @"   / _ \   | |_) | | |       / _ \   |  \| | | | | | | |\/| |",
+        @"  / ___ \  |  _ <  | |___   / ___ \  | |\  | | |_| | | |  | |",
+        @" /_/   \_\ |_| \_\  \____| /_/   \_\ |_| \_|  \___/  |_|  |_|",
+    ];
 
     internal static IRenderable Render(BannerContext ctx)
     {
 
         ArgumentNullException.ThrowIfNull(ctx);
 
-        Markup title = new(
-            ctx.Theme.HeadingBoldMarkup(Markup.Escape(TitleArt.Trim('\r', '\n'))));
+        Markup title = new(BuildGradientFigletMarkup(ctx.Theme.Heading));
 
         IRenderable centeredTitle = Align.Center(title);
 
@@ -49,6 +52,82 @@ internal static class ArcanumBannerRenderer
         };
 
     }
+
+    /// <summary>
+    /// Paints Figlet glyphs with a left→right color gradient from <paramref name="start"/>
+    /// toward a lighter blend of the same hue.
+    /// </summary>
+    internal static string BuildGradientFigletMarkup(Color start)
+    {
+
+        Color end = Lighten(start, amount: 0.55);
+
+        int width = FigletArcanumLines.Max(static l => l.Length);
+
+        StringBuilder sb = new(FigletArcanumLines.Length * (width * 16));
+
+        for (int row = 0; row < FigletArcanumLines.Length; row++)
+        {
+
+            string line = FigletArcanumLines[row].PadRight(width);
+
+            for (int col = 0; col < width; col++)
+            {
+
+                char ch = line[col];
+
+                if (ch == ' ')
+                {
+                    sb.Append(' ');
+                    continue;
+                }
+
+                double t = width <= 1 ? 0.0 : col / (double)(width - 1);
+
+                Color color = Lerp(start, end, t);
+
+                sb.Append('[');
+                sb.Append(color.ToMarkup());
+                sb.Append(']');
+                sb.Append(Markup.Escape(ch.ToString()));
+                sb.Append("[/]");
+
+            }
+
+            if (row < FigletArcanumLines.Length - 1)
+            {
+                sb.Append('\n');
+            }
+
+        }
+
+        return sb.ToString();
+
+    }
+
+    private static Color Lighten(Color color, double amount)
+    {
+
+        amount = Math.Clamp(amount, 0.0, 1.0);
+
+        return Lerp(color, Color.White, amount);
+
+    }
+
+    private static Color Lerp(Color a, Color b, double t)
+    {
+
+        t = Math.Clamp(t, 0.0, 1.0);
+
+        return new Color(
+            LerpByte(a.R, b.R, t),
+            LerpByte(a.G, b.G, t),
+            LerpByte(a.B, b.B, t));
+
+    }
+
+    private static byte LerpByte(byte a, byte b, double t) =>
+        (byte)Math.Round(a + ((b - a) * t), MidpointRounding.AwayFromZero);
 
     private static Table BuildDetailsTable(BannerContext ctx)
     {

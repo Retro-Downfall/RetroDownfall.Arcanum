@@ -54,6 +54,8 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["read_saga"] = ExecuteReadSagaAsync,
 
+            ["attach_session_file"] = ExecuteAttachSessionFileAsync,
+
         };
 
         return handlers;

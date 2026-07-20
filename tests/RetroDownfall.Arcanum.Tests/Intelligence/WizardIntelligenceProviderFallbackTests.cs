@@ -453,6 +453,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 ward,
                 sanctumGuard,
+                new NoOpSessionAttachmentStore(),
                 NullLogger<ToolExecutionPipeline>.Instance),
             new GrimoireTurnWriter(
                 grimoire,
@@ -484,6 +485,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 new FakeCommLinkDispatcher(),
                 new TestOptionsMonitor<ArcanumSettings>(settings),
                 NullLogger<BudgetMonitor>.Instance),
+            new NoOpSessionAttachmentStore(),
             healthTracker);
     }
 

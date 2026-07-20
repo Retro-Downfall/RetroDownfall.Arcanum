@@ -39,4 +39,5 @@ public sealed record PingRequest(
     List<ScryingFocusDto>? ScryingFoci = null,
     OpenAiToolDefinition[]? ClientTools = null,
     JsonElement? ClientToolChoice = null,
-    bool ForwardClientTools = false);
+    bool ForwardClientTools = false,
+    List<Guid>? AttachmentReferences = null);

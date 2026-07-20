@@ -47,6 +47,13 @@ public static class ArcanumPaths
     public static string FilesDirectory => Path.Combine(GrimoireDirectory, "files");
 
     /// <summary>
+    /// Session attachment storage root: <c>~/.config/arcanum/attachments/</c>. Holds text and
+    /// Scrying image bytes keyed by session (or pending turn), with Grimoire metadata rows pointing
+    /// at relative paths under this directory.
+    /// </summary>
+    public static string AttachmentsDirectory => Path.Combine(GrimoireDirectory, "attachments");
+
+    /// <summary>
     /// HTTPS certificate storage root: <c>~/.config/arcanum/certs/</c>. Holds locally generated
     /// self-signed development certificates (and their PFX bundles) written owner-only.
     /// </summary>

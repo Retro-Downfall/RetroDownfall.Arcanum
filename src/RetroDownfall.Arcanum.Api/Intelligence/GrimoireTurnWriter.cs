@@ -22,6 +22,9 @@ public sealed class GrimoireTurnWriter(
     ILogger<GrimoireTurnWriter> logger)
 {
 
+    public const string PublicFinalizeFailureMessage =
+        "The conversation reply could not be saved. Please try again.";
+
     public sealed class TurnHandle
     {
 
@@ -65,14 +68,19 @@ public sealed class GrimoireTurnWriter(
 
     }
 
-    public async Task TryFinalizeBufferedAssistantEntryAsync(
+    /// <summary>
+    /// Persists the assistant entry, then publishes to the session event hub.
+    /// Returns <see langword="false"/> when the database finalize fails (callers should emit failure).
+    /// Hub publication failure after a successful DB write is warning-only.
+    /// </summary>
+    public async Task<bool> TryFinalizeBufferedAssistantEntryAsync(
         TurnHandle handle,
         string finalText,
         string targetModel,
         CancellationToken cancellationToken)
     {
 
-        await TryFinalizeAssistantEntryCoreAsync(
+        return await TryFinalizeAssistantEntryCoreAsync(
             handle,
             finalText,
             targetModel,
@@ -81,14 +89,15 @@ public sealed class GrimoireTurnWriter(
 
     }
 
-    public async Task TryFinalizeStreamedAssistantEntryAsync(
+    /// <inheritdoc cref="TryFinalizeBufferedAssistantEntryAsync"/>
+    public async Task<bool> TryFinalizeStreamedAssistantEntryAsync(
         TurnHandle handle,
         string finalText,
         string targetModel,
         CancellationToken cancellationToken)
     {
 
-        await TryFinalizeAssistantEntryCoreAsync(
+        return await TryFinalizeAssistantEntryCoreAsync(
             handle,
             finalText,
             targetModel,
@@ -226,7 +235,27 @@ public sealed class GrimoireTurnWriter(
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            await PublishLatestSavedEntriesAsync(sessionId.Value, 2, cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await PublishLatestSavedEntriesAsync(sessionId.Value, 2, cancellationToken).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                throw;
+
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogWarning(
+                    ex,
+                    "Session event hub could not publish tool interaction for tool {ToolName}.",
+                    toolName);
+
+            }
 
         }
         catch (OperationCanceledException)
@@ -272,7 +301,33 @@ public sealed class GrimoireTurnWriter(
 
             handle.AssistantEntryId = aid;
 
-            await PublishLatestSavedEntriesAsync(sid, 2, cancellationToken).ConfigureAwait(false);
+            try
+            {
+
+                await PublishLatestSavedEntriesAsync(sid, 2, cancellationToken).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                throw;
+
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogWarning(
+                    ex,
+                    "Session event hub could not publish begin-assistant entries for model {ModelName}.",
+                    targetModel);
+
+            }
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
 
         }
         catch (Exception ex)
@@ -286,7 +341,7 @@ public sealed class GrimoireTurnWriter(
 
     }
 
-    private async Task TryFinalizeAssistantEntryCoreAsync(
+    private async Task<bool> TryFinalizeAssistantEntryCoreAsync(
         TurnHandle handle,
         string finalText,
         string targetModel,
@@ -297,7 +352,7 @@ public sealed class GrimoireTurnWriter(
         if (handle.AssistantEntryId is not { } finalizeId)
         {
 
-            return;
+            return true;
 
         }
 
@@ -308,21 +363,74 @@ public sealed class GrimoireTurnWriter(
                 .FinalizeAssistantEntryAsync(finalizeId, finalText, cancellationToken)
                 .ConfigureAwait(false);
 
+            // Persistence succeeded — mark immediately so callers treat the turn as saved even if
+            // hub publication fails below.
             handle.IsFinalized = true;
 
             if (handle.SessionId is { } publishSessionId)
             {
 
-                await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
-                    .ConfigureAwait(false);
+                try
+                {
+
+                    await PublishSavedEntryByIdAsync(publishSessionId, finalizeId, cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
+                catch (OperationCanceledException)
+                {
+
+                    throw;
+
+                }
+                catch (Exception ex)
+                {
+
+                    logger.LogWarning(
+                        ex,
+                        "Session event hub could not publish finalized assistant entry {AssistantEntryId} for model {ModelName}.",
+                        finalizeId,
+                        targetModel);
+
+                }
 
             }
+
+            return true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
 
         }
         catch (Exception ex)
         {
 
             logger.LogWarning(ex, finalizeFailureLogMessage, targetModel);
+
+            try
+            {
+
+                await grimoire
+                    .DiscardAssistantEntryAsync(finalizeId, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+            }
+            catch (Exception cleanupEx)
+            {
+
+                logger.LogWarning(
+                    cleanupEx,
+                    "Grimoire could not resolve interrupted assistant entry {AssistantEntryId} after finalize failure.",
+                    finalizeId);
+
+            }
+
+            handle.IsFinalized = true;
+
+            return false;
 
         }
 

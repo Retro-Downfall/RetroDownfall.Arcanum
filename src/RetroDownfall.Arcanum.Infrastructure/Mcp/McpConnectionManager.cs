@@ -83,6 +83,8 @@ public sealed partial class McpConnectionManager(
 
     private volatile bool _disposed;
 
+    private readonly CancellationTokenSource _hostLifetimeCts = new();
+
     /// <inheritdoc />
     public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -641,6 +643,14 @@ public sealed partial class McpConnectionManager(
 
         _disposed = true;
 
+        try
+        {
+            await _hostLifetimeCts.CancelAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
         // Awaited before StopAllAsync/gate disposal below: a HandleTransportEnded background task
         // that was already past its own _disposed check when the flag flipped above could otherwise
         // still be mid-flight — acquiring entry.Gate, mutating entry.Client, or publishing an event —
@@ -711,6 +721,8 @@ public sealed partial class McpConnectionManager(
         }
 
         _registry.Clear();
+
+        _hostLifetimeCts.Dispose();
     }
 
 }

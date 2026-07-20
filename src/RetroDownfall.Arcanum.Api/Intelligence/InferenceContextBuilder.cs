@@ -123,6 +123,34 @@ public sealed class InferenceContextBuilder(
 
     }
 
+    /// <summary>
+    /// Appends additional content parts onto the last message (typically the current user turn).
+    /// Used for rehydrated session attachment references. No-op when contents are empty.
+    /// </summary>
+    public static void AppendContentsToLastMessage(
+        List<MeAiChatMessage> messages,
+        IReadOnlyList<AIContent>? contents)
+    {
+
+        if (contents is not { Count: > 0 } || messages.Count == 0)
+        {
+
+            return;
+
+        }
+
+        MeAiChatMessage last = messages[^1];
+
+        List<AIContent> merged = new(last.Contents.Count + contents.Count);
+
+        merged.AddRange(last.Contents);
+
+        merged.AddRange(contents);
+
+        messages[^1] = new MeAiChatMessage(last.Role, merged) { AuthorName = last.AuthorName };
+
+    }
+
     public static void PrependDynamicSystemMessage(List<MeAiChatMessage> messages, string systemText)
     {
 
@@ -148,7 +176,10 @@ public sealed class InferenceContextBuilder(
         ChatClientLease lease,
         SemanticContextChunk[]? semanticContext = null,
         SagaMemory[]? sagaMemories = null,
-        IReadOnlyList<LexiconEntryDto>? lexiconEntries = null)
+        IReadOnlyList<LexiconEntryDto>? lexiconEntries = null,
+        IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex = null,
+        int maxIndexItems = 40,
+        int maxIndexBytes = 4096)
     {
 
         if (!settings.Value.Intelligence.EnableContextCompression)
@@ -218,7 +249,10 @@ public sealed class InferenceContextBuilder(
             sagaMemories: sagaMemories,
             lexiconEntries: lexiconEntries,
             maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
-                settings.Value.Intelligence.LexiconMaxInjectedBytes));
+                settings.Value.Intelligence.LexiconMaxInjectedBytes),
+            sessionAttachmentsIndex: sessionAttachmentsIndex,
+            maxIndexItems: maxIndexItems,
+            maxIndexBytes: maxIndexBytes);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 

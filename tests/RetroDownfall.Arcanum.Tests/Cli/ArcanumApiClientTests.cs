@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -352,6 +354,100 @@ public sealed class ArcanumApiClientTests
         Assert.True(result.Value);
 
         Assert.Equal("/api/intelligence/human-response", handler.Requests[0].RequestUri!.AbsolutePath);
+
+    }
+
+    [Fact]
+    public async Task GetSessionAttachmentsAsync_deserializes_bound_rows()
+    {
+
+        Guid attachmentId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        Guid sessionId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+
+        SessionAttachmentDto[] payload =
+        [
+            new(
+                attachmentId,
+                "notes",
+                "notes.txt",
+                1,
+                $"{sessionId:N}/notes/v1/notes.txt",
+                "text/plain",
+                11,
+                SessionAttachmentKind.Text,
+                "abc123",
+                DateTimeOffset.Parse("2026-07-19T12:00:00Z")),
+        ];
+
+        RecordingHandler handler = new(_ =>
+        {
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<SessionAttachmentDto[]>(payload, true, null),
+                ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+
+            HttpResponseMessage response = new(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(json),
+            };
+
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            return response;
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<SessionAttachmentDto[]> result = await client.GetSessionAttachmentsAsync(sessionId, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Single(result.Value!);
+
+        Assert.Equal(attachmentId, result.Value![0].Id);
+
+        Assert.Equal("notes", result.Value[0].LogicalKey);
+
+        Assert.Equal(SessionAttachmentKind.Text, result.Value[0].Kind);
+
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+
+        Assert.Equal($"/api/sessions/{sessionId:D}/attachments", handler.Requests[0].RequestUri!.AbsolutePath);
+
+    }
+
+    [Fact]
+    public async Task GetSessionAttachmentsAsync_returns_not_found_on_404()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        RecordingHandler handler = new(_ =>
+        {
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<SessionAttachmentDto[]>(
+                    null,
+                    false,
+                    new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+
+            HttpResponseMessage response = new(HttpStatusCode.NotFound)
+            {
+                Content = new ByteArrayContent(json),
+            };
+
+            response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            return response;
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<SessionAttachmentDto[]> result = await client.GetSessionAttachmentsAsync(sessionId, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
 
     }
 

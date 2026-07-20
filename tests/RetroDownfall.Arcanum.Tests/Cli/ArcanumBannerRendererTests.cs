@@ -73,15 +73,16 @@ public sealed class ArcanumBannerRendererTests
     }
 
     [Fact]
-    public void Render_includes_sword_through_title()
+    public void Render_gradient_title_preserves_figlet_glyphs()
     {
+
         TestConsole console = new();
 
         console.Write(ArcanumBannerRenderer.Render(CreateContext(ServeLaunchStatus.AlreadyRunning)));
 
-        Assert.Contains('═', console.Output);
-        Assert.Contains('>', console.Output);
-        Assert.Contains('╪', console.Output);
+        Assert.Contains("/_/", console.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("/\\_/\\", console.Output, StringComparison.Ordinal);
+
     }
 
     private static BannerContext CreateContext(

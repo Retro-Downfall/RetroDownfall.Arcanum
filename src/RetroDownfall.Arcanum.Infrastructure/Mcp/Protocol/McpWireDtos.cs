@@ -242,6 +242,14 @@ public sealed record ReadSagaParams(
     [property: JsonPropertyName("limit")] int? Limit = null);
 
 /// <summary>
+/// Arguments accepted by the in-process <c>attach_session_file</c> tool (re-attach a bound session
+/// attachment into the next model turn). Session id is ambient — never passed as an argument.
+/// </summary>
+public sealed record AttachSessionFileParams(
+    [property: JsonPropertyName("logicalName")] string LogicalName,
+    [property: JsonPropertyName("version")] int? Version = null);
+
+/// <summary>
 /// Arguments accepted by the in-process <c>adjust_initiative</c> tool (Unseen Servant dynamic polling).
 /// </summary>
 public sealed record AdjustInitiativeArgs

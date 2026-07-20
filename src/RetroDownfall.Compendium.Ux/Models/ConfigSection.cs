@@ -43,6 +43,8 @@ public enum ConfigSection
 
     Files,
 
+    Attachments,
+
     Batches,
 
     StructuredOutput,
@@ -115,6 +117,8 @@ public static class SectionDescriptors
 
         new(ConfigSection.Files, "Files", "\ue7d5", "OpenAI-compatible file uploads"),
 
+        new(ConfigSection.Attachments, "Attachments", "\ue7d7", "Session attachment persistence"),
+
         new(ConfigSection.Batches, "Batches", "\ue7d6", "OpenAI-compatible batch jobs"),
 
     ];
@@ -150,6 +154,7 @@ public static class SectionDescriptors
         ConfigSection.Embeddings => "embeddings.",
         ConfigSection.Metrics => "metrics.",
         ConfigSection.Files => "files.",
+        ConfigSection.Attachments => "attachments.",
         ConfigSection.Batches => "batches.",
         _ => null,
     };

@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -44,7 +45,10 @@ public static class SystemPromptBuilder
         SemanticContextChunk[]? semanticContext = null,
         SagaMemory[]? sagaMemories = null,
         IReadOnlyList<LexiconEntryDto>? lexiconEntries = null,
-        int maxLexiconInjectedBytes = 4096)
+        int maxLexiconInjectedBytes = 4096,
+        IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex = null,
+        int maxIndexItems = 40,
+        int maxIndexBytes = 4096)
     {
 
         int estimatedCapacity = Math.Max(
@@ -56,13 +60,24 @@ public static class SystemPromptBuilder
             + (semanticContext?.Sum(static c => c.Content.Length) ?? 0)
             + (sagaMemories?.Sum(static m => m.Content.Length) ?? 0)
             + (lexiconEntries?.Sum(static e => e.Name.Length + e.Type.Length + e.Facts.Sum(static f => f.Length)) ?? 0)
+            + (sessionAttachmentsIndex?.Count * 64 ?? 0)
             + 1024);
 
         var sb = new StringBuilder(estimatedCapacity);
 
         AppendPersona(sb);
 
-        AppendDataBlock(sb, request, attachedFiles, semanticContext, sagaMemories, lexiconEntries, maxLexiconInjectedBytes);
+        AppendDataBlock(
+            sb,
+            request,
+            attachedFiles,
+            semanticContext,
+            sagaMemories,
+            lexiconEntries,
+            maxLexiconInjectedBytes,
+            sessionAttachmentsIndex,
+            maxIndexItems,
+            maxIndexBytes);
 
         AppendContextBlock(sb, request, codexContent, campaignSummary);
 
@@ -196,7 +211,10 @@ public static class SystemPromptBuilder
         SemanticContextChunk[]? semanticContext,
         SagaMemory[]? sagaMemories,
         IReadOnlyList<LexiconEntryDto>? lexiconEntries,
-        int maxLexiconInjectedBytes)
+        int maxLexiconInjectedBytes,
+        IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex,
+        int maxIndexItems,
+        int maxIndexBytes)
     {
 
         sb.AppendLine();
@@ -234,6 +252,14 @@ public static class SystemPromptBuilder
 
         }
 
+        if (sessionAttachmentsIndex is { Count: > 0 }
+            && AppendSessionAttachmentsIndex(sb, sessionAttachmentsIndex, maxIndexItems, maxIndexBytes))
+        {
+
+            hasData = true;
+
+        }
+
         if (semanticContext is { Length: > 0 })
         {
 
@@ -267,6 +293,124 @@ public static class SystemPromptBuilder
             sb.AppendLine(NonePlaceholder);
 
         }
+
+    }
+
+    /// <summary>
+    /// Metadata-only index of bound session attachments under DATA. Filenames are hardened so
+    /// newlines / <c>#</c> cannot inject headings. Bounded by item count and UTF-8 byte length of
+    /// the whole index block (header + lines). Returns <see langword="true"/> when at least one
+    /// item line was emitted.
+    /// </summary>
+    private static bool AppendSessionAttachmentsIndex(
+        StringBuilder sb,
+        IReadOnlyList<SessionAttachmentIndexItem> items,
+        int maxIndexItems,
+        int maxIndexBytes)
+    {
+
+        int cappedItems = maxIndexItems <= 0 ? 40 : maxIndexItems;
+
+        int cappedBytes = maxIndexBytes <= 0 ? 4096 : maxIndexBytes;
+
+        StringBuilder block = new();
+
+        block.AppendLine("### Session Attachments Index");
+
+        block.AppendLine();
+
+        int usedBytes = Encoding.UTF8.GetByteCount(block.ToString());
+
+        int emitted = 0;
+
+        foreach (SessionAttachmentIndexItem item in items)
+        {
+
+            if (emitted >= cappedItems)
+            {
+                break;
+            }
+
+            string hardenedName = HardenAttachmentIndexName(item.OriginalFileName);
+
+            if (hardenedName.Length == 0)
+            {
+                hardenedName = HardenAttachmentIndexName(item.LogicalKey);
+            }
+
+            if (hardenedName.Length == 0)
+            {
+                continue;
+            }
+
+            string versions = string.Join(",", item.Versions);
+
+            string line =
+                $"- {hardenedName}  versions={versions}  kind={item.Kind}  bytes={item.LatestByteLength}";
+
+            int lineBytes = Encoding.UTF8.GetByteCount(line) + 1;
+
+            if (usedBytes + lineBytes > cappedBytes)
+            {
+                break;
+            }
+
+            block.AppendLine(line);
+
+            usedBytes += lineBytes;
+
+            emitted++;
+
+        }
+
+        if (emitted == 0)
+        {
+            return false;
+        }
+
+        sb.Append(block);
+
+        sb.AppendLine();
+
+        return true;
+
+    }
+
+    /// <summary>
+    /// Neutralizes filename characters that could create markdown headings or break line structure.
+    /// </summary>
+    internal static string HardenAttachmentIndexName(string? value)
+    {
+
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        StringBuilder sb = new(value.Length);
+
+        foreach (char c in value)
+        {
+
+            if (c is '#' or '\r' or '\n')
+            {
+                sb.Append('_');
+
+                continue;
+            }
+
+            if (char.IsControl(c))
+            {
+                sb.Append('_');
+
+                continue;
+            }
+
+            sb.Append(c);
+
+        }
+
+        return sb.ToString().Trim();
 
     }
 

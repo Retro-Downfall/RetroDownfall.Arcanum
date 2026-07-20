@@ -2,7 +2,6 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector"
              xmlns:theForge="using:RetroDownfall.Arcanum.Core.TheForge"
-             xmlns:weave="using:RetroDownfall.Arcanum.Core.Weave"
              xmlns:workspaces="using:RetroDownfall.Arcanum.Core.Workspaces"
              x:Class="RetroDownfall.TheForge.Ux.Views.WeaveInspector.WeaveInspectorView"
              x:DataType="vm:WeaveInspectorViewModel">
@@ -86,21 +85,21 @@
 
           <Border Grid.Row="3" Padding="8" BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Margin="0,8,0,0" IsVisible="{Binding SelectedChunk, Converter={x:Static ObjectConverters.IsNotNull}}">
             <StackPanel Spacing="3">
-              <TextBlock Text="{Binding SelectedChunk.RelativePath}" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding SelectedChunk?.RelativePath}" FontWeight="SemiBold" />
               <TextBlock Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}">
                 <TextBlock.Text>
                   <MultiBinding StringFormat="Chunk {0} of {1}">
-                    <Binding Path="SelectedChunk.ChunkIndex" />
-                    <Binding Path="SelectedChunk.TotalChunksForFile" />
+                    <Binding Path="SelectedChunk?.ChunkIndex" />
+                    <Binding Path="SelectedChunk?.TotalChunksForFile" />
                   </MultiBinding>
                 </TextBlock.Text>
               </TextBlock>
-              <TextBlock Text="{Binding SelectedChunk.ContentPreview}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding SelectedChunk?.ContentPreview}" TextWrapping="Wrap" />
               <TextBlock Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}">
                 <TextBlock.Text>
                   <MultiBinding StringFormat="Char offset: {0}, length: {1}">
-                    <Binding Path="SelectedChunk.CharOffset" />
-                    <Binding Path="SelectedChunk.CharLength" />
+                    <Binding Path="SelectedChunk?.CharOffset" />
+                    <Binding Path="SelectedChunk?.CharLength" />
                   </MultiBinding>
                 </TextBlock.Text>
               </TextBlock>
@@ -136,7 +135,7 @@
                   <StackPanel Spacing="3">
                     <DockPanel LastChildFill="False">
                       <TextBlock DockPanel.Dock="Left" Text="{Binding RelativePath}" FontWeight="SemiBold" />
-                      <Button DockPanel.Dock="Right" Content="Browse chunks" Command="{Binding $parent[UserControl].DataContext.LoadChunksForFileCommand}" CommandParameter="{Binding RelativePath}" />
+                      <Button DockPanel.Dock="Right" Content="Browse chunks" Command="{Binding $parent[UserControl].((vm:WeaveInspectorViewModel)DataContext)?.LoadChunksForFileCommand}" CommandParameter="{Binding RelativePath}" />
                     </DockPanel>
                     <TextBlock Text="{Binding ContentPreview}" TextWrapping="Wrap" MaxLines="4" Opacity="0.85" />
                     <TextBlock Text="{Binding Similarity, StringFormat=Similarity: {0:0.00}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
@@ -197,7 +196,7 @@
                   <StackPanel Spacing="3">
                     <DockPanel LastChildFill="False">
                       <TextBlock DockPanel.Dock="Left" Text="{Binding SessionTitle}" FontWeight="SemiBold" />
-                      <Button DockPanel.Dock="Right" Content="Open in Tome" Command="{Binding $parent[UserControl].DataContext.OpenSessionResultCommand}" CommandParameter="{Binding}" />
+                      <Button DockPanel.Dock="Right" Content="Open in Tome" Command="{Binding $parent[UserControl].((vm:WeaveInspectorViewModel)DataContext)?.OpenSessionResultCommand}" CommandParameter="{Binding}" />
                     </DockPanel>
                     <TextBlock Text="{Binding EntryContentPreview}" TextWrapping="Wrap" MaxLines="3" Opacity="0.85" />
                     <TextBlock Text="{Binding Similarity, StringFormat=Similarity: {0:0.00}}" Opacity="0.6" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />

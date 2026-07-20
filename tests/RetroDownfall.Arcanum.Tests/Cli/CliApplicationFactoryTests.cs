@@ -1,157 +1,214 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
 public sealed class CliApplicationFactoryTests
 {
-
     [Fact]
-    public void Empty_args_defaults_to_chat_command()
+    public void ApplyDefaultCommand_no_longer_maps_empty_to_chat()
     {
-
         string[] empty = CliApplicationFactory.ApplyDefaultCommand([]);
-
-        Assert.Equal(["chat"], empty);
+        Assert.Empty(empty);
 
         string[] unchanged = CliApplicationFactory.ApplyDefaultCommand(["ask", "hello"]);
-
         Assert.Equal(["ask", "hello"], unchanged);
 
         string[] helpUnchanged = CliApplicationFactory.ApplyDefaultCommand(["--help"]);
-
         Assert.Equal(["--help"], helpUnchanged);
+    }
 
+    [Fact]
+    public async Task Empty_interactive_routes_to_command_center_host()
+    {
+        FakeCommandCenterHost host = new(exitCode: 42);
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+        services.AddSingleton<ICliEnvironment>(new FakeCliEnvironment(interactive: true, colorEnabled: true));
+        services.AddTransient<ICommandCenterHost>(_ => host);
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, []);
+
+        Assert.Equal(42, result.ExitCode);
+        Assert.Equal(1, host.RunCount);
+    }
+
+    [Fact]
+    public async Task Empty_interactive_with_NO_COLOR_still_routes_to_command_center()
+    {
+        FakeCommandCenterHost host = new(exitCode: 7);
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+        services.AddSingleton<ICliEnvironment>(new FakeCliEnvironment(interactive: true, colorEnabled: false));
+        services.AddTransient<ICommandCenterHost>(_ => host);
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, []);
+
+        Assert.Equal(7, result.ExitCode);
+        Assert.Equal(1, host.RunCount);
+    }
+
+    [Fact]
+    public async Task Empty_non_interactive_prints_usage_exit_0_without_host()
+    {
+        FakeCommandCenterHost host = new(exitCode: 99);
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+        services.AddSingleton<ICliEnvironment>(new FakeCliEnvironment(interactive: false, colorEnabled: false));
+        services.AddTransient<ICommandCenterHost>(_ => host);
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, []);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, host.RunCount);
+        Assert.Contains("Command Center", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Empty_with_NO_COMMAND_CENTER_prints_usage_exit_0()
+    {
+        string? previous = global::System.Environment.GetEnvironmentVariable(CommandCenterHost.NoCommandCenterEnvVar);
+        try
+        {
+            global::System.Environment.SetEnvironmentVariable(CommandCenterHost.NoCommandCenterEnvVar, "1");
+
+            FakeCommandCenterHost host = new(exitCode: 99);
+            ServiceCollection services = new();
+            ConfigurationManager configuration = new();
+            CliApplicationFactory.ConfigureCliServices(services, configuration);
+            services.AddSingleton<ICliEnvironment>(new FakeCliEnvironment(interactive: true, colorEnabled: true));
+            services.AddTransient<ICommandCenterHost>(_ => host);
+
+            CliTestResult result = await CliTestHarness.RunAsync(services, []);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Equal(0, host.RunCount);
+            Assert.Contains("ARCANUM_NO_COMMAND_CENTER", result.Output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(CommandCenterHost.NoCommandCenterEnvVar, previous);
+        }
     }
 
     [Fact]
     public void Help_smoke_lists_core_commands()
     {
-
         ServiceCollection services = new();
-
         ConfigurationManager configuration = new();
-
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
         CliTestResult result = CliTestHarness.Run(services, "--help");
 
         Assert.Equal(0, result.ExitCode);
-
         Assert.Contains("serve", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("ask", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("chat", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("look", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("key", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Help_smoke_lists_branch_commands()
     {
-
         ServiceCollection services = new();
-
         ConfigurationManager configuration = new();
-
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
         CliTestResult result = CliTestHarness.Run(services, "--help");
 
         Assert.Equal(0, result.ExitCode);
-
         Assert.Contains("daemon", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("lore", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("campaign", result.Output, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void ConfigureCliServices_registers_streaming_and_bounded_request_clients()
     {
-
         ServiceCollection services = new();
-
         ConfigurationManager configuration = new();
-
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
         using ServiceProvider provider = services.BuildServiceProvider();
-
         IHttpClientFactory factory = provider.GetRequiredService<IHttpClientFactory>();
-
         HttpClient streamingClient = factory.CreateClient(ArcanumApiClient.StreamingHttpClientName);
-
         HttpClient requestClient = factory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
         Assert.Equal(Timeout.InfiniteTimeSpan, streamingClient.Timeout);
-
         Assert.Equal(TimeSpan.FromSeconds(60), requestClient.Timeout);
-
     }
 
     [Fact]
     public void ConfigureCliServices_registers_api_key_digest_cache_so_secret_store_resolves()
     {
-
-        // Regression guard for DX5: DataProtectionSecretStore requires IApiKeyDigestCache,
-        // which the CLI DI wiring previously omitted, so constructing AskCommand/ChatCommand
-        // via the real container threw. Resolve the secret store and an AskCommand to prove
-        // the full construction path now works.
-
         ServiceCollection services = new();
-
         ConfigurationManager configuration = new();
-
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
         using ServiceProvider provider = services.BuildServiceProvider();
-
         IApiKeyDigestCache digestCache = provider.GetRequiredService<IApiKeyDigestCache>();
-
         Assert.NotNull(digestCache);
-
         AskCommand askCommand = provider.GetRequiredService<AskCommand>();
-
         Assert.NotNull(askCommand);
-
     }
 
     [Fact]
     public void ConfigureCliServices_registers_grimoire_readiness_so_chat_command_resolves()
     {
-
-        // Regression guard: GrimoireDatabaseBootstrapper (used by ChatCommand via
-        // IGrimoireCliInitialization) requires IGrimoireDbReadiness to mark the database ready.
-        // The CLI's narrow grimoire stack must register the same singleton as the API host.
-
         ServiceCollection services = new();
-
         ConfigurationManager configuration = new();
-
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
         using ServiceProvider provider = services.BuildServiceProvider();
-
-        Core.TheForge.IGrimoireDbReadiness readiness = provider.GetRequiredService<Core.TheForge.IGrimoireDbReadiness>();
-
+        IGrimoireDbReadiness readiness = provider.GetRequiredService<IGrimoireDbReadiness>();
         Assert.NotNull(readiness);
-
         ChatCommand chatCommand = provider.GetRequiredService<ChatCommand>();
-
         Assert.NotNull(chatCommand);
-
     }
 
+    [Fact]
+    public void ConfigureCliServices_registers_command_center_host()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        Assert.NotNull(provider.GetRequiredService<ICommandCenterHost>());
+        Assert.NotNull(provider.GetRequiredService<ShellCommandParser>());
+        Assert.NotNull(provider.GetRequiredService<ShellCommandDispatcher>());
+        Assert.NotNull(provider.GetRequiredService<CommandCenterChatRunner>());
+    }
+
+    private sealed class FakeCommandCenterHost(int exitCode) : ICommandCenterHost
+    {
+        public int RunCount { get; private set; }
+
+        public Task<int> RunAsync(CancellationToken cancellationToken)
+        {
+            RunCount++;
+            return Task.FromResult(exitCode);
+        }
+    }
+
+    private sealed class FakeCliEnvironment(bool interactive, bool colorEnabled) : ICliEnvironment
+    {
+        public bool IsInteractive { get; } = interactive;
+
+        public bool ColorEnabled { get; } = colorEnabled;
+
+        public bool ShouldShowManaBar => IsInteractive && ColorEnabled;
+    }
 }

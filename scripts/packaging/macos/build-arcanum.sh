@@ -98,17 +98,13 @@ if [[ ! -f "$PUBLISH_DIR/$PUBLISHED_NAME" ]]; then
   exit 1
 fi
 
+rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
-cp "$PUBLISH_DIR/$PUBLISHED_NAME" "$STAGE_DIR/arcanum"
-chmod +x "$STAGE_DIR/arcanum"
-
-# Native SQLitePCLRaw bundle is a separate dylib when using single-file publish
-# (the macOS Native AOT fallback). Include it if present.
-SQLCIPHER_DYLIB="libe_sqlcipher.dylib"
-if [[ -f "$PUBLISH_DIR/$SQLCIPHER_DYLIB" ]]; then
-  cp "$PUBLISH_DIR/$SQLCIPHER_DYLIB" "$STAGE_DIR/$SQLCIPHER_DYLIB"
-  chmod +x "$STAGE_DIR/$SQLCIPHER_DYLIB"
+cp -R "$PUBLISH_DIR"/. "$STAGE_DIR"/
+if [[ -f "$STAGE_DIR/$PUBLISHED_NAME" ]]; then
+  mv "$STAGE_DIR/$PUBLISHED_NAME" "$STAGE_DIR/arcanum"
 fi
+chmod +x "$STAGE_DIR/arcanum"
 
 if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd codesign
@@ -116,15 +112,8 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd xcrun
   require_signing_env
 
-  echo "==> Signing arcanum (Developer ID Application, hardened runtime)"
-  codesign_item "$STAGE_DIR/arcanum"
-  codesign --verify --strict --verbose=4 "$STAGE_DIR/arcanum"
-
-  if [[ -f "$STAGE_DIR/$SQLCIPHER_DYLIB" ]]; then
-    echo "==> Signing $SQLCIPHER_DYLIB"
-    codesign_item "$STAGE_DIR/$SQLCIPHER_DYLIB"
-    codesign --verify --strict --verbose=4 "$STAGE_DIR/$SQLCIPHER_DYLIB"
-  fi
+  echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime)"
+  sign_publish_dir "$STAGE_DIR"
 else
   echo "==> --skip-sign: skipping codesign/notarization (local smoke only)"
 fi

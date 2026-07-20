@@ -3392,6 +3392,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             new FakeWard(),
             new ConfigurableSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance);
 
         FunctionCallContent fcc = new(callId: string.Empty, name: "test_tool", arguments: null);
@@ -3418,6 +3419,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             new FakeWard(),
             new ConfigurableSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance);
 
         FunctionCallContent fcc = new(callId: "call_abc123", name: "test_tool", arguments: null);
@@ -3509,6 +3511,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 ward,
                 sanctumGuard,
+                new NoOpSessionAttachmentStore(),
                 NullLogger<ToolExecutionPipeline>.Instance),
             new GrimoireTurnWriter(
                 grimoire,
@@ -3529,6 +3532,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new StructuredOutputValidator(),
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             budgetMonitor,
+            new NoOpSessionAttachmentStore(),
             null,
             guardrailsPipeline);
     }

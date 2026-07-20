@@ -30,6 +30,8 @@ using RetroDownfall.Arcanum.Core.TheForge;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
@@ -48,6 +50,7 @@ public sealed class ToolExecutionPipeline(
     IOptionsSnapshot<ArcanumSettings> settings,
     IWard ward,
     ISanctumGuard sanctumGuard,
+    ISessionAttachmentStore sessionAttachmentStore,
     ILogger<ToolExecutionPipeline> logger)
 {
 
@@ -102,7 +105,8 @@ public sealed class ToolExecutionPipeline(
         string ArgsSnapshot,
         string ResultText,
         IReadOnlyList<IntelligenceEvent> WardEvents,
-        bool Failed = false);
+        bool Failed = false,
+        IReadOnlyList<AIContent>? AdditionalContextContents = null);
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
@@ -162,6 +166,14 @@ public sealed class ToolExecutionPipeline(
 
             foreach (KeyValuePair<string, object?> pair in fcc.Arguments)
             {
+
+                if (string.Equals(
+                        pair.Key,
+                        SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
 
                 writer.WritePropertyName(pair.Key);
 
@@ -266,9 +278,9 @@ public sealed class ToolExecutionPipeline(
             catch (HumanPromptTimeoutException ex)
             {
 
-                wardedExecution = new WardedToolExecutionResult(ex.Message, [], Failed: false);
+                wardedExecution = new WardedToolExecutionResult(ex.Message, [], Failed: true);
 
-                RecordToolInvocationMetric(toolName, "success");
+                RecordToolInvocationMetric(toolName, "error");
 
             }
             catch (HumanPromptCapExceededException ex)
@@ -331,13 +343,37 @@ public sealed class ToolExecutionPipeline(
 
         }
 
+        IReadOnlyList<AIContent>? additionalContext = null;
+
+        if (!wardedExecution.Failed
+            && string.Equals(toolName, "attach_session_file", StringComparison.Ordinal)
+            && SessionAttachmentToolAmbient.CurrentSessionId is { } ambientSessionId
+            && SessionAttachmentToolInjection.TryParseAttachArguments(fcc.Arguments, out string logicalName, out int? version))
+        {
+
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                settings.Value.Cli.MaxAttachFileSizeBytes);
+
+            additionalContext = await SessionAttachmentToolInjection
+                .TryBuildContentsAsync(
+                    sessionAttachmentStore,
+                    ambientSessionId,
+                    logicalName,
+                    version,
+                    maxTextBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
         return new ProcessedToolCall(
             callId,
             toolName,
             argsSnapshot,
             wardedExecution.ResultText,
             wardedExecution.WardEvents,
-            wardedExecution.Failed);
+            wardedExecution.Failed,
+            additionalContext);
 
     }
 

@@ -767,6 +767,64 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Result<SessionAttachmentDto[]>> GetSessionAttachmentsAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/sessions/{sessionId:D}/attachments",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray,
+            static (response, _, envelope) =>
+            {
+                if (response.IsSuccessStatusCode)
+                {
+                    if (envelope is null)
+                    {
+                        return Result<SessionAttachmentDto[]>.Failure(InvalidResponseError);
+                    }
+
+                    if (!envelope.IsSuccess)
+                    {
+                        Error err = envelope.Error ?? ApiRequestFailedError;
+
+                        return Result<SessionAttachmentDto[]>.Failure(err);
+                    }
+
+                    if (envelope.Data is null)
+                    {
+                        return Result<SessionAttachmentDto[]>.Failure(
+                            new Error("Api.InvalidResponse", "Session attachments payload was empty."));
+                    }
+
+                    return Result<SessionAttachmentDto[]>.Success(envelope.Data);
+                }
+
+                if ((int)response.StatusCode == 404)
+                {
+                    if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+                    {
+                        return Result<SessionAttachmentDto[]>.Failure(envelope.Error.Value);
+                    }
+
+                    return Result<SessionAttachmentDto[]>.Failure(
+                        new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
+                }
+
+                if (envelope is not null && envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<SessionAttachmentDto[]>.Failure(envelope.Error.Value);
+                }
+
+                string fallback = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+
+                return Result<SessionAttachmentDto[]>.Failure(new Error("Api.HttpError", fallback));
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<Result> ArchiveSessionAsync(Guid id, CancellationToken cancellationToken = default)
     {
         Result<bool> result = await SendRequestAsync(

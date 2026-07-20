@@ -233,6 +233,7 @@ public sealed class GrimoireFixture : IDisposable
                 Password = _passphrase,
             }.ToString())
             .UseModel(ArcanumDbContextModel.Instance)
+            .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance)
             .Options;
 
         return new ArcanumDbContext(options, secretStore, passphraseSource);

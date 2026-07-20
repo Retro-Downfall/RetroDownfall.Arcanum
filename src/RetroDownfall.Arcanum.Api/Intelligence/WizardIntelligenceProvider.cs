@@ -68,6 +68,7 @@ public sealed class WizardIntelligenceProvider(
     StructuredOutputValidator structuredOutputValidator,
     InferenceTokenizerResolver tokenizerResolver,
     BudgetMonitor budgetMonitor,
+    ISessionAttachmentStore sessionAttachmentStore,
     IProviderHealthTracker? healthTracker = null,
     GuardrailsPipeline? guardrailsPipeline = null) : IArcanumIntelligenceProvider
 {
@@ -297,6 +298,67 @@ public sealed class WizardIntelligenceProvider(
             .TryBeginBufferedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
             .ConfigureAwait(false);
 
+        SessionAttachmentTurnPreparation attachmentPrep = await SessionAttachmentTurnService
+            .PrepareAsync(
+                request,
+                sessionAttachmentStore,
+                settings.Value,
+                grimoireTurn.SessionId,
+                grimoireTurn.AssistantEntryId,
+                pendingTurnId: null,
+                inferenceToken)
+            .ConfigureAwait(false);
+
+        if (attachmentPrep.ErrorMessage is not null)
+        {
+            if (!grimoireTurn.IsFinalized)
+            {
+                await grimoireTurnWriter
+                    .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            return new InferenceAttemptResult(
+                Result<PromptTurnResult>.Failure(
+                    new Error(ErrorCodes.Validation.AttachedFiles, attachmentPrep.ErrorMessage)),
+                IsConnectivityFailure: false);
+        }
+
+        if (attachmentPrep.PendingTurnId is not null
+            && grimoireTurn.SessionId is { } promoteSessionId)
+        {
+            try
+            {
+                await sessionAttachmentStore
+                    .PromotePendingAsync(
+                        attachmentPrep.PendingTurnId,
+                        promoteSessionId,
+                        grimoireTurn.AssistantEntryId,
+                        inferenceToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to promote pending session attachments for session {SessionId}.", promoteSessionId);
+
+                if (!grimoireTurn.IsFinalized)
+                {
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
+                        .ConfigureAwait(false);
+                }
+
+                return new InferenceAttemptResult(
+                    Result<PromptTurnResult>.Failure(
+                        new Error(
+                            ErrorCodes.Validation.AttachedFiles,
+                            string.IsNullOrWhiteSpace(ex.Message)
+                                ? "Session attachment promotion failed."
+                                : ex.Message)),
+                    IsConnectivityFailure: false);
+            }
+        }
+
         string? codexContent = await CodexReader
             .ReadCodexAsync(
                 request.WorkingDirectory,
@@ -366,11 +428,18 @@ public sealed class WizardIntelligenceProvider(
             semanticContext: semanticContext,
             sagaMemories: sagaMemories,
             lexiconEntries: lexiconEntries,
-            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes));
+            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes),
+            sessionAttachmentsIndex: attachmentPrep.IndexItems,
+            maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(settings.Value.Attachments.MaxIndexItemsInPrompt),
+            maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(settings.Value.Attachments.MaxIndexBytesInPrompt));
 
         List<AITool> toolSet = request.ForwardClientTools
             ? BuildClientForwardedToolSet(request)
-            : await BuildToolSetWithMcpAsync(request, resolvedSpell, inferenceToken).ConfigureAwait(false);
+            : await BuildToolSetWithMcpAsync(
+                request,
+                resolvedSpell,
+                grimoireTurn.SessionId ?? request.SessionId,
+                inferenceToken).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext turnContext = await BuildTurnContextAsync(request, toolSet, inferenceToken).ConfigureAwait(false);
 
@@ -395,9 +464,14 @@ public sealed class WizardIntelligenceProvider(
                     lease,
                     semanticContext: semanticContext,
                     sagaMemories: sagaMemories,
-                    lexiconEntries: lexiconEntries);
+                    lexiconEntries: lexiconEntries,
+                    sessionAttachmentsIndex: attachmentPrep.IndexItems,
+                    maxIndexItems: ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(settings.Value.Attachments.MaxIndexItemsInPrompt),
+                    maxIndexBytes: ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(settings.Value.Attachments.MaxIndexBytesInPrompt));
 
                 chatMessages = syncMessages;
+
+                InferenceContextBuilder.AppendContentsToLastMessage(chatMessages, attachmentPrep.RehydratedContents);
 
                 if (compressedSync)
                 {
@@ -460,40 +534,58 @@ public sealed class WizardIntelligenceProvider(
                             IsConnectivityFailure: false);
                     }
 
-                    foreach (FunctionCallContent fcc in calls)
+                    Guid? ambientSessionId = grimoireTurn.SessionId ?? request.SessionId;
+
+                    SessionAttachmentToolAmbient.CurrentSessionId = ambientSessionId;
+
+                    try
                     {
-                        ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
-                            .ProcessSingleToolCallAsync(
+                        foreach (FunctionCallContent fcc in calls)
+                        {
+                            ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
+                                .ProcessSingleToolCallAsync(
+                                    fcc,
+                                    request,
+                                    chatOptions,
+                                    activeSpell,
+                                    grimoireTurn.SessionId?.ToString(),
+                                    turnContext,
+                                    suppressInvocationFailures: settings.Value.Intelligence.TolerateToolFailures,
+                                    inferenceToken)
+                                .ConfigureAwait(false);
+
+                            (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
+
+                            auditContext?.ToolNames.Add(processed.ToolName);
+
+                            auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
+
+                            ToolExecutionPipeline.AppendToolExchangeToMessages(
+                                chatMessages,
                                 fcc,
-                                request,
-                                chatOptions,
-                                activeSpell,
-                                grimoireTurn.SessionId?.ToString(),
-                                turnContext,
-                                suppressInvocationFailures: settings.Value.Intelligence.TolerateToolFailures,
+                                processed.CallId,
+                                processed.ResultText);
+
+                            if (processed.AdditionalContextContents is { Count: > 0 } extras)
+                            {
+                                // Prefer a User message so vision providers receive DataContent on the next round
+                                // (Tool-role messages are a poor carrier for multimodal payload).
+                                chatMessages.Add(new MeAiChatMessage(ChatRole.User, extras.ToList()));
+                            }
+
+                            await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                                grimoireTurn.SessionId,
+                                processed.ToolName,
+                                processed.ArgsSnapshot,
+                                processed.ResultText,
+                                targetModel,
                                 inferenceToken)
-                            .ConfigureAwait(false);
-
-                        (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
-
-                        auditContext?.ToolNames.Add(processed.ToolName);
-
-                        auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
-
-                        ToolExecutionPipeline.AppendToolExchangeToMessages(
-                            chatMessages,
-                            fcc,
-                            processed.CallId,
-                            processed.ResultText);
-
-                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                            grimoireTurn.SessionId,
-                            processed.ToolName,
-                            processed.ArgsSnapshot,
-                            processed.ResultText,
-                            targetModel,
-                            inferenceToken)
-                            .ConfigureAwait(false);
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        SessionAttachmentToolAmbient.CurrentSessionId = null;
                     }
                 }
 
@@ -611,9 +703,17 @@ public sealed class WizardIntelligenceProvider(
                         IsConnectivityFailure: false);
                 }
 
-                await grimoireTurnWriter
+                bool finalizeOk = await grimoireTurnWriter
                     .TryFinalizeBufferedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
                     .ConfigureAwait(false);
+
+                if (!finalizeOk)
+                {
+                    return new InferenceAttemptResult(
+                        Result<PromptTurnResult>.Failure(
+                            new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage)),
+                        IsConnectivityFailure: false);
+                }
 
                 await TryIncrementSessionTokensAsync(
                     grimoireTurn.SessionId,
@@ -818,16 +918,63 @@ public sealed class WizardIntelligenceProvider(
 
             StreamFailureClassification singleClassification = new();
 
+            IAsyncEnumerator<IntelligenceEvent> singleEnumerator = StreamCommittedInferenceAsync(
+                singleLease,
+                request,
+                prompt,
+                singleClassification,
+                inferenceToken,
+                callerToken,
+                auditContext).GetAsyncEnumerator(inferenceToken);
+
+            Exception? singleMoveFailure = null;
+
             try
             {
-                await foreach (IntelligenceEvent evt in StreamCommittedInferenceAsync(singleLease, request, prompt, singleClassification, inferenceToken, callerToken, auditContext).ConfigureAwait(false))
+                while (true)
                 {
-                    yield return evt;
+                    bool moved;
+
+                    try
+                    {
+                        moved = await singleEnumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        singleMoveFailure = ex;
+
+                        break;
+                    }
+
+                    if (!moved)
+                    {
+                        yield break;
+                    }
+
+                    yield return singleEnumerator.Current;
                 }
             }
             finally
             {
+                await singleEnumerator.DisposeAsync().ConfigureAwait(false);
+
                 singleLease.Dispose();
+            }
+
+            if (singleMoveFailure is not null)
+            {
+                logger.LogError(
+                    singleMoveFailure,
+                    "Streaming inference threw after start for model {RequestedModel}.",
+                    request.Model);
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    PublicInferenceFailureMessage);
             }
 
             yield break;
@@ -1002,12 +1149,35 @@ public sealed class WizardIntelligenceProvider(
 
             healthTracker!.MarkHealthy(candidateProvider.Name);
 
+            Exception? midStreamFailure = null;
+
             try
             {
                 yield return firstEvent;
 
-                while (await enumerator.MoveNextAsync().ConfigureAwait(false))
+                while (true)
                 {
+                    bool moved;
+
+                    try
+                    {
+                        moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        midStreamFailure = ex;
+                        break;
+                    }
+
+                    if (!moved)
+                    {
+                        break;
+                    }
+
                     yield return enumerator.Current;
                 }
             }
@@ -1016,6 +1186,19 @@ public sealed class WizardIntelligenceProvider(
                 await enumerator.DisposeAsync().ConfigureAwait(false);
 
                 lease.Dispose();
+            }
+
+            if (midStreamFailure is not null)
+            {
+                logger.LogError(
+                    midStreamFailure,
+                    "Streaming inference threw mid-stream for provider {ProviderName} model {RequestedModel}.",
+                    candidateProvider.Name,
+                    request.Model);
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    PublicInferenceFailureMessage);
             }
 
             yield break;
@@ -1056,6 +1239,55 @@ public sealed class WizardIntelligenceProvider(
         Session? thread = await inferenceContextBuilder
             .LoadThreadAsync(request, inferenceToken)
             .ConfigureAwait(false);
+
+        bool attachmentsEnabled = settings.Value.Attachments.Enabled;
+
+        string? streamPendingTurnId = null;
+
+        if (attachmentsEnabled
+            && request.SessionId is null
+            && HasSessionAttachmentPayload(request))
+        {
+            streamPendingTurnId = Guid.NewGuid().ToString("N");
+        }
+
+        bool streamTurnBegunEarly = false;
+
+        if (attachmentsEnabled && !InferenceContextBuilder.HasStatelessMessages(request))
+        {
+            grimoireTurn = await grimoireTurnWriter
+                .TryBeginStreamedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
+                .ConfigureAwait(false);
+
+            streamTurnBegunEarly = true;
+        }
+
+        SessionAttachmentTurnPreparation streamAttachmentPrep = await SessionAttachmentTurnService
+            .PrepareAsync(
+                request,
+                sessionAttachmentStore,
+                settings.Value,
+                grimoireTurn.SessionId,
+                grimoireTurn.AssistantEntryId,
+                streamPendingTurnId,
+                inferenceToken)
+            .ConfigureAwait(false);
+
+        if (streamAttachmentPrep.ErrorMessage is not null)
+        {
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                streamAttachmentPrep.ErrorMessage);
+
+            if (!grimoireTurn.IsFinalized)
+            {
+                await grimoireTurnWriter
+                    .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            yield break;
+        }
 
         List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
 
@@ -1115,6 +1347,12 @@ public sealed class WizardIntelligenceProvider(
             chatClient,
             inferenceToken).ConfigureAwait(false);
 
+        int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
+            settings.Value.Attachments.MaxIndexItemsInPrompt);
+
+        int streamMaxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
+            settings.Value.Attachments.MaxIndexBytesInPrompt);
+
         string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
             request,
             streamCodexContent,
@@ -1125,7 +1363,10 @@ public sealed class WizardIntelligenceProvider(
             semanticContext: streamSemanticContext,
             sagaMemories: streamSagaMemories,
             lexiconEntries: streamLexiconEntries,
-            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes));
+            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(settings.Value.Intelligence.LexiconMaxInjectedBytes),
+            sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+            maxIndexItems: streamMaxIndexItems,
+            maxIndexBytes: streamMaxIndexBytes);
 
         InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -1140,11 +1381,16 @@ public sealed class WizardIntelligenceProvider(
             lease,
             semanticContext: streamSemanticContext,
             sagaMemories: streamSagaMemories,
-            lexiconEntries: streamLexiconEntries);
+            lexiconEntries: streamLexiconEntries,
+            sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+            maxIndexItems: streamMaxIndexItems,
+            maxIndexBytes: streamMaxIndexBytes);
 
         chatMessages = streamMessages;
 
-        if (!InferenceContextBuilder.HasStatelessMessages(request))
+        InferenceContextBuilder.AppendContentsToLastMessage(chatMessages, streamAttachmentPrep.RehydratedContents);
+
+        if (!streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
         {
             grimoireTurn = await grimoireTurnWriter
                 .TryBeginStreamedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
@@ -1162,6 +1408,46 @@ public sealed class WizardIntelligenceProvider(
                 IntelligenceEventType.ConversationBound,
                 "Conversation started",
                 bcid.ToString());
+
+            if (streamAttachmentPrep.PendingTurnId is not null)
+            {
+                string? promoteError = null;
+
+                try
+                {
+                    await sessionAttachmentStore
+                        .PromotePendingAsync(
+                            streamAttachmentPrep.PendingTurnId,
+                            bcid,
+                            grimoireTurn.AssistantEntryId,
+                            inferenceToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to promote pending session attachments for session {SessionId}.", bcid);
+
+                    promoteError = string.IsNullOrWhiteSpace(ex.Message)
+                        ? "Session attachment promotion failed."
+                        : ex.Message;
+                }
+
+                if (promoteError is not null)
+                {
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Error,
+                        promoteError);
+
+                    if (!grimoireTurn.IsFinalized)
+                    {
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    yield break;
+                }
+            }
         }
 
         if (compressedStream)
@@ -1171,7 +1457,11 @@ public sealed class WizardIntelligenceProvider(
 
         List<AITool> streamToolSet = request.ForwardClientTools
             ? BuildClientForwardedToolSet(request)
-            : await BuildToolSetWithMcpAsync(request, streamResolvedSpell, inferenceToken).ConfigureAwait(false);
+            : await BuildToolSetWithMcpAsync(
+                request,
+                streamResolvedSpell,
+                grimoireTurn.SessionId ?? request.SessionId,
+                inferenceToken).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(request, streamToolSet, inferenceToken).ConfigureAwait(false);
 
@@ -1384,75 +1674,93 @@ public sealed class WizardIntelligenceProvider(
 
                 int toolCallIndex = 0;
 
-                foreach (FunctionCallContent fcc in toolCalls)
+                Guid? streamAmbientSessionId = grimoireTurn.SessionId ?? request.SessionId;
+
+                SessionAttachmentToolAmbient.CurrentSessionId = streamAmbientSessionId;
+
+                try
                 {
-                    string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
-
-                    string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
-
-                    string callId = toolExecutionPipeline.ResolveCallId(fcc);
-
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.ToolCall,
-                        fcc.Name ?? string.Empty,
-                        toolCallData,
-                        null,
-                        new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
-
-                    ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
-                        .ProcessSingleToolCallAsync(
-                            fcc,
-                            request,
-                            streamChatOptions,
-                            streamActiveSpell,
-                            grimoireTurn.SessionId?.ToString(),
-                            streamTurnContext,
-                            suppressInvocationFailures: true,
-                            inferenceToken)
-                        .ConfigureAwait(false);
-
-                    foreach (IntelligenceEvent wardEvent in processed.WardEvents)
+                    foreach (FunctionCallContent fcc in toolCalls)
                     {
-                        yield return wardEvent;
-                    }
+                        string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
 
-                    if (processed.Failed)
-                    {
+                        string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
+
+                        string callId = toolExecutionPipeline.ResolveCallId(fcc);
+
                         yield return new IntelligenceEvent(
-                            IntelligenceEventType.ToolError,
+                            IntelligenceEventType.ToolCall,
+                            fcc.Name ?? string.Empty,
+                            toolCallData,
+                            null,
+                            new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
+
+                        ToolExecutionPipeline.ProcessedToolCall processed = await toolExecutionPipeline
+                            .ProcessSingleToolCallAsync(
+                                fcc,
+                                request,
+                                streamChatOptions,
+                                streamActiveSpell,
+                                grimoireTurn.SessionId?.ToString(),
+                                streamTurnContext,
+                                suppressInvocationFailures: true,
+                                inferenceToken)
+                            .ConfigureAwait(false);
+
+                        foreach (IntelligenceEvent wardEvent in processed.WardEvents)
+                        {
+                            yield return wardEvent;
+                        }
+
+                        if (processed.Failed)
+                        {
+                            yield return new IntelligenceEvent(
+                                IntelligenceEventType.ToolError,
+                                processed.ToolName,
+                                "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                                null,
+                                new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
+                        }
+
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.ToolResult,
                             processed.ToolName,
-                            "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                            processed.ResultText,
                             null,
                             new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
+
+                        auditContext?.ToolNames.Add(processed.ToolName);
+
+                        auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
+
+                        ToolExecutionPipeline.AppendToolExchangeToMessages(
+                            chatMessages,
+                            fcc,
+                            processed.CallId,
+                            processed.ResultText);
+
+                        if (processed.AdditionalContextContents is { Count: > 0 } extras)
+                        {
+                            // Prefer a User message so vision providers receive DataContent on the next round
+                            // (Tool-role messages are a poor carrier for multimodal payload).
+                            chatMessages.Add(new MeAiChatMessage(ChatRole.User, extras.ToList()));
+                        }
+
+                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                            grimoireTurn.SessionId,
+                            processed.ToolName,
+                            processed.ArgsSnapshot,
+                            processed.ResultText,
+                            targetModel,
+                            inferenceToken)
+                            .ConfigureAwait(false);
+
+                        toolCallIndex++;
                     }
-
-                    yield return new IntelligenceEvent(
-                        IntelligenceEventType.ToolResult,
-                        processed.ToolName,
-                        processed.ResultText,
-                        null,
-                        new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
-
-                    auditContext?.ToolNames.Add(processed.ToolName);
-
-                    auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
-
-                    ToolExecutionPipeline.AppendToolExchangeToMessages(
-                        chatMessages,
-                        fcc,
-                        processed.CallId,
-                        processed.ResultText);
-
-                    await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                        grimoireTurn.SessionId,
-                        processed.ToolName,
-                        processed.ArgsSnapshot,
-                        processed.ResultText,
-                        targetModel,
-                        inferenceToken)
-                        .ConfigureAwait(false);
-
-                    toolCallIndex++;
+                }
+                finally
+                {
+                    SessionAttachmentToolAmbient.CurrentSessionId = null;
                 }
             }
 
@@ -1585,9 +1893,18 @@ public sealed class WizardIntelligenceProvider(
 
         }
 
-        await grimoireTurnWriter
+        bool streamFinalizeOk = await grimoireTurnWriter
             .TryFinalizeStreamedAssistantEntryAsync(grimoireTurn, finalText, targetModel, inferenceToken)
             .ConfigureAwait(false);
+
+        if (!streamFinalizeOk)
+        {
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                GrimoireTurnWriter.PublicFinalizeFailureMessage);
+
+            yield break;
+        }
 
         await TryIncrementSessionTokensAsync(grimoireTurn.SessionId, streamAccumulatedUsage, targetModel, inferenceToken)
             .ConfigureAwait(false);
@@ -2479,6 +2796,7 @@ public sealed class WizardIntelligenceProvider(
     private async Task<List<AITool>> BuildToolSetWithMcpAsync(
         PingRequest request,
         ResolvedSpell? resolvedSpell,
+        Guid? sessionIdForTurn,
         CancellationToken cancellationToken)
     {
         string workingDirectory = request.WorkingDirectory;
@@ -2536,8 +2854,20 @@ public sealed class WizardIntelligenceProvider(
                 string.Join(", ", attunement.Excluded));
         }
 
+        AttachmentsSettings attachments = settings.Value.Attachments ?? new AttachmentsSettings();
+
+        bool advertiseAttachTool = attachments.Enabled
+            && attachments.EnableModelAttachTool
+            && (request.SessionId.HasValue || sessionIdForTurn.HasValue);
+
         foreach (AITool t in attunement.Allowed)
         {
+            if (!advertiseAttachTool
+                && string.Equals(t.Name, "attach_session_file", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             tools.Add(t);
         }
 
@@ -3167,6 +3497,11 @@ public sealed class WizardIntelligenceProvider(
         return Result.Success();
 
     }
+
+    private static bool HasSessionAttachmentPayload(PingRequest request) =>
+        request.AttachedFiles is { Count: > 0 }
+        || request.ScryingFoci is { Count: > 0 }
+        || request.AttachmentReferences is { Count: > 0 };
 
     private bool TryValidateAttachedFiles(PingRequest request, out Error error)
     {

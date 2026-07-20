@@ -10,7 +10,7 @@
     <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Spacing="2">
         <TextBlock Text="{Binding Title}" FontSize="{DynamicResource ForgeTitleFontSize}" FontWeight="SemiBold" />
-        <TextBlock Text="{Binding Session.Status}" Opacity="0.68" />
+        <TextBlock Text="{Binding Session?.Status}" Opacity="0.68" />
       </StackPanel>
 
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
@@ -62,19 +62,19 @@
                               Spacing="4"
                               IsVisible="{Binding HasEntryId}">
                     <Button Content="Pin"
-                            Command="{Binding $parent[UserControl].DataContext.PinEntryCommand}"
+                            Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.PinEntryCommand}"
                             CommandParameter="{Binding}"
                             IsVisible="{Binding CanPin}"
-                            IsEnabled="{Binding !$parent[UserControl].DataContext.MemoryManagementDisabled}" />
+                            IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
                     <Button Content="Unpin"
-                            Command="{Binding $parent[UserControl].DataContext.UnpinEntryCommand}"
+                            Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.UnpinEntryCommand}"
                             CommandParameter="{Binding}"
                             IsVisible="{Binding CanUnpin}"
-                            IsEnabled="{Binding !$parent[UserControl].DataContext.MemoryManagementDisabled}" />
+                            IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
                     <Button Content="Delete"
-                            Command="{Binding $parent[UserControl].DataContext.DeleteEntryCommand}"
+                            Command="{Binding $parent[UserControl].((vm:TomeViewModel)DataContext)?.DeleteEntryCommand}"
                             CommandParameter="{Binding}"
-                            IsEnabled="{Binding !$parent[UserControl].DataContext.MemoryManagementDisabled}" />
+                            IsEnabled="{Binding !$parent[UserControl].((vm:TomeViewModel)DataContext)?.MemoryManagementDisabled}" />
                   </StackPanel>
                 </DockPanel>
 
@@ -82,14 +82,14 @@
                            TextWrapping="Wrap"
                            IsVisible="{Binding Content, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
-                <Expander Header="{Binding ToolCall.Name}"
+                <Expander Header="{Binding ToolCall?.Name}"
                           IsVisible="{Binding ToolCall, Converter={x:Static ObjectConverters.IsNotNull}}"
                           Margin="0,4,0,0">
                   <StackPanel Spacing="6">
-                    <TextBlock Text="{Binding ToolCall.ArgumentsJson}" TextWrapping="Wrap" Opacity="0.8" />
-                    <TextBlock Text="{Binding ToolCall.Result}" TextWrapping="Wrap" />
-                    <TextBlock Text="{Binding ToolCall.ErrorMessage}"
-                               IsVisible="{Binding ToolCall.HasError}"
+                    <TextBlock Text="{Binding ToolCall?.ArgumentsJson}" TextWrapping="Wrap" Opacity="0.8" />
+                    <TextBlock Text="{Binding ToolCall?.Result}" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding ToolCall?.ErrorMessage}"
+                               IsVisible="{Binding ToolCall?.HasError}"
                                Foreground="{DynamicResource ForgeAccentBrush}"
                                TextWrapping="Wrap" />
                   </StackPanel>
@@ -108,7 +108,7 @@
     <StackPanel Grid.Row="5" Spacing="8" Margin="0,8,0,4">
       <StackPanel Orientation="Horizontal" Spacing="12">
         <TextBlock Text="{Binding ManaPercent, StringFormat=Mana: {0:0}%}" Opacity="0.72" />
-        <TextBlock Text="{Binding LastUsage.TotalTokens, StringFormat=Tokens: {0}}" Opacity="0.72" />
+        <TextBlock Text="{Binding LastUsage?.TotalTokens, StringFormat=Tokens: {0}}" Opacity="0.72" />
         <TextBlock Text="Streaming…" IsVisible="{Binding IsStreaming}" Opacity="0.72" />
         <TextBlock Text="Ward pending — open The Gatehouse"
                    IsVisible="{Binding WardPending}"

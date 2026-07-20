@@ -1457,8 +1457,9 @@ public sealed class ChatCommand(
 
         string mutedTag = themePalette.Muted.ToMarkup();
 
+        // Spectre: "[[" / "]]" emit literal brackets. Closing bar "]" must be "]]" after "[/]".
         string line =
-            $"{themePalette.MutedMarkup(Markup.Escape("Mana:"))} [[[{fillTag}]{filledStr}[/][{mutedTag}]{emptyStr}[/]] {displayPct}% ({usedTokens}/{contextWindowLimit})";
+            $"{themePalette.MutedMarkup(Markup.Escape("Mana:"))} [[[{fillTag}]{filledStr}[/][{mutedTag}]{emptyStr}[/]]] {displayPct}% ({usedTokens}/{contextWindowLimit})";
 
         if (session.MemoryCompressed)
         {

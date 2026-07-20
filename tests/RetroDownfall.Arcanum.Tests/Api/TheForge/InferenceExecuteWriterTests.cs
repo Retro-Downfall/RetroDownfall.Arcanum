@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -45,11 +46,17 @@ public sealed class InferenceExecuteWriterTests
     }
 
     [Fact]
-    public async Task WriteStreamAsync_NonOperationCanceledException_WritesErrorFrame()
+    public async Task WriteStreamAsync_NonOperationCanceledException_WritesSanitizedErrorFrameAndLogsException()
     {
         ServiceCollection services = new();
 
-        services.AddLogging();
+        RecordingLoggerProvider recording = new();
+        services.AddLogging(builder =>
+        {
+            builder.ClearProviders();
+            builder.AddProvider(recording);
+            builder.SetMinimumLevel(LogLevel.Trace);
+        });
 
         ServiceProvider provider = services.BuildServiceProvider();
 
@@ -76,7 +83,13 @@ public sealed class InferenceExecuteWriterTests
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
         Assert.Contains("error", output, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stream boom", output, StringComparison.Ordinal);
+        Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
 
+        Assert.Contains(
+            recording.Entries,
+            e => e.Exception is InvalidOperationException { Message: "stream boom" }
+                && e.Level >= LogLevel.Error);
     }
 
     // W3.4 Group A (S10): a client disconnect mid-stream must (a) cancel the linked inference
@@ -158,6 +171,8 @@ public sealed class InferenceExecuteWriterTests
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
         Assert.Contains("error", output, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("late boom", output, StringComparison.Ordinal);
+        Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
 
     }
 
@@ -293,6 +308,35 @@ public sealed class InferenceExecuteWriterTests
 
         }
 
+    }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        public List<(LogLevel Level, Exception? Exception, string Message)> Entries { get; } = [];
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(Entries);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class RecordingLogger(
+            List<(LogLevel Level, Exception? Exception, string Message)> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                entries.Add((logLevel, exception, formatter(state, exception)));
+            }
+        }
     }
 
 }

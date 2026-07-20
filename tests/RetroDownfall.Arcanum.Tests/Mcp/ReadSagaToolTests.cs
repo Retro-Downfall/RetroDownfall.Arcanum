@@ -231,6 +231,7 @@ public sealed class ReadSagaToolTests
             conclaveEnabled: false,
             sagaEnabled: sagaEnabled,
             a2aClientEnabled: false,
+            attachmentsToolEnabled: false,
             maxJsonRpcLineBytes: 2_097_152,
             logger: NullLogger<ArcanumInternalToolServer>.Instance);
 
