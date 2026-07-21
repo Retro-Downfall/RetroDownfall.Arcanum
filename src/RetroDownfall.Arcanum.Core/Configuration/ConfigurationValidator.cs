@@ -24,6 +24,9 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
     internal const string ObsoleteProviderModelMapMessage =
         "Provider-level modelMap is no longer supported. List models explicitly under Providers[].Models.";
 
+    internal const string ObsoleteModerationsMigrationMessage =
+        "Arcanum:Moderations is no longer supported. POST /v1/moderations always returns 501 not_supported; remove the Moderations block from arcanum.json.";
+
     /// <summary>
     /// Rejects obsolete configuration keys that binding would otherwise silently ignore after the
     /// corresponding options properties were removed (managed local-inference options / global Cache).
@@ -49,6 +52,13 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             errors.Add(new ConfigurationValidationError(
                 "cache",
                 ObsoleteCacheMigrationMessage));
+        }
+
+        if (arcanum.GetSection("Moderations").Exists())
+        {
+            errors.Add(new ConfigurationValidationError(
+                "moderations",
+                ObsoleteModerationsMigrationMessage));
         }
 
         IConfigurationSection providers = arcanum.GetSection("Providers");
@@ -123,6 +133,13 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             errors.Add(new ConfigurationValidationError(
                 "cache",
                 ObsoleteCacheMigrationMessage));
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "moderations", out _))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "moderations",
+                ObsoleteModerationsMigrationMessage));
         }
 
         if (TryGetPropertyIgnoreCase(root, "providers", out JsonElement providers)

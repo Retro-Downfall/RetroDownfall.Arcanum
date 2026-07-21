@@ -4,8 +4,12 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -63,6 +67,8 @@ internal static class InferenceExecuteWriter
                 ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
                 cancellationToken).ConfigureAwait(false);
 
+            TurnContextGuards.MarkIdempotencyTerminal(httpContext);
+
             return;
         }
 
@@ -73,6 +79,8 @@ internal static class InferenceExecuteWriter
             response,
             ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
             cancellationToken).ConfigureAwait(false);
+
+        TurnContextGuards.MarkIdempotencyTerminal(httpContext);
     }
 
     public static async Task WriteStreamAsync(
@@ -82,9 +90,19 @@ internal static class InferenceExecuteWriter
         CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null)
     {
-        using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
-            httpContext.RequestAborted,
-            cancellationToken);
+        // Prefer RequestServices in production; tolerate null/partial providers in unit tests.
+        IServiceProvider? services = httpContext.RequestServices;
+
+        DisconnectPolicy disconnectPolicy = services
+            ?.GetService<IOptionsSnapshot<ArcanumSettings>>()
+            ?.Value.Intelligence.DisconnectPolicy
+            ?? DisconnectPolicy.Auto;
+
+        bool continueThenReplay = TurnContextGuards.ResolveContinueThenReplay(httpContext, disconnectPolicy);
+
+        using CancellationTokenSource streamCts = continueThenReplay
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted, cancellationToken);
 
         CancellationToken ct = streamCts.Token;
 
@@ -98,20 +116,26 @@ internal static class InferenceExecuteWriter
 
         Utf8JsonWriter jsonWriter = new(eventBuffer);
 
-        // Track whether any NDJSON frame has been streamed. Mid-stream exceptions still
-        // emit a terminal IntelligenceEventType.Error when the client is writable (wire
-        // contract). Client disconnects are handled separately and must not write to a
-        // dead socket.
         bool responseStarted = false;
 
-        ILogger logger = httpContext.RequestServices
-            .GetRequiredService<ILoggerFactory>()
-            .CreateLogger(typeof(InferenceExecuteWriter).FullName ?? nameof(InferenceExecuteWriter));
+        bool clientGone = false;
+
+        string loggerCategory = typeof(InferenceExecuteWriter).FullName ?? nameof(InferenceExecuteWriter);
+
+        ILogger logger = services
+            ?.GetService<ILoggerFactory>()
+            ?.CreateLogger(loggerCategory)
+            ?? NullLoggerFactory.Instance.CreateLogger(loggerCategory);
 
         try
         {
             await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(request, ct, auditContext).ConfigureAwait(false))
             {
+                if (clientGone)
+                {
+                    // Continue-then-replay: drain remaining events without writing.
+                    continue;
+                }
 
                 eventBuffer.ResetWrittenCount();
 
@@ -121,23 +145,43 @@ internal static class InferenceExecuteWriter
 
                 eventBuffer.Write(NewlineBytes);
 
-                await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, ct).ConfigureAwait(false);
+                try
+                {
+                    await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, ct).ConfigureAwait(false);
 
-                await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                    await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
 
-                responseStarted = true;
+                    responseStarted = true;
+                }
+                catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
+                {
+                    clientGone = true;
 
+                    if (!continueThenReplay)
+                    {
+                        streamCts.Cancel();
+                        break;
+                    }
+                }
+
+            }
+
+            if (!clientGone || continueThenReplay)
+            {
+                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
 
         }
         catch (OperationCanceledException)
         {
-            // DESIGN / WizardIntelligenceProvider cancellation rule:
-            // 1) Client abort (RequestAborted) → stop cleanly (no error frame).
-            // 2) Inference wall-clock timeout (!caller cancel) → Hub.Timeout frame.
-            // 3) Host/caller cancellation → sanitized failure frame (not labeled timeout).
-            if (httpContext.RequestAborted.IsCancellationRequested)
+            if (httpContext.RequestAborted.IsCancellationRequested && !continueThenReplay)
             {
+                return;
+            }
+
+            if (continueThenReplay && httpContext.RequestAborted.IsCancellationRequested)
+            {
+                // Inference CTS was not linked to RequestAborted; treat as clean finish if producer ended.
                 return;
             }
 
@@ -158,6 +202,7 @@ internal static class InferenceExecuteWriter
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, CancellationToken.None)
                     .ConfigureAwait(false);
                 await httpContext.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {
@@ -165,27 +210,19 @@ internal static class InferenceExecuteWriter
         }
         catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
         {
-
-            // Client disconnected mid-stream (broken pipe / reset). Cancel the linked
-            // inference CTS so the producer stops promptly, then break silently.
-
-            streamCts.Cancel();
-
+            if (!continueThenReplay)
+            {
+                streamCts.Cancel();
+            }
         }
         catch (Exception ex)
         {
-
-            // Emit a terminal error frame whenever the client is still writable — including
-            // after partial output — so native NDJSON clients always observe a terminal Error.
-            // Full exception detail stays in logs; the client frame is sanitized (W3.5).
-
             logger.LogError(
                 ex,
                 "Stream inference failed (responseStarted={ResponseStarted}, model={Model}).",
                 responseStarted,
                 request.Model);
 
-            // ServeCommand clears MEL providers; Serilog is the durable sink for operators.
             Serilog.Log.Error(
                 ex,
                 "Stream inference failed (responseStarted={ResponseStarted}, model={Model}).",
@@ -206,33 +243,24 @@ internal static class InferenceExecuteWriter
 
             try
             {
-
                 await httpContext.Response.Body.WriteAsync(eventBuffer.WrittenMemory, httpContext.RequestAborted).ConfigureAwait(false);
 
                 await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
 
+                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
-
             catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
             {
-
-                // Disconnect while writing the terminal error — swallow as disconnect.
-
             }
-
             catch (Exception writeEx)
             {
-
                 logger.LogWarning(writeEx, "Failed to write stream error frame after inference failure.");
-
             }
 
         }
         finally
         {
-
             jsonWriter.Dispose();
-
         }
     }
 

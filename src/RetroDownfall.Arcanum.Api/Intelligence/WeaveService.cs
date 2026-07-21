@@ -1,29 +1,18 @@
 using System.ClientModel;
+using System.Diagnostics;
 using System.Net.Http;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-// RAG Phase 1 — The Weave (imprinting). Layering note: the plan places this implementation in
-// Infrastructure (mirroring EmbeddingService/DivinationService both being Infrastructure concerns), but
-// WeaveService depends on IEmbeddingGeneratorFactory, whose concrete provider wiring uses AI SDK types
-// (OpenAI.Embeddings.EmbeddingClient, Microsoft.Extensions.AI.OpenAI) that are referenced only by the
-// Api csproj — RetroDownfall.Arcanum.Infrastructure.csproj has no ProjectReference to Api, so
-// Infrastructure genuinely cannot see those types. This lives in Api instead, exactly mirroring why
-// ChatClientFactory (the equivalent composition root for chat completions) also lives in Api rather
-// than Infrastructure. This placement is invisible to every consumer: IWeaveService (the Core contract)
-// is registered once in AddArcanumApiServices, and Infrastructure-layer code (including later phases'
-// background services, e.g. Phase 2's EntryWeavingService) depends only on IWeaveService — DI resolves
-// this Api-layer class at runtime regardless of which project registered it.
-//
-// IDivinationService/DivinationService, by contrast, has no dependency on the embedding generator (only
-// on ArcanumDbContext raw SQL and WeaveIndexAvailability) and lives in Infrastructure exactly as
-// planned — see DivinationService.cs.
 /// <summary>
 /// Imprints text into The Weave via <see cref="IEmbeddingGeneratorFactory"/>. Never throws for expected
 /// failure modes (feature disabled, provider unreachable, timeout, or genuine per-call provider error):
@@ -35,6 +24,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public sealed class WeaveService(
     IEmbeddingGeneratorFactory generatorFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    IServiceScopeFactory scopeFactory,
     ILogger<WeaveService> logger) : IWeaveService
 {
 
@@ -142,6 +132,8 @@ public sealed class WeaveService(
 
             }
 
+            await TryLedgerEmbeddingAsync(texts, embeddings, cancellationToken).ConfigureAwait(false);
+
             return Result<Embedding<float>[]>.Success([.. results]);
 
         }
@@ -202,6 +194,128 @@ public sealed class WeaveService(
 
         }
 
+    }
+
+    private async Task TryLedgerEmbeddingAsync(
+        IReadOnlyList<string> texts,
+        EmbeddingSettings embeddings,
+        CancellationToken cancellationToken)
+    {
+        long approxTokens = 0L;
+
+        foreach (string text in texts)
+        {
+            approxTokens += Math.Max(1L, (text.Length + 3) / 4);
+        }
+
+        PricingSettings pricingSettings = optionsMonitor.CurrentValue.Pricing ?? new PricingSettings();
+        ModelPricingEntry pricing = pricingSettings.DefaultPricing;
+
+        if (!string.IsNullOrWhiteSpace(embeddings.Model)
+            && pricingSettings.ModelPricing.TryGetValue(embeddings.Model, out ModelPricingEntry? explicitPricing))
+        {
+            pricing = explicitPricing;
+        }
+
+        string provider = embeddings.Provider ?? "unknown";
+        string model = embeddings.Model ?? "unknown";
+
+        if (TurnAccountingAmbient.Current is TurnAccountingHandle ambient)
+        {
+            try
+            {
+                await ambient.RecordUsageAsync(
+                        TurnAccountingAmbient.Writer,
+                        BillableOperationType.Embedding,
+                        provider,
+                        model,
+                        purpose: "embedding",
+                        approxTokens,
+                        outputTokens: 0,
+                        cachedTokens: 0,
+                        pricing,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogDebug(ex, "Failed to ledger ambient embedding usage.");
+            }
+
+            return;
+        }
+
+        try
+        {
+            using IServiceScope scope = scopeFactory.CreateScope();
+            ITurnRunWriter? turnRunWriter = scope.ServiceProvider.GetService<ITurnRunWriter>();
+            IBudgetReservationService? budgetReservations =
+                scope.ServiceProvider.GetService<IBudgetReservationService>();
+
+            decimal reservedUsd = BudgetReservationService.EstimateWorstCaseEmbeddingUsd(pricing, approxTokens);
+
+            Result<TurnAccountingHandle> begin = await TurnAccountingHandle.BeginAsync(
+                    turnRunWriter,
+                    budgetReservations,
+                    pricingSettings,
+                    model,
+                    sessionId: null,
+                    surface: "embedding",
+                    purpose: "embedding",
+                    requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
+                    cancellationToken,
+                    reservedUsdOverride: reservedUsd)
+                .ConfigureAwait(false);
+
+            if (begin.IsFailure)
+            {
+                logger.LogDebug(
+                    "Embedding budget reservation failed ({Code}); provider call already succeeded.",
+                    begin.Error.Code);
+
+                return;
+            }
+
+            TurnAccountingHandle handle = begin.Value;
+
+            try
+            {
+                await handle.RecordUsageAsync(
+                        turnRunWriter,
+                        BillableOperationType.Embedding,
+                        provider,
+                        model,
+                        purpose: "embedding",
+                        approxTokens,
+                        outputTokens: 0,
+                        cachedTokens: 0,
+                        pricing,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                await handle.CompleteAsync(
+                        turnRunWriter,
+                        budgetReservations,
+                        InferenceRunStatus.Completed,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                await handle.CompleteAsync(
+                        turnRunWriter,
+                        budgetReservations,
+                        InferenceRunStatus.Failed,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                throw;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Failed to ledger standalone embedding usage.");
+        }
     }
 
     /// <summary>

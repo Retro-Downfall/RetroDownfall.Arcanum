@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -22,17 +23,18 @@ internal static class LexiconEntityExtractor
     /// <summary>Low internal token cap for the extractor preflight (kept separate from the router).</summary>
     public const int MaxOutputTokens = 128;
 
-    public static async Task<IReadOnlyList<string>> ExtractAsync(
+    public static async Task<(IReadOnlyList<string> Entities, UsageDetails? Usage)> ExtractAsync(
         IChatClient client,
         string userPrompt,
         TimeSpan preflightTimeout,
         CancellationToken cancellationToken,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IModelCallExecutor? modelCallExecutor = null)
     {
 
         if (string.IsNullOrWhiteSpace(userPrompt))
         {
-            return [];
+            return ([], null);
         }
 
         string safeUser = userPrompt.Replace('\'', '`');
@@ -65,9 +67,32 @@ internal static class LexiconEntityExtractor
 
         try
         {
-            response = await client
-                .GetResponseAsync(messages, options, timeoutCts.Token)
+            IModelCallExecutor executor = modelCallExecutor ?? new ModelCallExecutor();
+
+            // Auxiliary preflight — dedicated budget so Lexicon extraction does not consume the
+            // interactive turn's model-call ceiling.
+            TurnBudget auxBudget = new(maxModelCalls: 1);
+
+            var callResult = await executor
+                .ExecuteBufferedAsync(
+                    client,
+                    messages,
+                    options,
+                    auxBudget,
+                    ModelCallPurpose.LexiconExtraction,
+                    timeoutCts.Token)
                 .ConfigureAwait(false);
+
+            if (callResult.IsFailure)
+            {
+                logger?.LogWarning(
+                    "LexiconEntityExtractor preflight failed ({ErrorCode}); continuing with no entities.",
+                    callResult.Error.Code);
+
+                return ([], null);
+            }
+
+            response = callResult.Value.Response;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -79,7 +104,7 @@ internal static class LexiconEntityExtractor
                 "LexiconEntityExtractor preflight timed out after {TimeoutSeconds:F0}s; continuing with no entities.",
                 preflightTimeout.TotalSeconds);
 
-            return [];
+            return ([], null);
         }
         catch (Exception ex)
         {
@@ -88,12 +113,12 @@ internal static class LexiconEntityExtractor
                 "LexiconEntityExtractor preflight failed ({ExceptionType}); continuing with no entities.",
                 ex.GetType().Name);
 
-            return [];
+            return ([], null);
         }
 
         if (string.IsNullOrWhiteSpace(response.Text))
         {
-            return [];
+            return ([], response.Usage);
         }
 
         string cleaned = SemanticRouter.StripMarkdownFences(response.Text.Trim());
@@ -108,10 +133,10 @@ internal static class LexiconEntityExtractor
         {
             logger?.LogWarning("LexiconEntityExtractor failed to parse JSON response: {ResponseText}", response.Text);
 
-            return [];
+            return ([], response.Usage);
         }
 
-        return SemanticRouter.NormalizeEntities(parsed?.Entities);
+        return (SemanticRouter.NormalizeEntities(parsed?.Entities), response.Usage);
     }
 
 }

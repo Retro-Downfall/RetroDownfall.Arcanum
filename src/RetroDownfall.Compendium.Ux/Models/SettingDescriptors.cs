@@ -11,6 +11,8 @@ public static class SettingDescriptors
 
         // ===== Host =====
 
+        new("edition", ConfigSection.Host, "Edition", "Runtime edition / hardening mode. Local (default) disables host process tools, A2A/Conclave advertising, and diagnostic MCP. Development unlocks those surfaces when accompanying startup flags are set. Overridable by ARCANUM_EDITION.", SettingKind.Enum, EnumType: typeof(ArcanumEdition)),
+
         new("host.port", ConfigSection.Host, "Port", "Kestrel listen port.", SettingKind.Int, 1, 65535, 1, ClampName: nameof(ArcanumSettingClamps.HostPort)),
 
         new("host.retainedLogFileCount", ConfigSection.Host, "Retained log file count", "Number of rolling log files kept on disk before oldest are pruned.", SettingKind.Int, 1, 366, 1, ClampName: nameof(ArcanumSettingClamps.RetainedLogFileCount)),
@@ -133,7 +135,11 @@ public static class SettingDescriptors
 
         new("intelligence.toolOutputCapBytes", ConfigSection.Intelligence, "Tool output cap (bytes)", "Hard cap on captured stdout/stderr for in-process execute_command and run_spell_script. Output beyond this is truncated.", SettingKind.Long, 65_536, 67_108_864, 65_536, ClampName: nameof(ArcanumSettingClamps.ToolOutputCapBytes)),
 
-        new("intelligence.maxToolInferenceRounds", ConfigSection.Intelligence, "Max tool inference rounds", "Maximum agentic tool rounds per inference turn. Beyond this the turn fails with Hub.ToolLoop.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxToolInferenceRounds)),
+        new("intelligence.disconnectPolicy", ConfigSection.Intelligence, "Disconnect policy", "Auto (default): continue-then-replay when Idempotency-Key is present; otherwise cancel→Abandoned. See ADR 0003.", SettingKind.Enum, EnumType: typeof(DisconnectPolicy)),
+
+        new("intelligence.reservedOutputTokens", ConfigSection.Intelligence, "Reserved output tokens", "Tokens reserved for model output during per-call context preflight when MaxOutputTokens is unset (default 1024).", SettingKind.Int, 0, 128000, 1),
+
+        new("intelligence.maxToolInferenceRounds", ConfigSection.Intelligence, "Max tool inference rounds", "Maximum agentic tool rounds per inference turn (default 8). Beyond this the turn fails with Hub.ToolLoop.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxToolInferenceRounds)),
 
         new("intelligence.tolerateToolFailures", ConfigSection.Intelligence, "Tolerate tool failures", "When true (default), an unexpected tool exception during a buffered turn is caught and synthesized into a tool result instead of failing the whole turn with Hub.Error. Streaming already tolerates failures unconditionally.", SettingKind.Bool),
 
@@ -560,15 +566,15 @@ public static class SettingDescriptors
 
         new("scrying.allowedMimeTypes", ConfigSection.Scrying, "Allowed MIME types", "Allowed image MIME types. Non-matching types are rejected. Only enforced for data: URI images; not enforced for http(s) URLs.", SettingKind.StringArray),
 
-        new("moderations.enabled", ConfigSection.Moderations, "Moderations enabled", "When false (default), POST /v1/moderations returns 404. When true, it returns a pass-through result (always unflagged) — Arcanum runs no local or remote moderation model yet.", SettingKind.Bool),
-
         // ===== Pricing =====
 
         new("pricing.defaultPricing.inputPer1M", ConfigSection.Pricing, "Default input price (USD / 1M tokens)", "Fallback cost per 1M input tokens when a model has no explicit pricing entry. Default free.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingInputPer1M)),
 
         new("pricing.defaultPricing.outputPer1M", ConfigSection.Pricing, "Default output price (USD / 1M tokens)", "Fallback cost per 1M output tokens when a model has no explicit pricing entry. Default free.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingOutputPer1M)),
 
-        new("pricing.modelPricing", ConfigSection.Pricing, "Per-model pricing", "Dictionary keyed by model name. Each entry supplies input and output USD cost per 1M tokens.", SettingKind.Dictionary),
+        new("pricing.defaultPricing.cachedPer1M", ConfigSection.Pricing, "Default cached input price (USD / 1M tokens)", "Fallback cost per 1M cached input tokens. Default 0.00 — set explicitly; cached tokens are not assumed free forever.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingInputPer1M)),
+
+        new("pricing.modelPricing", ConfigSection.Pricing, "Per-model pricing", "Dictionary keyed by model name. Each entry supplies input, output, and cached USD cost per 1M tokens.", SettingKind.Dictionary),
 
         // ===== Budget =====
 
@@ -608,7 +614,7 @@ public static class SettingDescriptors
 
         new("guardrails.blockedTopics", ConfigSection.Guardrails, "Blocked topics", "Optional block-list of regex patterns. Input or output matching any pattern is rejected. Default empty — no topics blocked.", SettingKind.StringArray),
 
-        new("guardrails.streamingMode", ConfigSection.Guardrails, "Streaming output-filter mode", "passthrough (default) emits tokens in real time and runs the output filter post-hoc (toxic text may reach the client; only persistence is blocked). buffered holds tokens server-side and releases them only after the filter passes, blocking toxic content at the cost of real-time streaming. No-op when Guardrails:Enabled is false.", SettingKind.String),
+        new("guardrails.streamingMode", ConfigSection.Guardrails, "Streaming output-filter mode", "buffered (default when guardrails are enabled) holds tokens until the output filter passes. passthrough emits tokens live and filters post-hoc (toxic text may reach the client). Explicit passthrough is honored with a warning. Filters assistant output only — not tool side effects. No-op when Guardrails:Enabled is false.", SettingKind.Enum, EnumType: typeof(GuardrailsStreamingMode)),
 
         // ===== Content Guardrails — Audit log =====
 

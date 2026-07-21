@@ -128,7 +128,7 @@ public sealed class IdempotencyEndpointFilterTests
     }
 
     [SkippableFact]
-    public async Task PostPing_DifferentBodySameKey_ExecutesBothIndependently()
+    public async Task PostPing_DifferentBodySameKey_Returns409Conflict()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -167,10 +167,10 @@ public sealed class IdempotencyEndpointFilterTests
 
         HttpResponseMessage responseB = await SendAsync("prompt-b");
 
-        Assert.Equal(HttpStatusCode.OK, responseB.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, responseB.StatusCode);
 
-        // Same client-supplied key but different bodies hash differently, so both executed.
-        Assert.Equal(before + 2, _factory.FakeIntelligence.ExecutePromptCallCount);
+        // Same Idempotency-Key with a different fingerprint must not execute again.
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
 
     }
 
@@ -609,62 +609,52 @@ public sealed class IdempotencyEndpointFilterTests
     }
 
     [SkippableFact]
-    public async Task PostPing_ExpiredCacheEntry_ExecutesFreshInsteadOfReplayingStaleData()
+    public async Task PostPing_IdempotencyKeyFingerprintMismatch_Returns409()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
 
+        _factory.FakeIntelligence.NextText = "first-response";
+
         string key = $"test-key-{Guid.NewGuid():N}";
-
-        PingRequest request = new(Prompt: "expiry probe");
-
-        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.PingRequest);
-
-        // Pre-seed an already-expired cache row (older than the default 24h TTL) computed with the
-        // exact same hash algorithm the filter uses, so a fresh request must ignore it as stale.
-        byte[] canonicalBodyBytes = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PingRequest);
-
-        string keyHash = IdempotencyEndpointFilters.ComputeKeyHash(key, canonicalBodyBytes);
-
-        using (IServiceScope scope = _factory.Services.CreateScope())
-        {
-
-            IIdempotencyStore store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
-
-            await store.SaveAsync(
-                keyHash,
-                statusCode: 200,
-                contentType: "application/json",
-                responseBody: "{\"stale\":true}",
-                createdAt: DateTimeOffset.UtcNow.AddHours(-25),
-                CancellationToken.None);
-
-        }
-
-        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
-
-        _factory.FakeIntelligence.NextText = "fresh-execution";
 
         HttpClient client = _factory.CreateAuthenticatedClient();
 
-        HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping")
+        PingRequest firstRequest = new(Prompt: "fingerprint-a");
+
+        string firstPayload = JsonSerializer.Serialize(firstRequest, ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage first = new(HttpMethod.Post, "/api/intelligence/ping")
         {
-            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            Content = new StringContent(firstPayload, Encoding.UTF8, "application/json"),
         };
 
-        req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+        first.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
-        HttpResponseMessage response = await client.SendAsync(req);
+        HttpResponseMessage firstResponse = await client.SendAsync(first);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
 
-        string body = await response.Content.ReadAsStringAsync();
+        PingRequest secondRequest = new(Prompt: "fingerprint-b");
 
-        Assert.DoesNotContain("stale", body);
+        string secondPayload = JsonSerializer.Serialize(secondRequest, ArcanumJsonContext.Default.PingRequest);
 
-        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+        HttpRequestMessage second = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(secondPayload, Encoding.UTF8, "application/json"),
+        };
+
+        second.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+        HttpResponseMessage secondResponse = await client.SendAsync(second);
+
+        Assert.Equal(HttpStatusCode.Conflict, secondResponse.StatusCode);
+
+        string body = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("IdempotencyConflict", body, StringComparison.Ordinal);
 
     }
 

@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
 [ExcludeFromCodeCoverage] // Reason: live HTTP provider connectivity probe endpoint; does not persist configuration.
+/// <remarks>Non-billable (ADR 0002 / <c>NonBillableSurfaces.ProviderTest</c>): connectivity probe only.</remarks>
 internal static class ProviderTestEndpoints
 {
 

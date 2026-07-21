@@ -27,4 +27,6 @@ public sealed record InstanceMetadataDto(
     bool EmbeddingsEnabled,
     string EmbeddingsVectorMode,
     string EmbeddingsVectorDiagnostic,
-    int EmbeddingsManagedSearchRowBudget);
+    int EmbeddingsManagedSearchRowBudget,
+    string Edition,
+    bool HostProcessToolsAllowed);

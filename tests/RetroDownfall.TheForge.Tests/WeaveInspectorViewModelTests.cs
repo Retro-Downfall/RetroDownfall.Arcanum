@@ -468,7 +468,9 @@ public class WeaveInspectorViewModelTests
             EmbeddingsEnabled: embeddingsEnabled,
             EmbeddingsVectorMode: vectorMode,
             EmbeddingsVectorDiagnostic: "diag",
-            EmbeddingsManagedSearchRowBudget: 50000);
+            EmbeddingsManagedSearchRowBudget: 50000,
+            Edition: "local",
+            HostProcessToolsAllowed: false);
 
     private sealed class FakeWeaveInspectorDataSource : IWeaveInspectorDataSource
     {

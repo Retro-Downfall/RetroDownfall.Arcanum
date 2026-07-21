@@ -245,22 +245,27 @@ public sealed class WindowsJobObjectSessionTests
         Assert.True(limiter.CapturedPid > 0);
 
         // Process object may be disposed by the runner; verify by pid that the tree was killed.
-        bool stillAlive;
+        // Poll briefly — ProcessTreeKiller is best-effort async w.r.t. kernel process table updates.
+        bool stillAlive = true;
 
-        try
+        for (int i = 0; i < 50 && stillAlive; i++)
         {
+            try
+            {
+                using global::System.Diagnostics.Process surviving =
+                    global::System.Diagnostics.Process.GetProcessById(limiter.CapturedPid);
 
-            using global::System.Diagnostics.Process surviving =
-                global::System.Diagnostics.Process.GetProcessById(limiter.CapturedPid);
+                stillAlive = !surviving.HasExited;
 
-            stillAlive = !surviving.HasExited;
-
-        }
-        catch (ArgumentException)
-        {
-
-            stillAlive = false;
-
+                if (stillAlive)
+                {
+                    await Task.Delay(20);
+                }
+            }
+            catch (ArgumentException)
+            {
+                stillAlive = false;
+            }
         }
 
         Assert.False(

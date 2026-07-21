@@ -20,6 +20,9 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Hub.ToolLoop or ErrorCodes.Hub.Timeout or ErrorCodes.Api.TooManyConnections or ErrorCodes.Embeddings.ProviderUnavailable or ErrorCodes.Embeddings.FeatureDisabled =>
                 StatusCodes.Status503ServiceUnavailable,
 
+            ErrorCodes.Hub.TurnBudgetExceeded or ErrorCodes.Hub.ContextBudgetExceeded =>
+                StatusCodes.Status429TooManyRequests,
+
             ErrorCodes.Hub.Model =>
                 StatusCodes.Status404NotFound,
 
@@ -38,7 +41,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Scrying.FeatureDisabled =>
                 StatusCodes.Status403Forbidden,
 
-            ErrorCodes.Apprentice.AlreadyRunning or ErrorCodes.Apprentice.Running or ErrorCodes.Apprentice.NotPaused or ErrorCodes.Apprentice.CannotReweave or ErrorCodes.Apprentice.NotEscalated or ErrorCodes.Apprentice.MaxReached or ErrorCodes.Apprentice.ConclaveDisabled or ErrorCodes.Apprentice.ConclaveDepthExceeded or ErrorCodes.Apprentice.ConclaveBreadthExceeded or ErrorCodes.Session.ForkDepthExceeded or ErrorCodes.Session.TooManyPinned =>
+            ErrorCodes.Apprentice.AlreadyRunning or ErrorCodes.Apprentice.Running or ErrorCodes.Apprentice.NotPaused or ErrorCodes.Apprentice.CannotReweave or ErrorCodes.Apprentice.NotEscalated or ErrorCodes.Apprentice.MaxReached or ErrorCodes.Apprentice.ConclaveDisabled or ErrorCodes.Apprentice.ConclaveDepthExceeded or ErrorCodes.Apprentice.ConclaveBreadthExceeded or ErrorCodes.Session.ForkDepthExceeded or ErrorCodes.Session.TooManyPinned or ErrorCodes.Security.IdempotencyConflict =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.Campaign.InvalidPath or ErrorCodes.Campaign.MaxReached or ErrorCodes.Workspace.NameEmpty or ErrorCodes.Spell.NoWorkspace or ErrorCodes.Spell.InvalidWorkspace or ErrorCodes.Prompt.CodexPathNotContained or ErrorCodes.Prompt.InvalidRequest or ErrorCodes.Mcp.AmbiguousServer or ErrorCodes.Mcp.MissingWorkspace or ErrorCodes.Mcp.AmbiguousTool or ErrorCodes.Mcp.ServerNotRunning or ErrorCodes.Mcp.ToolError or ErrorCodes.Apprentice.Disabled or ErrorCodes.Apprentice.InvalidGuidance or ErrorCodes.Apprentice.InvalidPlan or ErrorCodes.Apprentice.InvalidGoal or ErrorCodes.Apprentice.InvalidWorkspace or ErrorCodes.Apprentice.PendingQueueFull or ErrorCodes.ProvingGrounds.InvalidTrial or ErrorCodes.ProvingGrounds.TooManyInquisitors or ErrorCodes.ProvingGrounds.WorkspaceNotAllowed or ErrorCodes.Security.BlockedOutboundUrl or ErrorCodes.Security.IdempotencyKeyTooLong or ErrorCodes.Session.Archived or ErrorCodes.Session.InvalidStatus or ErrorCodes.Session.TooManyEntries or ErrorCodes.Session.EntryTooLarge or ErrorCodes.Session.EmptyContent or ErrorCodes.Session.MemoryManagementDisabled or ErrorCodes.Spell.InvalidName or ErrorCodes.Spell.NameCollision or ErrorCodes.Spell.BuiltinReadOnly or ErrorCodes.Spell.DuplicateVersion or ErrorCodes.Spell.InvalidVersion or ErrorCodes.Prompt.DuplicateVersion or ErrorCodes.Prompt.InvalidName or ErrorCodes.Prompt.InvalidVersion or ErrorCodes.Workspace.DirectoryNotEmpty or ErrorCodes.Workspace.ReplacementAmbiguous or ErrorCodes.Workspace.PathIsDirectory or ErrorCodes.Workspace.PathIsFile or ErrorCodes.Workspace.SymbolicLinkEscape or ErrorCodes.Workspace.PathTraversal or ErrorCodes.Saga.NotEmpty or ErrorCodes.StructuredOutput.ValidationFailed or ErrorCodes.StructuredOutput.SchemaInvalid or ErrorCodes.Embeddings.ConfirmationRequired =>

@@ -298,16 +298,10 @@ internal static partial class OpenAiV1Endpoints
 
     /// <summary>
     /// Executes a single <c>/v1/batches</c> JSONL request line's <see cref="OpenAiChatRequest"/>
-    /// body through the same mapper (<see cref="OpenAiChatCompletionMapper.ToPingRequest"/>) and
-    /// buffered response shape (<see cref="OpenAiChatResponse"/>) as <c>POST /v1/chat/completions</c>
-    /// non-streaming — but returns a <see cref="Result{T}"/> instead of an <see cref="IResult"/> so
-    /// <c>BatchProcessingService</c> (a background worker, not an HTTP handler) can record a
-    /// per-line success/failure without needing an <see cref="HttpContext"/>. Deliberately skips the
-    /// HTTP handler's request-shape pre-checks (multimodal part limits, `tools`/`tool_choice`
-    /// rejection, Scrying image gating) — a batch line that trips one of those still gets a clean
-    /// per-line failure via <see cref="IArcanumIntelligenceProvider.ExecutePromptAsync"/>'s own
-    /// validation/model-resolution, it just surfaces a less specific error code than the live HTTP
-    /// path would for the same malformed request.
+    /// body through the same validation and mapper as live <c>POST /v1/chat/completions</c>
+    /// non-streaming, forcing zero tools. Returns a <see cref="Result{T}"/> so
+    /// <c>BatchProcessingService</c> can record per-line success/failure without an
+    /// <see cref="HttpContext"/>.
     /// </summary>
     internal static async Task<Result<OpenAiChatResponse>> ExecuteChatRequestForBatchAsync(
         OpenAiChatRequest body,
@@ -315,30 +309,32 @@ internal static partial class OpenAiV1Endpoints
         ArcanumSettings settings,
         CancellationToken cancellationToken)
     {
+        ChatCompletionValidationFailure? validationFailure = TryValidateChatCompletionRequest(
+            body,
+            settings,
+            out PingRequest? ping,
+            forceDisableAllTools: true);
 
-        if (string.IsNullOrWhiteSpace(body.Model))
+        if (validationFailure is not null || ping is null)
         {
+            ChatCompletionValidationFailure failure = validationFailure
+                ?? new ChatCompletionValidationFailure(
+                    "Request validation failed.",
+                    "invalid_request_error",
+                    "invalid_value",
+                    null,
+                    StatusCodes.Status400BadRequest);
 
-            return Result<OpenAiChatResponse>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "`model` is required."));
-
+            return Result<OpenAiChatResponse>.Failure(new Error(
+                failure.Code ?? ErrorCodes.Validation.InvalidPrompt,
+                failure.Message));
         }
-
-        if (body.Messages is null || body.Messages.Count == 0)
-        {
-
-            return Result<OpenAiChatResponse>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "`messages` is required and must be non-empty."));
-
-        }
-
-        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body);
 
         Result<PromptTurnResult> result = await intelligence.ExecutePromptAsync(ping, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return Result<OpenAiChatResponse>.Failure(result.Error);
-
         }
 
         PromptTurnResult turn = result.Value;
@@ -353,7 +349,7 @@ internal static partial class OpenAiV1Endpoints
             Id: "chatcmpl-" + Guid.NewGuid().ToString("N"),
             ObjectKind: "chat.completion",
             Created: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            Model: body.Model.Trim(),
+            Model: body.Model!.Trim(),
             Choices:
             [
                 new OpenAiChatChoice(
@@ -367,7 +363,6 @@ internal static partial class OpenAiV1Endpoints
             ServiceTier: null);
 
         return Result<OpenAiChatResponse>.Success(response);
-
     }
 
 }

@@ -46,6 +46,32 @@ If Secret Service / libsecret is unavailable, The Forge may prompt for an API ke
 
 Run `arcanum doctor` and inspect `GET /api/health` component `ToolChildSandbox`.
 
+## Safe defaults (breaking for beta operators)
+
+- **Edition:** default `Local` (`Arcanum:Edition` / `ARCANUM_EDITION`). Development unlocks gated surfaces.
+- **Host process tools off:** `execute_command` and `run_spell_script` are not advertised or invoked unless `Edition=Development` **and** `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`. When enabled, `GET /api/health` component `HostProcessTools` is **Degraded**.
+- **Forced Spells with scripts:** scripts will not run under Local defaults (dry-run cast still works).
+- **Batches are text-only:** OpenAI batch lines force zero tools and share live `/v1/chat/completions` request-shape validation; budget is reserved once per batch.
+- **Moderation:** `POST /v1/moderations` always returns **501 `not_supported`**. Remove any `Arcanum:Moderations` block from `arcanum.json` or startup fails with an obsolete-key migration error.
+- **Guardrails:** when enabled, streaming defaults to **buffered** (blocked assistant output is not streamed live). Explicit `passthrough` is still allowed with a warning.
+- **Tool rounds:** default `MaxToolInferenceRounds` is **8** (was 100).
+- **Compatibility claim:** OpenAI **Chat Completions compatibility subset** — not full parity; images/audio/moderation are unsupported.
+- **A2A / Conclave / diagnostic MCP:** gated to Development edition.
+
+Accurate claim: default inference no longer exposes arbitrary host process execution. An API key still authorizes privileged file, network, and MCP operations.
+
+## Inference accounting, idempotency, and context budgets (Grimoire reinstall required)
+
+New raw-SQL tables: `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments`, `IdempotencyClaims`.
+
+**Restart/reinstall the Grimoire database** after upgrading — there is no user migration path. Use `arcanum reset --backup` (or delete the Grimoire file) then start the host so schema migrations apply cleanly.
+
+- Daily budget enforcement uses committed billable ops + outstanding reservations (session totals are projection only). Chat, embeddings, routing, and Lexicon extraction are ledgered; non-billable: `GET /models`, `POST /api/providers/test`, `POST /api/intelligence/mana`.
+- `Idempotency-Key` uses claim-key ≠ fingerprint; fingerprint mismatch → **409**; only terminal completed responses replay.
+- Tool results are token-budget truncated before returning to the model.
+- Before each provider call, messages + tool schemas + reserved output are checked against the model context window; exhaustion → **429** `Hub.ContextBudgetExceeded` (or `Hub.TurnBudgetExceeded` for model-call ceilings). Compaction/delete paths keep ToolCall/ToolResult pairs intact.
+- Disconnect policy default `Auto`: continue-then-replay when `Idempotency-Key` is present (claim can Complete for replay; accounting fully ledgered); otherwise cancel → Abandoned (unused reservation released; partial billed cost still ledgered). Override with `Arcanum:Intelligence:DisconnectPolicy`.
+
 ## RAG / The Weave
 
 sqlite-vec is **not** shipped in this beta. When embeddings are enabled, search uses managed SIMD fallback (preview/performance-limited; 50,000 row scan budget). The Forge shows a non-blocking banner; `GET /api/meta` exposes typed `embeddingsVectorMode` (`disabled` | `managed` | `vec0` | `unavailable`).

@@ -452,21 +452,105 @@ internal sealed class BatchProcessingService(
 
             {
 
-                await using BatchJsonlWriters writers = BatchJsonlWriters.Create(outputTempPath, errorTempPath);
-
-                cancelledMidway = await RunRequestLinesAsync(
-                    EnumerateRequestLinesAsync(inputPath, maxRequests, stoppingToken),
-                    maxConcurrentRequests,
-                    batch.Id,
-                    batches,
-                    intelligence,
-                    settings,
-                    writers,
+                List<(int Line, string Text)> requestLines = await CollectRequestLinesAsync(
+                    inputPath,
+                    maxRequests,
                     stoppingToken).ConfigureAwait(false);
 
-                outputLineCount = writers.OutputLineCount;
+                ITurnRunWriter? turnRunWriter = scope.ServiceProvider.GetService<ITurnRunWriter>();
 
-                errorLineCount = writers.ErrorLineCount;
+                IBudgetReservationService? budgetReservations =
+                    scope.ServiceProvider.GetService<IBudgetReservationService>();
+
+                Result<TurnAccountingHandle> batchAccountingBegin = await TurnAccountingHandle.BeginBatchAsync(
+                        turnRunWriter,
+                        budgetReservations,
+                        settings.Pricing ?? new PricingSettings(),
+                        requestLines.Count,
+                        requestId: $"batch-{batch.Id:N}",
+                        stoppingToken)
+                    .ConfigureAwait(false);
+
+                if (batchAccountingBegin.IsFailure)
+                {
+                    logger.LogWarning(
+                        "Batch {BatchId} could not reserve budget ({Code}); marking failed.",
+                        batch.Id,
+                        batchAccountingBegin.Error.Code);
+
+                    await batches.UpdateStatusAsync(
+                            batch.Id,
+                            BatchStatuses.Failed,
+                            DateTimeOffset.UtcNow,
+                            null,
+                            null,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+
+                    return;
+                }
+
+                TurnAccountingHandle batchAccounting = batchAccountingBegin.Value;
+                TurnAccountingHandle? previousAmbient = TurnAccountingAmbient.Current;
+                ITurnRunWriter? previousAmbientWriter = TurnAccountingAmbient.Writer;
+                TurnAccountingAmbient.Publish(batchAccounting, turnRunWriter);
+
+                InferenceRunStatus batchRunStatus = InferenceRunStatus.Completed;
+
+                try
+                {
+                    await using BatchJsonlWriters writers = BatchJsonlWriters.Create(outputTempPath, errorTempPath);
+
+                    cancelledMidway = await RunRequestLinesAsync(
+                        requestLines,
+                        maxConcurrentRequests,
+                        batch.Id,
+                        batches,
+                        intelligence,
+                        settings,
+                        writers,
+                        stoppingToken).ConfigureAwait(false);
+
+                    outputLineCount = writers.OutputLineCount;
+
+                    errorLineCount = writers.ErrorLineCount;
+
+                    if (cancelledMidway)
+                    {
+                        batchRunStatus = InferenceRunStatus.Abandoned;
+                    }
+                }
+                catch
+                {
+                    batchRunStatus = InferenceRunStatus.Failed;
+
+                    throw;
+                }
+                finally
+                {
+                    if (previousAmbient is null)
+                    {
+                        TurnAccountingAmbient.Clear();
+                    }
+                    else
+                    {
+                        TurnAccountingAmbient.Publish(previousAmbient, previousAmbientWriter);
+                    }
+
+                    try
+                    {
+                        await batchAccounting.CompleteAsync(
+                                turnRunWriter,
+                                budgetReservations,
+                                batchRunStatus,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Failed to complete batch accounting for {BatchId}.", batch.Id);
+                    }
+                }
 
             }
 
@@ -517,6 +601,26 @@ internal sealed class BatchProcessingService(
 
         }
 
+    }
+
+    /// <summary>
+    /// Materializes non-empty JSONL request lines up to <paramref name="maxRequests"/> so the
+    /// batch can reserve budget once for the full line count.
+    /// </summary>
+    private static async Task<List<(int Line, string Text)>> CollectRequestLinesAsync(
+        string inputPath,
+        int maxRequests,
+        CancellationToken cancellationToken)
+    {
+        List<(int Line, string Text)> lines = [];
+
+        await foreach ((int Line, string Text) item in EnumerateRequestLinesAsync(inputPath, maxRequests, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            lines.Add(item);
+        }
+
+        return lines;
     }
 
     /// <summary>
@@ -583,7 +687,7 @@ internal sealed class BatchProcessingService(
     /// <see langword="true"/> when a mid-batch cancellation was observed.
     /// </summary>
     private async Task<bool> RunRequestLinesAsync(
-        IAsyncEnumerable<(int Line, string Text)> requestLines,
+        IReadOnlyList<(int Line, string Text)> requestLines,
         int maxConcurrentRequests,
         Guid batchId,
         IBatchRepository batches,

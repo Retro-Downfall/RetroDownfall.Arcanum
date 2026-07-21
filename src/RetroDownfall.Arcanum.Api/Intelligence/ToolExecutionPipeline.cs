@@ -53,7 +53,8 @@ public sealed class ToolExecutionPipeline(
     IWard ward,
     ISanctumGuard sanctumGuard,
     ISessionAttachmentStore sessionAttachmentStore,
-    ILogger<ToolExecutionPipeline> logger)
+    ILogger<ToolExecutionPipeline> logger,
+    IToolResultMaterializer? toolResultMaterializer = null)
 {
 
     /// <summary>
@@ -245,7 +246,8 @@ public sealed class ToolExecutionPipeline(
         TurnContext turnContext,
         bool suppressInvocationFailures,
         CancellationToken cancellationToken,
-        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null)
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
+        Func<ToolExecutionEvent, ValueTask>? observer = null)
     {
 
         string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
@@ -271,7 +273,8 @@ public sealed class ToolExecutionPipeline(
                     turnContext,
                     argsSnapshot,
                     cancellationToken,
-                    liveWardEmit)
+                    liveWardEmit,
+                    observer)
                     .ConfigureAwait(false);
 
                 RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
@@ -329,7 +332,8 @@ public sealed class ToolExecutionPipeline(
                     turnContext,
                     argsSnapshot,
                     cancellationToken,
-                    liveWardEmit)
+                    liveWardEmit,
+                    observer)
                     .ConfigureAwait(false);
 
                 RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
@@ -652,7 +656,8 @@ public sealed class ToolExecutionPipeline(
         TurnContext turnContext,
         string argsSnapshot,
         CancellationToken cancellationToken,
-        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null)
+        Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
+        Func<ToolExecutionEvent, ValueTask>? observer = null)
     {
 
         string toolName = fcc.Name ?? string.Empty;
@@ -670,6 +675,15 @@ public sealed class ToolExecutionPipeline(
 
         if (!IsForbiddenArt(request, toolName, turnContext.CampaignRequiresWard, wardSettings))
         {
+
+            if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
+            {
+                string promptText = TryExtractAskHumanPrompt(argsSnapshot);
+
+                await observer(
+                        new ToolHumanInputRequestedEvent(ResolveCallId(fcc), promptText))
+                    .ConfigureAwait(false);
+            }
 
             (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
                 fcc,
@@ -707,6 +721,12 @@ public sealed class ToolExecutionPipeline(
             wardTimestamp);
 
         await EmitWardEventAsync(wardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
+
+        if (observer is not null)
+        {
+            await observer(new ToolApprovalRequestedEvent(wardId, toolName, argsSnapshot))
+                .ConfigureAwait(false);
+        }
 
         int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(wardSettings.TimeoutSeconds);
 
@@ -757,6 +777,15 @@ public sealed class ToolExecutionPipeline(
 
         }
 
+        if (string.Equals(toolName, "ask_human", StringComparison.Ordinal) && observer is not null)
+        {
+            string promptText = TryExtractAskHumanPrompt(argsSnapshot);
+
+            await observer(
+                    new ToolHumanInputRequestedEvent(ResolveCallId(fcc), promptText))
+                .ConfigureAwait(false);
+        }
+
         (string allowedResult, bool allowedDenied) = await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
@@ -767,6 +796,32 @@ public sealed class ToolExecutionPipeline(
 
         return new WardedToolExecutionResult(allowedResult, wardEvents, allowedDenied);
 
+    }
+
+    private static string TryExtractAskHumanPrompt(string argsSnapshot)
+    {
+        if (string.IsNullOrWhiteSpace(argsSnapshot))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(argsSnapshot);
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("question", out JsonElement question)
+                && question.ValueKind == JsonValueKind.String)
+            {
+                return question.GetString() ?? string.Empty;
+            }
+        }
+        catch (JsonException)
+        {
+            // Fall through — surface raw args when question cannot be parsed.
+        }
+
+        return argsSnapshot;
     }
 
     /// <summary>
@@ -799,6 +854,12 @@ public sealed class ToolExecutionPipeline(
         }
 
         string resultText = await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+
+        if (toolResultMaterializer is not null)
+        {
+            string toolName = fcc.Name ?? string.Empty;
+            resultText = toolResultMaterializer.Materialize(toolName, resultText).TextForModel;
+        }
 
         return (resultText, false);
 

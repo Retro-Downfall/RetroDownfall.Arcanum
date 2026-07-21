@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -43,11 +44,11 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// </para>
 ///
 /// <para>
-/// Concurrent cache misses for the same key hash share one in-flight handler execution
-/// (keyed by the same SHA-256 used for store lookup). Waiters await the leader's
-/// <see cref="HttpResponse.OnCompleted"/> persist, then replay from the store.
-/// <see cref="PersistIfCapturedAsync"/> stores any finished response with a non-empty body
-/// that stayed within the byte cap — including non-2xx — matching prior OnCompleted semantics.
+/// Concurrent misses for the same claim-key hash share one in-flight handler execution.
+/// Waiters await the leader's <see cref="HttpResponse.OnCompleted"/> persist, then replay
+/// from a terminal <see cref="IdempotencyClaimState.Completed"/> claim only. Partial,
+/// cancelled, or over-cap streams are marked Abandoned and are never replayable.
+/// Fingerprint mismatch yields <see cref="ErrorCodes.Security.IdempotencyConflict"/> (409).
 /// </para>
 /// </summary>
 public static class IdempotencyEndpointFilters
@@ -127,134 +128,194 @@ public static class IdempotencyEndpointFilters
 
         HttpContext httpContext = context.HttpContext;
 
+        TurnIdempotencyAmbient.Publish(true);
+
+        try
+        {
+            return await InvokeCoreWithAmbientAsync(context, next, key, bodyBytes).ConfigureAwait(false);
+        }
+        finally
+        {
+            TurnIdempotencyAmbient.Clear();
+        }
+
+    }
+
+    private static async ValueTask<object?> InvokeCoreWithAmbientAsync(
+        EndpointFilterInvocationContext context,
+        EndpointFilterDelegate next,
+        string key,
+        byte[] bodyBytes)
+    {
+
+        HttpContext httpContext = context.HttpContext;
+
         IOptionsMonitor<ArcanumSettings> optionsMonitor =
             httpContext.RequestServices.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
         SecuritySettings security = optionsMonitor.CurrentValue.Security ?? new SecuritySettings();
 
-        string keyHash = ComputeKeyHash(key, bodyBytes);
+        string principal = IdempotencyIdentity.ResolvePrincipal(httpContext);
+        string route = IdempotencyIdentity.NormalizeRoute(httpContext);
+        string method = httpContext.Request.Method;
+        string claimKeyHash = IdempotencyIdentity.ComputeClaimKeyHash(principal, method, route, key);
+        string fingerprintHash = IdempotencyIdentity.ComputeFingerprintHash(
+            bodyBytes,
+            route,
+            httpContext.Request.ContentType);
 
-        IIdempotencyStore store = httpContext.RequestServices.GetRequiredService<IIdempotencyStore>();
+        IIdempotencyClaimStore claimStore =
+            httpContext.RequestServices.GetRequiredService<IIdempotencyClaimStore>();
 
         ILogger logger = httpContext.RequestServices
             .GetRequiredService<ILoggerFactory>()
             .CreateLogger("RetroDownfall.Arcanum.Api.Security.IdempotencyEndpointFilters");
 
-        int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(security.IdempotencyTtlHours);
-
-        DateTimeOffset notOlderThan = DateTimeOffset.UtcNow.AddHours(-ttlHours);
-
-        IdempotencyRecord? cached;
+        IdempotencyClaim? existing;
 
         try
         {
-
-            cached = await store.TryGetAsync(keyHash, notOlderThan, httpContext.RequestAborted).ConfigureAwait(false);
-
+            existing = await claimStore.TryGetAsync(claimKeyHash, httpContext.RequestAborted).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-
-            // Fail open: an unavailable cache backing store must never block inference.
-            logger.LogWarning(ex, "Idempotency cache lookup failed for hash {KeyHash}; proceeding without replay.", keyHash);
-
-            cached = null;
-
+            logger.LogWarning(ex, "Idempotency claim lookup failed for {ClaimKeyHash}; proceeding without replay.", claimKeyHash);
+            existing = null;
         }
 
-        if (cached is not null)
+        if (existing is not null)
         {
+            if (!string.Equals(existing.FingerprintHash, fingerprintHash, StringComparison.Ordinal))
+            {
+                return BuildConflictResult(httpContext);
+            }
 
-            return new IdempotencyReplayResult(cached.StatusCode, cached.ContentType, cached.ResponseBody);
+            if (existing.State == IdempotencyClaimState.Completed
+                && existing.TerminalStreamComplete
+                && existing.StatusCode is int status
+                && existing.ResponseBody is not null)
+            {
+                return new IdempotencyReplayResult(status, existing.ContentType, existing.ResponseBody);
+            }
 
+            if (existing.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
+                && existing.LeaseExpiresAt > DateTimeOffset.UtcNow)
+            {
+                // Wait for in-process leader if present; otherwise poll once after a short delay path via InFlight.
+            }
+        }
+
+        string ownerId = Guid.NewGuid().ToString("N");
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset leaseExpires = now.AddMinutes(5);
+
+        IdempotencyClaimAcquireResult acquire;
+
+        try
+        {
+            if (existing is { State: IdempotencyClaimState.Running or IdempotencyClaimState.Claimed }
+                && existing.LeaseExpiresAt <= now)
+            {
+                _ = await claimStore.TryReclaimAsync(existing.Id, ownerId, leaseExpires, httpContext.RequestAborted)
+                    .ConfigureAwait(false);
+            }
+
+            acquire = await claimStore.TryAcquireAsync(
+                    new IdempotencyClaimAcquireRequest(claimKeyHash, fingerprintHash, ownerId, leaseExpires, now),
+                    httpContext.RequestAborted)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Idempotency claim acquire failed for {ClaimKeyHash}; proceeding without claim.", claimKeyHash);
+
+            return await next(context).ConfigureAwait(false);
+        }
+
+        if (acquire.Conflict)
+        {
+            return BuildConflictResult(httpContext);
+        }
+
+        if (!acquire.Acquired
+            && acquire.Claim.State == IdempotencyClaimState.Completed
+            && acquire.Claim.TerminalStreamComplete
+            && acquire.Claim.StatusCode is int completedStatus
+            && acquire.Claim.ResponseBody is not null)
+        {
+            return new IdempotencyReplayResult(completedStatus, acquire.Claim.ContentType, acquire.Claim.ResponseBody);
+        }
+
+        if (!acquire.Acquired)
+        {
+            // Another owner holds a live claim — join in-process flight if any, then re-read.
+            if (InFlight.TryGetValue(claimKeyHash, out Task? inFlightTask))
+            {
+                try
+                {
+                    await inFlightTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // fall through
+                }
+
+                IdempotencyClaim? after = await claimStore.TryGetAsync(claimKeyHash, httpContext.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (after is { State: IdempotencyClaimState.Completed, TerminalStreamComplete: true, StatusCode: int s, ResponseBody: not null })
+                {
+                    return new IdempotencyReplayResult(s, after.ContentType, after.ResponseBody);
+                }
+            }
         }
 
         TaskCompletionSource flightTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        if (InFlight.TryAdd(keyHash, flightTcs.Task))
+        if (acquire.Acquired && InFlight.TryAdd(claimKeyHash, flightTcs.Task))
         {
-
             try
             {
-
                 return await ExecuteMissAsync(
                         context,
                         next,
-                        keyHash,
+                        claimKeyHash,
+                        acquire.Claim.Id,
+                        ownerId,
                         security,
-                        store,
+                        claimStore,
                         logger,
                         flightTcs)
                     .ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
-                // Leader failed before OnCompleted could run — unblock waiters and clear the slot.
-                _ = InFlight.TryRemove(new KeyValuePair<string, Task>(keyHash, flightTcs.Task));
-
+                _ = InFlight.TryRemove(new KeyValuePair<string, Task>(claimKeyHash, flightTcs.Task));
                 _ = flightTcs.TrySetException(ex);
 
+                try
+                {
+                    await claimStore.MarkFailedAsync(acquire.Claim.Id, ownerId, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // ignore
+                }
+
                 throw;
-
             }
-
         }
 
-        // Waiter: block until the leader's OnCompleted persist finishes, then replay.
-        if (InFlight.TryGetValue(keyHash, out Task? inFlightTask))
-        {
-
-            try
-            {
-
-                await inFlightTask.ConfigureAwait(false);
-
-            }
-            catch
-            {
-
-                // Leader faulted — fall through to independent execution / cache re-check below.
-
-            }
-
-        }
-
-        IdempotencyRecord? afterFlight;
-
-        try
-        {
-
-            afterFlight = await store.TryGetAsync(keyHash, notOlderThan, httpContext.RequestAborted)
-                .ConfigureAwait(false);
-
-        }
-        catch (Exception ex)
-        {
-
-            logger.LogWarning(
-                ex,
-                "Idempotency cache lookup failed after single-flight for hash {KeyHash}; executing independently.",
-                keyHash);
-
-            afterFlight = null;
-
-        }
-
-        if (afterFlight is not null)
-        {
-
-            return new IdempotencyReplayResult(
-                afterFlight.StatusCode,
-                afterFlight.ContentType,
-                afterFlight.ResponseBody);
-
-        }
-
-        // Leader did not cache (oversized, empty, persist failure, or already cleared) —
-        // execute independently without joining another flight wave.
-        return await ExecuteMissAsync(context, next, keyHash, security, store, logger, flightSignal: null)
+        return await ExecuteMissAsync(
+                context,
+                next,
+                claimKeyHash,
+                acquire.Claim.Id,
+                acquire.Acquired ? ownerId : acquire.Claim.OwnerId,
+                security,
+                claimStore,
+                logger,
+                flightSignal: null)
             .ConfigureAwait(false);
 
     }
@@ -262,51 +323,14 @@ public static class IdempotencyEndpointFilters
     private static async Task<object?> ExecuteMissAsync(
         EndpointFilterInvocationContext context,
         EndpointFilterDelegate next,
-        string keyHash,
+        string claimKeyHash,
+        Guid claimId,
+        string ownerId,
         SecuritySettings security,
-        IIdempotencyStore store,
+        IIdempotencyClaimStore claimStore,
         ILogger logger,
         TaskCompletionSource? flightSignal)
     {
-
-        // Re-check after winning the flight: a prior wave may have persisted while we waited to run.
-        int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(security.IdempotencyTtlHours);
-
-        DateTimeOffset notOlderThan = DateTimeOffset.UtcNow.AddHours(-ttlHours);
-
-        try
-        {
-
-            IdempotencyRecord? raced = await store
-                .TryGetAsync(keyHash, notOlderThan, context.HttpContext.RequestAborted)
-                .ConfigureAwait(false);
-
-            if (raced is not null)
-            {
-
-                if (flightSignal is not null)
-                {
-
-                    _ = InFlight.TryRemove(new KeyValuePair<string, Task>(keyHash, flightSignal.Task));
-
-                    _ = flightSignal.TrySetResult();
-
-                }
-
-                return new IdempotencyReplayResult(raced.StatusCode, raced.ContentType, raced.ResponseBody);
-
-            }
-
-        }
-        catch (Exception ex)
-        {
-
-            logger.LogWarning(
-                ex,
-                "Idempotency cache re-check failed for hash {KeyHash}; proceeding with handler.",
-                keyHash);
-
-        }
 
         int maxCacheBytes = ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes(security.IdempotencyMaxResponseBytes);
 
@@ -318,83 +342,109 @@ public static class IdempotencyEndpointFilters
 
         httpContext.Response.Body = teeStream;
 
-        // Persist via OnCompleted so IResult-returning handlers (body written after the filter
-        // returns) are captured. Signal single-flight waiters only after that persist attempt.
         httpContext.Response.OnCompleted(async () =>
         {
-
             try
             {
-
-                await PersistIfCapturedAsync(httpContext, store, keyHash, teeStream, logger)
+                await PersistClaimAsync(httpContext, claimStore, claimId, ownerId, teeStream, logger)
                     .ConfigureAwait(false);
-
             }
             finally
             {
-
                 if (flightSignal is not null)
                 {
-
-                    _ = InFlight.TryRemove(new KeyValuePair<string, Task>(keyHash, flightSignal.Task));
-
+                    _ = InFlight.TryRemove(new KeyValuePair<string, Task>(claimKeyHash, flightSignal.Task));
                     _ = flightSignal.TrySetResult();
-
                 }
-
             }
-
         });
 
         return await next(context).ConfigureAwait(false);
 
     }
 
-    private static async Task PersistIfCapturedAsync(
+    private static async Task PersistClaimAsync(
         HttpContext httpContext,
-        IIdempotencyStore store,
-        string keyHash,
+        IIdempotencyClaimStore claimStore,
+        Guid claimId,
+        string ownerId,
         IdempotencyBufferingStream teeStream,
         ILogger logger)
     {
-
         try
         {
+            bool withinCap = teeStream.WithinCap;
+            byte[] buffered = withinCap ? teeStream.GetBufferedBytes() : [];
+            bool aborted = httpContext.RequestAborted.IsCancellationRequested;
+            // Terminal when:
+            // - writer explicitly marked continue-then-replay completion, or
+            // - the request was not aborted and we buffered a non-empty in-cap body (buffered IResult paths).
+            bool terminalStreamValid = withinCap
+                && buffered.Length > 0
+                && (TurnContextGuards.IsIdempotencyTerminal(httpContext) || !aborted);
 
-            if (!teeStream.WithinCap)
+            if (!terminalStreamValid)
             {
+                await claimStore.MarkAbandonedAsync(claimId, ownerId, CancellationToken.None).ConfigureAwait(false);
 
                 return;
-
-            }
-
-            byte[] buffered = teeStream.GetBufferedBytes();
-
-            if (buffered.Length == 0)
-            {
-
-                return;
-
             }
 
             string body = Encoding.UTF8.GetString(buffered);
 
-            await store.SaveAsync(
-                keyHash,
-                httpContext.Response.StatusCode,
-                httpContext.Response.ContentType,
-                body,
-                DateTimeOffset.UtcNow,
-                CancellationToken.None).ConfigureAwait(false);
-
+            await claimStore.CompleteAsync(
+                    claimId,
+                    ownerId,
+                    httpContext.Response.StatusCode,
+                    httpContext.Response.ContentType,
+                    body,
+                    terminalStreamValid: true,
+                    runId: null,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            logger.LogWarning(ex, "Failed to persist idempotency claim {ClaimId}.", claimId);
 
-            logger.LogWarning(ex, "Failed to persist idempotency cache entry for hash {KeyHash}.", keyHash);
+            try
+            {
+                await claimStore.MarkFailedAsync(claimId, ownerId, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
 
+    private static IResult BuildConflictResult(HttpContext httpContext)
+    {
+        const string message = "Idempotency-Key reused with a different request fingerprint.";
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        bool isOpenAi = httpContext.Request.Path.StartsWithSegments("/v1");
+
+        if (isOpenAi)
+        {
+            return Results.Json(
+                new OpenAiErrorResponse(
+                    new OpenAiErrorDetail(
+                        message,
+                        "invalid_request_error",
+                        Param: null,
+                        Code: "idempotency_conflict")),
+                ArcanumJsonContext.Default.OpenAiErrorResponse,
+                statusCode: StatusCodes.Status409Conflict);
         }
 
+        return Results.Json(
+            ApiResponse<string>.FromResult(
+                Result<string>.Failure(new Error(ErrorCodes.Security.IdempotencyConflict, message)),
+                traceId),
+            ArcanumJsonContext.Default.ApiResponseString,
+            statusCode: StatusCodes.Status409Conflict);
     }
 
     private static bool TryResolveIdempotencyKey(HttpContext httpContext, out string? key, out IResult? error)
@@ -436,7 +486,7 @@ public static class IdempotencyEndpointFilters
 
     }
 
-    /// <summary>Internal (not private) solely so integration tests can pre-seed/inspect cache rows by their exact hash.</summary>
+    /// <summary>Legacy hash retained for test helpers; prefer <see cref="IdempotencyIdentity"/>.</summary>
     internal static string ComputeKeyHash(string key, byte[] bodyBytes)
     {
 
@@ -522,6 +572,8 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
 
     private bool _capExceeded;
 
+    private bool _innerDead;
+
     public bool WithinCap => !_capExceeded;
 
     public byte[] GetBufferedBytes() => _buffer.ToArray();
@@ -540,9 +592,39 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
         set => throw new NotSupportedException();
     }
 
-    public override void Flush() => inner.Flush();
+    public override void Flush()
+    {
+        if (_innerDead)
+        {
+            return;
+        }
 
-    public override Task FlushAsync(CancellationToken cancellationToken) => inner.FlushAsync(cancellationToken);
+        try
+        {
+            inner.Flush();
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            _innerDead = true;
+        }
+    }
+
+    public override async Task FlushAsync(CancellationToken cancellationToken)
+    {
+        if (_innerDead)
+        {
+            return;
+        }
+
+        try
+        {
+            await inner.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+        {
+            _innerDead = true;
+        }
+    }
 
     public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
@@ -555,7 +637,19 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
 
         TryBuffer(buffer.AsSpan(offset, count));
 
-        inner.Write(buffer, offset, count);
+        if (_innerDead)
+        {
+            return;
+        }
+
+        try
+        {
+            inner.Write(buffer, offset, count);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            _innerDead = true;
+        }
 
     }
 
@@ -564,7 +658,19 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
 
         TryBuffer(buffer.AsSpan(offset, count));
 
-        await inner.WriteAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+        if (_innerDead)
+        {
+            return;
+        }
+
+        try
+        {
+            await inner.WriteAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+        {
+            _innerDead = true;
+        }
 
     }
 
@@ -573,7 +679,19 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
 
         TryBuffer(buffer.Span);
 
-        await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        if (_innerDead)
+        {
+            return;
+        }
+
+        try
+        {
+            await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+        {
+            _innerDead = true;
+        }
 
     }
 

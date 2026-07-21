@@ -40,4 +40,10 @@ public sealed record PingRequest(
     OpenAiToolDefinition[]? ClientTools = null,
     JsonElement? ClientToolChoice = null,
     bool ForwardClientTools = false,
-    List<Guid>? AttachmentReferences = null);
+    List<Guid>? AttachmentReferences = null,
+    /// <summary>
+    /// When true, advertise and invoke zero tools (including hub-native builtins, MCP, scripts,
+    /// browse, and client-forwarded tools). Used by OpenAI batches until durable side-effect
+    /// semantics exist.
+    /// </summary>
+    bool DisableAllTools = false);

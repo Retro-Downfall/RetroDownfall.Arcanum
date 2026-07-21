@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Daemons;
 using RetroDownfall.Arcanum.Api.Mcp;
 using RetroDownfall.Arcanum.Api.Perception;
@@ -336,6 +337,10 @@ public static class ApiBootstrapper
 
         services.AddSingleton<BudgetMonitor>();
 
+        services.AddSingleton<IModelCallExecutor, ModelCallExecutor>();
+
+        services.AddSingleton<IToolResultMaterializer, ToolResultMaterializer>();
+
         services.AddSingleton<ManaPreflight>();
 
         services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
@@ -356,7 +361,22 @@ public static class ApiBootstrapper
 
         services.AddSingleton<GuardrailsPipeline>();
 
-        services.AddScoped<IArcanumIntelligenceProvider, WizardIntelligenceProvider>();
+        services.AddScoped<WizardIntelligenceProvider>(static sp =>
+            ActivatorUtilities.CreateInstance<WizardIntelligenceProvider>(
+                sp,
+                new Lazy<ITurnExecutionFacade>(sp.GetRequiredService<ITurnExecutionFacade>)));
+
+        services.AddScoped<ITurnPipelineRunner>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
+
+        services.AddScoped<TurnEngine>();
+
+        services.AddScoped<ITurnEventSource>(static sp => sp.GetRequiredService<TurnEngine>());
+
+        services.AddScoped<TurnExecutionCoordinator>();
+
+        services.AddScoped<ITurnExecutionFacade>(static sp => sp.GetRequiredService<TurnExecutionCoordinator>());
+
+        services.AddScoped<IArcanumIntelligenceProvider>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
         services.AddScoped<IBuiltInToolRegistry, BuiltInToolRegistry>();
 

@@ -8,26 +8,32 @@ public static class CostCalculator
 {
 
     /// <summary>
-    /// Calculates the cost in USD from input and output token counts using the supplied pricing.
-    /// Formula: (inputTokens * inputPer1M) / 1_000_000m + (outputTokens * outputPer1M) / 1_000_000m.
+    /// Calculates the cost in USD from input, output, and cached token counts using the supplied pricing.
+    /// Billable input = max(0, inputTokens - cachedTokens) at <see cref="ModelPricingEntry.InputPer1M"/>;
+    /// cached tokens priced at <see cref="ModelPricingEntry.CachedPer1M"/>.
     /// </summary>
-    /// <param name="inputTokens">Number of input (prompt) tokens.</param>
-    /// <param name="outputTokens">Number of output (completion) tokens.</param>
-    /// <param name="pricing">Pricing rates per 1M tokens.</param>
-    /// <returns>Total cost in USD, never negative.</returns>
-    public static decimal CalculateCost(long inputTokens, long outputTokens, ModelPricingEntry pricing)
+    public static decimal CalculateCost(
+        long inputTokens,
+        long outputTokens,
+        long cachedTokens,
+        ModelPricingEntry pricing)
     {
-
         long clampedInput = Math.Max(0L, inputTokens);
-
         long clampedOutput = Math.Max(0L, outputTokens);
+        long clampedCached = Math.Max(0L, Math.Min(cachedTokens, clampedInput));
+        long billableInput = clampedInput - clampedCached;
 
-        decimal inputCost = (clampedInput * pricing.InputPer1M) / 1_000_000m;
-
+        decimal inputCost = (billableInput * pricing.InputPer1M) / 1_000_000m;
+        decimal cachedCost = (clampedCached * pricing.CachedPer1M) / 1_000_000m;
         decimal outputCost = (clampedOutput * pricing.OutputPer1M) / 1_000_000m;
 
-        return inputCost + outputCost;
-
+        return inputCost + cachedCost + outputCost;
     }
+
+    /// <summary>
+    /// Calculates the cost in USD from input and output token counts (cached tokens treated as zero).
+    /// </summary>
+    public static decimal CalculateCost(long inputTokens, long outputTokens, ModelPricingEntry pricing) =>
+        CalculateCost(inputTokens, outputTokens, cachedTokens: 0L, pricing);
 
 }

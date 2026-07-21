@@ -58,8 +58,9 @@ public sealed record IntelligenceSettings
     /// Maximum number of agentic tool rounds the hub will execute per inference turn.
     /// A round = one model response containing tool calls + one server-side execution batch.
     /// Beyond this cap, the hub fails the turn with <c>Hub.ToolLoop</c>.
+    /// Default follows <see cref="TurnLimitsDefaults.MaxToolRounds"/>.
     /// </summary>
-    public int MaxToolInferenceRounds { get; set; } = 100;
+    public int MaxToolInferenceRounds { get; set; } = TurnLimitsDefaults.MaxToolRounds;
 
     /// <summary>
     /// When <see langword="true"/> (default), an unexpected exception from a single tool
@@ -110,6 +111,18 @@ public sealed record IntelligenceSettings
     /// Default 600. Linked to the caller cancellation token.
     /// </summary>
     public int InferenceTimeoutSeconds { get; set; } = 600;
+
+    /// <summary>
+    /// Client-disconnect policy for streaming inference. Default <see cref="DisconnectPolicy.Auto"/>:
+    /// continue-then-replay when an <c>Idempotency-Key</c> is present; otherwise cancel → abandoned.
+    /// </summary>
+    public DisconnectPolicy DisconnectPolicy { get; set; } = DisconnectPolicy.Auto;
+
+    /// <summary>
+    /// Tokens reserved for model output when running per-call context preflight.
+    /// Used when the request does not specify <c>MaxOutputTokens</c>. Default 1024.
+    /// </summary>
+    public int ReservedOutputTokens { get; set; } = 1024;
 
     /// <summary>
     /// When <c>true</c>, semantic spell-router preflight uses <see cref="ArcanumSettings.FastModel"/> when configured.

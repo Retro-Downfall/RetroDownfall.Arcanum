@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
@@ -594,6 +595,8 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
             File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
+            using HostProcessToolsEscapeHatchScope _ = new();
+
             ArcanumSpellScriptTool tool = new(
                 [globalScripts],
                 TimeSpan.FromSeconds(15),
@@ -698,6 +701,8 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho spell-ok\n");
 
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        using HostProcessToolsEscapeHatchScope _ = new();
 
         ArcanumSpellScriptTool tool = new(
             [_scriptsRoot],

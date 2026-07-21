@@ -56,13 +56,13 @@ public sealed record GuardrailsSettings
     public GuardrailsAuditLogSettings AuditLog { get; set; } = new();
 
     /// <summary>
-    /// Streaming output-filter mode. <c>passthrough</c> (default) emits tokens in real time and
-    /// runs the output filter post-hoc (toxic text may reach the client; only persistence is blocked).
-    /// <c>buffered</c> holds tokens server-side, runs the output filter on the full text, and only
-    /// releases the content after the filter passes — toxic content never reaches the client, at the
-    /// cost of real-time streaming. No effect when <see cref="Enabled"/> is <see langword="false"/>.
+    /// Streaming output-filter mode. Default <see cref="GuardrailsStreamingMode.Buffered"/> so that
+    /// when <see cref="Enabled"/> is true and the operator has not opted into passthrough, blocked
+    /// assistant output does not reach the client. Explicit <see cref="GuardrailsStreamingMode.Passthrough"/>
+    /// is still honored (with a warning). Filters assistant output only — not tool side effects.
+    /// No effect when <see cref="Enabled"/> is <see langword="false"/>.
     /// </summary>
-    public string StreamingMode { get; set; } = "passthrough";
+    public GuardrailsStreamingMode StreamingMode { get; set; } = GuardrailsStreamingMode.Buffered;
 
 }
 

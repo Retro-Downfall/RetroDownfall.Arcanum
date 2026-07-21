@@ -298,6 +298,12 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IIdempotencyStore, IdempotencyStore>();
 
+        services.AddScoped<IIdempotencyClaimStore, IdempotencyClaimStore>();
+
+        services.AddScoped<ITurnRunWriter, TurnRunWriter>();
+
+        services.AddScoped<IBudgetReservationService, BudgetReservationService>();
+
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 
         services.AddScoped<ISessionAttachmentStore, SessionAttachmentStore>();

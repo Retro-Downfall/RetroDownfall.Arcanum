@@ -5,8 +5,11 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
@@ -151,6 +154,11 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
+        if (!HostProcessToolPolicy.AreAllowed(ArcanumEnvironment.ResolveEdition(ArcanumEdition.Local)))
+        {
+            return HostProcessToolPolicy.DeniedMessage;
+        }
+
         if (_scriptsRootsFull.Count == 0)
         {
             return "run_spell_script: scripts directory path could not be resolved.";

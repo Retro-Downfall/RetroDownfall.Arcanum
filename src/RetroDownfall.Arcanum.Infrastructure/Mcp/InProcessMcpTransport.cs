@@ -133,7 +133,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
-        McpJsonSerializerContext? jsonContext = null)
+        McpJsonSerializerContext? jsonContext = null,
+        bool allowHostProcessTools = true)
     {
         (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
             humanPromptRegistry,
@@ -151,7 +152,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             attachmentsToolEnabled,
             maxJsonRpcLineBytes,
             logger,
-            jsonContext);
+            jsonContext,
+            allowHostProcessTools);
 
         InProcessMcpTransport transport = new(
             clientToServer.Writer,
@@ -185,7 +187,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
-        McpJsonSerializerContext? jsonContext = null)
+        McpJsonSerializerContext? jsonContext = null,
+        bool allowHostProcessTools = false)
     {
         (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
             humanPromptRegistry,
@@ -203,7 +206,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             attachmentsToolEnabled,
             maxJsonRpcLineBytes,
             logger,
-            jsonContext);
+            jsonContext,
+            allowHostProcessTools);
 
         return (clientToServer.Writer, serverToClient.Reader, server);
     }
@@ -224,7 +228,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger,
-        McpJsonSerializerContext? jsonContext)
+        McpJsonSerializerContext? jsonContext,
+        bool allowHostProcessTools)
     {
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
 
@@ -273,6 +278,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             a2aClientEnabled,
             attachmentsToolEnabled,
             maxJsonRpcLineBytes,
+            allowHostProcessTools,
             ambientConnectionKey,
             logger,
             jsonContext);

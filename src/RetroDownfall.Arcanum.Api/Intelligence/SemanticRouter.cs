@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -15,7 +16,10 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// call) plus the entity strings the router extracted from the user prompt. Entities survive a
 /// <c>NONE</c> spell so Lexicon retrieval can still run when the router fired but matched no spell.
 /// </summary>
-internal sealed record SemanticSpellRoutingResult(SpellMetadata? Spell, IReadOnlyList<string> Entities);
+internal sealed record SemanticSpellRoutingResult(
+    SpellMetadata? Spell,
+    IReadOnlyList<string> Entities,
+    UsageDetails? Usage = null);
 
 internal static class SemanticRouter
 {
@@ -29,7 +33,8 @@ internal static class SemanticRouter
         float temperature,
         CancellationToken cancellationToken,
         ILogger? logger = null,
-        IReadOnlyList<SpellMetadata>? candidates = null)
+        IReadOnlyList<SpellMetadata>? candidates = null,
+        IModelCallExecutor? modelCallExecutor = null)
     {
         if (availableSpells.Count == 0)
         {
@@ -98,9 +103,32 @@ internal static class SemanticRouter
 
         try
         {
-            response = await client
-                .GetResponseAsync(routerMessages, routerOptions, timeoutCts.Token)
+            IModelCallExecutor executor = modelCallExecutor ?? new ModelCallExecutor();
+
+            // Auxiliary preflight — dedicated budget so routing does not consume the interactive
+            // turn's model-call ceiling.
+            TurnBudget auxBudget = new(maxModelCalls: 1);
+
+            var callResult = await executor
+                .ExecuteBufferedAsync(
+                    client,
+                    routerMessages,
+                    routerOptions,
+                    auxBudget,
+                    ModelCallPurpose.SpellRouting,
+                    timeoutCts.Token)
                 .ConfigureAwait(false);
+
+            if (callResult.IsFailure)
+            {
+                logger?.LogWarning(
+                    "SemanticRouter preflight failed ({ErrorCode}); continuing with no active spell.",
+                    callResult.Error.Code);
+
+                return null;
+            }
+
+            response = callResult.Value.Response;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -159,19 +187,19 @@ internal static class SemanticRouter
 
         if (string.IsNullOrEmpty(spellName) || spellName.Equals("NONE", StringComparison.OrdinalIgnoreCase))
         {
-            return new SemanticSpellRoutingResult(null, entities);
+            return new SemanticSpellRoutingResult(null, entities, response.Usage);
         }
 
         foreach (SpellMetadata spell in offeredSpells)
         {
             if (spell.Name.Equals(spellName, StringComparison.OrdinalIgnoreCase))
             {
-                return new SemanticSpellRoutingResult(spell, entities);
+                return new SemanticSpellRoutingResult(spell, entities, response.Usage);
             }
         }
 
         // Unmatched spell name: no spell, but extracted entities still survive for Lexicon retrieval.
-        return new SemanticSpellRoutingResult(null, entities);
+        return new SemanticSpellRoutingResult(null, entities, response.Usage);
     }
 
     internal static IReadOnlyList<string> NormalizeEntities(string[]? entities)

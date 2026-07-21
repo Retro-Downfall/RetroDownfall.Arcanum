@@ -53,6 +53,8 @@ public sealed class ManagedWeaveBannerTests
             embeddingsEnabled,
             mode,
             "diagnostic",
-            50_000);
+            50_000,
+            "local",
+            false);
 
 }

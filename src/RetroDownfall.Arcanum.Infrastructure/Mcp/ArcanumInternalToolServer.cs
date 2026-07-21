@@ -96,6 +96,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly bool _a2aClientEnabled;
 
+    private readonly bool _allowHostProcessTools;
+
     /// <summary>
     /// In-flight <c>tools/call</c> request ids to their linked <see cref="CancellationTokenSource"/>, so
     /// an inbound <c>notifications/cancelled</c> can cancel cooperative tool work (e.g. <c>execute_command</c>)
@@ -141,6 +143,7 @@ internal sealed partial class ArcanumInternalToolServer
         bool a2aClientEnabled,
         bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
+        bool allowHostProcessTools = false,
         string? ambientConnectionKey = null,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null)
@@ -211,6 +214,8 @@ internal sealed partial class ArcanumInternalToolServer
         _attachmentsToolEnabled = attachmentsToolEnabled;
 
         _a2aClientEnabled = a2aClientEnabled;
+
+        _allowHostProcessTools = allowHostProcessTools;
 
         _maxJsonRpcLineBytes = maxJsonRpcLineBytes;
 
@@ -624,41 +629,54 @@ internal sealed partial class ArcanumInternalToolServer
                 Description = _listDirectoryToolsListDescription,
                 InputSchema = _listDirectorySchema,
             },
-            new McpToolDefinitionWire
-            {
-                Name = "execute_command",
-                Description = _executeCommandToolDescription,
-                InputSchema = _executeCommandSchema,
-            },
+        ];
+
+        if (_allowHostProcessTools)
+        {
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "execute_command",
+                    Description = _executeCommandToolDescription,
+                    InputSchema = _executeCommandSchema,
+                });
+        }
+
+        tools.Add(
             new McpToolDefinitionWire
             {
                 Name = "adjust_initiative",
                 Description =
                     "Dynamically adjusts the polling interval (in minutes) for a background Unseen Servant job based on current conditions.",
                 InputSchema = _adjustInitiativeSchema,
-            },
+            });
+
+        tools.Add(
             new McpToolDefinitionWire
             {
                 Name = "send_commlink_alert",
                 Description =
                     "Send a one-way external notification through the configured Comm Link. This does not wait for or receive a reply.",
                 InputSchema = _useCommlinkSchema,
-            },
+            });
+
+        tools.Add(
             new McpToolDefinitionWire
             {
                 Name = "petition_dungeon_master",
                 Description =
                     "Escalate an autonomous task that cannot safely continue. The Apprentice pauses for later Dungeon Master intervention. Do not use for ordinary questions.",
                 InputSchema = _petitionDungeonMasterSchema,
-            },
+            });
+
+        tools.Add(
             new McpToolDefinitionWire
             {
                 Name = "ask_human",
                 Description =
                     "Ask the active operator a question and wait for their response. Use only during attended interactive turns.",
                 InputSchema = _askHumanSchema,
-            },
-        ];
+            });
 
         if (_conclaveEnabled)
         {

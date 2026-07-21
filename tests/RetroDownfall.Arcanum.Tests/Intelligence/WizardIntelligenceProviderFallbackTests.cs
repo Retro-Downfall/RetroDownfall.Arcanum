@@ -487,6 +487,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<BudgetMonitor>.Instance),
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
+            new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
             healthTracker);
     }
 

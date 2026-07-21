@@ -31,8 +31,6 @@ public enum ConfigSection
 
     Scrying,
 
-    Moderations,
-
     Pricing,
 
     Guardrails,
@@ -97,8 +95,6 @@ public static class SectionDescriptors
 
         new(ConfigSection.Resilience, "Resilience", "\ue7c9", "Provider health probing and fallback"),
 
-        new(ConfigSection.Moderations, "Moderations", "\ue7cb", "OpenAI-compatible content moderation"),
-
         new(ConfigSection.Pricing, "Pricing", "\ue7cc", "Per-model cost tracking"),
 
         new(ConfigSection.Budget, "Budget", "\ue7cd", "Daily spend limits and alerts"),
@@ -144,7 +140,6 @@ public static class SectionDescriptors
     public static string? KeyPrefix(ConfigSection section) => section switch
     {
         ConfigSection.Resilience => "resilience.",
-        ConfigSection.Moderations => "moderations.",
         ConfigSection.Pricing => "pricing.",
         ConfigSection.Budget => "budget.",
         ConfigSection.StructuredOutput => "structuredOutput.",

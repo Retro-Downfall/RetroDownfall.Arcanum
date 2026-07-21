@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -10,8 +11,12 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
     private readonly string _rootB;
 
+    private readonly HostProcessToolsEscapeHatchScope _hostProcessTools;
+
     public ArcanumSpellScriptToolMultiRootTests()
     {
+        _hostProcessTools = new HostProcessToolsEscapeHatchScope();
+
         string baseDir = Path.Combine(Path.GetTempPath(), "arcanum-scripttool-" + Guid.NewGuid().ToString("N"));
 
         _rootA = Path.Combine(baseDir, "a", "scripts");
@@ -25,6 +30,8 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
     public void Dispose()
     {
+        _hostProcessTools.Dispose();
+
         try
         {
             string? parent = Directory.GetParent(_rootA)?.Parent?.Parent?.FullName;

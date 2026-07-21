@@ -216,7 +216,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
         BatchProcessingService service = CreateService(intelligence);
 
         Guid inputFileId = await SeedInputFileAsync(
-            """{"custom_id":"req-fail","method":"POST","url":"/v1/chat/completions","body":{"model":"missing","messages":[{"role":"user","content":"hi"}]}}""" + "\n");
+            """{"custom_id":"req-fail","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""" + "\n");
 
         BatchRecord batch = new(Guid.NewGuid(), inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null);
 
@@ -376,11 +376,26 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             BatchExpiryHours = batchExpiryHours ?? 24,
         };
 
+        ArcanumSettings settings = new()
+        {
+            Batches = batches,
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "test",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "http://localhost",
+                    Models = [new ModelEntry("m"), new ModelEntry("missing")],
+                },
+            ],
+        };
+
         ServiceProvider root = BuildServiceProvider(intelligence);
 
         return new BatchProcessingService(
             root.GetRequiredService<IServiceScopeFactory>(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Batches = batches }),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
             root,
             NullLogger<BatchProcessingService>.Instance);
 

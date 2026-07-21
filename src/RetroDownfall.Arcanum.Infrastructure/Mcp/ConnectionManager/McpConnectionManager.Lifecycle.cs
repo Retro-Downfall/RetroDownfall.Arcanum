@@ -6,11 +6,13 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -499,11 +501,17 @@ public sealed partial class McpConnectionManager
 
         ConclaveA2ASettings a2a = conclave.A2A ?? new ConclaveA2ASettings();
 
-        bool a2aClientEnabled = conclave.Enabled && a2a.Enabled && a2a.ClientEnabled;
-
         AttachmentsSettings attachments = settings.CurrentValue.Attachments ?? new AttachmentsSettings();
 
         bool attachmentsToolEnabled = attachments.Enabled && attachments.EnableModelAttachTool;
+
+        ArcanumEdition edition = ArcanumEnvironment.ResolveEdition(settings.CurrentValue.Edition);
+
+        bool allowHostProcessTools = HostProcessToolPolicy.AreAllowed(edition);
+
+        bool conclaveEffective = edition == ArcanumEdition.Development && conclave.Enabled;
+
+        bool a2aClientEffective = conclaveEffective && a2a.Enabled && a2a.ClientEnabled;
 
         (ChannelWriter<string> toServer, ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
@@ -516,12 +524,13 @@ public sealed partial class McpConnectionManager
                 listDirectoryMaxPaths,
                 settings.CurrentValue.Intelligence,
                 maxFileReadSizeBytes,
-                conclave.Enabled,
+                conclaveEffective,
                 sagaEnabled,
-                a2aClientEnabled,
+                a2aClientEffective,
                 attachmentsToolEnabled,
                 GetClampedMcpMaxJsonRpcLineBytes(),
-                logger: null);
+                logger: null,
+                allowHostProcessTools: allowHostProcessTools);
 
         // The server's own RunAsync loop terminates when the client-to-server channel completes
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).

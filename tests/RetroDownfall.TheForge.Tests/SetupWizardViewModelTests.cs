@@ -198,7 +198,9 @@ public class SetupWizardViewModelTests
             embeddingsEnabled,
             "managed",
             "ok",
-            100);
+            100,
+            "local",
+            false);
 
     private sealed class FakeSetupWizardDataSource : ISetupWizardDataSource
     {

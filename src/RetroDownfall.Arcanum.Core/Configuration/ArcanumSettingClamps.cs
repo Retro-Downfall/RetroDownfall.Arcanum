@@ -373,12 +373,10 @@ public static class ArcanumSettingClamps
     public static int ClientToolForwardingMaxClientTools(int value) => Math.Clamp(value, 1, 100);
 
     /// <summary>
-    /// Streaming output-filter mode for guardrails. Only <c>passthrough</c> and <c>buffered</c> are
-    /// recognized; any other value falls back to <c>passthrough</c> so an invalid setting never
-    /// silently changes streaming behavior.
+    /// Streaming output-filter mode for guardrails. Enum values only; unknown strings are not
+    /// accepted by binding — callers that still hold a legacy string should map explicitly.
     /// </summary>
-    public static string GuardrailsStreamingMode(string value) =>
-        value.Equals("buffered", StringComparison.OrdinalIgnoreCase) ? "buffered" : "passthrough";
+    public static GuardrailsStreamingMode GuardrailsStreamingMode(GuardrailsStreamingMode value) => value;
 
 }
 

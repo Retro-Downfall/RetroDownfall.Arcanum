@@ -356,7 +356,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DetectPii = false,
                 BlockToxicity = true,
                 ToxicityBlocklist = ["bad-word"],
-                StreamingMode = "buffered",
+                StreamingMode = GuardrailsStreamingMode.Buffered,
             },
         };
 
@@ -390,7 +390,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DetectPii = false,
                 BlockToxicity = true,
                 ToxicityBlocklist = ["bad-word"],
-                StreamingMode = "buffered",
+                StreamingMode = GuardrailsStreamingMode.Buffered,
             },
         };
 
@@ -440,7 +440,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 DetectPii = false,
                 BlockToxicity = true,
                 ToxicityBlocklist = ["bad-word"],
-                StreamingMode = "passthrough",
+                StreamingMode = GuardrailsStreamingMode.Passthrough,
             },
         };
 
@@ -473,7 +473,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 Enabled = false,
                 BlockToxicity = true,
                 ToxicityBlocklist = ["bad-word"],
-                StreamingMode = "buffered",
+                StreamingMode = GuardrailsStreamingMode.Buffered,
             },
         };
 
@@ -759,14 +759,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             Providers =
             [
-                DefaultProvider() with { ContextWindowLimit = 128 },
+                DefaultProvider() with { ContextWindowLimit = 4096 },
             ],
             Intelligence = DefaultSettings().Intelligence with
             {
                 EnableContextCompression = true,
                 CompressionPreflightMinMessages = 2,
-                ContextWindowCompressionThreshold = 10,
+                ContextWindowCompressionThreshold = 50,
                 PerMessageTemplateOverheadTokens = 1,
+                ReservedOutputTokens = 256,
             },
         };
 
@@ -807,6 +808,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         ArcanumSettings settings = DefaultSettings() with
         {
+            Providers =
+            [
+                DefaultProvider() with { ContextWindowLimit = 32_768 },
+            ],
             Intelligence = DefaultSettings().Intelligence with { EnableContextCompression = false },
         };
 
@@ -1364,7 +1369,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             Providers =
             [
-                DefaultProvider() with { ContextWindowLimit = 128 },
+                DefaultProvider() with { ContextWindowLimit = 32_768 },
             ],
             Intelligence = DefaultSettings().Intelligence with
             {
@@ -1523,7 +1528,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario34_SessionFinalizeFailure_StillReturnsInference()
+    public async Task Scenario34_SessionFinalizeFailure_ReturnsHubError()
     {
 
         FakeGrimoireRepository grimoire = new() { ThrowOnFinalize = true };
@@ -1544,9 +1549,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             },
             CancellationToken.None);
 
-        Assert.True(result.IsSuccess);
+        // Phase 0: finalize failure is a hard turn failure (GrimoireTurnWriter contract).
+        Assert.True(result.IsFailure);
 
-        Assert.Equal("finalize failure ok", result.Value!.Text);
+        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
 
     }
 
@@ -2310,42 +2316,59 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task Scenario56_AttunementExecuteCommand_StillAdvertisedAndWardFires()
     {
+        string? previousAllow = global::System.Environment.GetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar);
 
-        await CreateSpellWithDeclaredToolsAsync("exec-spell", ["execute_command"]);
+        string? previousEdition = global::System.Environment.GetEnvironmentVariable("ARCANUM_EDITION");
 
-        ScriptingChatClient chat = new();
+        try
+        {
+            global::System.Environment.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, "1");
 
-        chat.EnqueueToolCall("execute_command");
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_EDITION", "development");
 
-        chat.EnqueueText("done");
+            await CreateSpellWithDeclaredToolsAsync("exec-spell", ["execute_command"]);
 
-        FakeWard ward = new() { NextResolution = new WardResolution(true, null, DateTimeOffset.UtcNow) };
+            ScriptingChatClient chat = new();
 
-        FakeMcpConnectionManager mcp = new();
+            chat.EnqueueToolCall("execute_command");
 
-        mcp.Tools.Add(CreateMcpTool("execute_command"));
+            chat.EnqueueText("done");
 
-        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
+            FakeWard ward = new() { NextResolution = new WardResolution(true, null, DateTimeOffset.UtcNow) };
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with
-            {
-                Prompt = "run",
-                WorkingDirectory = _workspace.Root,
-                OverrideSpellName = "exec-spell",
-                SkipSpellRouting = false,
-                UnattendedMode = false,
-            },
-            CancellationToken.None);
+            FakeMcpConnectionManager mcp = new();
 
-        Assert.True(result.IsSuccess);
+            mcp.Tools.Add(CreateMcpTool("execute_command"));
 
-        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+            ArcanumSettings settings = DefaultSettings() with { Edition = ArcanumEdition.Development };
 
-        Assert.Contains("execute_command", toolNames);
+            WizardIntelligenceProvider wizard = CreateWizard(chat, settings, ward: ward, mcp: mcp);
 
-        Assert.Equal(1, ward.WardCallCount);
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "run",
+                    WorkingDirectory = _workspace.Root,
+                    OverrideSpellName = "exec-spell",
+                    SkipSpellRouting = false,
+                    UnattendedMode = false,
+                },
+                CancellationToken.None);
 
+            Assert.True(result.IsSuccess);
+
+            HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+
+            Assert.Contains("execute_command", toolNames);
+
+            Assert.Equal(1, ward.WardCallCount);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, previousAllow);
+
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_EDITION", previousEdition);
+        }
     }
 
     // === Execute/Stream tool-round loop contract (W6.15c guard) ===
@@ -3645,7 +3668,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp ??= new FakeMcpConnectionManager();
 
-        factory ??= new FakeChatClientFactory(chatClient, DefaultProvider());
+        factory ??= new FakeChatClientFactory(
+            chatClient,
+            settings.Providers is { Length: > 0 } ? settings.Providers[0] : DefaultProvider());
 
         campaignRepository ??= new FakeCampaignRepository();
 
@@ -3718,6 +3743,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             budgetMonitor,
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
+            new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
             null,
             guardrailsPipeline);
     }
@@ -3892,7 +3918,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             Id = sessionId,
             Summary = "rolled-up campaign memory",
-            LastSummarizedMessageAt = watermark,
+            // Watermark after most entries so compression can drop the heavy prefix and still
+            // leave a few recent turns — required once EnsureContextBudget runs post-compression.
+            LastSummarizedMessageAt = watermark.AddMinutes(35),
             Entries = entries,
         };
     }

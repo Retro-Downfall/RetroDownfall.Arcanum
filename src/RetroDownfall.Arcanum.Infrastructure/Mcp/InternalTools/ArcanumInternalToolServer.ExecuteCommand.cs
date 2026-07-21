@@ -21,6 +21,11 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
+        if (!_allowHostProcessTools)
+        {
+            return ToolError(Core.Security.HostProcessToolPolicy.DeniedMessage);
+        }
+
         McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
 
         if (gate is not null)

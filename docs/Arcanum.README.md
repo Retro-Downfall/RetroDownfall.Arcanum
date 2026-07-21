@@ -2,7 +2,7 @@
 
 > **Agent orientation document.** This README is written first and foremost for an **AI coding agent** (e.g. Cursor) that needs to understand Arcanum well enough to write effective prompts and code changes. It summarizes *what Arcanum is*, *the standards every change must uphold*, *how the system is shaped*, and *the patterns to follow*. For exhaustive, authoritative detail (every config key, clamp, and endpoint contract), defer to **[`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)** — this file links into it throughout.
 
-**Arcanum** is a **.NET 10, single-binary, Native AOT, local-first AI assistant and inference hub.** It ships as one self-contained native executable (`arcanum`) that runs two ways: a long-running **HTTP host** exposing an API-first surface (`arcanum serve`), and a set of **terminal commands** (`ask`, `chat`, `look`, `lore`, `daemon`, `campaign`, `session`, `saga`, `spell`, `prompt`, `ward`, `trial`, `apprentice`, `model`, `provider`) that are thin clients over that same API — see the [CLI quick reference](#cli-quick-reference) for the full list. It speaks the **OpenAI API** for drop-in client compatibility, routes inference across a **multi-provider native engine** (any OpenAI-compatible HTTP API, including Ollama via its `/v1` endpoint), and persists everything in an **encrypted local store** (SQLCipher).
+**Arcanum** is a **.NET 10, single-binary, Native AOT, local-first AI assistant and inference hub.** It ships as one self-contained native executable (`arcanum`) that runs two ways: a long-running **HTTP host** exposing an API-first surface (`arcanum serve`), and a set of **terminal commands** (`ask`, `chat`, `look`, `lore`, `daemon`, `campaign`, `session`, `saga`, `spell`, `prompt`, `ward`, `trial`, `apprentice`, `model`, `provider`) that are thin clients over that same API — see the [CLI quick reference](#cli-quick-reference) for the full list. It exposes an **OpenAI Chat Completions compatibility subset** for client drop-in use (ADR 0001 — honesty fixes only, not full OpenAI API parity), routes inference across a **multi-provider native engine** (any OpenAI-compatible HTTP API, including Ollama via its `/v1` endpoint), and persists everything in an **encrypted local store** (SQLCipher).
 
 - **Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT · `Microsoft.Extensions.AI` · EF Core 10 + SQLCipher · ConsoleAppFramework + Spectre.Console
 - **Version:** `0.1.0-beta` (see [`Directory.Build.props`](../Directory.Build.props))
@@ -32,12 +32,12 @@ The shipping artifact is a **Native AOT** binary with **zero runtime prerequisit
 - Put **domain logic in `Core`**; keep `Api` to composition/orchestration and `Cli` to thin HTTP calls (`ArcanumApiClient`).
 - CLI verbs that need server state (`lore`, `daemon jobs`, …) **call the running host's API** rather than reaching into infrastructure directly.
 
-### 3. OpenAI API compatibility
+### 3. OpenAI Chat Completions compatibility subset
 
-Arcanum exposes a maximum-parity **OpenAI Chat Completions** surface so existing OpenAI clients work unchanged. See [DESIGN.md §8.8](Arcanum.DESIGN.md#88-openai-v1-parity-surface).
+Arcanum exposes a **Chat Completions compatibility subset** so common OpenAI clients work for chat (ADR 0001). See [DESIGN.md §8.8](Arcanum.DESIGN.md#88-openai-v1-chat-completions-compatibility-subset). Moderations/images/audio remain `501 not_supported`.
 
 - **`POST /v1/chat/completions`** (JSON or SSE) and **`GET /v1/models`** (auto-discovery across all configured providers).
-- Full request parsing including multimodal `content` parts, `tool`/`assistant` tool-call replay, `stream_options.include_usage`, `response_format`, etc.
+- Request parsing including multimodal `content` parts, `tool`/`assistant` tool-call replay, `stream_options.include_usage`, `response_format`, etc.
 - Responses carry `usage`, `system_fingerprint`, and OpenAI-shaped error envelopes. **Auth** accepts `Authorization: Bearer <KEY>` for OpenAI clients (as well as `X-Arcanum-Key`).
 - Arcanum runs **its own server-side MCP toolset** by default, so client-supplied `tools`/`tool_choice` are rejected with `400 unsupported_parameter` (except `tool_choice: "auto"`/`"none"`, which are always accepted as OpenAI defaults). Operators may opt in to **client tool forwarding** via `Arcanum:ClientToolForwarding:Enabled`; when enabled, client schemas are forwarded to the resolved provider (per-tool `strict` flag preserved via `AIFunction.AdditionalProperties`), `tool_choice.function.name` is verified against the supplied `tools`, and the returned `tool_calls` are surfaced for the client to round-trip (bypasses Arcanum's server-side tool loop, Sanctum, Wards, and tool audit logging).
 
@@ -61,7 +61,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](Arcanu
 - Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`).
 - Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over **HTTPS only** (plaintext any-IP HTTP is refused; `Host:Https` + cert required).
-- Path containment + symlink revalidation for file tools; `execute_command` uses `ArgumentList` (no shell) with child-env scrubbing; workspace MCP requires trust. **Tool-child FS jail** (macOS Seatbelt active; Linux inactive fail-closed; Windows Job Objects only / Degraded) — filesystem-only — unless `AllowUnsandboxedToolChildren`. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
+- Path containment + symlink revalidation for file tools; host-process tools (`execute_command` / `run_spell_script`) use `ArgumentList` (no shell) with child-env scrubbing and are **gated by Local edition** unless Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1` (ADR 0001); workspace MCP requires trust. **Tool-child FS jail** (macOS Seatbelt active; Linux inactive fail-closed; Windows Job Objects only / Degraded) — filesystem-only — unless `AllowUnsandboxedToolChildren`. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
 
 ### 6. Strict Content Security Policy on every web surface
 
@@ -208,7 +208,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
 | Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana` | Buffered / NDJSON `IntelligenceEvent` |
 | Inference (OpenAI) | `POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/embeddings` | OpenAI JSON/SSE; Scrying gates images; client tools opt-in |
-| OpenAI stubs | `/v1/moderations`, `/images/*`, `/audio/*` | Moderations toggle; images/audio always 501 |
+| OpenAI stubs | `/v1/moderations`, `/images/*`, `/audio/*` | Always 501 `not_supported` |
 | Files / Batches | `/v1/files*`, `/v1/batches*` | Upload + async JSONL chat batches |
 | Sessions | `/api/sessions/*` (+ entries/stream/attachments/divine/fork/pin/compact) | Grimoire threads; memory-mgmt gated; RAG divine off by default |
 | Lore / Saga | `/api/lore/*`, `/api/saga/*` | Legacy KV lore; Saga auto-memory (divine gated) |

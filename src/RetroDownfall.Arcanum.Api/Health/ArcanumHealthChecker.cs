@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Resilience;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -97,6 +99,15 @@ public sealed class ArcanumHealthChecker(
             + $"network={sandbox.NetworkIsolationMode}; "
             + $"escapeHatch={sandbox.EscapeHatchEnabled}. "
             + sandbox.PublicMessage));
+
+        HostProcessToolPolicyStatus hostTools = HostProcessToolPolicy.Resolve(
+            ArcanumEnvironment.ResolveEdition(settings.CurrentValue.Edition));
+
+        components.Add(new HealthComponentDto(
+            "HostProcessTools",
+            hostTools.IsHealthDegraded ? HealthStatus.Degraded : HealthStatus.Healthy,
+            $"edition={hostTools.Edition}; allowed={hostTools.Allowed}; "
+            + $"escapeHatchEnv={hostTools.EscapeHatchEnvSet}. {hostTools.PublicMessage}"));
 
         (bool embeddingsEnabled, string vectorMode, string vectorDiagnostic, int managedBudget) =
             EmbeddingsVectorStatus.Resolve(settings.CurrentValue.Embeddings, weaveIndexAvailability);

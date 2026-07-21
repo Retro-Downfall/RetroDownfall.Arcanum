@@ -356,6 +356,8 @@ public sealed class InferenceContextBuilder(
             .OrderBy(m => m.CreatedAt)
             .ToList();
 
+        ordered = TurnContextGuards.DropOrphanToolHalves(ordered);
+
         while (ordered.Count > 0
 
             && ordered[^1].Role == MessageRole.Assistant

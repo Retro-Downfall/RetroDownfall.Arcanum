@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -68,6 +69,7 @@ internal static partial class OpenAiV1Endpoints
 
     private static IResult HandleListModels(IOptionsSnapshot<ArcanumSettings> settings)
     {
+        // Non-billable (ADR 0002 / NonBillableSurfaces.GetModels): config-only, no provider call.
         List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(settings.Value);
 
         List<OpenAiModel> data = [];
@@ -136,253 +138,35 @@ internal static partial class OpenAiV1Endpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
-        if (string.IsNullOrWhiteSpace(body.Model))
+        ChatCompletionValidationFailure? validationFailure = TryValidateChatCompletionRequest(
+            body,
+            settings.Value,
+            out PingRequest? ping,
+            forceDisableAllTools: false);
+
+        if (validationFailure is not null || ping is null)
         {
+            ChatCompletionValidationFailure failure = validationFailure
+                ?? new ChatCompletionValidationFailure(
+                    "Request validation failed.",
+                    "invalid_request_error",
+                    "invalid_value",
+                    null,
+                    StatusCodes.Status400BadRequest);
+
             return JsonError(
-                "`model` is required.",
-                "invalid_request_error",
-                code: "missing_required_parameter",
-                param: "model",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        if (body.Messages is null || body.Messages.Count == 0)
-        {
-            return JsonError(
-                "`messages` is required and must be non-empty.",
-                "invalid_request_error",
-                code: "missing_required_parameter",
-                param: "messages",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        Result messageCountBounds = PingRequestBoundsValidator.ValidateOpenApiMessageCount(body.Messages.Count, settings.Value);
-
-        if (messageCountBounds.IsFailure)
-        {
-            return JsonError(
-                messageCountBounds.Error.Message,
-                "invalid_request_error",
-                code: "invalid_value",
-                param: "messages",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        for (int i = 0; i < body.Messages.Count; i++)
-        {
-            OpenAiChatMessage m = body.Messages[i];
-
-            if (string.IsNullOrWhiteSpace(m.Role))
-            {
-                return JsonError(
-                    $"messages[{i}].role is required.",
-                    "invalid_request_error",
-                    code: "missing_required_parameter",
-                    param: $"messages[{i}].role",
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            if (!AllowedRoles.Contains(m.Role))
-            {
-                return JsonError(
-                    $"messages[{i}].role '{m.Role}' is not one of {string.Join(", ", AllowedRoles)}.",
-                    "invalid_request_error",
-                    code: "invalid_value",
-                    param: $"messages[{i}].role",
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            // W3.5: bound the multimodal parts array and reject unknown part types up front (the
-            // mapper otherwise silently drops unsupported parts, and a huge parts array allocates
-            // heavily before content-length checks apply).
-            if (m.Content?.Parts is { } parts)
-            {
-                int maxParts = ArcanumSettingClamps.MaxContentPartsPerMessage(
-                    (settings.Value.Intelligence ?? new IntelligenceSettings()).MaxContentPartsPerMessage);
-
-                if (parts.Length > maxParts)
-                {
-                    return JsonError(
-                        $"messages[{i}].content has {parts.Length} parts; the maximum is {maxParts}.",
-                        "invalid_request_error",
-                        code: "invalid_value",
-                        param: $"messages[{i}].content",
-                        statusCode: StatusCodes.Status400BadRequest);
-                }
-
-                for (int j = 0; j < parts.Length; j++)
-                {
-                    OpenAiContentPart part = parts[j];
-
-                    if (part is not null && !IsSupportedContentPartType(part.Type))
-                    {
-                        return JsonError(
-                            $"messages[{i}].content[{j}].type '{part.Type}' is not supported; expected 'text' or 'image_url'.",
-                            "invalid_request_error",
-                            code: "invalid_value",
-                            param: $"messages[{i}].content[{j}].type",
-                            statusCode: StatusCodes.Status400BadRequest);
-                    }
-                }
-            }
-        }
-
-        if (body.N is int n && n != 1)
-        {
-            return JsonError(
-                "`n` must be 1 when specified. Arcanum does not support multiple completion choices.",
-                "invalid_request_error",
-                code: "invalid_value",
-                param: "n",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        if (body.Tools is { Length: > 0 })
-        {
-            if (!settings.Value.ClientToolForwarding.Enabled)
-            {
-                return JsonError(
-                    "Client-supplied `tools` are not supported. Arcanum uses its own server-side MCP toolset.",
-                    "invalid_request_error",
-                    code: "unsupported_parameter",
-                    param: "tools",
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(settings.Value.StructuredOutput.SchemaMaxDepth);
-
-            Result toolsValidation = ValidateClientTools(body.Tools, settings.Value.ClientToolForwarding.MaxClientTools, schemaMaxDepth);
-
-            if (toolsValidation.IsFailure)
-            {
-                return JsonError(
-                    toolsValidation.Error.Message,
-                    "invalid_request_error",
-                    code: MapClientToolsErrorCode(toolsValidation.Error.Code),
-                    param: "tools",
-                    statusCode: ArcanumErrorMapper.ResolveStatusCode(toolsValidation.Error.Code));
-            }
-        }
-
-        if (body.ToolChoice is { } toolChoice
-            && toolChoice.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
-        {
-            if (!IsValidClientToolChoice(toolChoice))
-            {
-                return JsonError(
-                    "Client-supplied `tool_choice` is not a valid shape; expected 'auto', 'none', 'required', or an object with type 'function' and function.name.",
-                    "invalid_request_error",
-                    code: "invalid_schema",
-                    param: "tool_choice",
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            if (!settings.Value.ClientToolForwarding.Enabled)
-            {
-                if (toolChoice.ValueKind == JsonValueKind.Object)
-                {
-                    return JsonError(
-                        "Client-supplied `tool_choice` named function is not supported. Arcanum uses its own server-side MCP toolset.",
-                        "invalid_request_error",
-                        code: "unsupported_parameter",
-                        param: "tool_choice",
-                        statusCode: StatusCodes.Status400BadRequest);
-                }
-            }
-            else if (toolChoice.ValueKind == JsonValueKind.Object
-                && body.Tools is { Length: > 0 } tools)
-            {
-                string? functionName = toolChoice.TryGetProperty("function", out JsonElement functionElement)
-                    && functionElement.TryGetProperty("name", out JsonElement nameElement)
-                    ? nameElement.GetString()
-                    : null;
-
-                bool found = functionName is not null
-                    && tools.Any(t => string.Equals(t.Function?.Name, functionName, StringComparison.Ordinal));
-
-                if (!found)
-                {
-                    return JsonError(
-                        $"Client-supplied `tool_choice` references unknown function '{functionName}'; it must match one of the supplied tools.",
-                        "invalid_request_error",
-                        code: "invalid_value",
-                        param: "tool_choice",
-                        statusCode: StatusCodes.Status400BadRequest);
-                }
-            }
-        }
-
-        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(body, settings.Value.ClientToolForwarding.Enabled);
-
-        Result pingBounds = PingRequestBoundsValidator.Validate(ping, settings.Value);
-
-        if (pingBounds.IsFailure)
-        {
-            return JsonError(
-                pingBounds.Error.Message,
-                "invalid_request_error",
-                code: "invalid_value",
-                param: null,
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        if (!ProviderResolver.TryResolveProviderForModel(settings.Value, body.Model, out ProviderSettings? resolvedProvider, out string resolvedModel)
-            || resolvedProvider is null
-            || string.IsNullOrWhiteSpace(resolvedModel))
-        {
-            return JsonError(
-                $"Model '{body.Model}' is not configured on any provider.",
-                "invalid_request_error",
-                code: "model_not_found",
-                param: "model",
-                statusCode: StatusCodes.Status404NotFound);
-        }
-
-        // Scrying — reject images before any inference token is consumed. Count/MIME/size are
-        // validated against the mapped PingRequest (shared with the native ping path); vision
-        // capability is checked against the already-resolved provider/model.
-        if (ScryingValidator.RequestContainsImages(ping))
-        {
-            ScryingSettings scrying = settings.Value.Scrying ?? new ScryingSettings();
-
-            if (!scrying.Enabled)
-            {
-                return JsonError(
-                    "Scrying is disabled. Enable Arcanum:Scrying:Enabled to send images.",
-                    "invalid_request_error",
-                    code: "feature_disabled",
-                    param: null,
-                    statusCode: StatusCodes.Status403Forbidden);
-            }
-
-            Result scryingShape = ScryingValidator.ValidateRequestImages(ping, scrying);
-
-            if (scryingShape.IsFailure)
-            {
-                return JsonError(
-                    scryingShape.Error.Message,
-                    "invalid_request_error",
-                    code: MapScryingOpenAiErrorCode(scryingShape.Error.Code),
-                    param: null,
-                    statusCode: ArcanumErrorMapper.ResolveStatusCode(scryingShape.Error.Code));
-            }
-
-            if (!ProviderResolver.SupportsVision(resolvedProvider, resolvedModel))
-            {
-                return JsonError(
-                    $"Model '{resolvedModel}' does not support vision. Use a vision-capable model.",
-                    "invalid_request_error",
-                    code: "vision_not_supported",
-                    param: "model",
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
+                failure.Message,
+                failure.Type,
+                code: failure.Code,
+                param: failure.Param,
+                statusCode: failure.StatusCode);
         }
 
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         string completionId = "chatcmpl-" + Guid.NewGuid().ToString("N");
 
-        string echoModel = body.Model.Trim();
+        string echoModel = body.Model!.Trim();
 
         string systemFingerprint = ResolveSystemFingerprint(settings.Value);
 
@@ -559,9 +343,15 @@ internal static partial class OpenAiV1Endpoints
 
         httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
 
-        using CancellationTokenSource streamCts = CancellationTokenSource.CreateLinkedTokenSource(
-            httpContext.RequestAborted,
-            cancellationToken);
+        DisconnectPolicy disconnectPolicy = httpContext.RequestServices
+            .GetRequiredService<IOptionsSnapshot<ArcanumSettings>>()
+            .Value.Intelligence.DisconnectPolicy;
+
+        bool continueThenReplay = TurnContextGuards.ResolveContinueThenReplay(httpContext, disconnectPolicy);
+
+        using CancellationTokenSource streamCts = continueThenReplay
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted, cancellationToken);
 
         CancellationToken ct = streamCts.Token;
 
@@ -577,6 +367,8 @@ internal static partial class OpenAiV1Endpoints
 
         bool disconnected = false;
 
+        bool clientGone = false;
+
         // Monotonically increasing across the whole response (not reset per hub tool round, unlike
         // IntelligenceToolCallEvent.Index — see WriteToolCallChunksAsync remarks) so a multi-round
         // Arcanum tool loop never emits two distinct calls under the same `index`, which would be
@@ -587,11 +379,10 @@ internal static partial class OpenAiV1Endpoints
         {
             await WriteRoleChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ct).ConfigureAwait(false);
 
-            // Pump the hub stream manually so idle gaps can be filled with SSE keep-alive comments.
-            // A single in-flight MoveNextAsync is raced against a keep-alive delay; the delay is
-            // cancelled the moment an event arrives so no timer lingers (the same MoveNextAsync task
-            // is kept across keep-alive cycles — re-issuing MoveNextAsync while one is pending would
-            // be an invalid concurrent enumeration).
+            // Pump via the intelligence provider facade (already TurnExecutionCoordinator →
+            // TurnEngine for production). Keep-alives and SSE serialization stay in this writer
+            // (ADR 0004 transport/replay boundary). Tests inject a fake IArcanumIntelligenceProvider;
+            // resolving ITurnExecutionFacade here would bypass that fake.
             await using IAsyncEnumerator<IntelligenceEvent> enumerator =
                 intelligence.StreamPromptAsync(ping, ct, auditContext).GetAsyncEnumerator(ct);
 
@@ -607,7 +398,25 @@ internal static partial class OpenAiV1Endpoints
 
                 if (completed == keepAliveDelay)
                 {
-                    await SseStreamWriter.WriteKeepAliveAsync(httpContext, ct).ConfigureAwait(false);
+                    if (!clientGone)
+                    {
+                        try
+                        {
+                            await SseStreamWriter.WriteKeepAliveAsync(httpContext, ct).ConfigureAwait(false);
+                        }
+                        catch (Exception keepAliveEx) when (ClientDisconnect.IsClientDisconnect(keepAliveEx, httpContext))
+                        {
+                            clientGone = true;
+                            disconnected = true;
+
+                            if (!continueThenReplay)
+                            {
+                                streamCts.Cancel();
+                                aborted = true;
+                                break;
+                            }
+                        }
+                    }
 
                     continue;
                 }
@@ -621,73 +430,94 @@ internal static partial class OpenAiV1Endpoints
 
                 IntelligenceEvent ev = enumerator.Current;
 
-                switch (ev.Type)
+                if (clientGone && continueThenReplay)
                 {
-                    case IntelligenceEventType.Token when !string.IsNullOrEmpty(ev.Data):
-                        await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
-                        break;
-
-                    case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCallPayload:
-                        await WriteToolCallChunksAsync(
-                            httpContext,
-                            sseBuffer,
-                            completionId,
-                            created,
-                            echoModel,
-                            systemFingerprint,
-                            toolCallPayload,
-                            nextToolCallDeltaIndex,
-                            ct).ConfigureAwait(false);
-
-                        nextToolCallDeltaIndex++;
-
-                        break;
-
-                    case IntelligenceEventType.ToolCall:
-                        // ToolCall event without a structured payload (should not happen from
-                        // WizardIntelligenceProvider today, but tolerated defensively) — nothing to
-                        // surface on /v1 without a name/arguments/call id.
-                        break;
-
-                    case IntelligenceEventType.Result:
+                    if (ev.Type == IntelligenceEventType.Result)
+                    {
                         sseUsage = ev.Usage;
-
                         sseFinishReason = ev.FinishReason;
+                    }
 
-                        if (ev.Warnings.Count > 0)
-                        {
+                    move = enumerator.MoveNextAsync().AsTask();
+                    continue;
+                }
 
-                            // systemFingerprint can be null when Arcanum:Host:SystemFingerprint is unset; avoid a
-                            // leading-colon fingerprint in that case (the buffered path at :436 has the same edge).
-                            systemFingerprint = string.IsNullOrEmpty(systemFingerprint)
-                                ? "arcanum:structured-output-warning"
-                                : systemFingerprint + ":arcanum:structured-output-warning";
+                try
+                {
+                    switch (ev.Type)
+                    {
+                        case IntelligenceEventType.Token when !string.IsNullOrEmpty(ev.Data):
+                            await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
+                            break;
 
-                        }
+                        case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCallPayload:
+                            await WriteToolCallChunksAsync(
+                                httpContext,
+                                sseBuffer,
+                                completionId,
+                                created,
+                                echoModel,
+                                systemFingerprint,
+                                toolCallPayload,
+                                nextToolCallDeltaIndex,
+                                ct).ConfigureAwait(false);
 
+                            nextToolCallDeltaIndex++;
+
+                            break;
+
+                        case IntelligenceEventType.ToolCall:
+                            break;
+
+                        case IntelligenceEventType.Result:
+                            sseUsage = ev.Usage;
+
+                            sseFinishReason = ev.FinishReason;
+
+                            if (ev.Warnings.Count > 0)
+                            {
+                                systemFingerprint = string.IsNullOrEmpty(systemFingerprint)
+                                    ? "arcanum:structured-output-warning"
+                                    : systemFingerprint + ":arcanum:structured-output-warning";
+                            }
+
+                            break;
+
+                        case IntelligenceEventType.Error:
+                            await WriteStreamErrorAsync(
+                                httpContext,
+                                sseBuffer,
+                                completionId,
+                                created,
+                                echoModel,
+                                systemFingerprint,
+                                ev.Data,
+                                ct).ConfigureAwait(false);
+                            streamErrored = true;
+                            TurnContextGuards.MarkIdempotencyTerminal(httpContext);
+                            return Results.Empty;
+
+                        case IntelligenceEventType.Status:
+                        case IntelligenceEventType.ToolResult:
+                        case IntelligenceEventType.SessionBound:
+                        case IntelligenceEventType.ConversationBound:
+                        case IntelligenceEventType.Warded:
+                        case IntelligenceEventType.WardResolved:
+                        default:
+                            break;
+                    }
+                }
+                catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
+                {
+                    clientGone = true;
+                    disconnected = true;
+
+                    if (!continueThenReplay)
+                    {
+                        streamCts.Cancel();
+                        aborted = true;
                         break;
-
-                    case IntelligenceEventType.Error:
-                        await WriteStreamErrorAsync(
-                            httpContext,
-                            sseBuffer,
-                            completionId,
-                            created,
-                            echoModel,
-                            systemFingerprint,
-                            ev.Data,
-                            ct).ConfigureAwait(false);
-                        streamErrored = true;
-                        return Results.Empty;
-
-                    case IntelligenceEventType.Status:
-                    case IntelligenceEventType.ToolResult:
-                    case IntelligenceEventType.SessionBound:
-                    case IntelligenceEventType.ConversationBound:
-                    case IntelligenceEventType.Warded:
-                    case IntelligenceEventType.WardResolved:
-                    default:
-                        break;
+                    }
                 }
 
                 move = enumerator.MoveNextAsync().AsTask();
@@ -699,10 +529,10 @@ internal static partial class OpenAiV1Endpoints
         }
         catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
         {
-            // Client dropped the TCP connection ungracefully (broken pipe / reset). Cancel the
-            // linked inference CTS so the producer stops promptly, and never attempt to write an
-            // error frame — or any further terminal frame — to a dead socket.
-            streamCts.Cancel();
+            if (!continueThenReplay)
+            {
+                streamCts.Cancel();
+            }
 
             aborted = true;
 
@@ -733,29 +563,34 @@ internal static partial class OpenAiV1Endpoints
             return Results.Empty;
         }
 
-        if (streamErrored || disconnected)
+        if (streamErrored || (disconnected && !continueThenReplay))
         {
             return Results.Empty;
         }
 
         try
         {
-            string terminalFinishReason = ResolveFinishReason(sseFinishReason);
-
-            if (includeUsage)
+            if (!clientGone)
             {
-                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: terminalFinishReason, ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                string terminalFinishReason = ResolveFinishReason(sseFinishReason);
 
-                await WriteUsageOnlyChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, sseUsage, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                if (includeUsage)
+                {
+                    await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: terminalFinishReason, ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+
+                    await WriteUsageOnlyChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, sseUsage, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: terminalFinishReason, ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+                }
+
+                await httpContext.Response.Body.WriteAsync(SseDone, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+
+                await httpContext.Response.Body.FlushAsync(aborted ? CancellationToken.None : ct).ConfigureAwait(false);
             }
-            else
-            {
-                await WriteFinalContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, finishReason: terminalFinishReason, ct: aborted ? CancellationToken.None : ct).ConfigureAwait(false);
-            }
 
-            await httpContext.Response.Body.WriteAsync(SseDone, aborted ? CancellationToken.None : ct).ConfigureAwait(false);
-
-            await httpContext.Response.Body.FlushAsync(aborted ? CancellationToken.None : ct).ConfigureAwait(false);
+            TurnContextGuards.MarkIdempotencyTerminal(httpContext);
         }
         catch (OperationCanceledException)
         {

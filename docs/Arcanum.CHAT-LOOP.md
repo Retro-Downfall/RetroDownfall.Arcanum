@@ -1,13 +1,39 @@
 # Chat Loop Workflow
 
-This document describes the **chat loop** — the end-to-end flow Arcanum runs for every inference turn, from HTTP entry through the iterative tool-call loop to response finalization. The orchestrator is the **Wizard** (`WizardIntelligenceProvider`, which implements `IArcanumIntelligenceProvider`). See [Arcanum.DESIGN.md §10](Arcanum.DESIGN.md#10-intelligence-pipeline) for the architecture authority and the [README naming metaphor](Arcanum.README.md#naming-metaphor) for the D&D terms used below (Wizard, Grimoire, Codex, Spell, Ward, Sanctum, Saga, The Weave, Session, Dungeon Master).
+This document describes the **chat loop** — the end-to-end flow Arcanum runs for every inference turn, from HTTP entry through the iterative tool-call loop to response finalization. See [Arcanum.DESIGN.md §10](Arcanum.DESIGN.md#10-intelligence-pipeline) for the architecture authority and the [README naming metaphor](Arcanum.README.md#naming-metaphor) for the D&D terms used below (Wizard, Grimoire, Codex, Spell, Ward, Sanctum, Saga, The Weave, Session, Dungeon Master).
 
-There are two parallel shapes that share most of the pipeline:
+## Overview (TurnEngine + projections)
 
-- **Buffered** — `ExecutePromptAsync` returns a single `Result<PromptTurnResult>` after the whole turn completes.
-- **Streaming** — `StreamPromptAsync` yields `IntelligenceEvent`s as an `IAsyncEnumerable` while the turn runs.
+Phase 1 collapses the duplicated buffered/streaming orchestration into one logical-run owner:
 
-Both run the same pre-flight gates, the same context assembly, and the same iterative tool-call loop. They diverge only at the model call (`GetResponseAsync` vs. `GetStreamingResponseAsync`) and at how results are emitted.
+```text
+WizardIntelligenceProvider          thin IArcanumIntelligenceProvider facade
+        ↓
+TurnExecutionCoordinator            sole semantic consumer; one projection per request
+        ↓
+TurnEngine (producer)               logical run lifecycle (preflight, fallback, context,
+                                    model/tool loop, validation, finalization)
+        ↓
+TurnEventEmitter                    ordered Channel<TurnEvent> (semantic, internal)
+        ↓
+Exactly one projection
+  ├── BufferedTurnProjection → PromptTurnResult
+  ├── IntelligenceEventProjection → Channel<IntelligenceEvent> (NDJSON)
+  └── OpenAiSseProjection → Channel<OpenAiChatChunk>
+        ↓
+HTTP writer                         live serialization + exact-byte idempotency capture
+```
+
+`WizardIntelligenceProvider.ExecutePromptAsync` / `StreamPromptAsync` build a `TurnExecutionRequest` (including `HasIdempotencyKey` from `TurnIdempotencyAmbient`, never from the public `PingRequest` body) and delegate to `TurnExecutionCoordinator`. The coordinator consumes semantic `TurnEvent`s and applies exactly one projection; it does **not** serialize HTTP. Keep-alives remain transport-only.
+
+All turn-pipeline chat provider calls go through Core `IModelCallExecutor` (`ExecuteBufferedAsync` / `ExecuteStreamingAsync`), including main inference, tool continuation, structured-output retries, spell routing, and Lexicon extraction. Mode policy for tool failures is preserved: buffered uses `Arcanum:Intelligence:TolerateToolFailures`; streaming always suppresses invocation failures (ADR 0004).
+
+There are two response shapes that share the same engine:
+
+- **Buffered** — `BufferedTurnProjection` materializes `RunCompleted` into `Result<PromptTurnResult>`.
+- **Streaming** — `IntelligenceEventProjection` (native NDJSON) or `OpenAiSseProjection` (`/v1` SSE) write typed frames into a transport channel for the HTTP writer.
+
+Both run the same pre-flight gates, the same context assembly, and the same iterative tool-call loop. They diverge only at projection and at how the model call is consumed (buffered vs streaming executor APIs).
 
 ---
 
@@ -18,11 +44,14 @@ The diagram below shows the full pipeline. The highlighted **Chat Loop** subgrap
 ```mermaid
 flowchart TD
     Req([HTTP Request]) --> Entry{Entry point}
-    Entry -->|buffered| Exec["ExecutePromptAsync"]
-    Entry -->|streaming| Stream["StreamPromptAsync"]
+    Entry -->|buffered| Exec["ExecutePromptAsync facade"]
+    Entry -->|streaming| Stream["StreamPromptAsync facade"]
 
-    Exec --> Gates
-    Stream --> Gates
+    Exec --> Coord
+    Stream --> Coord
+
+    Coord["TurnExecutionCoordinator"] --> TE["TurnEngine"]
+    TE --> Gates
 
     subgraph Gates["Pre-flight gates (shared)"]
         G1["Guardrails input filter"]
@@ -61,7 +90,7 @@ flowchart TD
 
     subgraph Loop["Chat Loop — iterative tool-call loop (bounded)"]
         L1["Build messages +<br/>apply context compression"]
-        L2["Call model<br/>GetResponseAsync / GetStreamingResponseAsync"]
+        L2["IModelCallExecutor<br/>buffered / streaming"]
         L3["Collect actionable<br/>FunctionCallContent"]
         L4{"Tool calls?"}
         L5["Tool round budget check"]
@@ -110,11 +139,11 @@ Five HTTP surfaces all funnel into the same `IArcanumIntelligenceProvider` contr
 | Spell execute-stream | `TheForge/SpellExecutionEndpoints.cs` `Spell_ExecuteStream` | `POST /spells/{name}/execute-stream` | `InferenceExecuteWriter.WriteStreamAsync` |
 | Prompt execute | `TheForge/PromptEndpoints.cs` | `POST /prompts/{id}/execute(-stream)` | both |
 | OpenAI v1 chat (buffered) | `OpenAiV1Endpoints.cs` `HandleBufferedAsync` | `POST /v1/chat/completions` (non-stream) | `ExecutePromptAsync` |
-| OpenAI v1 chat (streaming) | `OpenAiV1Endpoints.cs` `HandleStreamingAsync` | `POST /v1/chat/completions` (`stream:true`) | `StreamPromptAsync` (re-shaped to OpenAI SSE) |
+| OpenAI v1 chat (streaming) | `OpenAiV1Endpoints.cs` `HandleStreamingAsync` | `POST /v1/chat/completions` (`stream:true`) | `StreamPromptAsync` → TurnExecutionCoordinator / TurnEngine (writer re-shapes to OpenAI SSE + keep-alives) |
 
 The OpenAI v1 path first converts the request via `OpenAi/OpenAiChatCompletionMapper.cs` `ToPingRequest(...)` into a stateless `PingRequest` (`SessionId=null`, `UnattendedMode=true`, `StatelessMessages` populated).
 
-`InferenceExecuteWriter.WriteStreamAsync` (`TheForge/InferenceExecuteWriter.cs`) is the NDJSON bridge for the native streaming endpoints: it sets `Content-Type: application/x-ndjson` and writes each `IntelligenceEvent` as one JSON line. The OpenAI v1 streaming path is different — it manually pumps the enumerator, re-shaping each `IntelligenceEvent` into OpenAI SSE chunks and interleaving keep-alive comments.
+`InferenceExecuteWriter.WriteStreamAsync` (`TheForge/InferenceExecuteWriter.cs`) is the NDJSON bridge for the native streaming endpoints: it sets `Content-Type: application/x-ndjson` and writes each `IntelligenceEvent` as one JSON line. The OpenAI v1 streaming path pumps `StreamPromptAsync` (same TurnEngine semantic source via the Wizard facade), re-shaping frames into OpenAI SSE chunks and interleaving keep-alive comments. Exact-byte idempotency capture remains in the HTTP/idempotency writer layer (ADR 0004 transport/replay boundary).
 
 ---
 
@@ -127,7 +156,7 @@ Both `ExecutePromptAsync` and `StreamPromptAsync` run the **same sequence of gat
 3. **Request bounds validation** — `PingRequestBoundsValidator.Validate`.
 4. **Scrying gate** — `ValidateScryingGate` — validates image foci attachments (size/count/MIME; vision-capable model). Session attachment **re-attach** (user `AttachmentReferences` and model `attach_session_file`) shares the same Scrying/`SupportsVision` gates for images; oversize images are rejected, never truncated. `MaxReferencesPerTurn` is a **combined** budget for user refs + model tool injections; each logical key+version injects **once** per turn.
 5. **Empty prompt check** — skipped for stateless (`/v1`) message lists.
-6. **Budget gate** — `BudgetMonitor.CheckAsync` (`Intelligence/BudgetMonitor.cs`). Reads today's USD spend from the Grimoire; returns `ErrorCodes.Budget.Exceeded` (HTTP 429) when over the daily limit, and dispatches a Comm Link alert once per threshold per UTC day.
+6. **Budget gate** — `BudgetMonitor.CheckAsync` (`Intelligence/BudgetMonitor.cs`). Prefers `IBudgetReservationService` → committed `BillableOperations` + outstanding `BudgetReservations` (ADR 0002); falls back to session-sum spend only when the reservation service is unavailable. Returns `ErrorCodes.Budget.Exceeded` (HTTP 429) when over the daily limit, and dispatches a Comm Link alert once per threshold per UTC day. `Sessions.TotalCostUsd` is a projection only.
 
 After the gates, a linked `CancellationTokenSource` is built for the inference wall-clock timeout (`Arcanum:Intelligence:InferenceTimeoutSeconds`, default 600), and the chat client lease is resolved.
 
@@ -139,13 +168,13 @@ After the gates, a linked `CancellationTokenSource` is built for the inference w
 
 The `ChatClientLease` owns the turn's `IChatClient`; `Dispose()` releases it. Prompt caching is provider-managed; Arcanum does not inject provider-specific cache request fields.
 
-When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop). Only a **connectivity-classified** failure (`HttpRequestException`, `SocketException`, timeout-cancellation, etc.) falls back to the next healthy candidate. Model/auth/400/429/5xx errors do **not** fall back — they are surfaced immediately. The streaming analog has the same loop but only retries if the *first* event is a connectivity error; once any real content has streamed, fallback is abandoned so a client never sees a mid-stream provider swap.
+When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop). Only a **connectivity-classified** failure (`HttpRequestException`, `SocketException`, timeout-cancellation, etc.) falls back to the next healthy candidate. Model/auth/400/429/5xx errors do **not** fall back — they are surfaced immediately. The streaming analog retries only while the attempt is still **pre-commit** (`ProviderAttemptCommitTracker` / `classification.ProviderCommitted`): Status/SessionBound alone do not commit; the first provider text delta (including guardrail-buffered), actionable tool proposal, or empty successful round does. After commit, fallback is abandoned so a client never sees a mid-stream provider swap (ADR 0004).
 
 ---
 
 ## 5. Context assembly (once per turn)
 
-Both `AttemptBufferedInferenceAsync` (buffered) and `StreamCommittedInferenceAsync` (streaming) perform the same context-assembly sequence before entering the tool loop:
+Both modes of `RunInferenceAttemptAsync` (buffered and streaming) perform the same context-assembly sequence before entering the tool loop:
 
 1. **Load thread** — `InferenceContextBuilder.LoadThreadAsync`. Returns `null` for stateless requests, otherwise loads the `Session` (with Entries) from the Grimoire.
 2. **Begin Grimoire turn** — `GrimoireTurnWriter.TryBeginBufferedAssistantReplyAsync` / `TryBeginStreamedAssistantReplyAsync`. For stateful turns, inserts an in-flight assistant Entry and returns a `TurnHandle` tracking `(sessionId, assistantEntryId)` for finalize/discard.
@@ -162,24 +191,25 @@ Both `AttemptBufferedInferenceAsync` (buffered) and `StreamCommittedInferenceAsy
 
 ## 6. The Chat Loop — the iterative tool-call loop
 
-This is the core of the workflow. `AttemptBufferedInferenceAsync` contains **two nested `while (true)` loops**:
+This is the core of the workflow. `RunInferenceAttemptAsync` (shared by buffered and streaming via `TurnResponseMode`) contains **two nested `while (true)` loops**:
 
 - **Outer loop** — normally runs once. Only `continue`s if the model throws an exception that looks like "model does not support tools"; then it rebuilds `chatOptions` without tools and retries inference once.
 - **Inner loop — the chat loop** — the bounded tool-call loop. Each iteration is one inference round:
 
 Each iteration of the inner loop:
 
-1. **Build messages + apply context compression** (outer-loop body, once per outer iteration) — `InferenceContextBuilder.BuildInitialMeAiChatMessages` constructs the message list from the thread + prompt; the dynamic system prompt is prepended; `TryApplyContextCompressionIfNeeded` may swap old Entries for a `Session.Summary` near the context limit (read-time compression — never deletes rows).
-2. **Call the model** — `chatClient.GetResponseAsync(chatMessages, chatOptions, inferenceToken)` (buffered) or `chatClient.GetStreamingResponseAsync(...)` (streaming).
-3. **Accumulate usage** — `AccumulateUsage` adds prompt/completion/total tokens across rounds.
-4. **Collect actionable function calls** — `ToolExecutionPipeline.CollectActionableFunctionCalls(response)` walks `response.Messages` extracting `FunctionCallContent` items where `!InformationalOnly`.
-5. **No tool calls → break** — the model produced a final text answer; exit the loop and proceed to finalization.
-6. **Forward-client-tools branch** — when `ForwardClientTools=true`, the Wizard **does not execute** the calls server-side: it records them as `PromptToolCall`s, sets `finishReason=tool_calls`, and breaks so the OpenAI v1 layer can echo them back to the client for client-side execution.
-7. **Tool round budget check** — increment `toolRoundsExecuted`; if it exceeds `MaxToolInferenceRounds`, return `ErrorCodes.Hub.ToolLoop`.
-8. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. The result is appended to `observedToolCalls` and the audit context.
-9. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id) and a tool message containing `FunctionResultContent(callId, resultText)`. **This is the feedback that feeds the next inference round.**
-10. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` calls `grimoire.AppendToolInteractionAsync` then publishes recent Entries to `SessionEventHub`, so `/sessions/{id}/stream` subscribers see the tool interaction appear live.
-11. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) is sent to the model again. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 5). Step 9 is what makes this a loop rather than a single call.
+1. **Build messages + apply context compression** (outer-loop body, once per outer iteration) — `InferenceContextBuilder.BuildInitialMeAiChatMessages` constructs the message list from the thread + prompt; the dynamic system prompt is prepended; `TryApplyContextCompressionIfNeeded` may swap old Entries for a `Session.Summary` near the context limit (read-time compression — never deletes rows). Watermark/compact paths drop orphan ToolCall/ToolResult halves so exchanges stay paired.
+2. **Context + turn-budget preflight** — before each provider call: `IModelCallExecutor.TryBeginModelCall` (`Hub.TurnBudgetExceeded`) and `EnsureContextBudget` (messages + tool schemas + reserved output vs context window; may trim oldest complete in-memory tool exchanges; else `Hub.ContextBudgetExceeded`).
+3. **Call the model** — `IModelCallExecutor.ExecuteBufferedAsync` / `ExecuteStreamingAsync` (sole chat I/O boundary; Core purpose-tagged).
+4. **Accumulate usage** — `AccumulateUsage` adds prompt/completion/total tokens across rounds.
+5. **Collect actionable function calls** — `ToolExecutionPipeline.CollectActionableFunctionCalls(response)` walks `response.Messages` extracting `FunctionCallContent` items where `!InformationalOnly`.
+6. **No tool calls → break** — the model produced a final text answer; exit the loop and proceed to finalization.
+7. **Forward-client-tools branch** — when `ForwardClientTools=true`, the Wizard **does not execute** the calls server-side: it records them as `PromptToolCall`s, sets `finishReason=tool_calls`, and breaks so the OpenAI v1 layer can echo them back to the client for client-side execution.
+8. **Tool round budget check** — increment `toolRoundsExecuted`; if it exceeds `MaxToolInferenceRounds`, return `ErrorCodes.Hub.ToolLoop`.
+9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token-budget materialized for the model. The result is appended to `observedToolCalls` and the audit context.
+10. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id) and a tool message containing `FunctionResultContent(callId, resultText)`. **This is the feedback that feeds the next inference round.**
+11. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` calls `grimoire.AppendToolInteractionAsync` then publishes recent Entries to `SessionEventHub`, so `/sessions/{id}/stream` subscribers see the tool interaction appear live.
+12. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) is sent to the model again. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 6). Step 10 is what makes this a loop rather than a single call.
 
 ### 6.1 Sequence diagram for a single tool round
 
@@ -262,7 +292,7 @@ Finally `InvokeToolCallAsync` resolves the `AIFunction` from `chatOptions.Tools`
 
 Per streaming round: stream chunks → combine `roundUpdates.ToChatResponse()` → accumulate usage → collect tool calls → (no calls → break with finish reason; forward-client-tools → yield `ToolCall` events and break; else increment `streamToolRoundCount`, and for each call yield a `ToolCall` event, run `ProcessSingleToolCallAsync` with `suppressInvocationFailures: true`, yield any `Warded`/`WardResolved` events, yield `ToolError` if the tool failed, yield `ToolResult`, append the exchange to `chatMessages`, persist to Grimoire) → loop back to a fresh `GetStreamingResponseAsync`.
 
-**Streaming guardrails modes** — `Guardrails.StreamingMode` can be `"buffered"` or (default) passthrough. When `buffered`, `bufferTokens=true` and tokens are NOT yielded per-chunk; instead the full `finalText` is yielded as a single `Token` event after the output guardrails filter runs, so the output guardrails can scan the complete text before any of it reaches the client.
+**Streaming guardrails modes** — `Guardrails.StreamingMode` defaults to **`buffered`** (`GuardrailsStreamingMode.Buffered`); explicit **`passthrough`** is honored with a configuration warning (ADR 0001). When `buffered`, `bufferTokens=true` and tokens are NOT yielded per-chunk; instead the full `finalText` is yielded as a single `Token` event after the output guardrails filter runs, so the output guardrails can scan the complete text before any of it reaches the client. Provider fallback still commits on the first provider content delta even while tokens are withheld (see ADR 0004).
 
 ---
 
@@ -270,7 +300,7 @@ Per streaming round: stream chunks → combine `roundUpdates.ToChatResponse()` �
 
 After the tool loop breaks with a final text answer:
 
-**Buffered** (`AttemptBufferedInferenceAsync`):
+**Buffered** (`RunInferenceAttemptAsync` with `TurnResponseMode.Buffered`):
 
 1. **Structured output validation** — when `ResponseFormat=="json_schema"` and `StructuredOutput.Enabled`, `StructuredOutputValidator.ValidateAndRetryAsync` can re-prompt the model with an error message up to `MaxValidationRetries` times (a bounded retry loop inside finalization).
 2. **Guardrails output filter** — `FilterGuardrailsOutputAsync` → `GuardrailsPipeline.FilterOutputAsync`. Scans for toxicity/blocked topics (not PII — that was input-only). On failure, the Grimoire turn is resolved as interrupted and the turn fails.
@@ -280,7 +310,7 @@ After the tool loop breaks with a final text answer:
 6. **Metrics + audit logging.**
 7. **Return** `PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)`.
 
-**Streaming** (`StreamCommittedInferenceAsync`): mirrors the above but yields events — `Error` on guardrails/validation failure (preserving any streamed partial text and resolving the Grimoire turn as interrupted), a single `Token` flush when `bufferTokens`, then the terminal `Result` event with usage, finish reason, and warnings. A `finally` block calls `TryResolveInterruptedOnStreamExitAsync` so the Grimoire turn is never left in-flight if the enumerator is abandoned (e.g. client disconnect).
+**Streaming** (`RunInferenceAttemptAsync` with `TurnResponseMode.Streaming`): mirrors the above but yields events — `Error` on guardrails/validation failure (preserving any streamed partial text and resolving the Grimoire turn as interrupted), a single `Token` flush when `bufferTokens`, then the terminal `Result` event with usage, finish reason, and warnings. A `finally` block calls `TryResolveInterruptedOnStreamExitAsync` so the Grimoire turn is never left in-flight if the enumerator is abandoned (e.g. client disconnect). Structured-output retries (`ValidateAndRetryAsync`) remain buffered-only; streaming validates post-hoc.
 
 ---
 
@@ -314,14 +344,14 @@ The **session live-stream** (`/sessions/{id}/stream`) is a **separate, independe
 | # | Loop | Location | Purpose | Termination |
 |---|---|---|---|---|
 | 1 | Provider fallback | `WizardIntelligenceProvider.ExecutePromptWithFallbackAsync` (buffered) and the streaming analog | Retry on next healthy provider on a connectivity failure | Success, non-connectivity error, or `MaxFallbackAttempts` exhausted |
-| 2 | Outer "no tools" restart | `AttemptBufferedInferenceAsync` / `StreamCommittedInferenceAsync` outer `while (true)` | Retry inference without tools if the model rejects them | Runs once, then breaks |
-| 3 | **Tool-call loop (buffered)** | `AttemptBufferedInferenceAsync` inner `while (true)` | Model → tool calls → execute → append → re-inference | `calls.Count==0` (final answer), `MaxToolInferenceRounds` exceeded, or client-tool-forward break |
-| 4 | Chunk pump (streaming) | `StreamCommittedInferenceAsync` innermost `while (true)` | Consume `GetStreamingResponseAsync` chunks | `!hasNext` or read error |
-| 5 | **Tool-call loop (streaming)** | `StreamCommittedInferenceAsync` middle `while (true)` | Same as #3 but streaming | Same as #3 |
+| 2 | Outer "no tools" restart | `RunInferenceAttemptAsync` outer `while (true)` | Retry inference without tools if the model rejects them | Runs once, then breaks |
+| 3 | **Tool-call loop** | `RunInferenceAttemptAsync` inner `while (true)` | Model → tool calls → execute → append → re-inference (mode branches for buffered vs streaming I/O and events) | `calls.Count==0` (final answer), `MaxToolInferenceRounds` exceeded, or client-tool-forward break |
+| 4 | Chunk pump (streaming) | `RunInferenceAttemptAsync` streaming branch innermost `while (true)` | Consume `IModelCallExecutor.ExecuteStreamingAsync` updates | `!hasNext` or read error |
+| 5 | _(removed)_ | — | Streaming tool loop is the same as #3 (`TurnResponseMode`) | — |
 | 6 | Structured output retry | `StructuredOutputValidator.ValidateAndRetryAsync` callback | Re-prompt model on JSON Schema validation failure | Schema valid or `MaxValidationRetries` |
 | 7 | Tool round budget check | `toolRoundsExecuted > maxToolRounds` | Hard cap on tool iterations | `ErrorCodes.Hub.ToolLoop` |
 
-The **core chat loop** is #3/#5: `GetResponseAsync`/`GetStreamingResponseAsync` → `CollectActionableFunctionCalls` → if 0 calls, break to finalization; else for each call `ProcessSingleToolCallAsync` (Ward → Sanctum → invoke) → `AppendToolExchangeToMessages` → `TryAppendToolInteractionAsync` (Grimoire + SessionEventHub) → loop back to `GetResponseAsync` with the augmented message list. The bounded retry (#6) and provider fallback (#1) are outer loops around this core.
+The **core chat loop** is #3: `IModelCallExecutor` → `CollectActionableFunctionCalls` → if 0 calls, break to finalization; else for each call `ProcessSingleToolCallAsync` (Ward → Sanctum → invoke) → `AppendToolExchangeToMessages` → `TryAppendToolInteractionAsync` (Grimoire + SessionEventHub) → loop back with the augmented message list. The bounded retry (#6) and provider fallback (#1) are outer loops around this core.
 
 ---
 
@@ -331,14 +361,14 @@ All of these live under `Arcanum:` in `arcanum.json` and have runtime clamps in 
 
 | Setting | Default | Effect on the chat loop |
 |---|---|---|
-| `Intelligence:MaxToolInferenceRounds` | — | Hard cap on tool-call iterations before `Hub.ToolLoop` |
+| `Intelligence:MaxToolInferenceRounds` | 8 | Hard cap on tool-call iterations before `Hub.ToolLoop` |
 | `Intelligence:InferenceTimeoutSeconds` | 600 | Wall-clock cap per inference turn (linked `CancellationTokenSource`) |
-| `Intelligence:TolerateToolFailures` | — | When true, a tool exception is synthesized into a result and the loop continues; when false, it fails the buffered turn |
+| `Intelligence:TolerateToolFailures` | true | When true, a tool exception is synthesized into a result and the buffered turn continues; when false, it fails the buffered turn. Streaming always tolerates tool invocation failures (mode policy; ADR 0004). |
 | `Resilience:Enabled` | false | Gates the provider fallback loop (#1) |
 | `Resilience:MaxFallbackAttempts` | 3 | Bounds candidates tried per turn |
 | `StructuredOutput:MaxValidationRetries` | 2 | Bounds the structured-output retry loop (#6) |
 | `Guardrails:Enabled` | false | Gates input + output guardrails filters |
-| `Guardrails:StreamingMode` | passthrough | `buffered` holds tokens until after the output filter |
-| `Budget:Enabled` | false | Gates the daily-USD budget gate (HTTP 429) |
+| `Guardrails:StreamingMode` | buffered | `buffered` holds tokens until after the output filter; `passthrough` emits real-time tokens then post-hoc filter |
+| `Budget:Enabled` | false | Gates the daily-USD budget gate (HTTP 429; BillableOperations + reservations) |
 | `Embeddings:SemanticSpellRoutingEnabled` | false | Gates the Phase 5 embedding-based Spell routing pre-filter |
 | `Ward:AutoDenyInUnattendedMode` | — | Unattended auto-deny for Forbidden Arts in the Ward gate |

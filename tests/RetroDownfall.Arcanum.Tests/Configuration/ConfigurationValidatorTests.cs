@@ -1406,6 +1406,27 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
+    public void RejectObsoleteKeys_RootModerations_ReturnsMigrationError()
+    {
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Moderations:Enabled"] = "true",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "moderations");
+
+        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("501", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
     public void RejectObsoleteKeys_ProviderLlamaCppAndModelMap_ReturnsMigrationErrors()
     {
 

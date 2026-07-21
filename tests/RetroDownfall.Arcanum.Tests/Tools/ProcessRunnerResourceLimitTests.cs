@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Tools;
 
@@ -51,6 +52,7 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
     [Fact]
     public async Task Process_within_limits_completes_normally()
     {
+        using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync("harmless.sh", "#!/bin/sh\necho ok\n");
 
@@ -79,6 +81,7 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
     [Fact(Skip = "Requires OS-level resource enforcement — run manually on macOS/Linux")]
     public async Task Process_exceeding_cpu_limit_is_terminated_and_breached()
     {
+        using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync("spin.sh", "#!/bin/sh\nwhile true; do :; done\n");
 
@@ -107,6 +110,7 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
     [Fact(Skip = "Requires OS-level resource enforcement — run manually on macOS/Linux")]
     public async Task Process_exceeding_memory_limit_is_terminated_and_breached()
     {
+        using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync(
             "hog.py",

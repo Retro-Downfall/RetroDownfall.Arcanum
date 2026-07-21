@@ -141,7 +141,9 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             }
 
-            foreach (Guid entryId in entryIdsToDelete)
+            HashSet<Guid> groupSafeDeletes = TurnContextGuards.ExpandDeletionToCompleteToolGroups(ordered, entryIdsToDelete);
+
+            foreach (Guid entryId in groupSafeDeletes)
             {
 
                 await _grimoire

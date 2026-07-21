@@ -13,6 +13,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -36,6 +37,13 @@ internal static class A2AServerEndpoints
 
     public static RouteGroupBuilder MapA2AServer(this RouteGroupBuilder apiGroup, ArcanumSettings startupSettings)
     {
+
+        ArcanumEdition edition = ArcanumEnvironment.ResolveEdition(startupSettings.Edition);
+
+        if (edition != ArcanumEdition.Development)
+        {
+            return apiGroup;
+        }
 
         ConclaveA2ASettings a2a = startupSettings.Conclave.A2A ?? new ConclaveA2ASettings();
 

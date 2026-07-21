@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -133,7 +134,10 @@ internal static class HealthEndpoints
                 EmbeddingsEnabled: embeddingsEnabled,
                 EmbeddingsVectorMode: vectorMode,
                 EmbeddingsVectorDiagnostic: vectorDiagnostic,
-                EmbeddingsManagedSearchRowBudget: managedBudget);
+                EmbeddingsManagedSearchRowBudget: managedBudget,
+                Edition: ArcanumEnvironment.ResolveEdition(settings.Value.Edition).ToString().ToLowerInvariant(),
+                HostProcessToolsAllowed: HostProcessToolPolicy.AreAllowed(
+                    ArcanumEnvironment.ResolveEdition(settings.Value.Edition)));
 
             Result<InstanceMetadataDto> metadataResult = metadata;
 

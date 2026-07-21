@@ -56,4 +56,24 @@ public sealed class CostCalculatorTests
 
     }
 
+    [Fact]
+    public void CalculateCost_WithCachedTokens_PricesCachedSeparately()
+    {
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = 10.00m,
+            OutputPer1M = 30.00m,
+            CachedPer1M = 1.00m,
+        };
+
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens: 1_000_000,
+            outputTokens: 0,
+            cachedTokens: 400_000,
+            pricing);
+
+        // 600k billable input @ $10 + 400k cached @ $1 = $6.00 + $0.40
+        Assert.Equal(6.40m, cost);
+    }
+
 }

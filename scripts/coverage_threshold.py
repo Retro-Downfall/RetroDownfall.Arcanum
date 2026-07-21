@@ -22,6 +22,9 @@ SECURITY_TYPES = {
     "SanctumGuard",
     "ToolHelpers",
     "OutboundUrlGuard",
+    "HostProcessToolPolicy",
+    "IdempotencyClaimStore",
+    "BudgetReservationService",
     "WardGate",
 }
 

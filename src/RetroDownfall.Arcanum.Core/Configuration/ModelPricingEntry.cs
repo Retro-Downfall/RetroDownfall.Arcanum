@@ -13,4 +13,7 @@ public sealed record ModelPricingEntry
     /// <summary>USD cost per 1,000,000 output (completion) tokens. Default 0.00.</summary>
     public decimal OutputPer1M { get; set; } = 0.00m;
 
+    /// <summary>USD cost per 1,000,000 cached input tokens. Default 0.00 (not assumed free forever — set explicitly).</summary>
+    public decimal CachedPer1M { get; set; } = 0.00m;
+
 }

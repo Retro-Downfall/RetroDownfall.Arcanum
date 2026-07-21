@@ -29,6 +29,10 @@ public static class ErrorCodes
 
         public const string ToolLoop = "Hub.ToolLoop";
 
+        public const string TurnBudgetExceeded = "Hub.TurnBudgetExceeded";
+
+        public const string ContextBudgetExceeded = "Hub.ContextBudgetExceeded";
+
         public const string Timeout = "Hub.Timeout";
 
         public const string Model = "Hub.Model";
@@ -321,6 +325,9 @@ public static class ErrorCodes
 
         /// <summary>The <c>Idempotency-Key</c> request header exceeds the maximum allowed length.</summary>
         public const string IdempotencyKeyTooLong = "Security.IdempotencyKeyTooLong";
+
+        /// <summary>Same idempotency key reused with a different request fingerprint.</summary>
+        public const string IdempotencyConflict = "Security.IdempotencyConflict";
 
     }
 

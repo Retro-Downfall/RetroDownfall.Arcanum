@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -303,11 +304,16 @@ public sealed class WeaveServiceTests
             },
         };
 
-    private static WeaveService CreateService(ArcanumSettings settings, FakeEmbeddingGeneratorFactory? factory = null) =>
-        new(
+    private static WeaveService CreateService(ArcanumSettings settings, FakeEmbeddingGeneratorFactory? factory = null)
+    {
+        ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+
+        return new(
             factory ?? new FakeEmbeddingGeneratorFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
+            services.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<WeaveService>.Instance);
+    }
 
     private sealed class FakeEmbeddingGeneratorFactory : IEmbeddingGeneratorFactory
     {

@@ -339,7 +339,7 @@ internal static class IntelligenceEndpoints
     /// Read-only diagnostic Mana (token) counter. Reuses <see cref="InferenceTokenizerResolver"/>
     /// and <see cref="ManaPreflight"/> (the same pre-flight counting machinery used for context
     /// compression, DESIGN.md §10.2.3) so results match what the intelligence hub actually
-    /// budgets against. Performs no Grimoire writes and no inference.
+    /// budgets against. Non-billable (ADR 0002): performs no Grimoire writes and no inference.
     /// </summary>
     private static async Task<IResult> HandleCountManaAsync(
         ManaCountRequest? body,

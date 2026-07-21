@@ -399,7 +399,7 @@ public sealed class SemanticRouterTests
             NextText = """{"entities":["Alice","Project Phoenix"]}""",
         };
 
-        IReadOnlyList<string> entities = await LexiconEntityExtractor.ExtractAsync(
+        (IReadOnlyList<string> entities, _) = await LexiconEntityExtractor.ExtractAsync(
             client,
             "tell me about Alice and Project Phoenix",
             TimeSpan.FromSeconds(5),
@@ -418,7 +418,7 @@ public sealed class SemanticRouterTests
             NextText = "not json",
         };
 
-        IReadOnlyList<string> entities = await LexiconEntityExtractor.ExtractAsync(
+        (IReadOnlyList<string> entities, _) = await LexiconEntityExtractor.ExtractAsync(
             client,
             "prompt",
             TimeSpan.FromSeconds(5),
@@ -433,7 +433,7 @@ public sealed class SemanticRouterTests
     {
         FakeChatClient client = new();
 
-        IReadOnlyList<string> entities = await LexiconEntityExtractor.ExtractAsync(
+        (IReadOnlyList<string> entities, _) = await LexiconEntityExtractor.ExtractAsync(
             client,
             "   ",
             TimeSpan.FromSeconds(5),

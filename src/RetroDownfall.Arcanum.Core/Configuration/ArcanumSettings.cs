@@ -3,6 +3,12 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record ArcanumSettings
 {
 
+    /// <summary>
+    /// Runtime edition / hardening mode. Default <see cref="ArcanumEdition.Local"/>. Overridable by
+    /// <c>ARCANUM_EDITION</c>. See <see cref="Environment.ArcanumEnvironment.ResolveEdition"/>.
+    /// </summary>
+    public ArcanumEdition Edition { get; set; } = ArcanumEdition.Local;
+
     public HostSettings Host { get; set; } = new();
 
     public ServerSettings Server { get; set; } = new();
@@ -60,8 +66,6 @@ public sealed record ArcanumSettings
     public EmbeddingSettings Embeddings { get; set; } = new();
 
     public ScryingSettings Scrying { get; set; } = new();
-
-    public ModerationsSettings Moderations { get; set; } = new();
 
     public StructuredOutputSettings StructuredOutput { get; set; } = new();
 

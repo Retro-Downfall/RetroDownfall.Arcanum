@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 {
 
-    private const int ExpectedMigrationCount = 6;
+    private const int ExpectedMigrationCount = 7;
 
     private readonly GrimoireFixture _fixture;
 

@@ -16,7 +16,9 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 |--------|--------|
 | Line | ≥ 85% |
 | Branch | ≥ 75% |
-| Security-critical types | 100% branch (`ApiKeyEndpointFilter`, `ApiKeyDigestCache`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `SandboxedFileIo`, `SanctumGuard`, `ToolHelpers`, `OutboundUrlGuard`, `WardGate`) |
+| Security-critical types | 100% branch (`ApiKeyEndpointFilter`, `ApiKeyDigestCache`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `SandboxedFileIo`, `SanctumGuard`, `ToolHelpers`, `OutboundUrlGuard`, `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, `WardGate`) |
+
+Assemblies under gate: **Core**, **Infrastructure**, **Api** (Cli interactive surfaces are exercised by scenario tests but excluded from coverlet Include filters — Terminal.Gui Command Center / UX is not line-covered).
 
 Reports are written to `.tmp/coverage/report/index.html`.
 

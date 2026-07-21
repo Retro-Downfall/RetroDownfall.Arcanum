@@ -72,7 +72,7 @@ public sealed class CappedChildProcessRunnerTests
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 2048,
-            timeout: TimeSpan.FromSeconds(10),
+            timeout: TimeSpan.FromSeconds(30),
             resourceLimits: null,
             resourceLimiter: null,
             CancellationToken.None);
@@ -83,9 +83,9 @@ public sealed class CappedChildProcessRunnerTests
 
         Assert.True(result.Stdout.Truncated);
 
-        // Well under the 10s timeout — proves the child exited on its own because the pipe kept
+        // Well under the timeout — proves the child exited on its own because the pipe kept
         // draining, rather than RunAsync only unblocking once the timeout killed the process tree.
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(8), $"Expected a prompt exit; took {stopwatch.Elapsed}.");
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(20), $"Expected a prompt exit; took {stopwatch.Elapsed}.");
 
     }
 

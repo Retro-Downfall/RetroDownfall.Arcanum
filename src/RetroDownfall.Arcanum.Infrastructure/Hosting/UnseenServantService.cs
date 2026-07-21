@@ -96,16 +96,23 @@ internal sealed class UnseenServantService(
 
             IIdempotencyStore store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
 
+            IIdempotencyClaimStore claimStore = scope.ServiceProvider.GetRequiredService<IIdempotencyClaimStore>();
+
             int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(
                 optionsMonitor.CurrentValue.Security?.IdempotencyTtlHours ?? new SecuritySettings().IdempotencyTtlHours);
 
-            int removed = await store.DeleteExpiredAsync(
-                DateTimeOffset.UtcNow.AddHours(-ttlHours),
-                stoppingToken).ConfigureAwait(false);
+            DateTimeOffset olderThan = DateTimeOffset.UtcNow.AddHours(-ttlHours);
 
-            if (removed > 0)
+            int removed = await store.DeleteExpiredAsync(olderThan, stoppingToken).ConfigureAwait(false);
+
+            int claimsRemoved = await claimStore.DeleteExpiredAsync(olderThan, stoppingToken).ConfigureAwait(false);
+
+            if (removed > 0 || claimsRemoved > 0)
             {
-                logger.LogDebug("Idempotency cache sweep removed {Removed} expired row(s).", removed);
+                logger.LogDebug(
+                    "Idempotency cache sweep removed {Removed} legacy row(s) and {ClaimsRemoved} claim(s).",
+                    removed,
+                    claimsRemoved);
             }
         }
         catch (Exception ex)
