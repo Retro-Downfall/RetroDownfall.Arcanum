@@ -13,8 +13,9 @@ __pycache__/
 *.cobertura.xml
 *.opencover.xml
 coverage.*
-# coverage.* (above) is for coverage data files; keep the runner script tracked.
+# coverage.* (above) is for coverage data files; keep tracked coverage tooling.
 !scripts/coverage.sh
+!tests/**/coverage.runsettings
 mcp.db
 mcp.db-shm
 mcp.db-wal

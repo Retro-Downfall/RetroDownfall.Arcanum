@@ -46,7 +46,9 @@ dotnet tool restore >/dev/null
 
 # The XPlat Code Coverage collector + its include/exclude filters are declared
 # in coverage.runsettings; --settings both enables and configures it.
+# --collect is required so VSTest actually attaches the XPlat collector.
 dotnet test "$TEST_PROJECT" \
+  --collect:"XPlat Code Coverage" \
   --settings "$RUNSETTINGS" \
   --results-directory "$OUT_DIR"
 

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Coverlet XPlat Code Coverage settings for Arcanum gates (docs/tests.README.md, DESIGN section 13).
+  Invoked by scripts/coverage.sh (dotnet test with this settings file).
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <!--
+            Gate assemblies: Core, Infrastructure, Api.
+            Cli is exercised by scenario tests but excluded from the Include denominator
+            (Terminal.Gui / interactive surfaces are not line-covered).
+            Api.DevHost is WAF-only and must stay out of the denominator.
+          -->
+          <Include>[RetroDownfall.Arcanum.Core]*,[RetroDownfall.Arcanum.Infrastructure]*,[RetroDownfall.Arcanum.Api]*</Include>
+          <!--
+            JSON source-gen contexts and EF migrations are not meaningful coverage surface.
+            OpenAI /v1 contract POCOs use ExcludeFromCodeCoverage in source.
+          -->
+          <Exclude>[*]*.Migrations*,[*]*JsonContext*,[*]*JsonSerializerContext*</Exclude>
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverage</ExcludeByAttribute>
+          <ExcludeByFile>**/obj/**/*.cs,**/*.g.cs,**/Migrations/**/*.cs</ExcludeByFile>
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+          <SkipAutoProps>true</SkipAutoProps>
+          <SingleHit>false</SingleHit>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
