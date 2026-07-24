@@ -72,6 +72,31 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
         WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(true);
 
+        // Path.GetRelativePath is case-sensitive on Linux; pair the ignore-case comparison seam
+        // with a relative-path resolver that treats containment ignore-case as well.
+        WorkspacePathPolicy.SetRelativePathResolverForTests(static (root, candidate) =>
+        {
+            char sep = Path.DirectorySeparatorChar;
+
+            string rootTrim = root.TrimEnd(sep);
+
+            string cand = Path.GetFullPath(candidate);
+
+            if (string.Equals(rootTrim, cand, StringComparison.OrdinalIgnoreCase))
+            {
+                return ".";
+            }
+
+            string prefix = rootTrim + sep;
+
+            if (cand.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return cand[prefix.Length..];
+            }
+
+            return Path.GetRelativePath(root, candidate);
+        });
+
         try
         {
             string root = Path.GetFullPath(Path.Combine(_root, "CaseRoot"));
@@ -82,19 +107,32 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
 
             Directory.CreateDirectory(nestedDir);
 
-            string child = Path.Combine(root.ToUpperInvariant(), "nested", "file.txt");
+            // Write at the real casing — Linux volumes are case-sensitive, so an uppercased
+            // path would DirectoryNotFoundException before the policy is exercised.
+            string realChild = Path.Combine(nestedDir, "file.txt");
 
-            File.WriteAllText(child, "ok");
+            File.WriteAllText(realChild, "ok");
+
+            string child = Path.Combine(root.ToUpperInvariant(), "nested", "file.txt");
 
             bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, child, out string? resolved);
 
             Assert.True(allowed);
 
-            Assert.Equal(Path.GetFullPath(child), resolved);
+            // Case-insensitive volumes resolve the probe path; case-sensitive ones allow
+            // lexically and leave resolvedFinalPath null when the probe path does not exist.
+            if (File.Exists(child) || Directory.Exists(child))
+            {
+                Assert.Equal(Path.GetFullPath(child), resolved);
+            }
+            else
+            {
+                Assert.Null(resolved);
+            }
         }
         finally
         {
-            WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests(false);
+            WorkspacePathPolicy.ResetTestSeams();
         }
     }
 

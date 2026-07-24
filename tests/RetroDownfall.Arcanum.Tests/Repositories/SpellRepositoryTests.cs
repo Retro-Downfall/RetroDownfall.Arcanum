@@ -953,16 +953,22 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     public void TryResolveDeleteTarget_rejects_directory_outside_workspace()
     {
 
-        string workspace = Path.GetTempPath();
+        // Use a dedicated workspace under temp — Path.GetTempPath() is often /tmp on Linux CI,
+        // so a hardcoded "/tmp/outside-..." path would incorrectly count as inside the workspace.
+        string workspace = Path.Combine(Path.GetTempPath(), "arcanum-spell-del-" + Guid.NewGuid().ToString("N"));
 
-        string spellDir = Path.Combine(workspace, "spells", "unsafe");
+        Directory.CreateDirectory(workspace);
+
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "arcanum-spell-outside-" + Guid.NewGuid().ToString("N"));
+
+        string outsideSpellDir = Path.Combine(outsideRoot, "unsafe");
 
         ParsedSpell spell = new(
             "unsafe",
             "unsafe",
-            Path.Combine(spellDir, "SPELL.md"),
+            Path.Combine(outsideSpellDir, "SPELL.md"),
             "content",
-            "/tmp/outside-workspace/unsafe",
+            outsideSpellDir,
             []);
 
         bool resolved = SpellRepository.TryResolveDeleteTarget(
