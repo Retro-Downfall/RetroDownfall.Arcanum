@@ -1,12 +1,14 @@
-# Package Arcanum (Native AOT) + The Forge + Compendium for Windows private beta.
+# Package Arcanum (Native AOT) + Compendium (+ optional The Forge) for Windows.
 #
 # Defaults to win-x64 on the current Windows host. Cross-OS packaging is handled
 # by GitHub Actions.
 #
 # Usage:
 #   .\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist
+#   .\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist -SkipForge
 #   .\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist -Sign
 #
+# -SkipForge omits The Forge zip (used by the Arcanum + Compendium Windows build action).
 # -Sign requires Windows Authenticode credentials via env:
 #   WINDOWS_CERT_PATH  — path to .pfx
 #   WINDOWS_CERT_PASSWORD — certificate password
@@ -21,6 +23,8 @@ param(
     [string]$OutputDir,
 
     [string]$Rid = "win-x64",
+
+    [switch]$SkipForge,
 
     [switch]$Sign
 )
@@ -137,28 +141,35 @@ try {
     }
 
     Publish-Cli
-    Publish-Gui -Product "the-forge" `
-        -ProjectRelative "src\RetroDownfall.TheForge.Ux\RetroDownfall.TheForge.Ux.csproj" `
-        -FolderName "the-forge-win-x64"
+    if (-not $SkipForge) {
+        Publish-Gui -Product "the-forge" `
+            -ProjectRelative "src\RetroDownfall.TheForge.Ux\RetroDownfall.TheForge.Ux.csproj" `
+            -FolderName "the-forge-win-x64"
+    }
+    else {
+        Write-Host "==> Skipping The Forge (-SkipForge)"
+    }
     Publish-Gui -Product "compendium" `
         -ProjectRelative "src\RetroDownfall.Compendium.Ux\RetroDownfall.Compendium.Ux.csproj" `
         -FolderName "compendium-win-x64"
 
     Write-Host "==> Writing SHA256SUMS"
     $sumsPath = Join-Path $OutputDir "SHA256SUMS"
+    $artifactNames = [System.Collections.Generic.List[string]]::new()
+    $artifactNames.Add("arcanum-win-x64.zip") | Out-Null
+    if (-not $SkipForge) {
+        $artifactNames.Add("the-forge-win-x64.zip") | Out-Null
+    }
+    $artifactNames.Add("compendium-win-x64.zip") | Out-Null
     $lines = @()
-    foreach ($name in @(
-            "arcanum-win-x64.zip",
-            "the-forge-win-x64.zip",
-            "compendium-win-x64.zip"
-        )) {
+    foreach ($name in $artifactNames) {
         $path = Join-Path $OutputDir $name
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
         $lines += "$hash  $name"
     }
     Set-Content -LiteralPath $sumsPath -Value $lines -Encoding ascii
 
-    Write-Host "==> Windows private-beta artifacts in $OutputDir"
+    Write-Host "==> Windows artifacts in $OutputDir"
     Get-ChildItem -LiteralPath $OutputDir | Format-Table Name, Length
 }
 finally {

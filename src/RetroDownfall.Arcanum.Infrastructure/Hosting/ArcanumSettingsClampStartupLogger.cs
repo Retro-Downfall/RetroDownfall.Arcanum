@@ -54,6 +54,11 @@ public sealed class ArcanumSettingsClampStartupLogger(
             ArcanumSettingClamps.MaxToolInferenceRounds(intelligence.MaxToolInferenceRounds));
 
         LogIfClamped(
+            "Arcanum:Intelligence:ReservedOutputTokens",
+            intelligence.ReservedOutputTokens,
+            ArcanumSettingClamps.ReservedOutputTokens(intelligence.ReservedOutputTokens));
+
+        LogIfClamped(
             "Arcanum:Intelligence:InferenceTimeoutSeconds",
             intelligence.InferenceTimeoutSeconds,
             ArcanumSettingClamps.InferenceTimeoutSeconds(intelligence.InferenceTimeoutSeconds));

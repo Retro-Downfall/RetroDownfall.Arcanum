@@ -127,6 +127,7 @@ Operator-facing settings bind under the `Arcanum` JSON object in `arcanum.json` 
 | `Arcanum:Intelligence:InferenceTimeoutSeconds` | `int` | `600` | 5 – 3,600 | Wall-clock cap for a single inference turn (buffered or streaming), including tool rounds. |
 | `Arcanum:Intelligence:ToolOutputCapBytes` | `long` | `1048576` (1 MiB) | 64 KiB – 64 MiB | Combined byte cap on stdout + stderr captured from `execute_command` and `run_spell_script` (split evenly per stream). |
 | `Arcanum:Intelligence:MaxToolInferenceRounds` | `int` | `8` | 1 – 100 | Hard cap on agentic tool rounds per inference turn (`TurnLimitsDefaults.MaxToolRounds`). |
+| `Arcanum:Intelligence:ReservedOutputTokens` | `int` | `1024` | 0 – 128,000 | Tokens reserved for model output during per-call context preflight when the request omits `MaxOutputTokens`. |
 | `Arcanum:Intelligence:DisconnectPolicy` | enum | `Auto` | — | Client disconnect policy (ADR 0003): `CancelAbandoned`, `ContinueThenReplay`, or `Auto` (continue when `Idempotency-Key` present, else cancel). |
 | `Arcanum:Intelligence:TolerateToolFailures` | `bool` | `true` | — | When `true`, an unexpected exception from a single tool invocation during a **buffered** turn is caught and synthesized into a tool result instead of failing the whole turn with `Hub.Error`. Streaming always tolerates tool invocation failures (mode policy; ADR 0004). |
 | `Arcanum:Intelligence:CompressionPreflightMinMessages` | `int` | `6` | 0 – 100 | Minimum assembled-message count before context-compression preflight runs (short threads skip tokenizer cost). |
@@ -1717,8 +1718,14 @@ Full conventions: [tests.README.md](tests.README.md).
 
 GitHub Actions workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on `pull_request`, `push` to `main`, and `workflow_dispatch`:
 
-1. **build-test** (`ubuntu-latest`): restore/build the solution, `dotnet test` for Compendium + The Forge, then the authoritative Arcanum suite + gates via `./scripts/coverage.sh --threshold` (does not double-run Arcanum.Tests).
+1. **build-test** (`ubuntu-latest`): restore/build Arcanum + Compendium (Cli + both test projects; **The Forge temporarily excluded**), `dotnet test` for Compendium, then the authoritative Arcanum suite + gates via `./scripts/coverage.sh --threshold` (does not double-run Arcanum.Tests).
 2. **aot-il** (`ubuntu-latest`): `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID (documented host-default invocation).
+
+Related packaging workflows (manual `workflow_dispatch`, not part of PR CI):
+
+- [`.github/workflows/build-windows-x64.yml`](../.github/workflows/build-windows-x64.yml) — unsigned **win-x64** Arcanum (Native AOT) + Compendium zips (`package-windows.ps1 -SkipForge`).
+- [`.github/workflows/private-beta-release.yml`](../.github/workflows/private-beta-release.yml) — Windows + Linux private-beta archives (includes The Forge).
+- [`.github/workflows/release-macos-arm64.yml`](../.github/workflows/release-macos-arm64.yml) — signed/notarized macOS arm64 (see [RELEASE-MACOS.md](RELEASE-MACOS.md)).
 
 SQLCipher-dependent tests keep their normal `[SkippableFact]` skip behavior when the native asset is unavailable.
 

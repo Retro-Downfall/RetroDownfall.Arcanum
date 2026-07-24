@@ -63,14 +63,24 @@ internal static class SecureFilePermissions
 
         DirectoryInfo directory = new(path);
 
-        DirectorySecurity security = new();
-
         SecurityIdentifier owner = WindowsIdentity.GetCurrent().User
             ?? throw new InvalidOperationException("Could not resolve current Windows user.");
 
-        security.SetOwner(owner);
+        // Harden DACL only — SetOwner often requires elevation and is unnecessary for
+        // files/directories the current user just created.
+        DirectorySecurity security = directory.GetAccessControl();
 
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(
+                     includeExplicit: true,
+                     includeInherited: true,
+                     typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>())
+        {
+
+            _ = security.RemoveAccessRule(rule);
+
+        }
 
         security.AddAccessRule(new FileSystemAccessRule(
             owner,
@@ -89,14 +99,22 @@ internal static class SecureFilePermissions
 
         FileInfo file = new(path);
 
-        FileSecurity security = new();
-
         SecurityIdentifier owner = WindowsIdentity.GetCurrent().User
             ?? throw new InvalidOperationException("Could not resolve current Windows user.");
 
-        security.SetOwner(owner);
+        FileSecurity security = file.GetAccessControl();
 
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(
+                     includeExplicit: true,
+                     includeInherited: true,
+                     typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>())
+        {
+
+            _ = security.RemoveAccessRule(rule);
+
+        }
 
         security.AddAccessRule(new FileSystemAccessRule(
             owner,

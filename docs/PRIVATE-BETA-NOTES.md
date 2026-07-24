@@ -4,7 +4,8 @@ These notes ship with private-beta archives produced by:
 
 - `scripts/packaging/linux/package-linux.sh`
 - `scripts/packaging/windows/package-windows.ps1`
-- `.github/workflows/private-beta-release.yml`
+- `.github/workflows/private-beta-release.yml` (Windows + Linux, includes The Forge)
+- `.github/workflows/build-windows-x64.yml` (Windows x64 Arcanum + Compendium only; `-SkipForge`)
 
 macOS Apple Silicon release remains on the separate signed/notarized path (`docs/RELEASE-MACOS.md`).
 
@@ -84,6 +85,11 @@ sqlite-vec is **not** shipped in this beta. When embeddings are enabled, search 
 
 # On Windows host (PowerShell):
 .\scripts\packaging\windows\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist
+# Arcanum + Compendium only (omit The Forge):
+.\scripts\packaging\windows\package-windows.ps1 -Version 0.1.0-beta.1 -OutputDir .\dist -SkipForge
 ```
 
-Cross-OS artifacts: run `.github/workflows/private-beta-release.yml` (`workflow_dispatch`).
+Cross-OS artifacts:
+
+- Full private beta (Windows + Linux, includes The Forge): `.github/workflows/private-beta-release.yml` (`workflow_dispatch`)
+- Windows x64 Arcanum + Compendium only: `.github/workflows/build-windows-x64.yml` (`workflow_dispatch`)

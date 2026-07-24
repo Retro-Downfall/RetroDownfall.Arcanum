@@ -148,6 +148,9 @@ public static class ArcanumSettingClamps
 
     public static int MaxToolInferenceRounds(int value) => Math.Clamp(value, 1, 100);
 
+    /// <summary>Tokens reserved for model output during context preflight when MaxOutputTokens is unset.</summary>
+    public static int ReservedOutputTokens(int value) => Math.Clamp(value, 0, 128_000);
+
     public static int CompressionPreflightMinMessages(int value) => Math.Clamp(value, 0, 100);
 
     public static int PerMessageTemplateOverheadTokens(int value) => Math.Clamp(value, 0, 32);

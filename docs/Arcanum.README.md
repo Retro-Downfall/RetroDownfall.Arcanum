@@ -136,7 +136,8 @@ scripts/align_csharp_blanklines.py       # C# blank-line formatter logic
 scripts/verify-aot-il-warnings.sh        # AOT IL-warning gate
 scripts/packaging/macos/                 # signed macOS arm64 release packaging (see RELEASE-MACOS.md)
 scripts/packaging/linux/                 # unsigned Linux private-beta tarballs (CLI AOT + Forge/Compendium)
-scripts/packaging/windows/               # unsigned Windows private-beta zips (CLI AOT + Forge/Compendium)
+scripts/packaging/windows/               # unsigned Windows zips (CLI AOT + Compendium; Forge optional via package-windows.ps1)
+                                         # workflow: build-windows-x64.yml (Arcanum + Compendium); private-beta-release.yml (all three)
 Directory.Build.props                    # shared MSBuild props + CVE pin (Microsoft.Bcl.Memory)
 ```
 

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -84,16 +85,15 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         Assert.NotNull(san);
 
-        string sanText = san.Format(multiLine: false);
+        // Prefer typed SAN enumeration — X509SubjectAlternativeNameExtension.Format()
+        // may expand IPv6 loopback as 0000:…:0001 depending on runtime/OS.
+        Assert.Contains("localhost", san.EnumerateDnsNames(), StringComparer.OrdinalIgnoreCase);
 
-        Assert.Contains("localhost", sanText, StringComparison.OrdinalIgnoreCase);
+        IPAddress[] sanIps = san.EnumerateIPAddresses().ToArray();
 
-        Assert.Contains("127.0.0.1", sanText, StringComparison.Ordinal);
+        Assert.Contains(IPAddress.Loopback, sanIps);
 
-        Assert.True(
-            sanText.Contains("::1", StringComparison.Ordinal)
-            || sanText.Contains("0:0:0:0:0:0:0:1", StringComparison.OrdinalIgnoreCase),
-            $"Expected IPv6 loopback in SAN, got: {sanText}");
+        Assert.Contains(IPAddress.IPv6Loopback, sanIps);
 
         Assert.True(result.ExpiresAt > DateTimeOffset.UtcNow);
 

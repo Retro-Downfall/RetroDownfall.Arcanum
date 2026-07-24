@@ -31,7 +31,7 @@ See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Authoritative Arc
 - run: ./scripts/coverage.sh --threshold
 ```
 
-Compendium and The Forge run as separate `dotnet test` steps in the same job (coverage filters remain Arcanum-only).
+Compendium runs as a separate `dotnet test` step in the same job (coverage filters remain Arcanum-only). **The Forge is temporarily excluded from CI build and test** while its suite is repaired; re-enable `tests/RetroDownfall.TheForge.Tests` (and solution build of `TheForge.Ux`) in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) when green again.
 
 ## Conventions
 

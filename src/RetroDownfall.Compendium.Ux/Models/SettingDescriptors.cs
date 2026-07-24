@@ -137,7 +137,7 @@ public static class SettingDescriptors
 
         new("intelligence.disconnectPolicy", ConfigSection.Intelligence, "Disconnect policy", "Auto (default): continue-then-replay when Idempotency-Key is present; otherwise cancel→Abandoned. See ADR 0003.", SettingKind.Enum, EnumType: typeof(DisconnectPolicy)),
 
-        new("intelligence.reservedOutputTokens", ConfigSection.Intelligence, "Reserved output tokens", "Tokens reserved for model output during per-call context preflight when MaxOutputTokens is unset (default 1024).", SettingKind.Int, 0, 128000, 1),
+        new("intelligence.reservedOutputTokens", ConfigSection.Intelligence, "Reserved output tokens", "Tokens reserved for model output during per-call context preflight when MaxOutputTokens is unset (default 1024).", SettingKind.Int, 0, 128000, 1, ClampName: nameof(ArcanumSettingClamps.ReservedOutputTokens)),
 
         new("intelligence.maxToolInferenceRounds", ConfigSection.Intelligence, "Max tool inference rounds", "Maximum agentic tool rounds per inference turn (default 8). Beyond this the turn fails with Hub.ToolLoop.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.MaxToolInferenceRounds)),
 

@@ -136,6 +136,15 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 
 Compendium ships as a signed, notarized, stapled `compendium-osx-arm64.dmg` containing `Compendium.app` (self-contained Avalonia on .NET 10 — **not** Native AOT). Packaging defaults to **multi-file** publish so native libraries can be codesigned individually. See [`RELEASE-MACOS.md`](RELEASE-MACOS.md) for the manual workflow, required **Developer ID Application** secrets, SemVer vs `CFBundle*` versioning, and draft-release steps.
 
+## Windows x64 packaging
+
+Unsigned `compendium-win-x64.zip` (self-contained Avalonia folder publish, **not** Native AOT) is produced with Arcanum via:
+
+- Local: `.\scripts\packaging\windows\package-windows.ps1 -Version <semver> -OutputDir .\dist -SkipForge`
+- GitHub Actions: [`.github/workflows/build-windows-x64.yml`](../.github/workflows/build-windows-x64.yml) (`workflow_dispatch`)
+
+See [`PRIVATE-BETA-NOTES.md`](PRIVATE-BETA-NOTES.md) for archive layout and SmartScreen notes.
+
 ## Note on headless testing
 
 Unit tests target `net10.0` and do not require a desktop session or Avalonia window. UI XAML compiles as part of the Avalonia desktop project; CI exercises services, ViewModels, converters, and descriptor guards without an X server.

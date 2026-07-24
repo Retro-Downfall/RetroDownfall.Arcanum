@@ -3941,7 +3941,7 @@ public sealed class WizardIntelligenceProvider(
     {
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
         int reserved = request.MaxOutputTokens
-            ?? settings.Value.Intelligence.ReservedOutputTokens;
+            ?? ArcanumSettingClamps.ReservedOutputTokens(settings.Value.Intelligence.ReservedOutputTokens);
 
         Tokenizer tokenizer = tokenizerResolver
             .ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding);
