@@ -10,9 +10,9 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
 
   </ItemGroup>
 
@@ -28,6 +28,10 @@
 
     <InternalsVisibleTo Include="RetroDownfall.TheForge.Tests" />
 
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
   </ItemGroup>
 
 </Project>

@@ -34,31 +34,35 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
 
     <!-- Pins the transitive Microsoft.OpenApi dependency (2.0.0, pulled in by Microsoft.AspNetCore.OpenApi
-         10.0.8) past GHSA-v5pm-xwqc-g5wc (circular schema references can terminate the process); patched in
+         10.0.10) past GHSA-v5pm-xwqc-g5wc (circular schema references can terminate the process); patched in
          2.7.5+. Remove once Microsoft.AspNetCore.OpenApi itself references a patched version. -->
-    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
 
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
 
     <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
 
-    <PackageReference Include="Scalar.AspNetCore" Version="2.14.14" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.16" />
 
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.1" />
 
-    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1" />
 
     <PackageReference Include="A2A.AspNetCore" Version="1.0.0-preview2" />
 
-    <PackageReference Include="HtmlAgilityPack" Version="1.12.0" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
 
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
   </ItemGroup>
 
 </Project>

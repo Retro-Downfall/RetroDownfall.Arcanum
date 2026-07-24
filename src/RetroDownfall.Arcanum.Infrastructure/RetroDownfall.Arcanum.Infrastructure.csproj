@@ -61,11 +61,14 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.8" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.8" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.10">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
 
       <PrivateAssets>all</PrivateAssets>
 
@@ -73,9 +76,9 @@
 
     </PackageReference>
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
 
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
 
@@ -87,12 +90,16 @@
 
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
 
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.1" />
 
-    <PackageReference Include="ModelContextProtocol.Core" Version="1.4.0" />
+    <PackageReference Include="ModelContextProtocol.Core" Version="1.4.1" />
 
     <PackageReference Include="A2A" Version="1.0.0-preview2" />
 
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
   </ItemGroup>
 
 </Project>

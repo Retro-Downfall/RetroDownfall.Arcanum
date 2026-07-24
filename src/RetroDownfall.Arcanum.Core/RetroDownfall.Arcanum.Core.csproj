@@ -14,10 +14,7 @@
 
     </PropertyGroup>
 
-    <WriteLinesToFile
-      File="$(_ArcanumBuildInfoGenerated)"
-      Overwrite="true"
-      Lines="namespace RetroDownfall.Arcanum.Core%3B%0A%0Apublic static partial class ArcanumBuildInfo%0A{%0A%0A    public const string InformationalVersion = &quot;$(Version)&quot;%3B%0A%0A}" />
+    <WriteLinesToFile File="$(_ArcanumBuildInfoGenerated)" Overwrite="true" Lines="namespace RetroDownfall.Arcanum.Core%3B%0A%0Apublic static partial class ArcanumBuildInfo%0A{%0A%0A    public const string InformationalVersion = &quot;$(Version)&quot;%3B%0A%0A}" />
 
     <ItemGroup>
 
@@ -29,17 +26,17 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.1" />
 
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
 
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
 
   </ItemGroup>
 
@@ -47,6 +44,10 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
 
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
   </ItemGroup>
 
 </Project>
