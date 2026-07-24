@@ -1718,7 +1718,7 @@ Full conventions: [tests.README.md](tests.README.md).
 
 GitHub Actions workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on `pull_request`, `push` to `main`, and `workflow_dispatch`:
 
-1. **build-test** (`ubuntu-latest`): restore/build Arcanum + Compendium (Cli + both test projects; **The Forge temporarily excluded**), `dotnet test` for Compendium, then the authoritative Arcanum suite + gates via `./scripts/coverage.sh --threshold` (does not double-run Arcanum.Tests).
+1. **build-test** (`ubuntu-latest`): restore/build Arcanum + Compendium (Cli + both test projects; **The Forge temporarily excluded**), `dotnet test` for Compendium, then Arcanum tests + coverage collection via `./scripts/coverage.sh` (does not double-run Arcanum.Tests). Coverage **thresholds are temporarily advisory** on CI (see [tests.README.md](tests.README.md)); HTML/Cobertura upload as `arcanum-coverage-report`.
 2. **aot-il** (`ubuntu-latest`): `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID (documented host-default invocation).
 
 Related packaging workflows (manual `workflow_dispatch`, not part of PR CI):
