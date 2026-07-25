@@ -69,4 +69,39 @@ public static class ArcanumMetrics
     public static readonly Counter<long> PromptCacheHitsTotal = Meter.CreateCounter<long>(
         "arcanum_prompt_cache_hits_total", description: "Inference turns that reported a non-zero prompt-cache hit");
 
+    /// <summary>
+    /// Pre-call locally estimated input tokens. Labels: <c>provider</c>, <c>model</c>.
+    /// </summary>
+    public static readonly Histogram<long> EstimatedInputTokens = Meter.CreateHistogram<long>(
+        "arcanum_estimated_input_tokens",
+        "{tokens}",
+        "Locally estimated input tokens before provider calls");
+
+    /// <summary>
+    /// Post-call provider-reported input tokens. Labels: <c>provider</c>, <c>model</c>.
+    /// </summary>
+    public static readonly Histogram<long> ProviderReportedInputTokens = Meter.CreateHistogram<long>(
+        "arcanum_provider_reported_input_tokens",
+        "{tokens}",
+        "Provider-reported input tokens after provider calls");
+
+    /// <summary>
+    /// Absolute provider-reported versus locally estimated input-token variance. Labels:
+    /// <c>provider</c>, <c>model</c>, <c>direction</c>
+    /// (<c>underestimated</c> | <c>overestimated</c> | <c>exact</c> | <c>inconsistent</c>).
+    /// </summary>
+    public static readonly Histogram<long> InputTokenEstimationVariance = Meter.CreateHistogram<long>(
+        "arcanum_input_token_estimation_variance",
+        "{tokens}",
+        "Absolute input-token estimation variance by direction");
+
+    /// <summary>
+    /// Calls rejected before provider I/O because accounted input plus reserves exceeded the
+    /// context window. Labels: <c>provider</c>, <c>model</c>.
+    /// </summary>
+    public static readonly Counter<long> ContextBudgetRejectionsTotal = Meter.CreateCounter<long>(
+        "arcanum_context_budget_rejections_total",
+        "{rejections}",
+        "Context-budget rejections before provider calls");
+
 }

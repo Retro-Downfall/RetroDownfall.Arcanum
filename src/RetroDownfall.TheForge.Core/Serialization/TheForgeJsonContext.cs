@@ -130,6 +130,14 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ReasoningWireDialect))]
 [JsonSerializable(typeof(List<Guid>))]
 [JsonSerializable(typeof(IntelligenceEvent))]
+[JsonSerializable(typeof(ContextTokenBreakdown))]
+[JsonSerializable(typeof(ContextTokenComponent))]
+[JsonSerializable(typeof(List<ContextTokenComponent>))]
+[JsonSerializable(typeof(TokenEstimate))]
+[JsonSerializable(typeof(ResolvedModelTokenizationProfile))]
+[JsonSerializable(typeof(ContextTokenSource))]
+[JsonSerializable(typeof(TokenEstimateClassification))]
+[JsonSerializable(typeof(ModelTokenizationProfileType))]
 
 // Sessions — memory management (Milestone H — Context and Memory)
 [JsonSerializable(typeof(CompactResult))]

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -174,6 +175,9 @@ public sealed class IntelligenceEndpointTests
 
         string json = await response.Content.ReadAsStringAsync();
 
+        Assert.Contains("\"classification\":\"estimated\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"source\":\"currentPrompt\"", json, StringComparison.Ordinal);
+
         ApiResponse<ManaCountResult>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseManaCountResult);
 
         Assert.NotNull(body);
@@ -190,6 +194,39 @@ public sealed class IntelligenceEndpointTests
 
         Assert.Null(body.Data.ToolManaEstimate);
 
+        Assert.NotNull(body.Data.Breakdown);
+
+        Assert.False(string.IsNullOrWhiteSpace(body.Data.ProfileId));
+
+        Assert.Contains(
+            body.Data.Breakdown!.Components,
+            static component => component.Source == ContextTokenSource.CurrentPrompt
+                && component.Estimate.TokenCount > 0);
+
+    }
+
+    [SkippableFact]
+    public async Task PostMana_WithUnknownModel_UsesEstimatedFallbackWithSafetyMargin()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        HttpClient client = _factory.CreateAuthenticatedClient();
+        ManaCountRequest request = new(Prompt: new string('x', 400), Model: "unknown-unconfigured-model");
+        string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.ManaCountRequest);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/intelligence/mana",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        ApiResponse<ManaCountResult>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponseManaCountResult);
+
+        Assert.NotNull(body?.Data?.Breakdown);
+        Assert.Equal(TokenEstimateClassification.Estimated, body!.Data!.Classification);
+        Assert.Equal(ModelTokenizationProfileType.UnknownFallback, body.Data.Breakdown!.Profile.Type);
+        Assert.True(body.Data.SafetyMarginTokens > 0);
     }
 
     [SkippableFact]
@@ -228,7 +265,9 @@ public sealed class IntelligenceEndpointTests
 
         Assert.Equal(2, body.Data.PerMessage!.Count);
 
-        Assert.Equal(body.Data.PerMessage.Sum(), body.Data.ManaCount);
+        Assert.All(body.Data.PerMessage, static count => Assert.True(count > 0));
+
+        Assert.True(body.Data.PerMessage.Sum() <= body.Data.ManaCount);
 
     }
 

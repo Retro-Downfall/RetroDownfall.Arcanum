@@ -24,10 +24,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Telemetry;
 public sealed class PrometheusMetricsExporter : IDisposable
 {
 
-    /// <summary>Histogram bucket boundaries in seconds, shared by every histogram this exporter renders.</summary>
-    private static readonly double[] HistogramBucketBoundaries =
+    private static readonly double[] DurationHistogramBucketBoundaries =
     [
         0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300,
+    ];
+
+    private static readonly double[] TokenHistogramBucketBoundaries =
+    [
+        1, 4, 16, 64, 256, 1_024, 4_096, 16_384, 65_536, 262_144, 1_048_576, 2_097_152,
     ];
 
     /// <summary>
@@ -219,7 +223,11 @@ public sealed class PrometheusMetricsExporter : IDisposable
 
         InstrumentInfo info = _instrumentInfo.GetOrAdd(
             metricName,
-            _ => new InstrumentInfo(promKind, BuildHelpText(instrument), useSetSemantics));
+            _ => new InstrumentInfo(
+                promKind,
+                BuildHelpText(instrument),
+                useSetSemantics,
+                ResolveHistogramBucketBoundaries(instrument)));
 
         string labelKey = BuildLabelString(tags);
 
@@ -230,7 +238,9 @@ public sealed class PrometheusMetricsExporter : IDisposable
                 metricName,
                 static _ => new ConcurrentDictionary<string, HistogramState>(StringComparer.Ordinal));
 
-            HistogramState histogramState = histogramSeries.GetOrAdd(labelKey, static _ => new HistogramState());
+            HistogramState histogramState = histogramSeries.GetOrAdd(
+                labelKey,
+                _ => new HistogramState(info.HistogramBucketBoundaries));
 
             histogramState.Record(value);
 
@@ -265,7 +275,9 @@ public sealed class PrometheusMetricsExporter : IDisposable
     private void RegisterManualGauge(string metricName, string help, double value)
     {
 
-        _instrumentInfo.GetOrAdd(metricName, _ => new InstrumentInfo("gauge", help, UseSetSemantics: true));
+        _instrumentInfo.GetOrAdd(
+            metricName,
+            _ => new InstrumentInfo("gauge", help, UseSetSemantics: true, []));
 
         ConcurrentDictionary<string, MetricValueState> series = _gaugeSeries.GetOrAdd(
             metricName,
@@ -322,10 +334,12 @@ public sealed class PrometheusMetricsExporter : IDisposable
 
             string baseLabels = entry.Key;
 
-            for (int i = 0; i < HistogramBucketBoundaries.Length; i++)
+            double[] boundaries = entry.Value.BucketBoundaries;
+
+            for (int i = 0; i < boundaries.Length; i++)
             {
 
-                string bucketLabels = AppendLeLabel(baseLabels, FormatDouble(HistogramBucketBoundaries[i]));
+                string bucketLabels = AppendLeLabel(baseLabels, FormatDouble(boundaries[i]));
 
                 AppendSampleLine(output, bucketMetricName, bucketLabels, cumulativeBucketCounts[i].ToString(CultureInfo.InvariantCulture));
 
@@ -601,7 +615,16 @@ public sealed class PrometheusMetricsExporter : IDisposable
 
     }
 
-    private sealed record InstrumentInfo(string PrometheusKind, string Help, bool UseSetSemantics);
+    private static double[] ResolveHistogramBucketBoundaries(Instrument instrument) =>
+        string.Equals(instrument.Unit, "{tokens}", StringComparison.Ordinal)
+            ? TokenHistogramBucketBoundaries
+            : DurationHistogramBucketBoundaries;
+
+    private sealed record InstrumentInfo(
+        string PrometheusKind,
+        string Help,
+        bool UseSetSemantics,
+        double[] HistogramBucketBoundaries);
 
     /// <summary>Mutable cumulative-or-current double value backing both counter and gauge series.</summary>
     private sealed class MetricValueState
@@ -648,18 +671,25 @@ public sealed class PrometheusMetricsExporter : IDisposable
     }
 
     /// <summary>
-    /// Manual Prometheus histogram: a fixed cumulative bucket-count array (index <c>i</c> counts every
-    /// observation <c>&lt;= HistogramBucketBoundaries[i]</c>, matching the cumulative semantics Prometheus
+    /// Manual Prometheus histogram: a cumulative bucket-count array (index <c>i</c> counts every
+    /// observation at or below its instrument-specific boundary, matching Prometheus
     /// expects at render time — no prefix-summing needed), plus running sum and count.
     /// </summary>
     private sealed class HistogramState
     {
+        public HistogramState(double[] bucketBoundaries)
+        {
+            BucketBoundaries = bucketBoundaries;
+            _cumulativeBucketCounts = new long[bucketBoundaries.Length + 1];
+        }
 
-        private readonly long[] _cumulativeBucketCounts = new long[HistogramBucketBoundaries.Length + 1];
+        private readonly long[] _cumulativeBucketCounts;
 
         private double _sum;
 
         private long _count;
+
+        public double[] BucketBoundaries { get; }
 
         public void Record(double value)
         {
@@ -671,10 +701,10 @@ public sealed class PrometheusMetricsExporter : IDisposable
 
                 _count++;
 
-                for (int i = 0; i < HistogramBucketBoundaries.Length; i++)
+                for (int i = 0; i < BucketBoundaries.Length; i++)
                 {
 
-                    if (value <= HistogramBucketBoundaries[i])
+                    if (value <= BucketBoundaries[i])
                     {
 
                         _cumulativeBucketCounts[i]++;

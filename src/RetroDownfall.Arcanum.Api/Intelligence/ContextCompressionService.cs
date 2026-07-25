@@ -1,7 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -18,7 +17,13 @@ public interface IContextCompressionService
 
     Task<CompactResult> CompressSessionAsync(Guid sessionId, int contextWindowLimit, CancellationToken cancellationToken);
 
-    int CountTokens(IReadOnlyList<MeAiChatMessage> messages);
+    int CountTokens(
+        IReadOnlyList<MeAiChatMessage> messages,
+        ProviderSettings? provider = null,
+        string? model = null,
+        ChatOptions? options = null,
+        int reservedAnswerTokens = 0,
+        int reservedReasoningTokens = 0);
 
     int ComputeEffectiveLimit(int contextWindowLimit, int thresholdPercent);
 
@@ -33,27 +38,24 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
     private readonly IOptionsSnapshot<ArcanumSettings> _settings;
 
-    private readonly ManaPreflight _manaPreflight;
-
-    private readonly InferenceTokenizerResolver _inferenceTokenizerResolver;
+    private readonly IModelTokenEstimator _modelTokenEstimator;
 
     private readonly ILogger<ContextCompressionService> _logger;
 
     public ContextCompressionService(
         IGrimoireRepository grimoire,
         IOptionsSnapshot<ArcanumSettings> settings,
-        ManaPreflight manaPreflight,
         InferenceTokenizerResolver inferenceTokenizerResolver,
-        ILogger<ContextCompressionService> logger)
+        ILogger<ContextCompressionService> logger,
+        IModelTokenEstimator? modelTokenEstimator = null)
     {
 
         _grimoire = grimoire;
 
         _settings = settings;
 
-        _manaPreflight = manaPreflight;
-
-        _inferenceTokenizerResolver = inferenceTokenizerResolver;
+        _modelTokenEstimator = modelTokenEstimator
+            ?? new ModelTokenEstimator(inferenceTokenizerResolver, settings);
 
         _logger = logger;
 
@@ -74,6 +76,11 @@ internal sealed class ContextCompressionService : IContextCompressionService
         }
 
         IntelligenceSettings intelligenceSettings = _settings.Value.Intelligence ?? new IntelligenceSettings();
+        ResolveProfileTarget(
+            provider: null,
+            model: null,
+            out ProviderSettings compressionProvider,
+            out string compressionModel);
 
         if (!intelligenceSettings.EnableContextCompression)
         {
@@ -94,7 +101,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         }
 
-        int tokensBefore = CountTokens(messages);
+        int tokensBefore = CountTokens(messages, compressionProvider, compressionModel);
 
         int effectiveLimit = ComputeEffectiveLimit(
             contextWindowLimit > 0 ? contextWindowLimit : DefaultContextWindowLimit,
@@ -121,14 +128,23 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
             int tokensToRemove = tokensBefore - effectiveLimit;
 
-            int estimatedRemoved = 0;
+            long estimatedRemoved = 0;
 
             List<Guid> entryIdsToDelete = [];
 
             foreach (Entry entry in ordered)
             {
-
-                estimatedRemoved += Math.Max(1, entry.Content.Length / 4);
+                ChatRole role = entry.Role switch
+                {
+                    MessageRole.User => ChatRole.User,
+                    MessageRole.Assistant => ChatRole.Assistant,
+                    MessageRole.System => ChatRole.System,
+                    _ => ChatRole.User,
+                };
+                estimatedRemoved += CountTokens(
+                    [new MeAiChatMessage(role, entry.Content)],
+                    compressionProvider,
+                    compressionModel);
 
                 entryIdsToDelete.Add(entry.Id);
 
@@ -163,7 +179,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
                 messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, string.Empty);
 
-                tokensAfter = CountTokens(messages);
+                tokensAfter = CountTokens(messages, compressionProvider, compressionModel);
 
             }
 
@@ -185,17 +201,76 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
     }
 
-    public int CountTokens(IReadOnlyList<MeAiChatMessage> messages)
+    public int CountTokens(
+        IReadOnlyList<MeAiChatMessage> messages,
+        ProviderSettings? provider = null,
+        string? model = null,
+        ChatOptions? options = null,
+        int reservedAnswerTokens = 0,
+        int reservedReasoningTokens = 0)
     {
+        ResolveProfileTarget(provider, model, out ProviderSettings resolvedProvider, out string resolvedModel);
+        return Estimate(
+                messages,
+                resolvedProvider,
+                resolvedModel,
+                options,
+                reservedAnswerTokens,
+                reservedReasoningTokens)
+            .TotalTokens;
+    }
 
-        string encodingName = _settings.Value.Intelligence.TokenizerEncoding ?? InferenceTokenizerResolver.DefaultEncodingName;
+    private ContextTokenBreakdown Estimate(
+        IReadOnlyList<MeAiChatMessage> messages,
+        ProviderSettings provider,
+        string model,
+        ChatOptions? options = null,
+        int reservedAnswerTokens = 0,
+        int reservedReasoningTokens = 0)
+    {
+        return _modelTokenEstimator.EstimateContext(
+            new ModelTokenizationRequest(
+                provider,
+                model,
+                messages,
+                options ?? new ChatOptions(),
+                reservedAnswerTokens,
+                reservedReasoningTokens));
+    }
 
-        Tokenizer tokenizer = _inferenceTokenizerResolver.ResolveTokenizer(encodingName);
+    private void ResolveProfileTarget(
+        ProviderSettings? provider,
+        string? model,
+        out ProviderSettings resolvedProvider,
+        out string resolvedModel)
+    {
+        if (provider is not null && !string.IsNullOrWhiteSpace(model))
+        {
+            resolvedProvider = provider;
+            resolvedModel = model;
+            return;
+        }
 
-        int perMessageOverhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
-            _settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
+        if (ProviderResolver.TryResolveProviderForModel(
+                _settings.Value,
+                model,
+                out ProviderSettings? configuredProvider,
+                out string configuredModel)
+            && configuredProvider is not null)
+        {
+            resolvedProvider = configuredProvider;
+            resolvedModel = configuredModel;
+            return;
+        }
 
-        return _manaPreflight.CountTokens(messages, tokenizer, perMessageOverhead, encodingName);
+        resolvedModel = string.IsNullOrWhiteSpace(model) ? "unknown" : model;
+        resolvedProvider = new ProviderSettings
+        {
+            Name = "unconfigured",
+            Type = AiProviderKind.OpenAICompatible,
+            Models = [new ModelEntry(resolvedModel)],
+            ContextWindowLimit = DefaultContextWindowLimit,
+        };
 
     }
 

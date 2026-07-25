@@ -30,6 +30,45 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
+internal sealed record ContextCompressionRequest
+{
+    public required PingRequest Request { get; init; }
+
+    public required List<MeAiChatMessage> Messages { get; init; }
+
+    public required Session? Thread { get; init; }
+
+    public required string NewUserPrompt { get; init; }
+
+    public required ChatClientLease Lease { get; init; }
+
+    public required ChatOptions ChatOptions { get; init; }
+
+    public string? CodexContent { get; init; }
+
+    public ParsedSpell? ActiveSpell { get; init; }
+
+    public IReadOnlyList<ParsedSpell>? DependencySpells { get; init; }
+
+    public int ReservedAnswerTokens { get; init; }
+
+    public int ReservedReasoningTokens { get; init; }
+
+    public IReadOnlyList<AIContent>? AppendedContents { get; init; }
+
+    public SemanticContextChunk[]? SemanticContext { get; init; }
+
+    public SagaMemory[]? SagaMemories { get; init; }
+
+    public IReadOnlyList<LexiconEntryDto>? LexiconEntries { get; init; }
+
+    public IReadOnlyList<SessionAttachmentIndexItem>? SessionAttachmentsIndex { get; init; }
+
+    public int MaxIndexItems { get; init; } = 40;
+
+    public int MaxIndexBytes { get; init; } = 4096;
+}
+
 /// <summary>
 /// History load, read-time compression decision, and Microsoft.Extensions.AI message mapping shared
 /// by buffered and streaming inference paths in <see cref="WizardIntelligenceProvider"/>.
@@ -38,7 +77,6 @@ public sealed class InferenceContextBuilder(
     IGrimoireRepository grimoire,
     IOptionsSnapshot<ArcanumSettings> settings,
     ILogger<InferenceContextBuilder> logger,
-    ManaPreflight manaPreflight,
     IContextCompressionService contextCompressionService)
 {
 
@@ -165,22 +203,13 @@ public sealed class InferenceContextBuilder(
 
     }
 
-    public (bool Compressed, List<MeAiChatMessage> Messages) TryApplyContextCompressionIfNeeded(
-        PingRequest request,
-        List<MeAiChatMessage> chatMessages,
-        string? codexContent,
-        ParsedSpell? activeSpell,
-        IReadOnlyList<ParsedSpell>? dependencySpells,
-        Session? thread,
-        string newUserPrompt,
-        ChatClientLease lease,
-        SemanticContextChunk[]? semanticContext = null,
-        SagaMemory[]? sagaMemories = null,
-        IReadOnlyList<LexiconEntryDto>? lexiconEntries = null,
-        IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex = null,
-        int maxIndexItems = 40,
-        int maxIndexBytes = 4096)
+    internal (bool Compressed, List<MeAiChatMessage> Messages) TryApplyContextCompressionIfNeeded(
+        ContextCompressionRequest context)
     {
+        PingRequest request = context.Request;
+        List<MeAiChatMessage> chatMessages = context.Messages;
+        Session? thread = context.Thread;
+        ChatClientLease lease = context.Lease;
 
         if (!settings.Value.Intelligence.EnableContextCompression)
         {
@@ -196,17 +225,13 @@ public sealed class InferenceContextBuilder(
 
         }
 
-        int minMessagesForPreflight = ArcanumSettingClamps.CompressionPreflightMinMessages(
-            settings.Value.Intelligence.CompressionPreflightMinMessages);
-
-        if (manaPreflight.ShouldSkipCompressionPreflight(chatMessages, minMessagesForPreflight))
-        {
-
-            return (false, chatMessages);
-
-        }
-
-        int totalTokens = contextCompressionService.CountTokens(chatMessages);
+        int totalTokens = contextCompressionService.CountTokens(
+            chatMessages,
+            lease.Provider,
+            lease.ResolvedModel,
+            context.ChatOptions,
+            context.ReservedAnswerTokens,
+            context.ReservedReasoningTokens);
 
         int effectiveLimit = contextCompressionService.ComputeEffectiveLimit(
             lease.Provider.ContextWindowLimit,
@@ -235,28 +260,36 @@ public sealed class InferenceContextBuilder(
         List<MeAiChatMessage> rebuilt = MapFilteredGrimoireToMeAiMessages(
             thread,
             thread.LastSummarizedMessageAt.Value,
-            newUserPrompt);
+            context.NewUserPrompt);
 
         string augmentedSystem = SystemPromptBuilder.Build(
             request,
-            codexContent,
-            activeSpell,
+            context.CodexContent,
+            context.ActiveSpell,
             request.AttachedFiles,
             thread.Summary,
-            dependencySpells,
+            context.DependencySpells,
             maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
-            semanticContext: semanticContext,
-            sagaMemories: sagaMemories,
-            lexiconEntries: lexiconEntries,
+            semanticContext: context.SemanticContext,
+            sagaMemories: context.SagaMemories,
+            lexiconEntries: context.LexiconEntries,
             maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
                 settings.Value.Intelligence.LexiconMaxInjectedBytes),
-            sessionAttachmentsIndex: sessionAttachmentsIndex,
-            maxIndexItems: maxIndexItems,
-            maxIndexBytes: maxIndexBytes);
+            sessionAttachmentsIndex: context.SessionAttachmentsIndex,
+            maxIndexItems: context.MaxIndexItems,
+            maxIndexBytes: context.MaxIndexBytes);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 
-        int afterTokens = contextCompressionService.CountTokens(rebuilt);
+        AppendContentsToLastMessage(rebuilt, context.AppendedContents);
+
+        int afterTokens = contextCompressionService.CountTokens(
+            rebuilt,
+            lease.Provider,
+            lease.ResolvedModel,
+            context.ChatOptions,
+            context.ReservedAnswerTokens,
+            context.ReservedReasoningTokens);
 
         if (afterTokens > effectiveLimit)
         {

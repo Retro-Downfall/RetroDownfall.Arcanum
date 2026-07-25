@@ -24,7 +24,8 @@ public sealed record ModelEntry
     public ModelEntry(
         string Name,
         bool SupportsVision = false,
-        ReasoningCapabilities? Reasoning = null)
+        ReasoningCapabilities? Reasoning = null,
+        ModelTokenizationProfile? Tokenization = null)
     {
 
         this.Name = Name;
@@ -32,6 +33,8 @@ public sealed record ModelEntry
         this.SupportsVision = SupportsVision;
 
         this.Reasoning = Reasoning;
+
+        this.Tokenization = Tokenization;
 
     }
 
@@ -45,6 +48,13 @@ public sealed record ModelEntry
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ReasoningCapabilities? Reasoning { get; set; }
+
+    /// <summary>
+    /// Optional token-accounting override for this canonical model. Takes precedence over the
+    /// provider-level profile and built-in model-name resolution.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ModelTokenizationProfile? Tokenization { get; set; }
 
     /// <summary>
     /// Implicit conversion from a bare model name — mirrors the JSON string-or-object back-compat
@@ -77,6 +87,8 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 
                 ReasoningCapabilities? reasoning = null;
 
+                ModelTokenizationProfile? tokenization = null;
+
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                 {
                     if (reader.TokenType != JsonTokenType.PropertyName)
@@ -105,17 +117,25 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                                 ref reader,
                                 ConfigurationJsonContext.Default.ReasoningCapabilities);
                     }
+                    else if (string.Equals(propertyName, "tokenization", StringComparison.OrdinalIgnoreCase))
+                    {
+                        tokenization = reader.TokenType == JsonTokenType.Null
+                            ? null
+                            : JsonSerializer.Deserialize(
+                                ref reader,
+                                ConfigurationJsonContext.Default.ModelTokenizationProfile);
+                    }
                     else
                     {
                         reader.Skip();
                     }
                 }
 
-                return new ModelEntry(name, supportsVision, reasoning);
+                return new ModelEntry(name, supportsVision, reasoning, tokenization);
 
             default:
                 throw new JsonException(
-                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning' (got {reader.TokenType}).");
+                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning'/'tokenization' (got {reader.TokenType}).");
         }
     }
 
@@ -135,6 +155,16 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                 writer,
                 value.Reasoning,
                 ConfigurationJsonContext.Default.ReasoningCapabilities);
+        }
+
+        if (value.Tokenization is not null)
+        {
+            writer.WritePropertyName("tokenization");
+
+            JsonSerializer.Serialize(
+                writer,
+                value.Tokenization,
+                ConfigurationJsonContext.Default.ModelTokenizationProfile);
         }
 
         writer.WriteEndObject();

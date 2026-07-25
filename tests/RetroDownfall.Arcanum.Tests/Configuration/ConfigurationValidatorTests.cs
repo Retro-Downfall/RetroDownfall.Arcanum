@@ -34,6 +34,92 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
+    public void Validate_TokenizationProfileOutsideClamps_ReturnsFailure()
+    {
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings
+            {
+                EstimatedTokenSafetyMarginPercent = 101,
+                UnknownImageTokenReserve = 0,
+            },
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models =
+                    [
+                        new ModelEntry("model")
+                        {
+                            Tokenization = new ModelTokenizationProfile
+                            {
+                                Type = ModelTokenizationProfileType.ExactLocalTokenizer,
+                                TokenizerId = "",
+                                PerToolOverheadTokens = 129,
+                                Confidence = 2,
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "intelligence.estimatedTokenSafetyMarginPercent");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "intelligence.unknownImageTokenReserve");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.tokenizerId");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.perToolOverheadTokens");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.confidence");
+    }
+
+    [Fact]
+    public void Validate_ProviderTokenizerApiWithoutSupportedProviderStrategy_ReturnsFailure()
+    {
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models =
+                    [
+                        new ModelEntry("model")
+                        {
+                            Tokenization = new ModelTokenizationProfile
+                            {
+                                Type = ModelTokenizationProfileType.ProviderTokenizerApi,
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.type");
+    }
+
+    [Fact]
     public void Validate_PricingRatesOutsideSupportedRange_ReturnsFailure()
     {
         ArcanumSettings settings = new()

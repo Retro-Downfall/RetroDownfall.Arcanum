@@ -56,6 +56,8 @@ internal sealed class CommandCenterState
 
     public int? ManaLimit { get; set; }
 
+    public ContextTokenBreakdown? LastContextBreakdown { get; set; }
+
     public HashSet<string> StagedAttachmentPaths { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -191,11 +193,13 @@ internal sealed class CommandCenterState
         {
             int mcpUp = McpServers.Count(static s => s.State == McpServerState.Running);
 
-            string mana = ManaLimit is > 0
-                ? $"Mana: {ManaUsed ?? 0}/{ManaLimit}"
-                : ManaUsed is { } used
-                    ? $"Mana: {used}"
-                    : "Mana: -";
+            string mana = LastContextBreakdown is { } context
+                ? $"Mana: {context.InputTokens}+{context.ReservedTokens} ({context.OverallClassification})"
+                : ManaLimit is > 0
+                    ? $"Mana: {ManaUsed ?? 0}/{ManaLimit}"
+                    : ManaUsed is { } used
+                        ? $"Mana: {used}"
+                        : "Mana: -";
 
             string serve = ServeLaunch?.Status.ToString() ?? "Unknown";
 
@@ -220,6 +224,7 @@ internal sealed class CommandCenterState
         SessionStatus = null;
         SessionEntryCount = null;
         SelectedSessionId = null;
+        LastContextBreakdown = null;
     }
 
     public void ApplySessionMeta(Guid id, string? title, string? status, int? entryCount)

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -92,6 +93,98 @@ public sealed class TurnAccountingHandleTests
                 maxOutputTokens: 1_000,
                 reasoningBudgetTokens: 600),
             request.ReservedUsd);
+    }
+
+    [Fact]
+    public async Task EnsureReservationForContextAsync_RaisesReservationFromMaterializedInput()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = new()
+        {
+            DefaultPricing = new ModelPricingEntry
+            {
+                InputPer1M = 10m,
+                OutputPer1M = 20m,
+                ReasoningPer1M = 80m,
+            },
+        };
+        TurnAccountingHandle handle = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            pricing,
+            "reasoner",
+            sessionId: null,
+            surface: "test",
+            purpose: "chat",
+            requestId: "context-reservation",
+            cancellationToken: CancellationToken.None,
+            maxOutputTokens: 1_000,
+            reasoningBudgetTokens: 600)).Value;
+        ContextTokenBreakdown breakdown = new()
+        {
+            Provider = "provider",
+            Model = "reasoner",
+            Profile = new ResolvedModelTokenizationProfile
+            {
+                ProfileId = "test",
+                Type = ModelTokenizationProfileType.UnknownFallback,
+                TokenizerId = "o200k_base",
+                SafetyMarginPercent = 15,
+                PerMessageOverheadTokens = 4,
+                PerToolOverheadTokens = 8,
+                ProviderFramingTokens = 3,
+                StopTokenOverheadTokens = 1,
+                UnknownImageReserveTokens = 2048,
+                Confidence = 0.5,
+            },
+            Components =
+            [
+                new ContextTokenComponent(
+                    ContextTokenSource.ReservedAnswer,
+                    new TokenEstimate(
+                        1_000,
+                        TokenEstimateClassification.Reserved,
+                        "test")),
+                new ContextTokenComponent(
+                    ContextTokenSource.ReservedReasoning,
+                    new TokenEstimate(
+                        600,
+                        TokenEstimateClassification.Reserved,
+                        "test")),
+            ],
+            InputTokens = 5_000,
+            ReservedTokens = 1_600,
+            ReservedAnswerTokens = 1_000,
+            ReservedReasoningTokens = 600,
+            TotalTokens = 6_600,
+            OverallClassification = TokenEstimateClassification.Estimated,
+            SafetyMarginTokens = 500,
+        };
+
+        Result adjusted = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            "reasoner",
+            breakdown,
+            CancellationToken.None);
+        Result repeated = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            "reasoner",
+            breakdown,
+            CancellationToken.None);
+
+        Assert.True(adjusted.IsSuccess);
+        Assert.True(repeated.IsSuccess);
+        Assert.Equal(
+            BudgetReservationService.EstimateWorstCaseTurnUsd(
+                pricing.DefaultPricing,
+                maxOutputTokens: 1_000,
+                reasoningBudgetTokens: 600,
+                estimatedInputTokens: 5_000),
+            reservations.AdjustedUsd);
+        Assert.Equal(1, reservations.AdjustCount);
     }
 
     [Fact]
@@ -419,6 +512,10 @@ public sealed class TurnAccountingHandleTests
 
         public decimal? ReconciledUsd { get; private set; }
 
+        public decimal? AdjustedUsd { get; private set; }
+
+        public int AdjustCount { get; private set; }
+
         public bool WasReleased { get; private set; }
 
         public Task<Result<BudgetReservation>> ReserveAsync(
@@ -444,6 +541,16 @@ public sealed class TurnAccountingHandleTests
         {
             ReconciledUsd = actualCostUsd;
             return Task.CompletedTask;
+        }
+
+        public Task<Result> AdjustAsync(
+            Guid reservationId,
+            decimal reservedUsd,
+            CancellationToken cancellationToken = default)
+        {
+            AdjustedUsd = reservedUsd;
+            AdjustCount++;
+            return Task.FromResult(Result.Success());
         }
 
         public Task ReleaseAsync(

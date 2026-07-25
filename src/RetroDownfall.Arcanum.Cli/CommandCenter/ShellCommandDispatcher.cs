@@ -595,6 +595,16 @@ internal sealed class ShellCommandDispatcher(
 
     private static string FormatMana(CommandCenterState state)
     {
+        if (state.LastContextBreakdown is { } context)
+        {
+            string reported = context.ProviderReportedInputTokens is { } providerReported
+                ? $", provider reported={providerReported}, variance={context.EstimationVarianceTokens ?? 0}"
+                : ", provider reported=unavailable";
+            return $"Mana context: input={context.InputTokens}, reserved={context.ReservedTokens}, "
+                + $"total={context.TotalTokens}, quality={context.OverallClassification}, "
+                + $"profile={context.Profile.ProfileId}{reported}.";
+        }
+
         if (state.ManaLimit is > 0)
         {
             return $"Mana: {state.ManaUsed ?? 0} / {state.ManaLimit} (session counters in Command Center are best-effort).";

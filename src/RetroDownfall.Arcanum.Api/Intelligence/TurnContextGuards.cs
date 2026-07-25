@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
@@ -155,50 +156,22 @@ internal static class TurnContextGuards
     }
 
     public static Result CheckContextBudget(
-        int messageTokens,
-        IEnumerable<AITool>? tools,
-        int contextWindowLimit,
-        int reservedOutputTokens)
+        ContextTokenBreakdown breakdown,
+        int contextWindowLimit)
     {
-        int toolSchemaTokens = EstimateToolSchemaTokens(tools);
-        int reserved = Math.Max(0, reservedOutputTokens);
-        long total = (long)Math.Max(0, messageTokens) + toolSchemaTokens + reserved;
-        int limit = Math.Max(1, contextWindowLimit);
+        ArgumentNullException.ThrowIfNull(breakdown);
+        int limit = ArcanumSettingClamps.ContextWindowLimit(contextWindowLimit);
 
-        if (total <= limit)
+        if (breakdown.TotalTokens <= limit)
         {
             return Result.Success();
         }
 
         return Result.Failure(new Error(
             ErrorCodes.Hub.ContextBudgetExceeded,
-            $"Context budget exceeded: ~{total} tokens (messages+tools+reserved output) exceed the {limit}-token window."));
-    }
-
-    public static int EstimateToolSchemaTokens(IEnumerable<AITool>? tools)
-    {
-        if (tools is null)
-        {
-            return 0;
-        }
-
-        long total = 0;
-        int count = 0;
-
-        foreach (AITool tool in tools)
-        {
-            count++;
-            string name = tool.Name ?? string.Empty;
-            string description = tool.Description ?? string.Empty;
-            total += 8 + ((name.Length + description.Length + 64) / 4);
-        }
-
-        if (count == 0)
-        {
-            return 0;
-        }
-
-        return total > int.MaxValue ? int.MaxValue : (int)total;
+            $"Context budget exceeded: {breakdown.TotalTokens} accounted tokens "
+            + $"({breakdown.InputTokens} input + {breakdown.ReservedTokens} reserved) exceed "
+            + $"the {limit}-token window using profile '{breakdown.Profile.ProfileId}'."));
     }
 
     public static bool ResolveContinueThenReplay(HttpContext httpContext, DisconnectPolicy policy)

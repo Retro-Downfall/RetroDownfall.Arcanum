@@ -52,11 +52,29 @@
                                      Increment="1" />
 
             <controls:LabeledEntry Label="Tokenizer encoding"
-                                   Description="Tiktoken encoding name used by InferenceTokenizerResolver. Only change if validating counts against a non-OpenAI model family with a different encoding."
+                                   Description="Fallback Tiktoken encoding used for unknown or calibrated model profiles. Known and explicitly configured exact profiles resolve independently."
                                    Key="intelligence.tokenizerEncoding"
                                    ValidationErrors="{Binding ValidationErrorsByPointer}"
                                    Text="{Binding Intelligence.TokenizerEncoding, Mode=TwoWay}"
                                    Placeholder="o200k_base" />
+
+            <controls:LabeledStepper Label="Estimated-token safety margin (%)"
+                                     Description="Percentage added to calibrated and unknown input-token estimates. Exact tokenizer output is never inflated."
+                                     Key="intelligence.estimatedTokenSafetyMarginPercent"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.EstimatedTokenSafetyMarginPercent, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Unknown image token reserve"
+                                     Description="Conservative reserve per image when no provider/model image formula is available. Byte size is never reported as an exact image-token count."
+                                     Key="intelligence.unknownImageTokenReserve"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.UnknownImageTokenReserve, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="128000"
+                                     Increment="1" />
 
             <TextBlock Text="Semantic router"
                    FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
@@ -114,8 +132,8 @@
                                      Maximum="100"
                                      Increment="1" />
 
-            <controls:LabeledStepper Label="Compression preflight min messages"
-                                     Description="Minimum assembled-message count before context-compression preflight runs. Short threads skip tokenizer cost."
+            <controls:LabeledStepper Label="Manual compact min messages"
+                                     Description="Minimum history size before the explicit compact operation tokenizes and prunes entries. Live provider calls always measure materialized context."
                                      Key="intelligence.compressionPreflightMinMessages"
                                      ValidationErrors="{Binding ValidationErrorsByPointer}"
                                      Value="{Binding Intelligence.CompressionPreflightMinMessages, Mode=TwoWay}"
@@ -123,8 +141,8 @@
                                      Maximum="100"
                                      Increment="1" />
 
-            <controls:LabeledStepper Label="Per-message template overhead (tokens)"
-                                     Description="Tokens added to the pre-flight count to approximate chat-template framing (role markers, separators)."
+            <controls:LabeledStepper Label="Fallback per-message framing (tokens)"
+                                     Description="Default role/template framing for calibrated and unknown tokenization profiles; a provider/model profile may override it."
                                      Key="intelligence.perMessageTemplateOverheadTokens"
                                      ValidationErrors="{Binding ValidationErrorsByPointer}"
                                      Value="{Binding Intelligence.PerMessageTemplateOverheadTokens, Mode=TwoWay}"

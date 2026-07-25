@@ -26,6 +26,8 @@ internal sealed class TurnAccountingHandle
 
     private readonly SemaphoreSlim _writerGate = new(1, 1);
 
+    private readonly SemaphoreSlim _reservationGate = new(1, 1);
+
     private readonly TurnAccountingHandle? _accountingOwner;
 
     private TurnAccountingHandle(
@@ -34,6 +36,7 @@ internal sealed class TurnAccountingHandle
         Guid? reservationId,
         bool reservationActive,
         bool ownsLifecycle,
+        decimal reservationHighWaterUsd = 0m,
         TurnAccountingHandle? accountingOwner = null)
     {
         Budget = budget;
@@ -41,6 +44,7 @@ internal sealed class TurnAccountingHandle
         ReservationId = reservationId;
         ReservationActive = reservationActive;
         OwnsLifecycle = ownsLifecycle;
+        _reservationHighWaterUsd = Math.Max(0m, reservationHighWaterUsd);
         _accountingOwner = accountingOwner;
     }
 
@@ -89,6 +93,8 @@ internal sealed class TurnAccountingHandle
 
     private bool _finished;
 
+    private decimal _reservationHighWaterUsd;
+
     private TurnAccountingHandle AccountingRoot => _accountingOwner ?? this;
 
     public void AddCost(decimal costUsd)
@@ -113,7 +119,62 @@ internal sealed class TurnAccountingHandle
             ReservationId,
             ReservationActive,
             ownsLifecycle: false,
-            AccountingRoot);
+            reservationHighWaterUsd: 0m,
+            accountingOwner: AccountingRoot);
+
+    public async Task<Result> EnsureReservationForContextAsync(
+        IBudgetReservationService? budgetReservations,
+        PricingSettings pricing,
+        string? model,
+        ContextTokenBreakdown breakdown,
+        CancellationToken cancellationToken)
+    {
+        if (!OwnsLifecycle
+            || !ReservationActive
+            || ReservationId is not Guid reservationId
+            || budgetReservations is null)
+        {
+            return Result.Success();
+        }
+
+        ModelPricingEntry entry = pricing.ResolveForModel(model);
+        decimal reservedUsd = BudgetReservationService.EstimateWorstCaseTurnUsd(
+            entry,
+            maxOutputTokens: breakdown.ReservedAnswerTokens,
+            reasoningBudgetTokens: breakdown.ReservedReasoningTokens,
+            estimatedInputTokens: breakdown.InputTokens);
+        TurnAccountingHandle root = AccountingRoot;
+        await root._reservationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            lock (root._costGate)
+            {
+                if (reservedUsd <= root._reservationHighWaterUsd)
+                {
+                    return Result.Success();
+                }
+            }
+
+            Result adjusted = await budgetReservations
+                .AdjustAsync(reservationId, reservedUsd, cancellationToken)
+                .ConfigureAwait(false);
+            if (adjusted.IsSuccess)
+            {
+                lock (root._costGate)
+                {
+                    root._reservationHighWaterUsd = Math.Max(
+                        root._reservationHighWaterUsd,
+                        reservedUsd);
+                }
+            }
+
+            return adjusted;
+        }
+        finally
+        {
+            root._reservationGate.Release();
+        }
+    }
 
     public async Task CompleteAsync(
         ITurnRunWriter? turnRunWriter,
@@ -235,7 +296,13 @@ internal sealed class TurnAccountingHandle
         bool active = reserved.Value.Status == BudgetReservationStatus.Reserved;
 
         return Result<TurnAccountingHandle>.Success(
-            new TurnAccountingHandle(budget, runId, active ? reserved.Value.Id : null, active, ownsLifecycle: true));
+            new TurnAccountingHandle(
+                budget,
+                runId,
+                active ? reserved.Value.Id : null,
+                active,
+                ownsLifecycle: true,
+                reservationHighWaterUsd: active ? reserved.Value.ReservedUsd : 0m));
     }
 
     /// <summary>

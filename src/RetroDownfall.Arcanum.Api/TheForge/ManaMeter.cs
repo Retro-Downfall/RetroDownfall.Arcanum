@@ -1,23 +1,23 @@
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.TheForge;
-using RetroDownfall.Arcanum.Api.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
 public sealed class ManaMeter : IManaMeter
 {
 
-    private readonly InferenceTokenizerResolver _resolver;
+    private readonly IModelTokenEstimator _estimator;
 
     private readonly IOptionsMonitor<ArcanumSettings> _settings;
 
     public ManaMeter(
-        InferenceTokenizerResolver resolver,
+        IModelTokenEstimator estimator,
         IOptionsMonitor<ArcanumSettings> settings)
     {
 
-        _resolver = resolver;
+        _estimator = estimator;
 
         _settings = settings;
 
@@ -33,11 +33,24 @@ public sealed class ManaMeter : IManaMeter
 
         }
 
-        string encoding = _settings.CurrentValue.Intelligence?.TokenizerEncoding ?? InferenceTokenizerResolver.DefaultEncodingName;
+        ArcanumSettings current = _settings.CurrentValue;
+        if (ProviderResolver.TryResolveProviderForModel(
+                current,
+                current.DefaultModel,
+                out ProviderSettings? provider,
+                out string model)
+            && provider is not null)
+        {
+            return _estimator.EstimateText(provider, model, text).TokenCount;
+        }
 
-        Microsoft.ML.Tokenizers.Tokenizer tokenizer = _resolver.ResolveTokenizer(encoding);
-
-        return tokenizer.CountTokens(text);
+        ProviderSettings fallback = new()
+        {
+            Name = "unconfigured",
+            Type = AiProviderKind.OpenAICompatible,
+            Models = [new ModelEntry("unknown")],
+        };
+        return _estimator.EstimateText(fallback, "unknown", text).TokenCount;
     }
 
 }

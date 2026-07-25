@@ -34,6 +34,8 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.Null(entry.Reasoning);
 
+        Assert.Null(entry.Tokenization);
+
     }
 
     [Fact]
@@ -256,6 +258,43 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Fact]
+    public void ReadAndWrite_ObjectForm_PreservesTypedTokenizationProfile()
+    {
+        const string json =
+            """
+            {
+              "name": "custom-model",
+              "tokenization": {
+                "type": "calibratedApproximation",
+                "tokenizerId": "o200k_base",
+                "safetyMarginPercent": 25,
+                "unknownImageReserveTokens": 4096,
+                "confidence": 0.8
+              }
+            }
+            """;
+
+        ModelEntry? entry = JsonSerializer.Deserialize(
+            json,
+            ConfigurationJsonContext.Default.ModelEntry);
+
+        ModelTokenizationProfile profile = Assert.IsType<ModelTokenizationProfile>(entry?.Tokenization);
+        Assert.Equal(ModelTokenizationProfileType.CalibratedApproximation, profile.Type);
+        Assert.Equal("o200k_base", profile.TokenizerId);
+        Assert.Equal(25, profile.SafetyMarginPercent);
+        Assert.Equal(4096, profile.UnknownImageReserveTokens);
+
+        string roundTripped = JsonSerializer.Serialize(
+            entry,
+            ConfigurationJsonContext.Default.ModelEntry);
+        ModelEntry? reparsed = JsonSerializer.Deserialize(
+            roundTripped,
+            ConfigurationJsonContext.Default.ModelEntry);
+
+        Assert.Equal(profile, reparsed?.Tokenization);
+    }
+
+    [Fact]
     public void ImplicitConversion_FromString_DefaultsSupportsVisionFalse()
     {
 
@@ -340,6 +379,8 @@ public sealed class ModelEntryJsonConverterTests
     [InlineData(typeof(ReasoningCapabilities))]
     [InlineData(typeof(ReasoningControlSupport))]
     [InlineData(typeof(ReasoningWireDialect))]
+    [InlineData(typeof(ModelTokenizationProfile))]
+    [InlineData(typeof(ModelTokenizationProfileType))]
     public void ConfigurationJsonContext_RegistersReasoningCapabilityTypes(Type type)
     {
 

@@ -88,6 +88,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "llo");
 
+        Assert.Contains(
+            events,
+            static e => e.Type == IntelligenceEventType.Context
+                && e.ContextBreakdown is { InputTokens: > 0 });
+
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
     }
 
@@ -805,7 +810,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             Providers =
             [
-                DefaultProvider() with { ContextWindowLimit = 4096 },
+                DefaultProvider() with { ContextWindowLimit = 16_384 },
             ],
             Intelligence = DefaultSettings().Intelligence with
             {
@@ -856,7 +861,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             Providers =
             [
-                DefaultProvider() with { ContextWindowLimit = 32_768 },
+                DefaultProvider() with { ContextWindowLimit = 262_144 },
             ],
             Intelligence = DefaultSettings().Intelligence with { EnableContextCompression = false },
         };
@@ -1152,7 +1157,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             events,
             static e => e.Type == IntelligenceEventType.Error
                 && e.Message.Contains("Tool invocation limit reached.", StringComparison.Ordinal)
-                && e.Message.Contains(ErrorCodes.Hub.ToolLoop, StringComparison.Ordinal));
+                && e.Data == ErrorCodes.Hub.ToolLoop);
 
     }
 
@@ -1415,7 +1420,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             Providers =
             [
-                DefaultProvider() with { ContextWindowLimit = 32_768 },
+                DefaultProvider() with { ContextWindowLimit = 262_144 },
             ],
             Intelligence = DefaultSettings().Intelligence with
             {
@@ -3043,7 +3048,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
         using ChatClientLease lease = new(
             chat,
-            DefaultProvider() with { ContextWindowLimit = messageTokens + reasoningBudgetTokens },
+            DefaultProvider() with
+            {
+                ContextWindowLimit = messageTokens + maxOutputTokens + reasoningBudgetTokens,
+            },
             ModelName,
             ownedHttpClient: null);
 
@@ -3072,7 +3080,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
         using ChatClientLease lease = new(
             chat,
-            DefaultProvider() with { ContextWindowLimit = messageTokens + reasoningBudgetTokens - 1 },
+            DefaultProvider() with
+            {
+                ContextWindowLimit = messageTokens + maxOutputTokens + reasoningBudgetTokens - 1,
+            },
             ModelName,
             ownedHttpClient: null);
 
@@ -5327,6 +5338,66 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StructuredRetry_ReservationFailure_PreservesBudgetError()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueText("invalid answer");
+        chat.EnqueueText("""{"name":"unused"}""");
+        RecordingBudgetReservationService reservations = new();
+        reservations.AdjustResults.Enqueue(Result.Success());
+        reservations.AdjustResults.Enqueue(Result.Failure(
+            new Error(ErrorCodes.Budget.Exceeded, "retry reservation exceeded")));
+        ArcanumSettings defaults = DefaultSettings();
+        ArcanumSettings settings = defaults with
+        {
+            Providers =
+            [
+                DefaultProvider() with { ContextWindowLimit = 262_144 },
+            ],
+            Intelligence = defaults.Intelligence with
+            {
+                ReservedOutputTokens = 128_000,
+            },
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry
+                {
+                    InputPer1M = 1m,
+                    OutputPer1M = 1m,
+                },
+            },
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 1,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>(
+            """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""");
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: new RecordingTurnRunWriter(),
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
+        Assert.Equal(1, chat.BufferedCallCount);
+    }
+
+    [Fact]
     public async Task Reasoning_StrictStructuredRetry_GuardrailsInspectReplacementReasoningBeforeVisibility()
     {
         ScriptingChatClient chat = new();
@@ -5718,12 +5789,17 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         InferenceTokenizerResolver resolver =
             new(NullLogger<InferenceTokenizerResolver>.Instance);
 
-        return new ManaPreflight(options).CountTokens(
-            messages,
-            resolver.ResolveTokenizer(settings.Intelligence.TokenizerEncoding),
-            ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
-                settings.Intelligence.PerMessageTemplateOverheadTokens),
-            settings.Intelligence.TokenizerEncoding);
+        ProviderSettings provider = settings.Providers[0];
+        string model = provider.Models[0].Name;
+        return new ModelTokenEstimator(resolver, options)
+            .EstimateContext(new ModelTokenizationRequest(
+                provider,
+                model,
+                messages,
+                new ChatOptions(),
+                ReservedAnswerTokens: 0,
+                ReservedReasoningTokens: 0))
+            .InputTokens;
     }
 
     private static Result InvokeEnsureContextBudget(
@@ -5736,8 +5812,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             "EnsureContextBudget",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
 
-        return Assert.IsType<Result>(
-            method.Invoke(wizard, [messages, new ChatOptions(), lease, request]));
+        object?[] arguments = [messages, new ChatOptions(), lease, request, null];
+        return Assert.IsType<Result>(method.Invoke(wizard, arguments));
     }
 
     private WizardIntelligenceProvider CreateWizard(
@@ -5848,7 +5924,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             budgetMonitor,
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
-            new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
             healthTracker: null,
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
@@ -5882,14 +5957,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ArcanumSettings settings)
     {
 
-        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
-
         InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
 
         IContextCompressionService compression = new ContextCompressionService(
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
-            manaPreflight,
             tokenizerResolver,
             NullLogger<ContextCompressionService>.Instance);
 
@@ -5897,7 +5969,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
-            manaPreflight,
             compression);
 
     }
@@ -6958,6 +7029,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public bool WasReleased { get; private set; }
 
+        public Queue<Result> AdjustResults { get; } = new();
+
         public Task<Result<BudgetReservation>> ReserveAsync(
             BudgetReservationRequest request,
             CancellationToken cancellationToken = default)
@@ -6983,6 +7056,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             ReconcileCount++;
             return Task.CompletedTask;
         }
+
+        public Task<Result> AdjustAsync(
+            Guid reservationId,
+            decimal reservedUsd,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                AdjustResults.Count > 0
+                    ? AdjustResults.Dequeue()
+                    : Result.Success());
 
         public Task ReleaseAsync(
             Guid reservationId,

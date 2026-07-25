@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Core.TheForge;
 
@@ -74,7 +75,8 @@ public sealed record PromptTestResultDto(
     string AssembledText,
     int TokenCount,
     ResolvedSpellInfoDto? ResolvedSpell,
-    int McpServerCount);
+    int McpServerCount,
+    ContextTokenBreakdown? ContextBreakdown = null);
 
 public sealed record ResolvedSpellInfoDto(
     string Name,

@@ -46,6 +46,58 @@ public sealed class CommandCenterReasoningTests
     }
 
     [Fact]
+    public async Task Runner_retains_latest_context_breakdown_for_mana_surfaces()
+    {
+        ContextTokenBreakdown breakdown = new()
+        {
+            Provider = "provider",
+            Model = "model",
+            Profile = new ResolvedModelTokenizationProfile
+            {
+                ProfileId = "fallback:test",
+                Type = ModelTokenizationProfileType.UnknownFallback,
+                TokenizerId = "o200k_base",
+                SafetyMarginPercent = 15,
+                PerMessageOverheadTokens = 4,
+                PerToolOverheadTokens = 8,
+                ProviderFramingTokens = 3,
+                StopTokenOverheadTokens = 1,
+                UnknownImageReserveTokens = 2048,
+                Confidence = 0.5,
+            },
+            Components = [],
+            InputTokens = 100,
+            ReservedTokens = 32,
+            TotalTokens = 132,
+            OverallClassification = TokenEstimateClassification.Estimated,
+            SafetyMarginTokens = 10,
+            ProviderReportedInputTokens = 107,
+            EstimationVarianceTokens = 7,
+        };
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(
+                new IntelligenceEvent(
+                    IntelligenceEventType.Context,
+                    "Context token accounting",
+                    ContextBreakdown: breakdown),
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "answer"),
+                new IntelligenceEvent(IntelligenceEventType.Result, "answer", "answer"))));
+        CommandCenterState state = new(new SessionLogBuffer());
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("question", state, updates.Writer, CancellationToken.None);
+
+        Assert.NotNull(state.LastContextBreakdown);
+        Assert.Equal(breakdown.InputTokens, state.LastContextBreakdown!.InputTokens);
+        Assert.Equal(breakdown.Profile, state.LastContextBreakdown.Profile);
+        Assert.Equal(breakdown.ProviderReportedInputTokens, state.LastContextBreakdown.ProviderReportedInputTokens);
+        Assert.Contains("Estimated", state.SidebarText, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            state.Log.Snapshot(),
+            static entry => entry.Text.Contains("Context token accounting", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Runner_coalesces_high_delta_reasoning_into_one_transcript_entry()
     {
         IntelligenceEvent[] frames =

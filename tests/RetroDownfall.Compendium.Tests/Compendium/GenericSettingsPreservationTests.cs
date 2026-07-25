@@ -214,6 +214,54 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Provider_tokenization_profiles_survive_load_build_and_save_round_trip()
+    {
+        ModelTokenizationProfile expected = new()
+        {
+            Type = ModelTokenizationProfileType.CalibratedApproximation,
+            TokenizerId = "o200k_base",
+            SafetyMarginPercent = 20,
+            UnknownImageReserveTokens = 4096,
+            Confidence = 0.8,
+        };
+
+        await SeedAsync(new ArcanumSettings
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "profiled-provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://profiled.example/v1",
+                    Models = [new ModelEntry("profiled-model", Tokenization: expected)],
+                },
+            ],
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+
+        ProvidersSectionViewModel.ModelEntryViewModel model = Assert.Single(
+            Assert.Single(vm.Providers.Providers).Models);
+        Assert.Equal(expected, model.Tokenization);
+
+        ArcanumSettings built = vm.BuildSettings();
+        Assert.Equal(
+            expected,
+            Assert.Single(Assert.Single(built.Providers).Models).Tokenization);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        Assert.Equal(
+            expected,
+            Assert.Single(Assert.Single(saved.Providers).Models).Tokenization);
+    }
+
     private static ConfigurationViewModel CreateViewModel()
     {
 

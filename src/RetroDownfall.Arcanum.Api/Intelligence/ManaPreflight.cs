@@ -5,15 +5,17 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Pre-flight token counting for context compression with per-message memoization.
+/// Legacy single-tokenizer benchmark helper retained for cache regression tests. Production
+/// admission, compression, Mana, and preview paths use <see cref="IModelTokenEstimator"/>.
 /// </summary>
-public sealed class ManaPreflight
+internal sealed class ManaPreflight
 {
 
     // W3.3 Fix 6: the LRU capacity is reloaded on IOptionsMonitor.OnChange. The
@@ -131,7 +133,7 @@ public sealed class ManaPreflight
         finally
         {
 
-            ArrayPool<byte>.Shared.Return(rented);
+            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
 
         }
 

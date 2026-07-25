@@ -157,6 +157,19 @@ public static class ArcanumSettingClamps
 
     public static int PerMessageTemplateOverheadTokens(int value) => Math.Clamp(value, 0, 32);
 
+    public static int EstimatedTokenSafetyMarginPercent(int value) => Math.Clamp(value, 1, 100);
+
+    public static int UnknownImageTokenReserve(int value) => Math.Clamp(value, 1, 128_000);
+
+    public static int TokenizationPerToolOverheadTokens(int value) => Math.Clamp(value, 0, 128);
+
+    public static int TokenizationProviderFramingTokens(int value) => Math.Clamp(value, 0, 1_024);
+
+    public static int TokenizationStopTokenOverheadTokens(int value) => Math.Clamp(value, 0, 128);
+
+    public static double TokenizationConfidence(double value) =>
+        double.IsNaN(value) ? 0d : Math.Clamp(value, 0d, 1d);
+
     public static int WebhookTimeoutSeconds(int value) => Math.Clamp(value, 1, 120);
 
     public static long MaxRequestBodyBytes(long value) => Math.Clamp(value, 256L * 1024L, 1024L * 1024L * 1024L);

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -425,7 +426,7 @@ internal static class PromptEndpoints
                 IOptionsSnapshot<ArcanumSettings> settings,
                 PromptRenderer renderer,
                 IMcpConnectionManager mcpManager,
-                IManaMeter manaMeter,
+                IModelTokenEstimator tokenEstimator,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -565,16 +566,39 @@ internal static class PromptEndpoints
 
                 string assembled = SystemPromptBuilder.Build(ping, codexContent, activeSpell);
 
-                int tokenCount = manaMeter.CountTokens(assembled);
-
-                IReadOnlyList<Microsoft.Extensions.AI.AITool> tools =
+                IReadOnlyList<AITool> tools =
                     await mcpManager.GetAvailableToolsAsync(workingDirectory, ctx.RequestAborted).ConfigureAwait(false);
+                ResolvePreviewModel(
+                    settings.Value,
+                    prompt.Model,
+                    out ProviderSettings previewProvider,
+                    out string previewModel);
+                ChatOptions previewOptions = new()
+                {
+                    Tools = [.. tools],
+                };
+                ContextTokenBreakdown contextBreakdown = tokenEstimator.EstimateContext(
+                    new ModelTokenizationRequest(
+                        previewProvider,
+                        previewModel,
+                        [
+                            new ChatMessage(ChatRole.System, assembled),
+                            new ChatMessage(ChatRole.User, string.Empty),
+                        ],
+                        previewOptions,
+                        Math.Max(
+                            0,
+                            prompt.MaxOutputTokens
+                            ?? ArcanumSettingClamps.ReservedOutputTokens(
+                                settings.Value.Intelligence.ReservedOutputTokens)),
+                        ReservedReasoningTokens: 0));
 
                 PromptTestResultDto dto = new(
                     assembled,
-                    tokenCount,
+                    contextBreakdown.TotalTokens,
                     new ResolvedSpellInfoDto(prompt.Name, prompt.Version),
-                    tools.Count);
+                    tools.Count,
+                    contextBreakdown);
 
                 return Results.Ok(
                     ApiResponse<PromptTestResultDto>.FromResult(
@@ -878,6 +902,34 @@ internal static class PromptEndpoints
         .AddEndpointFilter(IdempotencyEndpointFilters.ForBoundArgument(2, ArcanumJsonContext.Default.PromptExecuteRequest));
 
         return apiGroup;
+    }
+
+    private static void ResolvePreviewModel(
+        ArcanumSettings settings,
+        string? targetModel,
+        out ProviderSettings provider,
+        out string model)
+    {
+        if (ProviderResolver.TryResolveProviderForModel(
+                settings,
+                targetModel,
+                out ProviderSettings? configuredProvider,
+                out string configuredModel)
+            && configuredProvider is not null)
+        {
+            provider = configuredProvider;
+            model = configuredModel;
+            return;
+        }
+
+        model = string.IsNullOrWhiteSpace(targetModel) ? "unknown" : targetModel.Trim();
+        provider = new ProviderSettings
+        {
+            Name = "unconfigured",
+            Type = AiProviderKind.OpenAICompatible,
+            Models = [new ModelEntry(model)],
+            ContextWindowLimit = 8192,
+        };
     }
 
 }

@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -93,6 +94,52 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         Assert.Equal(record.TotalTokens, found.TotalTokens);
 
+    }
+
+    [Fact]
+    public async Task LogAsync_ThenQueryAsync_PreservesContextEstimateAndReportedVariance()
+    {
+        InferenceAuditLogger logger = CreateLogger(enabled: true);
+        ContextTokenBreakdown breakdown = new()
+        {
+            Provider = "provider",
+            Model = "model",
+            Profile = new ResolvedModelTokenizationProfile
+            {
+                ProfileId = "fallback:model",
+                Type = ModelTokenizationProfileType.UnknownFallback,
+                TokenizerId = "o200k_base",
+                SafetyMarginPercent = 15,
+                PerMessageOverheadTokens = 4,
+                PerToolOverheadTokens = 8,
+                ProviderFramingTokens = 3,
+                StopTokenOverheadTokens = 1,
+                UnknownImageReserveTokens = 2048,
+                Confidence = 0.5,
+            },
+            Components = [],
+            InputTokens = 100,
+            ReservedTokens = 32,
+            TotalTokens = 132,
+            OverallClassification = TokenEstimateClassification.Estimated,
+            SafetyMarginTokens = 10,
+            ProviderReportedInputTokens = 107,
+            EstimationVarianceTokens = 7,
+        };
+        InferenceAuditRecord record = MakeRecord("ping") with
+        {
+            ContextBreakdowns = [breakdown],
+        };
+
+        await logger.LogAsync(record, CancellationToken.None);
+        InferenceAuditRecord found = Assert.Single(
+            await logger.QueryAsync(null, null, null, null, 100, CancellationToken.None));
+        ContextTokenBreakdown foundBreakdown = Assert.Single(found.ContextBreakdowns!);
+
+        Assert.Equal(100, foundBreakdown.InputTokens);
+        Assert.Equal(107, foundBreakdown.ProviderReportedInputTokens);
+        Assert.Equal(7, foundBreakdown.EstimationVarianceTokens);
+        Assert.Equal("fallback:model", foundBreakdown.Profile.ProfileId);
     }
 
     [Fact]

@@ -102,6 +102,7 @@ public class TheForgeJsonContextTests
     [InlineData("""{"type":"token","message":"","data":"Hello"}""", IntelligenceEventType.Token, "Hello")]
     [InlineData("""{"type":"sessionBound","message":"session bound"}""", IntelligenceEventType.SessionBound, null)]
     [InlineData("""{"type":"conversationBound","message":"deprecated alias"}""", IntelligenceEventType.ConversationBound, null)]
+    [InlineData("""{"type":"context","message":"context accounting"}""", IntelligenceEventType.Context, null)]
     [InlineData("""{"type":"toolError","message":"boom"}""", IntelligenceEventType.ToolError, null)]
     public void IntelligenceEvent_DeserializesEachNdjsonFrameType(string ndjsonLine, IntelligenceEventType expectedType, string? expectedData)
     {

@@ -10,10 +10,8 @@ namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 /// </param>
 /// <param name="Prompt">Raw text to count — an alternative to <see cref="Messages"/> for a single string.</param>
 /// <param name="Model">
-/// Optional, accepted for forward-compatibility. Arcanum currently counts Mana using a single
-/// process-wide encoding (<c>Arcanum:Intelligence:TokenizerEncoding</c>) for all models — the same
-/// approximation the pre-flight context-compression counter uses (DESIGN.md §10.2.3) — so this value
-/// does not currently change the resolved encoding.
+/// Optional canonical model name. Arcanum resolves the configured provider/model tokenization
+/// profile; an unconfigured name uses the documented conservative fallback.
 /// </param>
 /// <param name="Tools">
 /// When <see langword="true"/>, include an estimate of tool-schema Mana overhead

@@ -93,8 +93,8 @@ flowchart TD
     Ctx --> Loop
 
     subgraph Loop["Chat Loop — iterative tool-call loop (bounded)"]
-        L1["Build messages +<br/>apply context compression"]
-        L2["IModelCallExecutor<br/>buffered / streaming"]
+        L1["Build materialized messages/options +<br/>model-aware breakdown/compression"]
+        L2["IModelCallExecutor<br/>admission + buffered / streaming"]
         L3["Collect actionable<br/>FunctionCallContent"]
         L4{"Tool calls?"}
         L5["Tool round budget check"]
@@ -202,10 +202,10 @@ This is the core of the workflow. `RunInferenceAttemptAsync` (shared by buffered
 
 Each iteration of the inner loop:
 
-1. **Build messages + apply context compression** (outer-loop body, once per outer iteration) — `InferenceContextBuilder.BuildInitialMeAiChatMessages` constructs the message list from the thread + prompt; the dynamic system prompt is prepended; `TryApplyContextCompressionIfNeeded` may swap old Entries for a `Session.Summary` near the context limit (read-time compression — never deletes rows). Watermark/compact paths drop orphan ToolCall/ToolResult halves so exchanges stay paired.
-2. **Context + turn-budget preflight** — before each provider call: `IModelCallExecutor.TryBeginModelCall` (`Hub.TurnBudgetExceeded`) and `EnsureContextBudget` (messages + tool schemas + `max(request MaxOutputTokens or configured ReservedOutputTokens default, Reasoning.BudgetTokens)` vs context window; may trim oldest complete in-memory tool exchanges; else `Hub.ContextBudgetExceeded`).
-3. **Call the model** — `IModelCallExecutor.ExecuteBufferedAsync` / `ExecuteStreamingAsync` (sole chat I/O boundary; Core purpose-tagged). `TextContent` becomes answer text; `TextReasoningContent` becomes a distinct normalized reasoning update/result. Streaming preserves interleaving order. Provider `ProtectedData` is retained only on the raw in-memory assistant content needed for same-provider tool continuation.
-4. **Accumulate usage** — `AccumulateUsage` adds prompt/completion/provider-total/cached/reasoning counts across rounds. Reasoning is already a completion subset and cached input is already a prompt subset, so neither is added to totals. A present provider total is authoritative; only a missing total is derived from prompt + completion.
+1. **Build the materialized context + apply compression** (outer-loop body, once per outer iteration) — `InferenceContextBuilder.BuildInitialMeAiChatMessages` constructs history + prompt; the dynamic system prompt and rehydrated attachments are added; the final filtered `ChatOptions.Tools` and structured-output schema already exist. `TryApplyContextCompressionIfNeeded` measures this complete payload with the resolved model profile and may swap old Entries for `Session.Summary` (never deletes rows). Watermark/compact paths keep ToolCall/ToolResult halves paired.
+2. **Context + reservation + turn-budget preflight** — before every provider call, including continuations: `EnsureContextBudget` builds a fresh `ContextTokenBreakdown` (all message/content sources, complete tool schemas, provider framing, separate answer/reasoning reserves), may trim oldest complete in-memory tool exchanges, and rejects overflow with `Hub.ContextBudgetExceeded`. `TurnAccountingHandle` atomically raises the USD reservation from the materialized input estimate; `IModelCallExecutor.TryBeginModelCall` enforces `Hub.TurnBudgetExceeded`.
+3. **Call the model** — `IModelCallExecutor.ExecuteBufferedAsync` / `ExecuteStreamingAsync` is the sole chat I/O boundary. It validates and reuses the finalized preflight breakdown (or computes one for auxiliary callers without a precomputed value), records estimated-input/rejection metrics, and blocks an over-limit call. `TextContent` becomes answer text; `TextReasoningContent` becomes a distinct normalized reasoning update/result. Streaming preserves interleaving order. Provider `ProtectedData` is retained only on the raw in-memory assistant content needed for same-provider tool continuation.
+4. **Reconcile + accumulate usage** — provider `InputTokenCount` is attached to that call's breakdown with signed variance; it remains post-call authority and never overwrites the estimate. `AccumulateUsage` adds prompt/completion/provider-total/cached/reasoning counts across rounds. Reasoning is already a completion subset and cached input is already a prompt subset, so neither is added to totals. A present provider total is authoritative; only a missing total is derived from prompt + completion.
 5. **Collect actionable function calls** — `ToolExecutionPipeline.CollectActionableFunctionCalls(response)` walks `response.Messages` extracting `FunctionCallContent` items where `!InformationalOnly`.
 6. **No tool calls → break** — the model produced a final text answer; exit the loop and proceed to finalization.
 7. **Forward-client-tools branch** — when `ForwardClientTools=true`, the Wizard **does not execute** the calls server-side: it records them as `PromptToolCall`s, sets `finishReason=tool_calls`, and breaks so the OpenAI v1 layer can echo them back to the client for client-side execution.
@@ -213,7 +213,7 @@ Each iteration of the inner loop:
 9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token-budget materialized for the model. The result is appended to `observedToolCalls` and the audit context.
 10. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id), any raw `TextReasoningContent` from that provider round, and a tool message containing `FunctionResultContent(callId, resultText)`. This is the feedback that feeds the next inference round. Raw reasoning never crosses to a fallback provider and exists only for this same-provider continuation.
 11. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` persists only the tool interaction and publishes recent Entries to `SessionEventHub`; raw or client-safe reasoning is never written to Grimoire.
-12. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) is sent to the model again. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 6). Step 10 is what makes this a loop rather than a single call.
+12. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) gets a new breakdown and admission decision; the initial count is never reused. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 6). Step 10 is what makes this a loop rather than a single call.
 
 ### 6.1 Sequence diagram for a single tool round
 
@@ -311,7 +311,7 @@ After the tool loop breaks with a final text answer:
 3. **Grimoire finalize** — `grimoireTurnWriter.TryFinalizeBufferedAssistantEntryAsync` → `grimoire.FinalizeAssistantEntryAsync(entryId, finalText)`. Publishes the finalized answer-only Entry to `SessionEventHub`; reasoning is never persisted.
 4. **Session token increment** — `TryIncrementSessionTokensAsync`.
 5. **Saga extraction enqueue** — `TryEnqueueSagaExtraction` — background service extracts Saga memories from the turn.
-6. **Metrics + audit logging.**
+6. **Metrics + audit logging** — reported usage remains the spend/session authority; per-call context breakdowns (including estimate quality and optional reported variance) are retained in successful inference audit records and exposed to native telemetry clients.
 7. **Return** `PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)` with a separate ordered `Reasoning` segment list.
 
 **Streaming** (`RunInferenceAttemptAsync` with `TurnResponseMode.Streaming`): mirrors the above but yields events. Best-effort structured output validates post-hoc without retry. Strict mode with `MaxValidationRetries > 0` uses bounded **buffered replacement calls** through `ValidateAndRetryAsync`; it clears rejected answer/reasoning runs and releases only the accepted replacement after validation and guardrails. Strict mode with zero retries still withholds and fails post-hoc. Failure yields `Error` and no terminal `Result`; success releases buffered `Reasoning`/`Token` runs in order, then yields `Result` with usage, finish reason, and warnings. A `finally` block calls `TryResolveInterruptedOnStreamExitAsync` so the Grimoire turn is never left in-flight if the enumerator is abandoned.
@@ -327,6 +327,7 @@ The sequence of events a streaming client sees for a typical multi-round tool tu
 3. `ConversationBound` — (if stateful) the conversation anchor
 4. `Status` — memory compression notice (if compression ran)
 5. **For each tool round:**
+   - `Context` — pre-call model/profile quality, source rows, estimated input, safety margin, and answer/reasoning reserves. When provider usage arrives, an updated frame for the same call adds reported input and signed variance. OpenAI SSE filters this Arcanum-native diagnostic frame.
    - `Reasoning` / `Token` × N — typed client-safe reasoning and answer chunks in provider order. Reasoning payload is `{ text, output }`; it never appears in token `data`. Frames are withheld together when `bufferTokens`.
    - **For each tool call in the round:**
      - `ToolCall` — name + args

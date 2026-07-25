@@ -48,6 +48,10 @@ public sealed partial class IntelligenceSectionViewModel : ObservableObject
 
     [ObservableProperty] private string _tokenizerEncoding = string.Empty;
 
+    [ObservableProperty] private int _estimatedTokenSafetyMarginPercent;
+
+    [ObservableProperty] private int _unknownImageTokenReserve;
+
     [ObservableProperty] private int _maxOpenApiMessages;
 
     [ObservableProperty] private int _maxStatelessMessages;
@@ -111,6 +115,10 @@ public sealed partial class IntelligenceSectionViewModel : ObservableObject
 
         TokenizerEncoding = settings.TokenizerEncoding;
 
+        EstimatedTokenSafetyMarginPercent = settings.EstimatedTokenSafetyMarginPercent;
+
+        UnknownImageTokenReserve = settings.UnknownImageTokenReserve;
+
         MaxOpenApiMessages = settings.MaxOpenApiMessages;
 
         MaxStatelessMessages = settings.MaxStatelessMessages;
@@ -171,6 +179,10 @@ public sealed partial class IntelligenceSectionViewModel : ObservableObject
         PerMessageTemplateOverheadTokens = PerMessageTemplateOverheadTokens,
 
         TokenizerEncoding = TokenizerEncoding,
+
+        EstimatedTokenSafetyMarginPercent = EstimatedTokenSafetyMarginPercent,
+
+        UnknownImageTokenReserve = UnknownImageTokenReserve,
 
         MaxOpenApiMessages = MaxOpenApiMessages,
 

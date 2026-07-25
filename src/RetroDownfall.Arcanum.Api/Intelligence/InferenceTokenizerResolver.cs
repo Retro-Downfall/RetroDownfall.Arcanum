@@ -15,16 +15,18 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
 
     internal const string DefaultEncodingName = "o200k_base";
 
-    private readonly ConcurrentDictionary<string, Tokenizer> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ResolvedInferenceTokenizer> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public Tokenizer ResolveTokenizer(string? encodingName)
+    public Tokenizer ResolveTokenizer(string? encodingName) => Resolve(encodingName).Tokenizer;
+
+    internal ResolvedInferenceTokenizer Resolve(string? encodingName)
     {
 
         string requested = string.IsNullOrWhiteSpace(encodingName)
             ? DefaultEncodingName
             : encodingName.Trim();
 
-        if (_cache.TryGetValue(requested, out Tokenizer? cached))
+        if (_cache.TryGetValue(requested, out ResolvedInferenceTokenizer? cached))
         {
             return cached;
         }
@@ -33,7 +35,7 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
 
     }
 
-    private Tokenizer ResolveTokenizerSlow(string requested)
+    private ResolvedInferenceTokenizer ResolveTokenizerSlow(string requested)
     {
 
         try
@@ -42,7 +44,7 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
 
             logger.LogDebug("Created Tiktoken tokenizer for encoding {EncodingName}.", requested);
 
-            return created;
+            return new ResolvedInferenceTokenizer(created, requested, requested, UsedFallback: false);
         }
         catch (Exception ex)
         {
@@ -52,11 +54,27 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
                 requested,
                 DefaultEncodingName);
 
-            return _cache.GetOrAdd(
+            ResolvedInferenceTokenizer fallback = _cache.GetOrAdd(
                 DefaultEncodingName,
-                static _ => TiktokenTokenizer.CreateForEncoding(DefaultEncodingName));
+                static _ => new ResolvedInferenceTokenizer(
+                    TiktokenTokenizer.CreateForEncoding(DefaultEncodingName),
+                    DefaultEncodingName,
+                    DefaultEncodingName,
+                    UsedFallback: false));
+
+            return fallback with
+            {
+                RequestedEncoding = requested,
+                UsedFallback = true,
+            };
         }
 
     }
 
 }
+
+internal sealed record ResolvedInferenceTokenizer(
+    Tokenizer Tokenizer,
+    string RequestedEncoding,
+    string ActualEncoding,
+    bool UsedFallback);

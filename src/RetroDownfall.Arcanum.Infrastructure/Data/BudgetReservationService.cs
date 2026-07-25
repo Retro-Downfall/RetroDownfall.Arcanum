@@ -126,6 +126,128 @@ internal sealed class BudgetReservationService(
         }
     }
 
+    public async Task<Result> AdjustAsync(
+        Guid reservationId,
+        decimal reservedUsd,
+        CancellationToken cancellationToken = default)
+    {
+        BudgetSettings budget = settings.CurrentValue.Budget ?? new BudgetSettings();
+        if (!budget.Enabled || budget.DailyLimitUsd <= 0)
+        {
+            return Result.Success();
+        }
+
+        decimal dailyLimit = ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd);
+        decimal requested = Math.Max(0m, reservedUsd);
+
+        try
+        {
+            await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    await ExecuteNonQueryAsync(connection, "BEGIN IMMEDIATE;", cancellationToken).ConfigureAwait(false);
+
+                    try
+                    {
+                        decimal currentReserved = 0m;
+                        string budgetPeriod = string.Empty;
+                        BudgetReservationStatus status = BudgetReservationStatus.Released;
+                        bool reservationFound;
+                        await using (DbCommand read = connection.CreateCommand())
+                        {
+                            read.CommandText =
+                                """
+                                SELECT "ReservedUsd", "BudgetPeriod", "Status"
+                                FROM "BudgetReservations"
+                                WHERE "Id" = @id
+                                """;
+                            AddParameter(read, "@id", reservationId.ToString("N"));
+                            await using DbDataReader reader = await read
+                                .ExecuteReaderAsync(cancellationToken)
+                                .ConfigureAwait(false);
+                            reservationFound = await reader
+                                .ReadAsync(cancellationToken)
+                                .ConfigureAwait(false);
+                            if (reservationFound)
+                            {
+                                currentReserved = Convert.ToDecimal(reader.GetValue(0), CultureInfo.InvariantCulture);
+                                budgetPeriod = reader.GetString(1);
+                                status = (BudgetReservationStatus)reader.GetInt32(2);
+                            }
+                        }
+
+                        if (!reservationFound
+                            || status != BudgetReservationStatus.Reserved
+                            || requested <= currentReserved)
+                        {
+                            await ExecuteNonQueryAsync(connection, "COMMIT;", cancellationToken).ConfigureAwait(false);
+                            return;
+                        }
+
+                        decimal committed = await SumCommittedAsync(
+                                connection,
+                                transaction: null,
+                                budgetPeriod,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        decimal outstanding = await SumOutstandingAsync(
+                                connection,
+                                transaction: null,
+                                budgetPeriod,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        decimal projected = committed + outstanding - currentReserved + requested;
+                        if (projected > dailyLimit)
+                        {
+                            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
+                            throw new BudgetExceededException(dailyLimit, committed + outstanding);
+                        }
+
+                        await using DbCommand update = connection.CreateCommand();
+                        update.CommandText =
+                            """
+                            UPDATE "BudgetReservations"
+                            SET "ReservedUsd" = @reserved, "UpdatedAt" = @updated
+                            WHERE "Id" = @id AND "Status" = @status
+                            """;
+                        AddParameter(update, "@id", reservationId.ToString("N"));
+                        AddParameter(update, "@reserved", requested);
+                        AddParameter(update, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+                        AddParameter(update, "@status", (int)BudgetReservationStatus.Reserved);
+                        _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                        await ExecuteNonQueryAsync(connection, "COMMIT;", cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (BudgetExceededException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // ignored — connection may already be rolled back
+                        }
+
+                        throw;
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            return Result.Success();
+        }
+        catch (BudgetExceededException ex)
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Budget.Exceeded,
+                $"Daily budget limit of ${ex.DailyLimit:0.00} USD would be exceeded (committed+reserved: ${ex.Current:0.00} USD)."));
+        }
+    }
+
     public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(
@@ -244,12 +366,14 @@ internal sealed class BudgetReservationService(
     public static decimal EstimateWorstCaseTurnUsd(
         ModelPricingEntry pricing,
         int? maxOutputTokens = null,
-        int? reasoningBudgetTokens = null) =>
+        int? reasoningBudgetTokens = null,
+        long? estimatedInputTokens = null) =>
         EstimateWorstCaseCallsUsd(
             pricing,
             maxOutputTokens,
             reasoningBudgetTokens,
-            TurnLimitsDefaults.MaxModelCalls);
+            TurnLimitsDefaults.MaxModelCalls,
+            estimatedInputTokens);
 
     /// <summary>
     /// Worst-case USD for one OpenAI batch JSONL line (single model call; batches force zero tools).
@@ -258,29 +382,47 @@ internal sealed class BudgetReservationService(
         ModelPricingEntry pricing,
         int? maxOutputTokens = null,
         int? reasoningBudgetTokens = null) =>
-        EstimateWorstCaseCallsUsd(pricing, maxOutputTokens, reasoningBudgetTokens, callCount: 1);
+        EstimateWorstCaseCallsUsd(
+            pricing,
+            maxOutputTokens,
+            reasoningBudgetTokens,
+            callCount: 1,
+            estimatedInputTokens: null);
 
     private static decimal EstimateWorstCaseCallsUsd(
         ModelPricingEntry pricing,
         int? maxOutputTokens,
         int? reasoningBudgetTokens,
-        int callCount)
+        int callCount,
+        long? estimatedInputTokens)
     {
         long requestedOutput = maxOutputTokens is > 0 ? maxOutputTokens.Value : 4096L;
         long requestedReasoning = reasoningBudgetTokens is > 0 ? reasoningBudgetTokens.Value : 0L;
         long maxPerCall = Math.Max(requestedOutput, requestedReasoning);
+        long inputPerCall = estimatedInputTokens is > 0
+            ? estimatedInputTokens.Value
+            : maxPerCall;
+        long outputPerCall = estimatedInputTokens is > 0
+            ? SaturatingAdd(requestedOutput, requestedReasoning)
+            : maxPerCall;
         decimal outputRate = Math.Max(0m, pricing.OutputPer1M);
         decimal reasoningRate = Math.Max(0m, pricing.ReasoningPer1M ?? outputRate);
         long conservativelyPricedReasoning =
-            reasoningRate > outputRate ? Math.Min(requestedReasoning, maxPerCall) : 0L;
+            reasoningRate > outputRate ? Math.Min(requestedReasoning, outputPerCall) : 0L;
 
         return CostCalculator.CalculateCost(
-            inputTokens: maxPerCall * callCount,
-            outputTokens: maxPerCall * callCount,
+            inputTokens: SaturatingMultiply(inputPerCall, callCount),
+            outputTokens: SaturatingMultiply(outputPerCall, callCount),
             cachedTokens: 0L,
-            reasoningTokens: conservativelyPricedReasoning * callCount,
+            reasoningTokens: SaturatingMultiply(conservativelyPricedReasoning, callCount),
             pricing);
     }
+
+    private static long SaturatingAdd(long left, long right) =>
+        long.CreateSaturating((Int128)left + right);
+
+    private static long SaturatingMultiply(long value, int multiplier) =>
+        multiplier <= 0 ? 0L : long.CreateSaturating((Int128)value * multiplier);
 
     /// <summary>
     /// Worst-case USD for an embedding batch sized by approximate input tokens.

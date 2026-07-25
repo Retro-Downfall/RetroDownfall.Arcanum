@@ -119,6 +119,39 @@ public sealed class PrometheusMetricsExporterTests
     }
 
     [Fact]
+    public async Task RenderMetrics_uses_token_scale_buckets_for_token_histograms()
+    {
+        using Meter meter = new(
+            "Arcanum.Tests." + nameof(RenderMetrics_uses_token_scale_buckets_for_token_histograms));
+        Histogram<long> histogram = meter.CreateHistogram<long>(
+            "arcanum_test_token_hist",
+            "{tokens}");
+        using PrometheusMetricsExporter exporter = new();
+
+        histogram.Record(1_000);
+        histogram.Record(5_000);
+
+        string result = await exporter.RenderMetricsAsync();
+
+        Assert.Contains(
+            "arcanum_test_token_hist_bucket{le=\"1024\"} 1",
+            result,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "arcanum_test_token_hist_bucket{le=\"4096\"} 1",
+            result,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "arcanum_test_token_hist_bucket{le=\"16384\"} 2",
+            result,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "arcanum_test_token_hist_bucket{le=\"0.1\"}",
+            result,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RenderMetrics_handles_empty_meter()
     {
 

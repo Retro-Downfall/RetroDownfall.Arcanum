@@ -198,6 +198,42 @@ public sealed class ArcanumMetricsTests
         Assert.Equal(75, Assert.Single(captured));
     }
 
+    [Fact]
+    public void ContextAccountingMetrics_record_estimate_report_variance_and_rejection()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        ConcurrentDictionary<string, long> captured = new(StringComparer.Ordinal);
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) =>
+                activeListener.EnableMeasurementEvents(instrument),
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (TagsContainMarker(tags, marker))
+            {
+                captured[instrument.Name] = measurement;
+            }
+        });
+        listener.Start();
+        KeyValuePair<string, object?> provider = new("provider", marker);
+        KeyValuePair<string, object?> model = new("model", "test-model");
+
+        ArcanumMetrics.EstimatedInputTokens.Record(100, provider, model);
+        ArcanumMetrics.ProviderReportedInputTokens.Record(107, provider, model);
+        ArcanumMetrics.InputTokenEstimationVariance.Record(
+            7,
+            provider,
+            model,
+            new KeyValuePair<string, object?>("direction", "underestimated"));
+        ArcanumMetrics.ContextBudgetRejectionsTotal.Add(1, provider, model);
+
+        Assert.Equal(100, captured["arcanum_estimated_input_tokens"]);
+        Assert.Equal(107, captured["arcanum_provider_reported_input_tokens"]);
+        Assert.Equal(7, captured["arcanum_input_token_estimation_variance"]);
+        Assert.Equal(1, captured["arcanum_context_budget_rejections_total"]);
+    }
+
     private static bool TagsContainMarker(ReadOnlySpan<KeyValuePair<string, object?>> tags, string marker)
     {
 

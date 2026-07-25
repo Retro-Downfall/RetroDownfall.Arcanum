@@ -775,9 +775,8 @@ public static class SystemPromptBuilder
     /// <summary>
     /// RAG Phase 3 — renders semantic codebase retrieval hits (see <see cref="SemanticContextChunk"/>).
     /// Positioned after Attached Files and before Data Streams in the DATA block (DESIGN.md §10.5).
-    /// Content is appended raw (no <see cref="AppendUntrusted"/> fencing) per the allocation and
-    /// trust-model discipline documented on <c>WizardIntelligenceProvider</c>'s retrieval step — these
-    /// are the operator's own workspace files, not externally attacker-controlled content.
+    /// Retrieved content is adaptively fenced as DATA so headings inside source files cannot alter
+    /// prompt structure or token-source attribution.
     /// </summary>
     private static void AppendSemanticContext(StringBuilder sb, SemanticContextChunk[] chunks)
     {
@@ -816,7 +815,7 @@ public static class SystemPromptBuilder
 
             sb.AppendLine(separator);
 
-            sb.AppendLine(chunk.Content);
+            AppendDataFence(sb, chunk.Content);
 
             sb.AppendLine(separator);
 
@@ -830,9 +829,8 @@ public static class SystemPromptBuilder
     /// RAG Phase 4 — renders Saga memories retrieved via Divination (see <see cref="SagaMemory"/>).
     /// Positioned after Semantic Context and before Data Streams in the DATA block (DESIGN.md §10.5) —
     /// Saga is Arcanum's long-term associative memory, cross-session and auto-extracted, distinct from
-    /// the operator-authored Lore key-value pairs surfaced elsewhere. Content is appended raw (no
-    /// <see cref="AppendUntrusted"/> fencing): these are the operator's own prior-session memories, not
-    /// externally attacker-controlled content, mirroring <see cref="AppendSemanticContext"/>.
+    /// the operator-authored Lore key-value pairs surfaced elsewhere. Retrieved content is fenced so
+    /// embedded headings cannot escape its DATA source category.
     /// </summary>
     private static void AppendSagaMemories(StringBuilder sb, SagaMemory[] memories)
     {
@@ -849,11 +847,7 @@ public static class SystemPromptBuilder
         foreach (SagaMemory memory in memories)
         {
 
-            sb.Append("- ");
-
-            sb.Append(memory.Content);
-
-            sb.Append(" (similarity: ");
+            sb.Append("- Memory (similarity: ");
 
             sb.Append(memory.Similarity.ToString("F2", CultureInfo.InvariantCulture));
 
@@ -863,10 +857,24 @@ public static class SystemPromptBuilder
 
             sb.AppendLine(")");
 
+            AppendDataFence(sb, memory.Content);
+
         }
 
         sb.AppendLine();
 
+    }
+
+    private static void AppendDataFence(StringBuilder sb, string content)
+    {
+        int fenceLength = ComputeFenceBacktickLength(content);
+        string fence = new('`', fenceLength);
+
+        sb.AppendLine(fence);
+
+        sb.AppendLine(content);
+
+        sb.AppendLine(fence);
     }
 
     /// <summary>

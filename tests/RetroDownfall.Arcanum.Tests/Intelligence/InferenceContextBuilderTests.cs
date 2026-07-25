@@ -130,14 +130,11 @@ public sealed class InferenceContextBuilderTests
 
         ArcanumSettings settings = new();
 
-        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
-
         InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
 
         IContextCompressionService compression = new ContextCompressionService(
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
-            manaPreflight,
             tokenizerResolver,
             NullLogger<ContextCompressionService>.Instance);
 
@@ -145,7 +142,6 @@ public sealed class InferenceContextBuilderTests
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
-            manaPreflight,
             compression);
 
     }

@@ -18,6 +18,12 @@ public sealed record ProviderSettings
     public int ContextWindowLimit { get; set; } = 8192;
 
     /// <summary>
+    /// Optional provider-wide token-accounting profile. A model entry may override this profile.
+    /// When absent, Arcanum resolves a built-in model profile or its conservative fallback.
+    /// </summary>
+    public ModelTokenizationProfile? Tokenization { get; set; }
+
+    /// <summary>
     /// When <see langword="true"/>, Arcanum records <c>arcanum_prompt_cache_tokens</c> metrics for
     /// this provider when the response usage reports cached prompt tokens. Defaults to
     /// <see langword="true"/> for OpenAI-compatible providers (which cache automatically).

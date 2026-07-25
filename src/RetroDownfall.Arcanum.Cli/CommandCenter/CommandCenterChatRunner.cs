@@ -149,6 +149,17 @@ internal sealed class CommandCenterChatRunner(
                         await coalescer.NoteTokenAsync(chunk, cancellationToken).ConfigureAwait(false);
                         break;
 
+                    case IntelligenceEventType.Context when evt.ContextBreakdown is { } breakdown:
+                        state.LastContextBreakdown = breakdown;
+                        await uiUpdates.WriteAsync(
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshSidebar),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        break;
+
+                    case IntelligenceEventType.Context:
+                        break;
+
                     case IntelligenceEventType.Status:
                         if (SessionLogBuffer.IsEphemeralGeneratingStatus(evt.Message))
                         {

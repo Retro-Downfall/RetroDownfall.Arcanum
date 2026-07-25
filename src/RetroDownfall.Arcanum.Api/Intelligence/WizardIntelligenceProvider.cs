@@ -74,15 +74,24 @@ public sealed class WizardIntelligenceProvider(
     BudgetMonitor budgetMonitor,
     ISessionAttachmentStore sessionAttachmentStore,
     IHumanPromptRegistry humanPromptRegistry,
-    ManaPreflight manaPreflight,
     IProviderHealthTracker? healthTracker = null,
     GuardrailsPipeline? guardrailsPipeline = null,
     IModelCallExecutor? modelCallExecutor = null,
     ITurnRunWriter? turnRunWriter = null,
     IBudgetReservationService? budgetReservationService = null,
-    Lazy<ITurnExecutionFacade>? turnCoordinator = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    Lazy<ITurnExecutionFacade>? turnCoordinator = null,
+    IModelTokenEstimator? modelTokenEstimator = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
 {
-    private readonly IModelCallExecutor _modelCallExecutor = modelCallExecutor ?? new ModelCallExecutor();
+    private readonly TokenAccountingDependencies _tokenAccounting =
+        TokenAccountingDependencies.Create(
+            modelTokenEstimator,
+            modelCallExecutor,
+            tokenizerResolver,
+            settings);
+
+    private IModelTokenEstimator ModelTokenEstimator => _tokenAccounting.Estimator;
+
+    private IModelCallExecutor ModelCallExecutor => _tokenAccounting.Executor;
 
     private readonly Lazy<ITurnExecutionFacade>? _turnCoordinator = turnCoordinator;
 
@@ -280,6 +289,13 @@ public sealed class WizardIntelligenceProvider(
                     }
 
                 case IntelligenceEventType.ConversationBound:
+                    yield break;
+
+                case IntelligenceEventType.Context when frame.ContextBreakdown is { } breakdown:
+                    yield return new ContextAccounted(correlation, breakdown);
+                    yield break;
+
+                case IntelligenceEventType.Context:
                     yield break;
 
                 case IntelligenceEventType.Token:
@@ -1344,6 +1360,8 @@ public sealed class WizardIntelligenceProvider(
 
         List<PromptToolCall>? observedToolCalls = null;
 
+        Dictionary<string, ContextTokenBreakdown> contextBreakdownsByCall = new(StringComparer.Ordinal);
+
         ChatResponse? bufferedFinalResponse = null;
 
         try
@@ -1528,7 +1546,7 @@ public sealed class WizardIntelligenceProvider(
             Result<ResolvedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
                 request,
                 chatClient,
-                lease.Provider.Name,
+                lease.Provider,
                 targetModel,
                 streamSpellWorkspaceRoot,
                 inferenceToken).ConfigureAwait(false);
@@ -1574,7 +1592,7 @@ public sealed class WizardIntelligenceProvider(
             request,
             streamResolvedSpell?.Entities ?? Array.Empty<string>(),
             chatClient,
-            lease.Provider.Name,
+            lease.Provider,
             targetModel,
             inferenceToken).ConfigureAwait(false);
 
@@ -1600,26 +1618,6 @@ public sealed class WizardIntelligenceProvider(
             maxIndexBytes: streamMaxIndexBytes);
 
         InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
-
-        (bool compressedStream, List<MeAiChatMessage> streamMessages) = inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
-            request,
-            chatMessages,
-            streamCodexContent,
-            streamActiveSpell,
-            streamResonants,
-            thread,
-            prompt,
-            lease,
-            semanticContext: streamSemanticContext,
-            sagaMemories: streamSagaMemories,
-            lexiconEntries: streamLexiconEntries,
-            sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
-            maxIndexItems: streamMaxIndexItems,
-            maxIndexBytes: streamMaxIndexBytes);
-
-        chatMessages = streamMessages;
-
-        InferenceContextBuilder.AppendContentsToLastMessage(chatMessages, streamAttachmentPrep.RehydratedContents);
 
         if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
         {
@@ -1693,18 +1691,6 @@ public sealed class WizardIntelligenceProvider(
             }
         }
 
-        if (compressedStream)
-        {
-            if (streaming)
-            {
-                yield return new IntelligenceEvent(IntelligenceEventType.Status, IntelligenceStatusMessages.MemoryCompressionNotice);
-            }
-            else
-            {
-                logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
-            }
-        }
-
         // Per-turn live HITL emitter — created before tool-set assembly so HumanInteractionAvailable
         // can strip ask_human when no live response channel exists (buffered path never creates this).
         // Also published via AsyncLocal so the singleton MCP ElicitationHandler can emit ask_human-shaped
@@ -1746,6 +1732,8 @@ public sealed class WizardIntelligenceProvider(
 
         string? inferenceError;
 
+        Error? inferenceTypedError = null;
+
         string? streamFinishReason = null;
 
         ChatCompletionUsage? streamAccumulatedUsage = null;
@@ -1776,6 +1764,8 @@ public sealed class WizardIntelligenceProvider(
 
         ChatOptions? lastInferenceChatOptions = null;
 
+        bool streamingContextPrepared = false;
+
         while (true)
         {
             bool streamOuterRestart = false;
@@ -1799,40 +1789,64 @@ public sealed class WizardIntelligenceProvider(
                 chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
 
                 InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
-
-                (bool compressedBuffered, List<MeAiChatMessage> bufferedMessages) = inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
-                    request,
-                    chatMessages,
-                    streamCodexContent,
-                    streamActiveSpell,
-                    streamResonants,
-                    thread,
-                    prompt,
-                    lease,
-                    semanticContext: streamSemanticContext,
-                    sagaMemories: streamSagaMemories,
-                    lexiconEntries: streamLexiconEntries,
-                    sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
-                    maxIndexItems: streamMaxIndexItems,
-                    maxIndexBytes: streamMaxIndexBytes);
-
-                chatMessages = bufferedMessages;
-
-                InferenceContextBuilder.AppendContentsToLastMessage(chatMessages, streamAttachmentPrep.RehydratedContents);
-
-                if (compressedBuffered)
-                {
-                    logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
-                }
             }
 
             ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
 
             lastInferenceChatOptions = streamChatOptions;
 
+            if (!streaming || !streamingContextPrepared)
+            {
+                ModelCallContext preparationContext = BuildModelCallContext(lease, request);
+                InferenceContextBuilder.AppendContentsToLastMessage(
+                    chatMessages,
+                    streamAttachmentPrep.RehydratedContents);
+                (bool compressed, List<MeAiChatMessage> preparedMessages) =
+                    inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
+                        new ContextCompressionRequest
+                        {
+                            Request = request,
+                            Messages = chatMessages,
+                            Thread = thread,
+                            NewUserPrompt = prompt,
+                            Lease = lease,
+                            ChatOptions = streamChatOptions,
+                            CodexContent = streamCodexContent,
+                            ActiveSpell = streamActiveSpell,
+                            DependencySpells = streamResonants,
+                            ReservedAnswerTokens = preparationContext.ReservedAnswerTokens,
+                            ReservedReasoningTokens = preparationContext.ReservedReasoningTokens,
+                            AppendedContents = streamAttachmentPrep.RehydratedContents,
+                            SemanticContext = streamSemanticContext,
+                            SagaMemories = streamSagaMemories,
+                            LexiconEntries = streamLexiconEntries,
+                            SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
+                            MaxIndexItems = streamMaxIndexItems,
+                            MaxIndexBytes = streamMaxIndexBytes,
+                        });
+                chatMessages = preparedMessages;
+                streamingContextPrepared = true;
+
+                if (compressed)
+                {
+                    if (streaming)
+                    {
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Status,
+                            IntelligenceStatusMessages.MemoryCompressionNotice);
+                    }
+                    else
+                    {
+                        logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
+                    }
+                }
+            }
+
             int streamToolRoundCount = 0;
 
             inferenceError = null;
+
+            inferenceTypedError = null;
 
             Exception? streamingMoveNextFailure = null;
 
@@ -1845,6 +1859,9 @@ public sealed class WizardIntelligenceProvider(
                     if (streamAccountingLocal.Budget.RemainingModelCalls <= 0)
                     {
                         inferenceError = "Model call limit reached for this turn.";
+                        inferenceTypedError = new Error(
+                            ErrorCodes.Hub.TurnBudgetExceeded,
+                            inferenceError);
 
                         streamAccountingStatus = InferenceRunStatus.Failed;
 
@@ -1857,11 +1874,29 @@ public sealed class WizardIntelligenceProvider(
                         break;
                     }
 
-                    Result streamContextGate = EnsureContextBudget(chatMessages, streamChatOptions, lease, request);
+                    Result streamContextGate = EnsureContextBudget(
+                        chatMessages,
+                        streamChatOptions,
+                        lease,
+                        request,
+                        out ContextTokenBreakdown callBreakdown);
+
+                    if (streamContextGate.IsSuccess)
+                    {
+                        streamContextGate = await streamAccountingLocal
+                            .EnsureReservationForContextAsync(
+                                budgetReservationService,
+                                settings.Value.Pricing ?? new PricingSettings(),
+                                targetModel,
+                                callBreakdown,
+                                inferenceToken)
+                            .ConfigureAwait(false);
+                    }
 
                     if (streamContextGate.IsFailure)
                     {
                         inferenceError = streamContextGate.Error.Message;
+                        inferenceTypedError = streamContextGate.Error;
 
                         streamAccountingStatus = InferenceRunStatus.Failed;
 
@@ -1890,14 +1925,15 @@ public sealed class WizardIntelligenceProvider(
 
                         try
                         {
-                            modelCall = await _modelCallExecutor
+                            modelCall = await ModelCallExecutor
                                 .ExecuteBufferedAsync(
                                     chatClient,
                                     chatMessages,
                                     streamChatOptions,
                                     streamAccountingLocal.Budget,
                                     streamPurpose,
-                                    inferenceToken)
+                                    inferenceToken,
+                                    BuildModelCallContext(lease, request, callBreakdown))
                                 .ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
@@ -1949,6 +1985,11 @@ public sealed class WizardIntelligenceProvider(
                         {
                             ModelCallResult bufferedCall = modelCall.Value;
 
+                            if (bufferedCall.ContextBreakdown is { } bufferedBreakdown)
+                            {
+                                contextBreakdownsByCall[bufferedCall.ModelCallId] = bufferedBreakdown;
+                            }
+
                             bufferedRoundResponse = bufferedCall.Response;
 
                             bufferedFinalResponse = bufferedRoundResponse;
@@ -1997,14 +2038,15 @@ public sealed class WizardIntelligenceProvider(
                     }
                     else
                     {
-                    IAsyncEnumerator<ModelCallUpdate> streamEnumerator = _modelCallExecutor
+                    IAsyncEnumerator<ModelCallUpdate> streamEnumerator = ModelCallExecutor
                             .ExecuteStreamingAsync(
                                 chatClient,
                                 chatMessages,
                                 streamChatOptions,
                                 streamAccountingLocal.Budget,
                                 streamPurpose,
-                                inferenceToken)
+                                inferenceToken,
+                                BuildModelCallContext(lease, request, callBreakdown))
                         .GetAsyncEnumerator(inferenceToken);
 
                 try
@@ -2055,6 +2097,28 @@ public sealed class WizardIntelligenceProvider(
                         }
 
                         ModelCallUpdate modelUpdate = streamEnumerator.Current;
+
+                        if (modelUpdate is ModelCallContextUpdate contextUpdate)
+                        {
+                            contextBreakdownsByCall[contextUpdate.ModelCallId] = contextUpdate.Breakdown;
+                            if (streaming)
+                            {
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.Context,
+                                    "Context token accounting",
+                                    ContextBreakdown: contextUpdate.Breakdown);
+                            }
+
+                            continue;
+                        }
+
+                        if (modelUpdate is ModelCallFailureUpdate failureUpdate)
+                        {
+                            inferenceTypedError = failureUpdate.Error;
+                            inferenceError = failureUpdate.Error.Message;
+                            streamAccountingStatus = InferenceRunStatus.Failed;
+                            break;
+                        }
 
                         if (ProviderAttemptCommitTracker.CommitsProviderAttempt(modelUpdate))
                         {
@@ -2264,6 +2328,9 @@ public sealed class WizardIntelligenceProvider(
                         targetModel);
 
                     inferenceError = ErrorCodes.Hub.ToolLoop + ": Tool invocation limit reached.";
+                    inferenceTypedError = new Error(
+                        ErrorCodes.Hub.ToolLoop,
+                        "Tool invocation limit reached.");
 
                     streamAccountingStatus = InferenceRunStatus.Failed;
 
@@ -2588,7 +2655,10 @@ public sealed class WizardIntelligenceProvider(
                         CancellationToken.None).ConfigureAwait(false);
                 }
 
-                yield return new IntelligenceEvent(IntelligenceEventType.Error, inferenceError);
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    inferenceTypedError?.Message ?? inferenceError,
+                    inferenceTypedError?.Code);
 
                 yield break;
             }
@@ -2631,24 +2701,18 @@ public sealed class WizardIntelligenceProvider(
                 int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
 
                 Func<string, int> estimateTokenCount = text =>
-                {
-                    try
-                    {
-                        return tokenizerResolver
-                            .ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding)
-                            .CountTokens(text);
-                    }
-                    catch
-                    {
-                        return Math.Max(1, text.Length / 4);
-                    }
-                };
+                    ModelTokenEstimator
+                        .EstimateText(lease.Provider, lease.ResolvedModel, text)
+                        .TokenCount;
 
                 ChatResponse responseForValidation = bufferedFinalResponse
                     ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, finalText));
 
-                Result<StructuredOutputResult> validationResult = await structuredOutputValidator
-                    .ValidateAndRetryAsync(
+                Result<StructuredOutputResult> validationResult;
+                try
+                {
+                    validationResult = await structuredOutputValidator
+                        .ValidateAndRetryAsync(
                         responseForValidation,
                         streamSchema,
                         maxRetries,
@@ -2662,28 +2726,57 @@ public sealed class WizardIntelligenceProvider(
 
                             chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
 
-                            ModelCallOutcome retryCall = await _modelCallExecutor
+                            ChatOptions retryOptions = lastInferenceChatOptions
+                                ?? CreateInferenceChatOptions(
+                                    streamUsesTools,
+                                    streamTurnContext.InferenceTools,
+                                    request,
+                                    lease);
+                            ModelCallContext retryContext = BuildModelCallContext(lease, request);
+                            ContextTokenBreakdown retryContextBreakdown = ModelTokenEstimator.EstimateContext(
+                                new ModelTokenizationRequest(
+                                    lease.Provider,
+                                    lease.ResolvedModel,
+                                    chatMessages,
+                                    retryOptions,
+                                    retryContext.ReservedAnswerTokens,
+                                    retryContext.ReservedReasoningTokens));
+                            Result retryReservation = await streamAccountingLocal
+                                .EnsureReservationForContextAsync(
+                                    budgetReservationService,
+                                    settings.Value.Pricing ?? new PricingSettings(),
+                                    targetModel,
+                                    retryContextBreakdown,
+                                    ct)
+                                .ConfigureAwait(false);
+                            if (retryReservation.IsFailure)
+                            {
+                                throw new ModelCallAdmissionException(retryReservation.Error);
+                            }
+
+                            ModelCallOutcome retryCall = await ModelCallExecutor
                                 .ExecuteBufferedAsync(
                                     chatClient,
                                     chatMessages,
-                                    lastInferenceChatOptions
-                                        ?? CreateInferenceChatOptions(
-                                            streamUsesTools,
-                                            streamTurnContext.InferenceTools,
-                                            request,
-                                            lease),
+                                    retryOptions,
                                     streamAccountingLocal.Budget,
                                     ModelCallPurpose.StructuredOutputRetry,
-                                    ct)
+                                    ct,
+                                    BuildModelCallContext(lease, request, retryContextBreakdown))
                                 .ConfigureAwait(false);
 
                             if (retryCall.IsFailure)
                             {
                                 throw retryCall.Failure.Cause
-                                    ?? new InvalidOperationException(retryCall.Error.Message);
+                                    ?? new ModelCallAdmissionException(retryCall.Error);
                             }
 
                             ModelCallResult retryResult = retryCall.Value;
+
+                            if (retryResult.ContextBreakdown is { } retryBreakdown)
+                            {
+                                contextBreakdownsByCall[retryResult.ModelCallId] = retryBreakdown;
+                            }
 
                             ChatResponse retryResponse = retryResult.Response;
 
@@ -2731,7 +2824,12 @@ public sealed class WizardIntelligenceProvider(
                             return retryResponse;
                         },
                         inferenceToken)
-                    .ConfigureAwait(false);
+                        .ConfigureAwait(false);
+                }
+                catch (ModelCallAdmissionException ex)
+                {
+                    validationResult = Result<StructuredOutputResult>.Failure(ex.Error);
+                }
 
                 if (validationResult.IsFailure)
                 {
@@ -2908,6 +3006,7 @@ public sealed class WizardIntelligenceProvider(
                 streamActiveSpell?.Name,
                 request.CampaignId,
                 inferenceStopwatch.Elapsed,
+                [.. contextBreakdownsByCall.Values],
                 CancellationToken.None).ConfigureAwait(false);
         }
 
@@ -3105,26 +3204,6 @@ public sealed class WizardIntelligenceProvider(
         return reasoningContents;
     }
 
-    private async IAsyncEnumerable<ChatResponseUpdate> EnumerateModelStreamingUpdatesAsync(
-        IChatClient chatClient,
-        IList<ChatMessage> messages,
-        ChatOptions options,
-        ITurnBudget budget,
-        ModelCallPurpose purpose,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (ModelCallUpdate update in _modelCallExecutor
-            .ExecuteStreamingAsync(chatClient, messages, options, budget, purpose, cancellationToken)
-            .WithCancellation(cancellationToken)
-            .ConfigureAwait(false))
-        {
-            if (update is ModelCallResponseUpdate responseUpdate)
-            {
-                yield return responseUpdate.Update;
-            }
-        }
-    }
-
     private static bool IsAskHumanTool(FunctionCallContent fcc) =>
         string.Equals(fcc.Name, "ask_human", StringComparison.Ordinal);
 
@@ -3306,7 +3385,7 @@ public sealed class WizardIntelligenceProvider(
     private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
         PingRequest request,
         IChatClient chatClient,
-        string mainProvider,
+        ProviderSettings mainProvider,
         string mainModel,
         string? spellWorkspaceRoot,
         CancellationToken cancellationToken)
@@ -3429,7 +3508,12 @@ public sealed class WizardIntelligenceProvider(
                             cancellationToken,
                             logger,
                             candidates,
-                            _modelCallExecutor)
+                            ModelCallExecutor,
+                            new ModelCallContext(
+                                routerLease?.Provider ?? mainProvider,
+                                routerLease?.ResolvedModel ?? mainModel,
+                                ReservedAnswerTokens: routerMaxTokens,
+                                ReservedReasoningTokens: 0))
                         .ConfigureAwait(false);
 
                     matchedMetadata = routingResult?.Spell;
@@ -3439,7 +3523,7 @@ public sealed class WizardIntelligenceProvider(
                     (string routingProvider, string routingModel) = ResolveAuxiliaryAccountingIdentity(
                         routerLease?.Provider.Name,
                         routerLease?.ResolvedModel,
-                        mainProvider,
+                        mainProvider.Name,
                         mainModel);
 
                     await TryRecordAuxiliaryUsageAsync(
@@ -3518,7 +3602,7 @@ public sealed class WizardIntelligenceProvider(
         PingRequest request,
         IReadOnlyList<string> routerEntities,
         IChatClient chatClient,
-        string mainProvider,
+        ProviderSettings mainProvider,
         string mainModel,
         CancellationToken cancellationToken)
     {
@@ -3569,7 +3653,12 @@ public sealed class WizardIntelligenceProvider(
                         preflight,
                         cancellationToken,
                         logger,
-                        _modelCallExecutor)
+                        ModelCallExecutor,
+                        new ModelCallContext(
+                            extractorLease?.Provider ?? mainProvider,
+                            extractorLease?.ResolvedModel ?? mainModel,
+                            ReservedAnswerTokens: LexiconEntityExtractor.MaxOutputTokens,
+                            ReservedReasoningTokens: 0))
                     .ConfigureAwait(false);
 
                 entities = extracted;
@@ -3577,7 +3666,7 @@ public sealed class WizardIntelligenceProvider(
                 (string extractionProvider, string extractionModel) = ResolveAuxiliaryAccountingIdentity(
                     extractorLease?.Provider.Name,
                     extractorLease?.ResolvedModel,
-                    mainProvider,
+                    mainProvider.Name,
                     mainModel);
 
                 await TryRecordAuxiliaryUsageAsync(
@@ -4548,36 +4637,66 @@ public sealed class WizardIntelligenceProvider(
         List<MeAiChatMessage> chatMessages,
         ChatOptions chatOptions,
         ChatClientLease lease,
-        PingRequest request)
+        PingRequest request,
+        out ContextTokenBreakdown breakdown)
     {
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
-        int requestedOutput = request.MaxOutputTokens
-            ?? ArcanumSettingClamps.ReservedOutputTokens(settings.Value.Intelligence.ReservedOutputTokens);
-        int reserved = Math.Max(
-            requestedOutput,
-            request.Reasoning?.BudgetTokens ?? 0);
-
-        Tokenizer tokenizer = tokenizerResolver
-            .ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding);
-
-        int overhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
-            settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
+        ModelCallContext context = BuildModelCallContext(lease, request);
 
         int Count(IReadOnlyList<MeAiChatMessage> messages) =>
-            manaPreflight.CountTokens(messages, tokenizer, overhead, settings.Value.Intelligence.TokenizerEncoding);
+            ModelTokenEstimator.EstimateContext(
+                new ModelTokenizationRequest(
+                    lease.Provider,
+                    lease.ResolvedModel,
+                    messages,
+                    chatOptions,
+                    context.ReservedAnswerTokens,
+                    context.ReservedReasoningTokens))
+                .TotalTokens;
 
-        int budgetForMessages = Math.Max(
+        _ = TurnContextGuards.TryTrimOldestToolExchanges(
+            chatMessages,
+            Count,
+            contextWindowLimit);
+
+        breakdown = ModelTokenEstimator.EstimateContext(
+            new ModelTokenizationRequest(
+                lease.Provider,
+                lease.ResolvedModel,
+                chatMessages,
+                chatOptions,
+                context.ReservedAnswerTokens,
+                context.ReservedReasoningTokens));
+
+        Result admission = TurnContextGuards.CheckContextBudget(
+            breakdown,
+            contextWindowLimit);
+        if (admission.IsSuccess)
+        {
+            return admission;
+        }
+
+        ArcanumMetrics.ContextBudgetRejectionsTotal.Add(
             1,
-            contextWindowLimit - TurnContextGuards.EstimateToolSchemaTokens(chatOptions.Tools) - Math.Max(0, reserved));
-
-        _ = TurnContextGuards.TryTrimOldestToolExchanges(chatMessages, Count, budgetForMessages);
-
-        return TurnContextGuards.CheckContextBudget(
-            Count(chatMessages),
-            chatOptions.Tools,
-            contextWindowLimit,
-            reserved);
+            new KeyValuePair<string, object?>("provider", lease.Provider.Name),
+            new KeyValuePair<string, object?>("model", lease.ResolvedModel));
+        return admission;
     }
+
+    private ModelCallContext BuildModelCallContext(
+        ChatClientLease lease,
+        PingRequest request,
+        ContextTokenBreakdown? precomputedBreakdown = null) =>
+        new(
+            lease.Provider,
+            lease.ResolvedModel,
+            ReservedAnswerTokens: Math.Max(
+                0,
+                request.MaxOutputTokens
+                ?? ArcanumSettingClamps.ReservedOutputTokens(
+                    settings.Value.Intelligence.ReservedOutputTokens)),
+            ReservedReasoningTokens: Math.Max(0, request.Reasoning?.BudgetTokens ?? 0),
+            PrecomputedBreakdown: precomputedBreakdown);
 
     private static void ApplyClientToolMode(ChatOptions options, PingRequest request)
     {
@@ -4887,6 +5006,7 @@ public sealed class WizardIntelligenceProvider(
         string? spellName,
         Guid? campaignId,
         TimeSpan elapsed,
+        List<ContextTokenBreakdown> contextBreakdowns,
         CancellationToken cancellationToken)
     {
 
@@ -4914,7 +5034,8 @@ public sealed class WizardIntelligenceProvider(
                 ClientIp: auditContext.ClientIp,
                 SpellName: spellName,
                 CampaignId: campaignId?.ToString(),
-                ReasoningTokens: usage?.ReasoningTokens ?? 0);
+                ReasoningTokens: usage?.ReasoningTokens ?? 0,
+                ContextBreakdowns: contextBreakdowns);
 
             await inferenceAuditLogger.LogAsync(record, cancellationToken).ConfigureAwait(false);
 
@@ -5424,6 +5545,29 @@ public sealed class WizardIntelligenceProvider(
         /// </summary>
         public Result<PromptTurnResult>? BufferedTerminal { get; set; }
 
+    }
+
+    private sealed record TokenAccountingDependencies(
+        IModelTokenEstimator Estimator,
+        IModelCallExecutor Executor)
+    {
+        public static TokenAccountingDependencies Create(
+            IModelTokenEstimator? estimator,
+            IModelCallExecutor? executor,
+            InferenceTokenizerResolver tokenizerResolver,
+            IOptionsSnapshot<ArcanumSettings> settings)
+        {
+            IModelTokenEstimator resolvedEstimator =
+                estimator ?? new ModelTokenEstimator(tokenizerResolver, settings);
+            return new TokenAccountingDependencies(
+                resolvedEstimator,
+                executor ?? new ModelCallExecutor(resolvedEstimator));
+        }
+    }
+
+    private sealed class ModelCallAdmissionException(Error error) : Exception(error.Message)
+    {
+        public Error Error { get; } = error;
     }
 
     private CancellationTokenSource CreateInferenceTimeoutSource(CancellationToken callerToken)

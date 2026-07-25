@@ -78,23 +78,34 @@ public sealed record IntelligenceSettings
     public bool TolerateToolFailures { get; set; } = true;
 
     /// <summary>
-    /// Minimum assembled-message count before context-compression preflight runs. Short threads
-    /// are assumed to fit and skip tokenizer cost. Default 6.
+    /// Minimum history-message count before the explicit/manual compact operation tokenizes and
+    /// prunes entries. Live provider-call admission always measures the materialized context.
     /// </summary>
     public int CompressionPreflightMinMessages { get; set; } = 6;
 
     /// <summary>
-    /// Per-message overhead (tokens) added to the pre-flight count to approximate chat-template
-    /// framing (role markers, separators). Default 4.
+    /// Default per-message framing for calibrated/unknown tokenization profiles. A provider/model
+    /// profile may override it. Default 4.
     /// </summary>
     public int PerMessageTemplateOverheadTokens { get; set; } = 4;
 
     /// <summary>
-    /// Tiktoken encoding name used by <c>InferenceTokenizerResolver</c>. Default <c>o200k_base</c>.
-    /// Operators only need to change this if they validate counts against a specific
-    /// non-OpenAI model family that ships a different encoding.
+    /// Linker-safe fallback tokenizer for calibrated and unknown model profiles. Known and
+    /// explicitly configured exact profiles resolve their own tokenizer id.
     /// </summary>
     public string TokenizerEncoding { get; set; } = "o200k_base";
+
+    /// <summary>
+    /// Safety margin added to calibrated and unknown input-token estimates. Exact tokenizer output
+    /// is never inflated. Default 15 percent.
+    /// </summary>
+    public int EstimatedTokenSafetyMarginPercent { get; set; } = 15;
+
+    /// <summary>
+    /// Conservative per-image reserve when no provider/model-specific image formula can be applied.
+    /// Such image costs remain classified as estimated, never exact. Default 2048 tokens.
+    /// </summary>
+    public int UnknownImageTokenReserve { get; set; } = 2048;
 
     public int MaxOpenApiMessages { get; set; } = 1_000;
 

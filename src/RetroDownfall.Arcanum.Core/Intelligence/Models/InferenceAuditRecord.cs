@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 /// <summary>
@@ -25,4 +27,5 @@ public sealed record InferenceAuditRecord(
     string? ClientIp,
     string? SpellName,
     string? CampaignId,
-    int ReasoningTokens = 0);
+    int ReasoningTokens = 0,
+    List<ContextTokenBreakdown>? ContextBreakdowns = null);

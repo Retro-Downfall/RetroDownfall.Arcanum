@@ -876,14 +876,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         ArcanumSettings settings)
     {
 
-        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
-
         InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
 
         IContextCompressionService compression = new ContextCompressionService(
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
-            manaPreflight,
             tokenizerResolver,
             NullLogger<ContextCompressionService>.Instance);
 
@@ -891,7 +888,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
-            manaPreflight,
             compression);
 
     }
@@ -997,7 +993,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<BudgetMonitor>.Instance),
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
-            new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
             healthTracker);
     }
 

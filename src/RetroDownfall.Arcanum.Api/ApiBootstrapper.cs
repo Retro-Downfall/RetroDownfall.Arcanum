@@ -333,6 +333,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<InferenceTokenizerResolver>();
 
+        services.AddSingleton<IModelTokenEstimator, ModelTokenEstimator>();
+
         services.AddSingleton<StructuredOutputValidator>();
 
         services.AddSingleton<BudgetMonitor>();
@@ -340,8 +342,6 @@ public static class ApiBootstrapper
         services.AddSingleton<IModelCallExecutor, ModelCallExecutor>();
 
         services.AddSingleton<IToolResultMaterializer, ToolResultMaterializer>();
-
-        services.AddSingleton<ManaPreflight>();
 
         services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
 

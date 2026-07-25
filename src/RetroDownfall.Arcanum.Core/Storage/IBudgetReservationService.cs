@@ -17,6 +17,15 @@ public interface IBudgetReservationService
         BudgetReservationRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Raises an existing reservation after the materialized context has been estimated. The
+    /// implementation must apply the same atomic daily-limit check as initial acquisition.
+    /// </summary>
+    Task<Result> AdjustAsync(
+        Guid reservationId,
+        decimal reservedUsd,
+        CancellationToken cancellationToken = default);
+
     Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default);
 
     Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default);

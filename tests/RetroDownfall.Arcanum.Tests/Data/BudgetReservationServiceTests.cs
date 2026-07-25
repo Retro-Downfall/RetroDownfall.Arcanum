@@ -214,6 +214,31 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.Equal(4m, await service.GetTodayOutstandingReservationsAsync());
     }
 
+    [SkippableFact]
+    public async Task AdjustAsync_AtomicallyRaisesWithoutLoweringOrExceedingDailyLimit()
+    {
+        RequireSqlCipher();
+        BudgetReservationService service = CreateService(new BudgetSettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 10m,
+        });
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string period = BudgetReservationService.UtcBudgetPeriod(now);
+        BudgetReservation first = await ReserveAsync(service, 2m, now.AddHours(1), period);
+
+        Result raised = await service.AdjustAsync(first.Id, 5m);
+        Result ignoredLower = await service.AdjustAsync(first.Id, 1m);
+        _ = await ReserveAsync(service, 4m, now.AddHours(1), period);
+        Result rejected = await service.AdjustAsync(first.Id, 7m);
+
+        Assert.True(raised.IsSuccess);
+        Assert.True(ignoredLower.IsSuccess);
+        Assert.True(rejected.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, rejected.Error.Code);
+        Assert.Equal(9m, await service.GetTodayOutstandingReservationsAsync());
+    }
+
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 

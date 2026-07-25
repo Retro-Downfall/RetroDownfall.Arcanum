@@ -175,14 +175,12 @@ public sealed class ContextCompressionServiceTests
         {
             Intelligence = intelligence ?? CompressionEnabledSettings(),
         };
-        ManaPreflight manaPreflight = new(new TestOptionsMonitor<ArcanumSettings>(settings));
         InferenceTokenizerResolver tokenizerResolver = new(
             NullLogger<InferenceTokenizerResolver>.Instance);
 
         return new ContextCompressionService(
             grimoire,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
-            manaPreflight,
             tokenizerResolver,
             logger ?? NullLogger<ContextCompressionService>.Instance);
     }

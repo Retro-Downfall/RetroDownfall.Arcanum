@@ -87,9 +87,13 @@ public static class SettingDescriptors
 
         new("providers.apiKey", ConfigSection.Providers, "API key", "Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local OpenAI-compatible endpoints (for example Ollama).", SettingKind.Secret, Placeholder: "sk-..."),
 
+        .. CreateTokenizationDescriptors("providers.tokenization", "Provider tokenization"),
+
         new("providers.models.name", ConfigSection.Providers, "Model name", "Model ID advertised by this provider. Must include the DefaultModel and FastModel if those reference this provider.", SettingKind.String, Placeholder: "gpt-4o"),
 
         new("providers.models.supportsVision", ConfigSection.Providers, "Supports vision", "When true, this model accepts image content (Scrying). The Scrying capability gate rejects images to models where this is false.", SettingKind.Bool),
+
+        .. CreateTokenizationDescriptors("providers.models.tokenization", "Model tokenization"),
 
         new("providers.models.reasoning.controlSupport", ConfigSection.Providers, "Reasoning controls", "Explicit reasoning controls accepted by this model: none, effort, budget, or effort and budget. Callers must still choose either effort or budget per request.", SettingKind.Enum, EnumType: typeof(ReasoningControlSupport)),
 
@@ -159,11 +163,15 @@ public static class SettingDescriptors
 
         new("intelligence.tolerateToolFailures", ConfigSection.Intelligence, "Tolerate tool failures", "When true (default), an unexpected tool exception during a buffered turn is caught and synthesized into a tool result instead of failing the whole turn with Hub.Error. Streaming already tolerates failures unconditionally.", SettingKind.Bool),
 
-        new("intelligence.compressionPreflightMinMessages", ConfigSection.Intelligence, "Compression preflight min messages", "Minimum assembled-message count before context-compression preflight runs. Short threads skip tokenizer cost.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.CompressionPreflightMinMessages)),
+        new("intelligence.compressionPreflightMinMessages", ConfigSection.Intelligence, "Manual compact min messages", "Minimum history size before the explicit compact operation tokenizes and prunes entries. Live calls always measure materialized context.", SettingKind.Int, 0, 100, 1, ClampName: nameof(ArcanumSettingClamps.CompressionPreflightMinMessages)),
 
-        new("intelligence.perMessageTemplateOverheadTokens", ConfigSection.Intelligence, "Per-message template overhead (tokens)", "Tokens added to the pre-flight count to approximate chat-template framing (role markers, separators).", SettingKind.Int, 0, 32, 1, ClampName: nameof(ArcanumSettingClamps.PerMessageTemplateOverheadTokens)),
+        new("intelligence.perMessageTemplateOverheadTokens", ConfigSection.Intelligence, "Fallback per-message framing (tokens)", "Default role/template framing for calibrated and unknown tokenization profiles; a provider/model profile may override it.", SettingKind.Int, 0, 32, 1, ClampName: nameof(ArcanumSettingClamps.PerMessageTemplateOverheadTokens)),
 
-        new("intelligence.tokenizerEncoding", ConfigSection.Intelligence, "Tokenizer encoding", "Tiktoken encoding name used by InferenceTokenizerResolver. Only change if validating counts against a non-OpenAI model family with a different encoding.", SettingKind.String, Placeholder: "o200k_base"),
+        new("intelligence.tokenizerEncoding", ConfigSection.Intelligence, "Tokenizer encoding", "Fallback Tiktoken encoding for unknown or calibrated model profiles. Known and explicitly configured exact profiles resolve independently.", SettingKind.String, Placeholder: "o200k_base"),
+
+        new("intelligence.estimatedTokenSafetyMarginPercent", ConfigSection.Intelligence, "Estimated-token safety margin (%)", "Percentage added to calibrated and unknown input-token estimates. Exact local tokenizers are not inflated.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent)),
+
+        new("intelligence.unknownImageTokenReserve", ConfigSection.Intelligence, "Unknown image token reserve", "Conservative per-image reserve when no provider/model-specific image formula is available. Image byte size is never presented as an exact token count.", SettingKind.Int, 1, 128_000, 1, ClampName: nameof(ArcanumSettingClamps.UnknownImageTokenReserve)),
 
         new("intelligence.maxOpenApiMessages", ConfigSection.Intelligence, "Max OpenAI API messages", "Maximum messages accepted in a single /v1/chat/completions request body.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.MaxOpenApiMessages)),
 
@@ -644,6 +652,19 @@ public static class SettingDescriptors
 
         new("guardrails.auditLog.retentionDays", ConfigSection.Guardrails, "Guardrails audit log retention (days)", "Dated log files older than this are deleted automatically. Default 7; clamped 1-365.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays)),
 
+    ];
+
+    private static SettingDescriptor[] CreateTokenizationDescriptors(string prefix, string group) =>
+    [
+        new($"{prefix}.type", ConfigSection.Providers, "Tokenization profile type", "Exact local tokenizer, provider tokenizer API, calibrated approximation, or conservative unknown-model fallback.", SettingKind.Enum, EnumType: typeof(ModelTokenizationProfileType), Group: group),
+        new($"{prefix}.tokenizerId", ConfigSection.Providers, "Tokenizer identifier", "Tokenizer or estimator identifier, such as o200k_base. Required for exact local tokenizers.", SettingKind.String, Placeholder: "o200k_base", Group: group, AllowUnset: true),
+        new($"{prefix}.safetyMarginPercent", ConfigSection.Providers, "Safety margin (%)", "Optional percentage added to estimated input. Ignored for exact local tokenizers.", SettingKind.Int, 1, 100, 1, ClampName: nameof(ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent), Group: group, AllowUnset: true),
+        new($"{prefix}.perMessageOverheadTokens", ConfigSection.Providers, "Per-message framing tokens", "Optional provider chat-template framing added for each message.", SettingKind.Int, 0, 32, 1, ClampName: nameof(ArcanumSettingClamps.PerMessageTemplateOverheadTokens), Group: group, AllowUnset: true),
+        new($"{prefix}.perToolOverheadTokens", ConfigSection.Providers, "Per-tool framing tokens", "Optional provider function/tool framing added for each declared tool.", SettingKind.Int, 0, 128, 1, ClampName: nameof(ArcanumSettingClamps.TokenizationPerToolOverheadTokens), Group: group, AllowUnset: true),
+        new($"{prefix}.providerFramingTokens", ConfigSection.Providers, "Provider framing tokens", "Optional once-per-call provider priming/framing reserve.", SettingKind.Int, 0, 1024, 1, ClampName: nameof(ArcanumSettingClamps.TokenizationProviderFramingTokens), Group: group, AllowUnset: true),
+        new($"{prefix}.stopTokenOverheadTokens", ConfigSection.Providers, "Stop-token overhead", "Optional once-per-call provider stop/end-marker reserve.", SettingKind.Int, 0, 128, 1, ClampName: nameof(ArcanumSettingClamps.TokenizationStopTokenOverheadTokens), Group: group, AllowUnset: true),
+        new($"{prefix}.unknownImageReserveTokens", ConfigSection.Providers, "Unknown image reserve", "Optional conservative per-image reserve when no provider image formula is available.", SettingKind.Int, 1, 128_000, 1, ClampName: nameof(ArcanumSettingClamps.UnknownImageTokenReserve), Group: group, AllowUnset: true),
+        new($"{prefix}.confidence", ConfigSection.Providers, "Estimate confidence", "Optional calibrated confidence from 0 through 1. Exact local tokenizers resolve to confidence 1.", SettingKind.Float, 0, 1, 0.05, ClampName: nameof(ArcanumSettingClamps.TokenizationConfidence), Group: group, AllowUnset: true),
     ];
 
     public static IReadOnlyDictionary<ConfigSection, IReadOnlyList<SettingDescriptor>> BySection { get; } =

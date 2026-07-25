@@ -247,6 +247,11 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
             IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
+            ValidateTokenizationProfile(
+                provider.Tokenization,
+                $"{providerPointer}.tokenization",
+                errors);
+
             if (models.Count == 0)
             {
 
@@ -261,6 +266,10 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
                 ValidateReasoningCapabilities(
                     models[modelIndex].Reasoning,
                     $"{providerPointer}.models[{modelIndex}].reasoning",
+                    errors);
+                ValidateTokenizationProfile(
+                    models[modelIndex].Tokenization,
+                    $"{providerPointer}.models[{modelIndex}].tokenization",
                     errors);
             }
 
@@ -330,6 +339,24 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
         ValidatePricing(settings.Pricing ?? new PricingSettings(), errors);
 
         IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
+
+        if (intelligence.EstimatedTokenSafetyMarginPercent
+            != ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent(
+                intelligence.EstimatedTokenSafetyMarginPercent))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "intelligence.estimatedTokenSafetyMarginPercent",
+                $"Intelligence.EstimatedTokenSafetyMarginPercent ({intelligence.EstimatedTokenSafetyMarginPercent}) must be within the 1-100 clamp range."));
+        }
+
+        if (intelligence.UnknownImageTokenReserve
+            != ArcanumSettingClamps.UnknownImageTokenReserve(
+                intelligence.UnknownImageTokenReserve))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "intelligence.unknownImageTokenReserve",
+                $"Intelligence.UnknownImageTokenReserve ({intelligence.UnknownImageTokenReserve}) must be within the 1-128,000 clamp range."));
+        }
 
         McpSettings mcp = settings.Mcp ?? new McpSettings();
 
@@ -739,6 +766,94 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.supportsStreaming",
                 "Reasoning SupportsStreaming requires SupportsSummary or SupportsFull."));
+        }
+    }
+
+    private static void ValidateTokenizationProfile(
+        ModelTokenizationProfile? profile,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        if (profile is null)
+        {
+            return;
+        }
+
+        if (!Enum.IsDefined(profile.Type))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.type",
+                $"Tokenization profile Type '{profile.Type}' is not defined."));
+        }
+        else if (profile.Type == ModelTokenizationProfileType.ProviderTokenizerApi)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.type",
+                "ProviderTokenizerApi is not available for the configured provider types in this build; use an exact local tokenizer or calibrated approximation."));
+        }
+
+        if (profile.Type == ModelTokenizationProfileType.ExactLocalTokenizer
+            && string.IsNullOrWhiteSpace(profile.TokenizerId))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.tokenizerId",
+                "ExactLocalTokenizer requires a non-empty TokenizerId."));
+        }
+
+        if (profile.SafetyMarginPercent is { } margin
+            && margin != ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent(margin))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.safetyMarginPercent",
+                $"Tokenization SafetyMarginPercent ({margin}) must be within the 1-100 clamp range."));
+        }
+
+        if (profile.PerMessageOverheadTokens is { } perMessage
+            && perMessage != ArcanumSettingClamps.PerMessageTemplateOverheadTokens(perMessage))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.perMessageOverheadTokens",
+                $"Tokenization PerMessageOverheadTokens ({perMessage}) must be within the 0-32 clamp range."));
+        }
+
+        if (profile.PerToolOverheadTokens is { } perTool
+            && perTool != ArcanumSettingClamps.TokenizationPerToolOverheadTokens(perTool))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.perToolOverheadTokens",
+                $"Tokenization PerToolOverheadTokens ({perTool}) must be within the 0-128 clamp range."));
+        }
+
+        if (profile.ProviderFramingTokens is { } framing
+            && framing != ArcanumSettingClamps.TokenizationProviderFramingTokens(framing))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.providerFramingTokens",
+                $"Tokenization ProviderFramingTokens ({framing}) must be within the 0-1,024 clamp range."));
+        }
+
+        if (profile.StopTokenOverheadTokens is { } stop
+            && stop != ArcanumSettingClamps.TokenizationStopTokenOverheadTokens(stop))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.stopTokenOverheadTokens",
+                $"Tokenization StopTokenOverheadTokens ({stop}) must be within the 0-128 clamp range."));
+        }
+
+        if (profile.UnknownImageReserveTokens is { } image
+            && image != ArcanumSettingClamps.UnknownImageTokenReserve(image))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.unknownImageReserveTokens",
+                $"Tokenization UnknownImageReserveTokens ({image}) must be within the 1-128,000 clamp range."));
+        }
+
+        if (profile.Confidence is { } confidence
+            && confidence != ArcanumSettingClamps.TokenizationConfidence(confidence))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.confidence",
+                $"Tokenization Confidence ({confidence}) must be finite and between 0 and 1."));
         }
     }
 

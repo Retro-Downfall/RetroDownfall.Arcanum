@@ -207,7 +207,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Health & meta | `/api/health`, `/meta`, `/grimoire/stats`, `/budget` | Readiness + spend snapshot; 503 mainly when Grimoire Unhealthy |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
 | Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
-| Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana` | Buffered / NDJSON `IntelligenceEvent` |
+| Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana` | Buffered / NDJSON `IntelligenceEvent`; model-aware Mana/source breakdown |
 | Inference (OpenAI) | `POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/embeddings` | OpenAI JSON/SSE; Scrying gates images; client tools opt-in |
 | OpenAI stubs | `/v1/moderations`, `/images/*`, `/audio/*` | Always 501 `not_supported` |
 | Files / Batches | `/v1/files*`, `/v1/batches*` | Upload + async JSONL chat batches |
@@ -223,7 +223,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Trials / Logs / Audit | `/proving-grounds/trials/run`, `/logs`, `/audit`, `/guardrails/audit` | Ephemeral trials; ring buffer; JSONL audits |
 | Tools / Docs | `POST /api/tools/invoke`, `/openapi/v1.json`, `/scalar` | Built-in invoke; OpenAPI; Scalar opt-in |
 
-**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [§8.25](Arcanum.DESIGN.md#825-http-response-compression) / [§11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
+**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON includes additive `context` frames with the pre-call estimate and optional post-call provider variance; OpenAI SSE intentionally filters those Arcanum diagnostics. Native clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [§8.25](Arcanum.DESIGN.md#825-http-response-compression) / [§11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
 
 
 ## Inference engine details
@@ -231,6 +231,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 Summaries only — full contracts live in DESIGN.
 
 - **Providers:** `Arcanum:Providers[]` with `type: "OpenAICompatible"` (Ollama via `/v1`). Obsolete managed-local / `Ollama` / `Arcanum:Cache` keys are hard-rejected by `ConfigurationValidator`.
+- **Model-aware context accounting:** `IModelTokenEstimator` resolves an optional model profile, provider default, verified official-OpenAI exact `o200k_base` family, or conservative fallback (at least UTF-8 bytes plus margin). Every provider call accounts for messages, complete tool schemas, structured-output schema, RAG/memory/attachments, provider framing, and separate answer/reasoning reserves. `/api/intelligence/mana`, native `context` frames, successful audit records, Command Center `/mana`, and Prometheus expose quality/source/variance; provider-reported usage remains the post-call authority.
 - **First-class reasoning:** native requests use `reasoning:{effort?,budgetTokens?,output?}` where effort is `none|minimal|low|medium|high|extraHigh`, output is `none|summary|full`, and effort/budget are mutually exclusive. OpenAI requests use `reasoning_effort` (`xhigh` maps to native `extraHigh`), additive `reasoning_budget`, and `reasoning_output`. `reasoning_output` is an Arcanum-local exposure preference plus a Microsoft.Extensions.AI best-effort hint, not a guaranteed provider wire control; Arcanum never invents an unsupported provider field. When output is omitted, a full-capable model defaults to `full`, otherwise a summary-only model defaults to `summary` (subject to `allowsClientOutput`, and `supportsStreaming` on streams). Reasoning and capability/dialect enums are string-only; numeric or unknown enum JSON fails strict binding. Model objects opt in with `reasoning:{controlSupport,supportsSummary,supportsFull,supportsStreaming,reportsReasoningTokens,allowsClientOutput,wireDialect,maxBudgetTokens?}`; control support is `none|effort|budget|effortAndBudget`, and the closed dialects are `standard|openRouter|topLevelReasoningBudget|anthropicThinking`. No dialect is inferred from provider/model names.
 - **OpenAI reasoning errors:** semantic validation is identical for buffered and `stream:true` requests and returns HTTP 400, `type:"invalid_request_error"`, `param:"reasoning"`, with `invalid_reasoning_options`, `invalid_reasoning_budget`, `unsupported_reasoning_control`, `reasoning_budget_exceeds_model_limit`, or `unsupported_reasoning_output`. Unknown enum strings and defined/undefined integer enum values fail earlier as strict JSON binding: HTTP 400, code `invalid_json`, no `param`.
 - **Reasoning separation:** native buffered responses expose an ordered `reasoning` array; NDJSON uses typed `reasoning` frames; OpenAI buffered/SSE uses additive `reasoning_summary` / `reasoning_content`; native usage exposes additive `cached_tokens` and `reasoning_tokens`, while OpenAI usage uses `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`. Answer fields remain answer-only. Visible reasoning is ephemeral, provider `ProtectedData` stays in memory only for same-provider tool continuation, and no reasoning body enters Grimoire, logs/audit, trace export, Master/Apprentice handoff, checkpoints, or Chronicles. The Forge Tome renders a live reasoning role and traces retain only redacted type/output/count metadata.
@@ -246,7 +247,7 @@ Summaries only — full contracts live in DESIGN.
 
 Settings bind under the `Arcanum` object in **`arcanum.json`** (`~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows). Override with **`ARCANUM_`** + `__` nesting. Clamps live in `ArcanumSettingClamps`; serve validates before listening. Obsolete removed keys are hard-rejected.
 
-> **Compendium** edits the same file visually — [`Compendium.README.md`](Compendium.README.md). Custom provider rows edit model name/vision and preserve optional reasoning metadata opaquely; operators author reasoning capabilities by editing raw `arcanum.json`. The reasoning descriptors mirror [DESIGN §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings) as schema/help and coverage-parity metadata only; they are not a generic editor surface for provider rows.
+> **Compendium** edits the same file visually — [`Compendium.README.md`](Compendium.README.md). Custom provider rows edit model name/vision and preserve optional reasoning/tokenization metadata opaquely; operators author those nested capabilities in raw `arcanum.json`. Matching descriptors mirror [DESIGN §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings) as schema/help and coverage-parity metadata.
 
 **Full key reference (types, defaults, clamps):** [DESIGN.md §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings). Sections at a glance:
 
@@ -254,8 +255,8 @@ Settings bind under the `Arcanum` object in **`arcanum.json`** (`~/.config/arcan
 |---------|----------|
 | `Host` | Port, HTTPS, CORS, body cap, rate limit, Scalar, ListenAny |
 | `Security` | API-key header/cache; Idempotency-Key TTL/size |
-| `DefaultModel` / `FastModel` / `Providers` | Multi-provider hub; per-model vision/reasoning capabilities and closed reasoning wire dialect |
-| `Intelligence` | Timeouts, tool rounds, Lexicon, compression, injection bounds |
+| `DefaultModel` / `FastModel` / `Providers` | Multi-provider hub; per-provider/per-model typed tokenization plus vision/reasoning capabilities |
+| `Intelligence` | Timeouts, tool rounds, Lexicon, compression, fallback-token safety/image reserves, injection bounds |
 | `Mcp` | Client timeouts, tools/list bounds, bootstrap |
 | `Ward` / Sanctum / `AllowUnsandboxedToolChildren` | Forbidden Arts, sandbox, FS-jail escape hatch |
 | `Apprentices` | Concurrency, retries, Simulacra |
@@ -314,6 +315,29 @@ Ollama must use its `/v1` endpoint. `models` entries may be bare strings or obje
 ```
 
 `standard` uses typed Microsoft.Extensions.AI/OpenAI controls and does not accept a numeric budget. Numeric budgets require exactly one explicit nonstandard shape: `openRouter` → `reasoning.max_tokens`, `topLevelReasoningBudget` → top-level `reasoning_budget`, or `anthropicThinking` → `thinking.budget_tokens`.
+
+Tokenization settings are optional; existing provider/model config remains valid. A calibrated non-OpenAI model can opt in explicitly:
+
+```json
+{
+  "name": "custom-model",
+  "tokenization": {
+    "type": "calibratedApproximation",
+    "tokenizerId": "o200k_base",
+    "safetyMarginPercent": 25,
+    "perMessageOverheadTokens": 4,
+    "perToolOverheadTokens": 8,
+    "providerFramingTokens": 3,
+    "stopTokenOverheadTokens": 1,
+    "unknownImageReserveTokens": 4096,
+    "confidence": 0.8
+  }
+}
+```
+
+Model-level tokenization overrides the provider-level `tokenization` object. Exact-local profiles require a valid tokenizer id and ignore safety margins; unknown models otherwise use `Intelligence.TokenizerEncoding`, `EstimatedTokenSafetyMarginPercent` (default 15), and `UnknownImageTokenReserve` (default 2048).
+
+The token-accounting feature changes no Grimoire table or compiled EF model and introduces no database migration. It does not add any reinstall requirement beyond the pre-existing reasoning-accounting notice below.
 
 ```bash
 export ARCANUM_Arcanum__Providers__1__ApiKey='your-key-here'

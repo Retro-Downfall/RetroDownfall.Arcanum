@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -29,6 +30,13 @@ public sealed class TurnProjectionSemanticTests
         Assert.Equal(
             new IntelligenceToolCallEvent("call-human", "ask_human", "Choose a path"),
             human.ToolCall);
+
+        ContextTokenBreakdown breakdown = Breakdown();
+        IntelligenceEvent context = Assert.Single(
+            IntelligenceEventProjection.Map(
+                new ContextAccounted(Correlation(3), breakdown)));
+        Assert.Equal(IntelligenceEventType.Context, context.Type);
+        Assert.Equal(breakdown, context.ContextBreakdown);
     }
 
     [Fact]
@@ -177,6 +185,7 @@ public sealed class TurnProjectionSemanticTests
             new TurnStatusChanged(Correlation(2), "working"),
             new SessionBound(Correlation(3), Guid.NewGuid()),
             new ContextCompressed(Correlation(4), "compressed"),
+            new ContextAccounted(Correlation(4), Breakdown()),
             new ProviderAttemptStarted(Correlation(5), "provider", "model"),
             new ProviderSelected(Correlation(6), "provider", "model"),
             new ProviderAttemptCommitted(Correlation(7)),
@@ -278,4 +287,30 @@ public sealed class TurnProjectionSemanticTests
             ModelCallId: "model-call",
             ToolCallId: null,
             DateTimeOffset.UnixEpoch.AddSeconds(sequence));
+
+    private static ContextTokenBreakdown Breakdown() =>
+        new()
+        {
+            Provider = "provider",
+            Model = "model",
+            Profile = new ResolvedModelTokenizationProfile
+            {
+                ProfileId = "test",
+                Type = ModelTokenizationProfileType.UnknownFallback,
+                TokenizerId = "o200k_base",
+                SafetyMarginPercent = 15,
+                PerMessageOverheadTokens = 4,
+                PerToolOverheadTokens = 8,
+                ProviderFramingTokens = 3,
+                StopTokenOverheadTokens = 1,
+                UnknownImageReserveTokens = 2048,
+                Confidence = 0.5,
+            },
+            Components = [],
+            InputTokens = 100,
+            ReservedTokens = 32,
+            TotalTokens = 132,
+            OverallClassification = TokenEstimateClassification.Estimated,
+            SafetyMarginTokens = 10,
+        };
 }

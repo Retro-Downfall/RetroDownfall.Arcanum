@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
@@ -53,10 +54,31 @@ public sealed class TurnContextGuardsTests
     public void CheckContextBudget_FailsWhenOverWindow()
     {
         Result result = TurnContextGuards.CheckContextBudget(
-            messageTokens: 9000,
-            tools: null,
-            contextWindowLimit: 8192,
-            reservedOutputTokens: 1024);
+            new ContextTokenBreakdown
+            {
+                Provider = "provider",
+                Model = "model",
+                Profile = new ResolvedModelTokenizationProfile
+                {
+                    ProfileId = "test",
+                    Type = ModelTokenizationProfileType.UnknownFallback,
+                    TokenizerId = "o200k_base",
+                    SafetyMarginPercent = 15,
+                    PerMessageOverheadTokens = 4,
+                    PerToolOverheadTokens = 8,
+                    ProviderFramingTokens = 3,
+                    StopTokenOverheadTokens = 1,
+                    UnknownImageReserveTokens = 2048,
+                    Confidence = 0.5,
+                },
+                Components = [],
+                InputTokens = 9_000,
+                ReservedTokens = 1_024,
+                TotalTokens = 10_024,
+                OverallClassification = TokenEstimateClassification.Estimated,
+                SafetyMarginTokens = 1_000,
+            },
+            contextWindowLimit: 8192);
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);

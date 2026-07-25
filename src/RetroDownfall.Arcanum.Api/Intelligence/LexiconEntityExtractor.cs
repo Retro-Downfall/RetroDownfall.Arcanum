@@ -29,7 +29,8 @@ internal static class LexiconEntityExtractor
         TimeSpan preflightTimeout,
         CancellationToken cancellationToken,
         ILogger? logger = null,
-        IModelCallExecutor? modelCallExecutor = null)
+        IModelCallExecutor? modelCallExecutor = null,
+        ModelCallContext? modelCallContext = null)
     {
 
         if (string.IsNullOrWhiteSpace(userPrompt))
@@ -80,7 +81,8 @@ internal static class LexiconEntityExtractor
                     options,
                     auxBudget,
                     ModelCallPurpose.LexiconExtraction,
-                    timeoutCts.Token)
+                    timeoutCts.Token,
+                    modelCallContext)
                 .ConfigureAwait(false);
 
             if (callResult.IsFailure)

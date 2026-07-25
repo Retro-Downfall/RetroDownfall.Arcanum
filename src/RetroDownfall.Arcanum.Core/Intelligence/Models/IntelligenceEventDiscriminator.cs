@@ -126,6 +126,7 @@ public static class IntelligenceEventDiscriminator
         "conversationBound",
         "token",
         "reasoning",
+        "context",
         "result",
         "error",
         "toolCall",

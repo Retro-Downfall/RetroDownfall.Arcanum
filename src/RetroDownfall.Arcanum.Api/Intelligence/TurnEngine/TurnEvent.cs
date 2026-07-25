@@ -18,6 +18,10 @@ internal sealed record SessionBound(TurnEventCorrelation Correlation, Guid Sessi
 
 internal sealed record ContextCompressed(TurnEventCorrelation Correlation, string Message) : TurnEvent(Correlation);
 
+internal sealed record ContextAccounted(
+    TurnEventCorrelation Correlation,
+    ContextTokenBreakdown Breakdown) : TurnEvent(Correlation);
+
 internal sealed record ProviderAttemptStarted(TurnEventCorrelation Correlation, string? ProviderName, string? Model)
     : TurnEvent(Correlation);
 

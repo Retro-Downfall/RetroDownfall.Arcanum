@@ -71,6 +71,14 @@ internal sealed class IntelligenceEventProjection
                 new IntelligenceEvent(IntelligenceEventType.Status, compressed.Message),
             ],
 
+            ContextAccounted accounted =>
+            [
+                new IntelligenceEvent(
+                    IntelligenceEventType.Context,
+                    "Context token accounting",
+                    ContextBreakdown: accounted.Breakdown),
+            ],
+
             TextDelta delta =>
             [
                 new IntelligenceEvent(IntelligenceEventType.Token, delta.Text, delta.Text),

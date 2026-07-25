@@ -674,6 +674,12 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        public Task<Result> AdjustAsync(
+            Guid reservationId,
+            decimal reservedUsd,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
         public Task ReleaseAsync(
             Guid reservationId,
             CancellationToken cancellationToken = default) =>

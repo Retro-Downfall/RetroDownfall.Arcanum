@@ -185,6 +185,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private ReasoningCapabilities? _reasoning;
 
+        [ObservableProperty] private ModelTokenizationProfile? _tokenization;
+
         public ModelEntryViewModel()
         {
         }
@@ -198,9 +200,11 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             Reasoning = entry.Reasoning;
 
+            Tokenization = entry.Tokenization;
+
         }
 
-        public ModelEntry Build() => new(Name, SupportsVision, Reasoning);
+        public ModelEntry Build() => new(Name, SupportsVision, Reasoning, Tokenization);
 
     }
 

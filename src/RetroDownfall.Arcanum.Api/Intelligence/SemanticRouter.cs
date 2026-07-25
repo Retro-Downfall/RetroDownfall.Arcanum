@@ -34,7 +34,8 @@ internal static class SemanticRouter
         CancellationToken cancellationToken,
         ILogger? logger = null,
         IReadOnlyList<SpellMetadata>? candidates = null,
-        IModelCallExecutor? modelCallExecutor = null)
+        IModelCallExecutor? modelCallExecutor = null,
+        ModelCallContext? modelCallContext = null)
     {
         if (availableSpells.Count == 0)
         {
@@ -116,7 +117,8 @@ internal static class SemanticRouter
                     routerOptions,
                     auxBudget,
                     ModelCallPurpose.SpellRouting,
-                    timeoutCts.Token)
+                    timeoutCts.Token,
+                    modelCallContext)
                 .ConfigureAwait(false);
 
             if (callResult.IsFailure)

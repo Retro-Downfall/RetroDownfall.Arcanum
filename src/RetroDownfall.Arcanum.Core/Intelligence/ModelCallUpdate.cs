@@ -29,6 +29,18 @@ public sealed record ModelCallResponseUpdate(ModelCallPurpose Purpose, string Mo
 public sealed record ModelCallUsageUpdate(ModelCallPurpose Purpose, string ModelCallId, UsageDetails? Usage)
     : ModelCallUpdate(Purpose, ModelCallId);
 
+public sealed record ModelCallContextUpdate(
+    ModelCallPurpose Purpose,
+    string ModelCallId,
+    ContextTokenBreakdown Breakdown)
+    : ModelCallUpdate(Purpose, ModelCallId);
+
+public sealed record ModelCallFailureUpdate(
+    ModelCallPurpose Purpose,
+    string ModelCallId,
+    Error Error)
+    : ModelCallUpdate(Purpose, ModelCallId);
+
 /// <summary>
 /// One normalized reasoning segment retained by the model/tool loop. <see cref="VisibleText"/> is
 /// client-safe; opaque provider data is represented only by <see cref="HasProtectedData"/>.
@@ -150,7 +162,8 @@ public sealed record ModelCallResult(
     string ModelCallId,
     ChatResponse Response,
     UsageDetails? Usage,
-    ModelCallReasoningResult Reasoning);
+    ModelCallReasoningResult Reasoning,
+    ContextTokenBreakdown? ContextBreakdown = null);
 
 /// <summary>Failure of a model call before a successful <see cref="ModelCallResult"/>.</summary>
 public sealed record ModelCallFailure(

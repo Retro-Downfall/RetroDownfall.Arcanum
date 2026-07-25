@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Core.Serialization;
@@ -16,4 +18,13 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(InferenceAuditRecord))]
 [JsonSerializable(typeof(GuardrailAuditRecord))]
 [JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(ContextTokenBreakdown))]
+[JsonSerializable(typeof(List<ContextTokenBreakdown>))]
+[JsonSerializable(typeof(ContextTokenComponent))]
+[JsonSerializable(typeof(List<ContextTokenComponent>))]
+[JsonSerializable(typeof(TokenEstimate))]
+[JsonSerializable(typeof(ResolvedModelTokenizationProfile))]
+[JsonSerializable(typeof(ContextTokenSource))]
+[JsonSerializable(typeof(TokenEstimateClassification))]
+[JsonSerializable(typeof(ModelTokenizationProfileType))]
 public sealed partial class AuditJsonContext : JsonSerializerContext;

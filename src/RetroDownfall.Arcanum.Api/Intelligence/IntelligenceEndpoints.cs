@@ -3,10 +3,10 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Models;
@@ -332,15 +332,13 @@ internal static class IntelligenceEndpoints
     }
 
     /// <summary>
-    /// Read-only diagnostic Mana (token) counter. Reuses <see cref="InferenceTokenizerResolver"/>
-    /// and <see cref="ManaPreflight"/> (the same pre-flight counting machinery used for context
-    /// compression, DESIGN.md §10.2.3) so results match what the intelligence hub actually
-    /// budgets against. Non-billable (ADR 0002): performs no Grimoire writes and no inference.
+    /// Read-only diagnostic Mana (token) counter. Reuses the model-aware
+    /// <see cref="IModelTokenEstimator"/> used at the provider-call boundary. Non-billable
+    /// (ADR 0002): performs no Grimoire writes and no inference.
     /// </summary>
     private static async Task<IResult> HandleCountManaAsync(
         ManaCountRequest? body,
-        InferenceTokenizerResolver tokenizerResolver,
-        ManaPreflight manaPreflight,
+        IModelTokenEstimator modelTokenEstimator,
         IMcpConnectionManager mcp,
         IOptionsSnapshot<ArcanumSettings> settings,
         IHttpClientFactory httpClientFactory,
@@ -368,61 +366,74 @@ internal static class IntelligenceEndpoints
 
         }
 
-        string encodingName = string.IsNullOrWhiteSpace(settings.Value.Intelligence.TokenizerEncoding)
-            ? InferenceTokenizerResolver.DefaultEncodingName
-            : settings.Value.Intelligence.TokenizerEncoding;
+        ArcanumSettings current = settings.Value;
+        string requestedModel = string.IsNullOrWhiteSpace(body!.Model)
+            ? current.DefaultModel ?? string.Empty
+            : body.Model.Trim();
+        ProviderSettings provider;
+        string canonicalModel;
 
-        Tokenizer tokenizer = tokenizerResolver.ResolveTokenizer(encodingName);
-
-        int perMessageOverhead = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
-            settings.Value.Intelligence.PerMessageTemplateOverheadTokens);
-
-        int manaCount;
-
-        List<int>? perMessage = null;
-
-        if (hasMessages)
+        if (ProviderResolver.TryResolveProviderForModel(
+                current,
+                requestedModel,
+                out ProviderSettings? configuredProvider,
+                out string configuredModel)
+            && configuredProvider is not null)
         {
-
-            List<MeAiChatMessage> chatMessages = InferenceContextBuilder.MapToAiChatMessages(body!.Messages!);
-
-            manaCount = manaPreflight.CountTokens(chatMessages, tokenizer, perMessageOverhead, encodingName);
-
-            perMessage = new List<int>(chatMessages.Count);
-
-            foreach (MeAiChatMessage message in chatMessages)
-            {
-
-                List<MeAiChatMessage> single = [message];
-
-                perMessage.Add(manaPreflight.CountTokens(single, tokenizer, perMessageOverhead, encodingName));
-
-            }
-
+            provider = configuredProvider;
+            canonicalModel = configuredModel;
         }
         else
         {
-
-            manaCount = tokenizer.CountTokens(body!.Prompt!);
-
+            canonicalModel = string.IsNullOrWhiteSpace(requestedModel) ? "unknown" : requestedModel;
+            provider = new ProviderSettings
+            {
+                Name = "unconfigured",
+                Type = AiProviderKind.OpenAICompatible,
+                Models = [new ModelEntry(canonicalModel)],
+                ContextWindowLimit = (current.Providers ?? []).FirstOrDefault()?.ContextWindowLimit ?? 8192,
+            };
         }
 
-        int? toolManaEstimate = null;
+        List<MeAiChatMessage> chatMessages = hasMessages
+            ? InferenceContextBuilder.MapToAiChatMessages(body.Messages!)
+            : [new MeAiChatMessage(ChatRole.User, body.Prompt!)];
+        ChatOptions chatOptions = new();
 
         if (body.Tools)
         {
-
             ArcanumBrowseWebTool? browseTool = settings.Value.WebBrowsing.Enabled
                 ? new ArcanumBrowseWebTool(httpClientFactory, settings, browseWebLogger)
                 : null;
-
-            toolManaEstimate = await ToolSchemaManaEstimator
-                .EstimateAsync(mcp, tokenizer, perMessageOverhead, workingDirectory: null, browseTool, cancellationToken)
+            chatOptions.Tools = await ManaToolCatalog
+                .CollectAsync(mcp, workingDirectory: null, browseTool, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
-        ManaCountResult result = new(manaCount, encodingName, perMessage, toolManaEstimate);
+        ContextTokenBreakdown breakdown = modelTokenEstimator.EstimateContext(
+            new ModelTokenizationRequest(
+                provider,
+                canonicalModel,
+                chatMessages,
+                chatOptions,
+                ReservedAnswerTokens: 0,
+                ReservedReasoningTokens: 0));
+        int? toolManaEstimate = body.Tools
+            ? breakdown.Source(ContextTokenSource.Tools).TokenCount
+            : null;
+        List<int>? perMessage = hasMessages
+            ? [.. breakdown.MessageTokenCounts]
+            : null;
+
+        ManaCountResult result = new(
+            breakdown.InputTokens,
+            breakdown.Profile.TokenizerId,
+            perMessage,
+            toolManaEstimate,
+            breakdown.OverallClassification,
+            breakdown.Profile.ProfileId,
+            breakdown.SafetyMarginTokens,
+            breakdown);
 
         Result<ManaCountResult> ok = Result<ManaCountResult>.Success(result);
 
