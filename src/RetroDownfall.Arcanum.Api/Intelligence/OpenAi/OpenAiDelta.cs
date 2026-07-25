@@ -13,4 +13,10 @@ public sealed record OpenAiDelta(
     [property: JsonPropertyName("content")] string? Content = null,
     [property: JsonPropertyName("role")] string? Role = null,
     [property: JsonPropertyName("tool_calls")] OpenAiStreamToolCall[]? ToolCalls = null,
-    [property: JsonPropertyName("refusal")] string? Refusal = null);
+    [property: JsonPropertyName("refusal")] string? Refusal = null,
+    [property: JsonPropertyName("reasoning_content")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ReasoningContent = null,
+    [property: JsonPropertyName("reasoning_summary")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ReasoningSummary = null);

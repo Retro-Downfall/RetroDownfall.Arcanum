@@ -104,6 +104,8 @@ Full catalog and deferred list: [`TheForge.DESIGN.md` §6](TheForge.DESIGN.md#6-
 | Whispers | Top-right toasts | Short success/error; detail on Foundry Floor |
 | The Illumination | Spell / Codex / markdown tabs | Source · Split · Preview (Markdig; optional remote images) |
 
+The Tome renders client-safe `reasoning` frames as a separate bounded live role and keeps the assistant bubble answer-only. Reasoning is not loaded from session history or handed to Apprentices. Inference traces retain event type, output mode, and token count while replacing the reasoning message and dropping its data before local persistence/export.
+
 Tool windows move via header context menu or **View**; **View → Reset Window Layout** restores defaults.
 Layout persists in `layoutState`.
 

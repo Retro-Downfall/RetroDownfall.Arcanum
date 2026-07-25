@@ -21,7 +21,7 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 {
 
     public const string LimitationsText =
-        "This trace shows stream events only (status, session binding, tokens, tools, wards, result/usage, errors). "
+        "This trace shows stream events only (status, session binding, tokens, reasoning metadata with body redacted, tools, wards, result/usage, errors). "
         + "It does not include full provider request messages, full assembled system prompts for arbitrary Tome runs, "
         + "or Sanctum decision details unless those were emitted on the stream.";
 
@@ -135,10 +135,11 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
         }
 
+        bool redactReasoning = ev.Type == IntelligenceEventType.Reasoning;
         Entries.Add(new InferenceTraceEntryViewModel(
             ev.Type.ToString(),
-            ev.Message,
-            ev.Data,
+            redactReasoning ? "[reasoning body redacted]" : ev.Message,
+            redactReasoning ? null : ev.Data,
             ev.Usage?.PromptTokens,
             ev.Usage?.CompletionTokens,
             ev.Usage?.TotalTokens,
@@ -147,7 +148,9 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
             toolCallId,
             toolName,
             toolRoundId,
-            ev.Timestamp ?? DateTimeOffset.UtcNow));
+            ev.Timestamp ?? DateTimeOffset.UtcNow,
+            ev.Reasoning?.Output.ToString(),
+            ev.Usage is null ? null : ev.Usage.ReasoningTokens));
 
     }
 
@@ -299,7 +302,9 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
                 e.ToolCallId,
                 e.ToolName,
                 e.ToolRoundId,
-                e.Timestamp))
+                e.Timestamp,
+                e.ReasoningOutputMode,
+                e.ReasoningTokens))
             .ToList();
 
         return new InferenceTraceRecord(
@@ -326,7 +331,9 @@ public sealed record InferenceTraceEntryViewModel(
     string? ToolCallId,
     string? ToolName,
     string? ToolRoundId,
-    DateTimeOffset Timestamp)
+    DateTimeOffset Timestamp,
+    string? ReasoningOutputMode = null,
+    int? ReasoningTokens = null)
 {
 
     public string DisplayLine
@@ -357,6 +364,20 @@ public sealed record InferenceTraceEntryViewModel(
             {
 
                 sb.Append(": ").Append(Message);
+
+            }
+
+            if (!string.IsNullOrWhiteSpace(ReasoningOutputMode))
+            {
+
+                sb.Append(" mode=").Append(ReasoningOutputMode);
+
+            }
+
+            if (ReasoningTokens is int reasoningTokens)
+            {
+
+                sb.Append(" reasoningTokens=").Append(reasoningTokens);
 
             }
 

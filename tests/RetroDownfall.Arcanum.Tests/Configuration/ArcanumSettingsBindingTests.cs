@@ -28,7 +28,20 @@ public sealed class ArcanumSettingsBindingTests
                     "endpoint": "https://api.fireworks.ai/inference/v1",
                     "apiKey": "test-key",
                     "models": [
-                      { "name": "accounts/fireworks/models/qwen3p7-plus", "supportsVision": true }
+                      {
+                        "name": "accounts/fireworks/models/qwen3p7-plus",
+                        "supportsVision": true,
+                        "reasoning": {
+                          "controlSupport": "EffortAndBudget",
+                          "supportsSummary": true,
+                          "supportsFull": false,
+                          "supportsStreaming": true,
+                          "reportsReasoningTokens": true,
+                          "allowsClientOutput": true,
+                          "wireDialect": "OpenRouter",
+                          "maxBudgetTokens": 32768
+                        }
+                      }
                     ],
                     "contextWindowLimit": 25600
                   }
@@ -71,6 +84,53 @@ public sealed class ArcanumSettingsBindingTests
 
         Assert.True(settings.Providers[0].Models[0].SupportsVision);
 
+        ReasoningCapabilities? reasoning = settings.Providers[0].Models[0].Reasoning;
+
+        Assert.NotNull(reasoning);
+        Assert.Equal(ReasoningControlSupport.EffortAndBudget, reasoning.ControlSupport);
+        Assert.True(reasoning.SupportsSummary);
+        Assert.False(reasoning.SupportsFull);
+        Assert.True(reasoning.SupportsStreaming);
+        Assert.True(reasoning.ReportsReasoningTokens);
+        Assert.True(reasoning.AllowsClientOutput);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, reasoning.WireDialect);
+        Assert.Equal(32_768, reasoning.MaxBudgetTokens);
+
+    }
+
+    [Fact]
+    public void Configure_binds_nullable_reasoning_price_via_source_generator()
+    {
+        const string json =
+            """
+            {
+              "Arcanum": {
+                "pricing": {
+                  "defaultPricing": {
+                    "inputPer1M": 10,
+                    "outputPer1M": 20,
+                    "reasoningPer1M": 80,
+                    "cachedPer1M": 1
+                  }
+                }
+              }
+            }
+            """;
+        using MemoryStream stream = new(System.Text.Encoding.UTF8.GetBytes(json));
+        IConfigurationRoot configuration = new ConfigurationBuilder()
+            .AddJsonStream(stream)
+            .Build();
+        ServiceCollection services = new();
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        ModelPricingEntry pricing =
+            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Pricing.DefaultPricing;
+
+        Assert.Equal(10m, pricing.InputPer1M);
+        Assert.Equal(20m, pricing.OutputPer1M);
+        Assert.Equal(80m, pricing.ReasoningPer1M);
+        Assert.Equal(1m, pricing.CachedPer1M);
     }
 
 }

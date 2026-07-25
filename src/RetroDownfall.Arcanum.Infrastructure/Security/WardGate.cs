@@ -37,11 +37,17 @@ public sealed class WardGate : IWard
 
     private readonly ConcurrentDictionary<string, WardResolution> _resolved = new();
 
+    private readonly object _resolutionGate = new();
+
     private readonly IOptionsMonitor<ArcanumSettings> _settings;
 
-    public WardGate(IOptionsMonitor<ArcanumSettings> settings)
+    private readonly TimeProvider _timeProvider;
+
+    public WardGate(IOptionsMonitor<ArcanumSettings> settings, TimeProvider? timeProvider = null)
     {
         _settings = settings;
+
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<WardResolution> WardAsync(
@@ -52,7 +58,7 @@ public sealed class WardGate : IWard
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset placedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset placedAt = _timeProvider.GetUtcNow();
 
         DateTimeOffset expiresAt = placedAt.Add(timeout);
 
@@ -64,7 +70,7 @@ public sealed class WardGate : IWard
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
 
-            return new WardResolution(false, CapacityReason, DateTimeOffset.UtcNow);
+            return new WardResolution(false, CapacityReason, _timeProvider.GetUtcNow());
 
         }
 
@@ -119,36 +125,39 @@ public sealed class WardGate : IWard
     {
         PruneResolvedTombstones();
 
-        if (_pending.TryRemove(wardId, out WardEntry? entry))
+        WardEntry entry;
+
+        WardResolution resolution;
+
+        lock (_resolutionGate)
         {
-            entry.CapacityLease.Dispose();
 
-            TryCancelEntry(entry.Cts);
-
-            DisposeEntry(entry);
-
-            DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
-
-            var resolution = new WardResolution(allow, reason, resolvedAt);
-
-            if (entry.Tcs.TrySetResult(resolution))
+            if (!_pending.TryRemove(wardId, out entry!))
             {
-                _resolved[wardId] = resolution;
 
-                return ResolveStatus.Success;
+                return _resolved.ContainsKey(wardId)
+                    ? ResolveStatus.AlreadyResolved
+                    : ResolveStatus.NotFound;
+
             }
+
+            resolution = new WardResolution(allow, reason, _timeProvider.GetUtcNow());
 
             _resolved[wardId] = resolution;
 
-            return ResolveStatus.AlreadyResolved;
         }
 
-        if (_resolved.ContainsKey(wardId))
-        {
-            return ResolveStatus.AlreadyResolved;
-        }
+        entry.CapacityLease.Dispose();
 
-        return ResolveStatus.NotFound;
+        TryCancelEntry(entry.Cts);
+
+        DisposeEntry(entry);
+
+        // Every completion path must win _pending.TryRemove before completing the TCS, so
+        // the remover exclusively owns an incomplete entry.
+        _ = entry.Tcs.TrySetResult(resolution);
+
+        return ResolveStatus.Success;
     }
 
     public IReadOnlyList<ActiveWard> GetActiveWards()
@@ -204,23 +213,29 @@ public sealed class WardGate : IWard
             return;
         }
 
-        if (!_pending.TryRemove(wardId, out WardEntry? removed))
+        WardEntry removed;
+
+        WardResolution resolution;
+
+        lock (_resolutionGate)
         {
-            return;
+
+            if (!_pending.TryRemove(wardId, out removed!))
+            {
+                return;
+            }
+
+            resolution = new WardResolution(false, TimeoutReason, _timeProvider.GetUtcNow());
+
+            _resolved[wardId] = resolution;
+
         }
 
         removed.CapacityLease.Dispose();
 
         DisposeEntry(removed);
 
-        DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
-
-        var resolution = new WardResolution(false, TimeoutReason, resolvedAt);
-
-        if (removed.Tcs.TrySetResult(resolution))
-        {
-            _resolved[wardId] = resolution;
-        }
+        _ = removed.Tcs.TrySetResult(resolution);
 
         PruneResolvedTombstones();
     }
@@ -230,7 +245,7 @@ public sealed class WardGate : IWard
         int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(
             _settings.CurrentValue.Ward?.TimeoutSeconds ?? new WardSettings().TimeoutSeconds);
 
-        DateTimeOffset cutoff = DateTimeOffset.UtcNow.AddSeconds(-(timeoutSeconds + 60));
+        DateTimeOffset cutoff = _timeProvider.GetUtcNow().AddSeconds(-(timeoutSeconds + 60));
 
         foreach (KeyValuePair<string, WardResolution> pair in _resolved)
         {

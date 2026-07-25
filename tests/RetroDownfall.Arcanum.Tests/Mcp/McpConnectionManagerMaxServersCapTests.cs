@@ -128,14 +128,33 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
     public async Task StartAsync_CanceledDuringHandshake_ResetsEntryState_NotStuckStarting()
     {
 
-        // /bin/sleep is spawned directly (an absolute path, bypassing PATH resolution, which MCP
-        // subprocesses do not inherit by default) and never speaks the MCP JSON-RPC handshake, so
-        // InitializeAsync hangs until this test's own cancellation fires.
+        // Spawn an absolute-path, silent sleeper (MCP subprocesses do not inherit PATH by default).
+        // It never speaks the MCP JSON-RPC handshake, so InitializeAsync blocks until this test's
+        // own cancellation fires on every supported host OS.
+        string command = OperatingSystem.IsWindows()
+            ? Path.Combine(
+                global::System.Environment.SystemDirectory,
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe")
+            : "/bin/sleep";
+
+        string[] arguments = OperatingSystem.IsWindows()
+            ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]
+            : ["30"];
+
+        Dictionary<string, string>? environment = OperatingSystem.IsWindows()
+            ? new Dictionary<string, string>
+            {
+                ["SystemRoot"] = global::System.Environment.GetEnvironmentVariable("SystemRoot")!,
+            }
+            : null;
+
         McpConfig config = new()
         {
             McpServers = new Dictionary<string, McpServerConfig>
             {
-                ["hang-server"] = new() { Command = "/bin/sleep", Args = ["30"] },
+                ["hang-server"] = new() { Command = command, Args = arguments, Env = environment },
             },
         };
 

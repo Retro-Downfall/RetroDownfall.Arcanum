@@ -14,6 +14,7 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     private readonly ChannelWriter<CommandCenterUiUpdate> _ui;
     private readonly TimeSpan _flushInterval;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly Action? _beforeFlush;
     private readonly object _gate = new();
     private bool _dirty;
     private DateTimeOffset _lastFlushUtc;
@@ -22,11 +23,13 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     public StreamingUiCoalescer(
         ChannelWriter<CommandCenterUiUpdate> uiUpdates,
         TimeSpan? flushInterval = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        Action? beforeFlush = null)
     {
         _ui = uiUpdates ?? throw new ArgumentNullException(nameof(uiUpdates));
         _flushInterval = flushInterval ?? DefaultFlushInterval;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _beforeFlush = beforeFlush;
         _lastFlushUtc = _utcNow();
     }
 
@@ -115,6 +118,7 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
 
     private async ValueTask FlushCoreAsync(CancellationToken cancellationToken)
     {
+        _beforeFlush?.Invoke();
         FlushCount++;
         await _ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
             .ConfigureAwait(false);

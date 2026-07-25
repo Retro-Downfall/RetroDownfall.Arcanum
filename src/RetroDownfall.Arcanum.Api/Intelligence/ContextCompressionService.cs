@@ -128,7 +128,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
             foreach (Entry entry in ordered)
             {
 
-                estimatedRemoved += Math.Max(1, (entry.Content?.Length ?? 0) / 4);
+                estimatedRemoved += Math.Max(1, entry.Content.Length / 4);
 
                 entryIdsToDelete.Add(entry.Id);
 

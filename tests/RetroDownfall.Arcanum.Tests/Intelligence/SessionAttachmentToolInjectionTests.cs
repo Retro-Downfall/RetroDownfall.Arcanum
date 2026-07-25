@@ -93,7 +93,12 @@ public sealed class SessionAttachmentToolInjectionTests
 
             Assert.Contains("hello", text.Text, StringComparison.Ordinal);
 
-            Assert.Contains("```\nhello\n```", text.Text, StringComparison.Ordinal);
+            string expectedFence = string.Join(global::System.Environment.NewLine, "```", "hello", "```");
+
+            Assert.Contains(
+                expectedFence,
+                text.Text,
+                StringComparison.Ordinal);
 
             List<MeAiChatMessage> messages =
             [

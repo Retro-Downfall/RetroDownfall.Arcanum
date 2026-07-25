@@ -88,9 +88,9 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         [ObservableProperty] private int _contextWindowLimit;
 
         /// <summary>
-        /// Per-model rows (name + Scrying <c>supportsVision</c> flag). A real editable collection —
-        /// not a collapsed comma-separated string — so vision capability declared in
-        /// <c>Arcanum:Providers[].models</c> round-trips through the Compendium UI without loss.
+        /// Editable per-model name and Scrying rows. Each row also retains its optional reasoning
+        /// capability object as opaque metadata so ordinary provider edits round-trip it unchanged;
+        /// the polished provider page is not a full reasoning-capability editor.
         /// </summary>
         public ObservableCollection<ModelEntryViewModel> Models { get; } = [];
 
@@ -172,8 +172,9 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
     }
 
     /// <summary>
-    /// A single <c>Arcanum:Providers[].models</c> entry — model name plus Scrying
-    /// <c>supportsVision</c> declaration. See <see cref="ModelEntry"/>.
+    /// A single <c>Arcanum:Providers[].models</c> entry. Name and Scrying support are edited by the
+    /// polished provider UI; optional reasoning metadata is preserved unchanged for configuration
+    /// or generic-descriptor editing. See <see cref="ModelEntry"/>.
     /// </summary>
     public sealed partial class ModelEntryViewModel : ObservableObject
     {
@@ -181,6 +182,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         [ObservableProperty] private string _name = string.Empty;
 
         [ObservableProperty] private bool _supportsVision;
+
+        [ObservableProperty] private ReasoningCapabilities? _reasoning;
 
         public ModelEntryViewModel()
         {
@@ -193,9 +196,11 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             SupportsVision = entry.SupportsVision;
 
+            Reasoning = entry.Reasoning;
+
         }
 
-        public ModelEntry Build() => new(Name, SupportsVision);
+        public ModelEntry Build() => new(Name, SupportsVision, Reasoning);
 
     }
 

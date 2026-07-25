@@ -28,4 +28,12 @@ public sealed record PricingSettings
     /// </summary>
     public ModelPricingEntry DefaultPricing { get; set; } = new();
 
+    /// <summary>Resolves configured model pricing, falling back for null, blank, or unmapped names.</summary>
+    public ModelPricingEntry ResolveForModel(string? model) =>
+        !string.IsNullOrWhiteSpace(model)
+        && ModelPricing.TryGetValue(model, out ModelPricingEntry? pricing)
+        && pricing is not null
+            ? pricing
+            : DefaultPricing;
+
 }

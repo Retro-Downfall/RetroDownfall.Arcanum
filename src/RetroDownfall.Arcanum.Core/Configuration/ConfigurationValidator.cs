@@ -256,6 +256,14 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
             }
 
+            for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+            {
+                ValidateReasoningCapabilities(
+                    models[modelIndex].Reasoning,
+                    $"{providerPointer}.models[{modelIndex}].reasoning",
+                    errors);
+            }
+
             // OpenAICompatible providers dial provider.Endpoint directly at inference time
             // (ChatClientFactory/EmbeddingGeneratorFactory both do `new Uri(provider.Endpoint)`
             // unguarded). An empty Endpoint is left as-is here (a provider mid-setup, not yet
@@ -318,6 +326,8 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             }
 
         }
+
+        ValidatePricing(settings.Pricing ?? new PricingSettings(), errors);
 
         IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
 
@@ -386,6 +396,46 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         return Result.Success();
 
+    }
+
+    private static void ValidatePricing(
+        PricingSettings pricing,
+        List<ConfigurationValidationError> errors)
+    {
+        ValidatePricingEntry(pricing.DefaultPricing, "pricing.defaultPricing", errors);
+
+        foreach ((string model, ModelPricingEntry entry) in pricing.ModelPricing)
+        {
+            ValidatePricingEntry(entry, $"pricing.modelPricing[{model}]", errors);
+        }
+    }
+
+    private static void ValidatePricingEntry(
+        ModelPricingEntry entry,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        ValidatePricingRate(entry.InputPer1M, $"{pointer}.inputPer1M", errors);
+        ValidatePricingRate(entry.OutputPer1M, $"{pointer}.outputPer1M", errors);
+        ValidatePricingRate(entry.CachedPer1M, $"{pointer}.cachedPer1M", errors);
+
+        if (entry.ReasoningPer1M is decimal reasoning)
+        {
+            ValidatePricingRate(reasoning, $"{pointer}.reasoningPer1M", errors);
+        }
+    }
+
+    private static void ValidatePricingRate(
+        decimal value,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        if (value != ArcanumSettingClamps.PricingRatePer1M(value))
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                $"Pricing rate ({value}) must be between 0 and 1,000,000 USD per 1M tokens."));
+        }
     }
 
     private void ValidateResilience(ArcanumSettings settings, List<ConfigurationValidationError> errors)
@@ -608,6 +658,88 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         }
 
+    }
+
+    private static void ValidateReasoningCapabilities(
+        ReasoningCapabilities? reasoning,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        if (reasoning is null)
+        {
+            return;
+        }
+
+        bool validControlSupport = Enum.IsDefined(reasoning.ControlSupport);
+
+        if (!validControlSupport)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.controlSupport",
+                $"Reasoning ControlSupport '{reasoning.ControlSupport}' is not defined."));
+        }
+
+        bool validWireDialect = Enum.IsDefined(reasoning.WireDialect);
+
+        if (!validWireDialect)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.wireDialect",
+                $"Reasoning WireDialect '{reasoning.WireDialect}' is not defined."));
+        }
+
+        bool supportsBudget = validControlSupport
+            && reasoning.ControlSupport is ReasoningControlSupport.Budget
+                or ReasoningControlSupport.EffortAndBudget;
+
+        if (validControlSupport && validWireDialect)
+        {
+            if (supportsBudget && reasoning.WireDialect == ReasoningWireDialect.Standard)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.wireDialect",
+                    "Reasoning budget control requires an explicitly configured nonstandard numeric-budget WireDialect."));
+            }
+            else if (!supportsBudget && reasoning.WireDialect != ReasoningWireDialect.Standard)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.wireDialect",
+                    "A nonstandard reasoning WireDialect requires Budget or EffortAndBudget control support."));
+            }
+        }
+
+        if (reasoning.MaxBudgetTokens is { } maxBudgetTokens)
+        {
+            if (maxBudgetTokens != ArcanumSettingClamps.ReasoningBudgetTokens(maxBudgetTokens))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.maxBudgetTokens",
+                    $"Reasoning MaxBudgetTokens ({maxBudgetTokens}) must be within the 1-2,097,152 token clamp range."));
+            }
+
+            if (validControlSupport && !supportsBudget)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.maxBudgetTokens",
+                    "Reasoning MaxBudgetTokens requires Budget or EffortAndBudget control support."));
+            }
+        }
+
+        bool supportsVisibleOutput = reasoning.SupportsSummary || reasoning.SupportsFull;
+
+        if (reasoning.AllowsClientOutput && !supportsVisibleOutput)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.allowsClientOutput",
+                "Reasoning AllowsClientOutput requires SupportsSummary or SupportsFull."));
+        }
+
+        if (reasoning.SupportsStreaming && !supportsVisibleOutput)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.supportsStreaming",
+                "Reasoning SupportsStreaming requires SupportsSummary or SupportsFull."));
+        }
     }
 
     /// <summary>

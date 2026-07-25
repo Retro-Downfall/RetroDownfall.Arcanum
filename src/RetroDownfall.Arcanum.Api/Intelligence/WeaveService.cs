@@ -93,36 +93,74 @@ public sealed class WeaveService(
 
         int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
 
+        List<List<string>> sanitizedBatches = [];
+
+        for (int offset = 0; offset < texts.Count; offset += batchSize)
+        {
+            int count = Math.Min(batchSize, texts.Count - offset);
+            List<string> batch = new(count);
+
+            for (int i = 0; i < count; i++)
+            {
+                string text = texts[offset + i];
+                batch.Add(text.Length > chunkSizeChars
+                    ? text[..Utf8Truncation.SafeCharSliceLength(text, chunkSizeChars)]
+                    : text);
+            }
+
+            sanitizedBatches.Add(batch);
+        }
+
+        long totalApproxTokens = EstimateApproximateTokens(sanitizedBatches.SelectMany(static batch => batch));
+        PricingSettings pricingSettings = optionsMonitor.CurrentValue.Pricing ?? new PricingSettings();
+        ModelPricingEntry pricing = pricingSettings.ResolveForModel(embeddings.Model);
+
+        string provider = embeddings.Provider ?? "unknown";
+        string model = embeddings.Model ?? "unknown";
+        IServiceScope? accountingScope = null;
+        ITurnRunWriter? turnRunWriter = TurnAccountingAmbient.Writer;
+        IBudgetReservationService? budgetReservations = null;
+        TurnAccountingHandle? accounting = TurnAccountingAmbient.Current;
+        bool ownsAccounting = false;
+
+        if (accounting is null)
+        {
+            accountingScope = scopeFactory.CreateScope();
+            turnRunWriter = accountingScope.ServiceProvider.GetService<ITurnRunWriter>();
+            budgetReservations = accountingScope.ServiceProvider.GetService<IBudgetReservationService>();
+            decimal reservedUsd = BudgetReservationService.EstimateWorstCaseEmbeddingUsd(pricing, totalApproxTokens);
+            Result<TurnAccountingHandle> begin = await TurnAccountingHandle.BeginAsync(
+                    turnRunWriter,
+                    budgetReservations,
+                    pricingSettings,
+                    model,
+                    sessionId: null,
+                    surface: "embedding",
+                    purpose: "embedding",
+                    requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
+                    cancellationToken,
+                    reservedUsdOverride: reservedUsd)
+                .ConfigureAwait(false);
+
+            if (begin.IsFailure)
+            {
+                accountingScope.Dispose();
+                return Result<Embedding<float>[]>.Failure(begin.Error);
+            }
+
+            accounting = begin.Value;
+            ownsAccounting = true;
+        }
+
         List<Embedding<float>> results = new(texts.Count);
+        InferenceRunStatus accountingStatus = InferenceRunStatus.Failed;
 
         try
         {
 
             // Sequential, not parallel — avoids overwhelming local providers (e.g. Ollama).
-            for (int offset = 0; offset < texts.Count; offset += batchSize)
+            foreach (List<string> batch in sanitizedBatches)
             {
-
-                int count = Math.Min(batchSize, texts.Count - offset);
-
-                List<string> batch = new(count);
-
-                for (int i = 0; i < count; i++)
-                {
-
-                    // Defense-in-depth against 413/400 provider errors: some callers (for example
-                    // EntryWeavingService embedding a full Grimoire entry) do not route text through
-                    // WeaveService.ChunkAsync first, and characters-to-tokens conversion can
-                    // underestimate heavy UTF-8/code content even for already-chunked text. Every
-                    // string leaving this method is hard-capped to ChunkSizeChars on a surrogate-safe
-                    // boundary before it ever reaches the provider.
-                    string text = texts[offset + i];
-
-                    batch.Add(text.Length > chunkSizeChars
-                        ? text[..Utf8Truncation.SafeCharSliceLength(text, chunkSizeChars)]
-                        : text);
-
-                }
-
                 Embedding<float>[] batchEmbeddings = await EmbedOneBatchAsync(
                     batch,
                     requestTimeoutSeconds,
@@ -130,10 +168,23 @@ public sealed class WeaveService(
 
                 results.AddRange(batchEmbeddings);
 
+                await accounting.RecordUsageAsync(
+                        turnRunWriter,
+                        BillableOperationType.Embedding,
+                        provider,
+                        model,
+                        purpose: "embedding",
+                        EstimateApproximateTokens(batch),
+                        outputTokens: 0,
+                        cachedTokens: 0,
+                        reasoningTokens: 0,
+                        pricing,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
             }
 
-            await TryLedgerEmbeddingAsync(texts, embeddings, cancellationToken).ConfigureAwait(false);
-
+            accountingStatus = InferenceRunStatus.Completed;
             return Result<Embedding<float>[]>.Success([.. results]);
 
         }
@@ -193,129 +244,40 @@ public sealed class WeaveService(
                 "The embedding provider is unavailable. See server logs for detail."));
 
         }
+        finally
+        {
+            if (ownsAccounting)
+            {
+                try
+                {
+                    await accounting.CompleteAsync(
+                            turnRunWriter,
+                            budgetReservations,
+                            accountingStatus,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "Failed to complete standalone embedding accounting.");
+                }
+
+                accountingScope?.Dispose();
+            }
+        }
 
     }
 
-    private async Task TryLedgerEmbeddingAsync(
-        IReadOnlyList<string> texts,
-        EmbeddingSettings embeddings,
-        CancellationToken cancellationToken)
+    private static long EstimateApproximateTokens(IEnumerable<string> texts)
     {
-        long approxTokens = 0L;
+        long total = 0L;
 
         foreach (string text in texts)
         {
-            approxTokens += Math.Max(1L, (text.Length + 3) / 4);
+            total += Math.Max(1L, (text.Length + 3L) / 4L);
         }
 
-        PricingSettings pricingSettings = optionsMonitor.CurrentValue.Pricing ?? new PricingSettings();
-        ModelPricingEntry pricing = pricingSettings.DefaultPricing;
-
-        if (!string.IsNullOrWhiteSpace(embeddings.Model)
-            && pricingSettings.ModelPricing.TryGetValue(embeddings.Model, out ModelPricingEntry? explicitPricing))
-        {
-            pricing = explicitPricing;
-        }
-
-        string provider = embeddings.Provider ?? "unknown";
-        string model = embeddings.Model ?? "unknown";
-
-        if (TurnAccountingAmbient.Current is TurnAccountingHandle ambient)
-        {
-            try
-            {
-                await ambient.RecordUsageAsync(
-                        TurnAccountingAmbient.Writer,
-                        BillableOperationType.Embedding,
-                        provider,
-                        model,
-                        purpose: "embedding",
-                        approxTokens,
-                        outputTokens: 0,
-                        cachedTokens: 0,
-                        pricing,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                logger.LogDebug(ex, "Failed to ledger ambient embedding usage.");
-            }
-
-            return;
-        }
-
-        try
-        {
-            using IServiceScope scope = scopeFactory.CreateScope();
-            ITurnRunWriter? turnRunWriter = scope.ServiceProvider.GetService<ITurnRunWriter>();
-            IBudgetReservationService? budgetReservations =
-                scope.ServiceProvider.GetService<IBudgetReservationService>();
-
-            decimal reservedUsd = BudgetReservationService.EstimateWorstCaseEmbeddingUsd(pricing, approxTokens);
-
-            Result<TurnAccountingHandle> begin = await TurnAccountingHandle.BeginAsync(
-                    turnRunWriter,
-                    budgetReservations,
-                    pricingSettings,
-                    model,
-                    sessionId: null,
-                    surface: "embedding",
-                    purpose: "embedding",
-                    requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
-                    cancellationToken,
-                    reservedUsdOverride: reservedUsd)
-                .ConfigureAwait(false);
-
-            if (begin.IsFailure)
-            {
-                logger.LogDebug(
-                    "Embedding budget reservation failed ({Code}); provider call already succeeded.",
-                    begin.Error.Code);
-
-                return;
-            }
-
-            TurnAccountingHandle handle = begin.Value;
-
-            try
-            {
-                await handle.RecordUsageAsync(
-                        turnRunWriter,
-                        BillableOperationType.Embedding,
-                        provider,
-                        model,
-                        purpose: "embedding",
-                        approxTokens,
-                        outputTokens: 0,
-                        cachedTokens: 0,
-                        pricing,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                await handle.CompleteAsync(
-                        turnRunWriter,
-                        budgetReservations,
-                        InferenceRunStatus.Completed,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-                await handle.CompleteAsync(
-                        turnRunWriter,
-                        budgetReservations,
-                        InferenceRunStatus.Failed,
-                        CancellationToken.None)
-                    .ConfigureAwait(false);
-
-                throw;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.LogDebug(ex, "Failed to ledger standalone embedding usage.");
-        }
+        return total;
     }
 
     /// <summary>

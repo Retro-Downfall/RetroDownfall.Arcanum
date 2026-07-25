@@ -6,13 +6,31 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.Spells;
 
+[Collection("ProcessEnvironment")]
 public sealed class SpellSearchServiceTests : IAsyncLifetime
 {
 
     private TempWorkspace _workspace = null!;
 
+    private string _testHome = string.Empty;
+
+    private readonly Dictionary<string, string?> _originalEnvironment = new();
+
     public async Task InitializeAsync()
     {
+
+        _testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            $"spell-search-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(_testHome);
+
+        SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
+
+        SetEnvironment("ARCANUM_TEST_HOME", _testHome);
 
         _workspace = new TempWorkspace();
 
@@ -48,6 +66,20 @@ public sealed class SpellSearchServiceTests : IAsyncLifetime
     {
 
         await _workspace.DisposeAsync();
+
+        foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
+        {
+
+            global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
+
+        }
+
+        if (Directory.Exists(_testHome))
+        {
+
+            Directory.Delete(_testHome, recursive: true);
+
+        }
 
     }
 
@@ -189,6 +221,15 @@ public sealed class SpellSearchServiceTests : IAsyncLifetime
             }
 
         }
+
+    }
+
+    private void SetEnvironment(string name, string value)
+    {
+
+        _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
+
+        global::System.Environment.SetEnvironmentVariable(name, value);
 
     }
 

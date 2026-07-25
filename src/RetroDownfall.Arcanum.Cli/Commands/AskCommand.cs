@@ -1,4 +1,3 @@
-using System.Text;
 using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -184,7 +183,7 @@ public sealed class AskCommand(
 
         string? finalText = null;
 
-        var accumulatedText = new StringBuilder();
+        CliStreamContent streamContent = new();
 
         ConsoleAskHumanCoordinator? hitl = null;
 
@@ -275,9 +274,16 @@ public sealed class AskCommand(
 
                         string chunk = evt.Data ?? string.Empty;
 
-                        _ = accumulatedText.Append(chunk);
+                        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
+                        streamContent.AppendAnswer(chunk);
 
                         AnsiConsole.Write(chunk);
+
+                        break;
+
+                    case IntelligenceEventType.Reasoning:
+
+                        _ = streamContent.AppendReasoning(evt);
 
                         break;
 
@@ -332,12 +338,14 @@ public sealed class AskCommand(
 
                     case IntelligenceEventType.Result:
 
-                        finalText = accumulatedText.ToString();
+                        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
+                        finalText = streamContent.AnswerText;
 
                         break;
 
                     case IntelligenceEventType.Error:
 
+                        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
                         stderrConsole.MarkupLine(
                             palette.ErrorLabelMarkup(
                                 Markup.Escape("Error:"),
@@ -347,6 +355,7 @@ public sealed class AskCommand(
                 }
             }
 
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
             if (hitl is not null)
             {
                 AskHumanResult? hitlResult = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
@@ -359,6 +368,7 @@ public sealed class AskCommand(
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
             hitl?.Cancel();
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
             if (hitl is not null)
             {
                 _ = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
@@ -372,6 +382,7 @@ public sealed class AskCommand(
         catch (OperationCanceledException)
         {
 
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
             stderrConsole.MarkupLine(
                 palette.ErrorLabelMarkup(
                     Markup.Escape("Error:"),
@@ -383,6 +394,7 @@ public sealed class AskCommand(
         catch (Exception ex)
         {
 
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
             stderrConsole.MarkupLine(
                 palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(FormatStreamTransportError(ex.Message))));
 
@@ -397,7 +409,7 @@ public sealed class AskCommand(
         if (finalText is null)
         {
 
-            string accumulated = accumulatedText.ToString();
+            string accumulated = streamContent.AnswerText;
 
             if (!string.IsNullOrEmpty(accumulated))
             {

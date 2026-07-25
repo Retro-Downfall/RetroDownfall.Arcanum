@@ -7,7 +7,11 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 /// <summary>
 /// Projects semantic <see cref="TurnEvent"/>s into OpenAI SSE chat chunks.
 /// Omits toolResult/toolError/ward/status frames (ADR 0004 OpenAI projection filter).
-/// Does not serialize HTTP — writes typed chunks to a transport channel.
+/// Does not serialize HTTP — writes typed chunks to a transport channel. This is a semantic
+/// helper/characterization path for reasoning-field and typed-error rules. The authoritative
+/// production <c>/v1</c> route instead reshapes native <c>IntelligenceEvent</c> frames in
+/// <c>OpenAiV1Endpoints</c>; terminal usage chunks and tool-argument fragmentation belong to that
+/// endpoint mapper and are outside this helper's contract.
 /// </summary>
 internal sealed class OpenAiSseProjection
 {
@@ -27,6 +31,8 @@ internal sealed class OpenAiSseProjection
     /// matching <c>OpenAiV1Endpoints.HandleStreamingAsync</c>.
     /// </summary>
     private int _nextToolCallDeltaIndex;
+
+    private bool _reasoningEmitted;
 
     public OpenAiSseProjection(
         ChannelWriter<OpenAiChatChunk> writer,
@@ -57,8 +63,20 @@ internal sealed class OpenAiSseProjection
         }
     }
 
-    internal IEnumerable<OpenAiChatChunk> Map(TurnEvent evt) =>
-        evt switch
+    internal IEnumerable<OpenAiChatChunk> Map(TurnEvent evt)
+    {
+        if (evt is ReasoningDelta reasoning)
+        {
+            _reasoningEmitted = true;
+            return [CreateReasoningChunk(reasoning.Reasoning)];
+        }
+
+        if (evt is RunCompleted completed)
+        {
+            return MapCompleted(completed);
+        }
+
+        return evt switch
         {
             TextDelta delta =>
             [
@@ -71,28 +89,51 @@ internal sealed class OpenAiSseProjection
 
             ToolCallProposed proposed => MapToolCallProposed(proposed),
 
-            RunCompleted completed =>
-            [
-                CreateChunk(
-                    new OpenAiChatStreamChoice(
-                        Index: ChoiceIndex,
-                        Delta: new OpenAiDelta(),
-                        FinishReason: completed.FinishReason ?? "stop"),
-                    completed.Usage),
-            ],
+            RunFailed failed => [CreateErrorChunk(failed.Error)],
 
-            RunFailed or RunAbandoned =>
-            [
-                CreateChunk(
-                    new OpenAiChatStreamChoice(
-                        Index: ChoiceIndex,
-                        Delta: new OpenAiDelta(),
-                        FinishReason: "stop")),
-            ],
+            RunAbandoned abandoned => [CreateErrorChunk(abandoned.Error)],
 
             // OpenAI projection filter: omit status/ward/toolResult/toolError/etc.
             _ => [],
         };
+    }
+
+    private IEnumerable<OpenAiChatChunk> MapCompleted(RunCompleted completed)
+    {
+        if (!_reasoningEmitted)
+        {
+            foreach (Core.Intelligence.ReasoningContentSegment reasoning in completed.Reasoning)
+            {
+                yield return CreateReasoningChunk(reasoning);
+            }
+
+            _reasoningEmitted = completed.Reasoning.Count > 0;
+        }
+
+        yield return CreateChunk(
+            new OpenAiChatStreamChoice(
+                Index: ChoiceIndex,
+                Delta: new OpenAiDelta(),
+                FinishReason: completed.FinishReason ?? "stop"),
+            completed.Usage);
+    }
+
+    private OpenAiChatChunk CreateReasoningChunk(Core.Intelligence.ReasoningContentSegment reasoning) =>
+        CreateChunk(
+            new OpenAiChatStreamChoice(
+                Index: ChoiceIndex,
+                Delta: reasoning.Output == Core.Intelligence.ReasoningOutputMode.Summary
+                    ? new OpenAiDelta(ReasoningSummary: reasoning.Text)
+                    : new OpenAiDelta(ReasoningContent: reasoning.Text),
+                FinishReason: null));
+
+    private OpenAiChatChunk CreateErrorChunk(Core.Primitives.Error? error) =>
+        CreateChunk(
+            new OpenAiChatStreamChoice(
+                Index: ChoiceIndex,
+                Delta: new OpenAiDelta(),
+                FinishReason: "error"),
+            error: OpenAiStreamErrorMapper.Map(error));
 
     private IEnumerable<OpenAiChatChunk> MapToolCallProposed(ToolCallProposed proposed)
     {
@@ -113,13 +154,17 @@ internal sealed class OpenAiSseProjection
                 FinishReason: null));
     }
 
-    private OpenAiChatChunk CreateChunk(OpenAiChatStreamChoice choice, ChatCompletionUsage? usage = null) =>
+    private OpenAiChatChunk CreateChunk(
+        OpenAiChatStreamChoice choice,
+        ChatCompletionUsage? usage = null,
+        OpenAiErrorDetail? error = null) =>
         new(
             _completionId,
             "chat.completion.chunk",
             _created,
             _model,
             [choice],
-            usage);
+            usage,
+            Error: error);
 
 }

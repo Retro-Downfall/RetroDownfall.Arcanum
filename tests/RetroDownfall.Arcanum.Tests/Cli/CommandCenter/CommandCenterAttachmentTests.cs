@@ -295,9 +295,11 @@ public sealed class SessionAttachmentRevealTests
     [Fact]
     public void Builds_linux_reveal_start_info_for_parent_dir()
     {
+        const string attachmentPath = "/tmp/dir/notes.txt";
+
         Assert.True(
             SessionAttachmentReveal.TryBuildStartInfo(
-                "/tmp/dir/notes.txt",
+                attachmentPath,
                 OperatingSystemFamily.Linux,
                 out ProcessStartInfo? psi,
                 out string? error));
@@ -305,7 +307,7 @@ public sealed class SessionAttachmentRevealTests
         Assert.NotNull(psi);
         Assert.Equal("xdg-open", psi!.FileName);
         Assert.False(psi.UseShellExecute);
-        Assert.Equal(["/tmp/dir"], psi.ArgumentList.ToArray());
+        Assert.Equal([Path.GetDirectoryName(attachmentPath)!], psi.ArgumentList.ToArray());
     }
 }
 
@@ -452,7 +454,7 @@ public sealed class ShellCommandDispatcherAttachmentsTests
 
         _ = await dispatcher.DispatchAsync("/attachments reveal notes", state, CancellationToken.None);
 
-        string expected = Path.Combine(ArcanumPaths.AttachmentsDirectory, relative);
+        string expected = Path.GetFullPath(Path.Combine(ArcanumPaths.AttachmentsDirectory, relative));
         string text = state.Log.RenderPlainText();
         Assert.Contains(expected, text, StringComparison.Ordinal);
     }

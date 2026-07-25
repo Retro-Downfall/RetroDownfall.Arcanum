@@ -94,11 +94,7 @@ internal static class IntelligenceEndpoints
 
             Result<PromptResponseDto> envelopeResult = turn.IsFailure
                 ? Result<PromptResponseDto>.Failure(turn.Error)
-                : Result<PromptResponseDto>.Success(new PromptResponseDto(
-                    turn.Value.Text,
-                    turn.Value.Usage,
-                    turn.Value.ToolCalls,
-                    turn.Value.FinishReason));
+                : Result<PromptResponseDto>.Success(PromptResponseDto.From(turn.Value));
 
             ApiResponse<PromptResponseDto> response = ApiResponse<PromptResponseDto>.FromResult(envelopeResult, traceId);
 

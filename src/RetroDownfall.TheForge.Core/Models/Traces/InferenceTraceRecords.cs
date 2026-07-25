@@ -27,4 +27,6 @@ public sealed record InferenceTraceEventRecord(
     string? ToolCallId,
     string? ToolName,
     string? ToolRoundId,
-    DateTimeOffset? Timestamp);
+    DateTimeOffset? Timestamp,
+    string? ReasoningOutputMode = null,
+    int? ReasoningTokens = null);

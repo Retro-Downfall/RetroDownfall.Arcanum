@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("OutboundUrlGuardDns")]
 public sealed class OutboundUrlGuardTests : IDisposable
 {
 
@@ -345,6 +346,18 @@ public sealed class OutboundUrlGuardTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void IsBlockedAddress_PublicIpv6_NotBlocked(bool allowPrivateAndLoopback)
+    {
+
+        IPAddress publicAddress = IPAddress.Parse("2606:4700:4700::1111");
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(publicAddress, allowPrivateAndLoopback));
+
+    }
+
     [Fact]
     public async Task ValidateArcanumSettingsAsync_DefaultCommLink_Succeeds()
     {
@@ -573,6 +586,24 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Contains("Location header", result.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData("http:/missing-authority")]
+    [InlineData("https://exa mple.com")]
+    public void ResolveRedirectLocation_MalformedLocation_Fails(string location)
+    {
+
+        Result<string> result = OutboundUrlGuard.ResolveRedirectLocation(
+            new Uri("https://example.com/a"),
+            location);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+
+        Assert.Equal("Redirect Location is not a valid absolute http or https URI.", result.Error.Message);
 
     }
 

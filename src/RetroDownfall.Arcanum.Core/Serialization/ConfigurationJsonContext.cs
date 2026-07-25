@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -17,6 +18,13 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(ProviderSettings[]))]
 [JsonSerializable(typeof(AiProviderKind))]
 [JsonSerializable(typeof(ModelEntry))]
+[JsonSerializable(typeof(ReasoningCapabilities))]
+[JsonSerializable(typeof(ReasoningControlSupport))]
+[JsonSerializable(typeof(ReasoningWireDialect))]
+[JsonSerializable(typeof(ReasoningRequestOptions))]
+[JsonSerializable(typeof(ReasoningEffortLevel))]
+[JsonSerializable(typeof(ReasoningOutputMode))]
+[JsonSerializable(typeof(ReasoningContentSegment))]
 [JsonSerializable(typeof(ConclaveSettings))]
 [JsonSerializable(typeof(ConclaveA2ASettings))]
 [JsonSerializable(typeof(IntelligenceSettings))]

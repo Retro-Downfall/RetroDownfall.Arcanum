@@ -17,6 +17,36 @@ public sealed class GrimoireKeyDerivationTests
 
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void DerivePassphraseFromApiKeyLegacy_EmptyMaterial_ThrowsArgumentException(string? keyMaterial)
+    {
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => GrimoireKeyDerivation.DerivePassphraseFromApiKeyLegacy(keyMaterial!));
+
+        Assert.Equal("keyMaterial", exception.ParamName);
+
+        Assert.Contains("Key material is required", exception.Message, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void DerivePassphraseFromEncryptionSecretLegacy_EmptyMaterial_ThrowsArgumentException(string? keyMaterial)
+    {
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecretLegacy(keyMaterial!));
+
+        Assert.Equal("keyMaterial", exception.ParamName);
+
+        Assert.Contains("Key material is required", exception.Message, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public void DerivePassphraseFromApiKey_ProducesDeterministicBase64Passphrase()
     {

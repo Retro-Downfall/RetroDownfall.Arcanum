@@ -1,4 +1,3 @@
-using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -61,11 +60,30 @@ internal sealed class CommandCenterChatRunner(
         await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll), cancellationToken)
             .ConfigureAwait(false);
 
-        StringBuilder assistant = new();
+        BoundedStreamingTextBuffer assistant = new(
+            state.Log.MaxAssistantChars,
+            SessionLogBuffer.TruncationMarker);
+        BoundedStreamingTextBuffer reasoning = new(
+            state.Log.MaxReasoningChars,
+            SessionLogBuffer.ReasoningTruncationMarker);
+        SessionLogEntry? reasoningEntry = null;
         bool cancelled = false;
         bool sawError = false;
         bool sawResult = false;
-        await using StreamingUiCoalescer coalescer = new(uiUpdates);
+
+        void SnapshotStreamingText()
+        {
+            state.StreamingAssistantText = assistant.Snapshot();
+            state.Log.UpdateStreaming(assistantEntry, state.StreamingAssistantText);
+            if (reasoningEntry is not null)
+            {
+                state.Log.UpdateStreaming(reasoningEntry, reasoning.Snapshot());
+            }
+        }
+
+        await using StreamingUiCoalescer coalescer = new(
+            uiUpdates,
+            beforeFlush: SnapshotStreamingText);
 
         try
         {
@@ -93,6 +111,32 @@ internal sealed class CommandCenterChatRunner(
 
                 switch (evt.Type)
                 {
+                    case IntelligenceEventType.Reasoning
+                        when evt.Reasoning is { Text.Length: > 0 } reasoningSegment:
+                        bool stoppedThinking = await StopThinkingAsync(
+                                state,
+                                uiUpdates,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        reasoningEntry ??= state.Log.InsertBefore(
+                            assistantEntry,
+                            SessionLogEntryKind.Reasoning,
+                            string.Empty,
+                            streaming: true);
+                        reasoning.Append(reasoningSegment.Text);
+                        await coalescer
+                            .NoteTokenAsync(reasoningSegment.Text, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (stoppedThinking)
+                        {
+                            await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        }
+
+                        break;
+
+                    case IntelligenceEventType.Reasoning:
+                        break;
+
                     case IntelligenceEventType.Token:
                         string chunk = evt.Data ?? string.Empty;
                         if (chunk.Length == 0)
@@ -100,10 +144,8 @@ internal sealed class CommandCenterChatRunner(
                             break;
                         }
 
-                        StopThinking(state);
-                        _ = assistant.Append(chunk);
-                        state.StreamingAssistantText = assistant.ToString();
-                        state.Log.UpdateStreaming(assistantEntry, state.StreamingAssistantText);
+                        _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
+                        assistant.Append(chunk);
                         await coalescer.NoteTokenAsync(chunk, cancellationToken).ConfigureAwait(false);
                         break;
 
@@ -127,14 +169,10 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.ToolCall:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
-                        StopThinking(state);
                         IngestToolCall(state, evt);
+                        _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                        await uiUpdates.WriteAsync(
-                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshHeader),
                                 cancellationToken)
                             .ConfigureAwait(false);
                         TryBeginHumanPrompt(evt);
@@ -142,7 +180,7 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.ToolResult:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
-                        StopThinking(state);
+                        _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
                         IngestToolResult(state, evt);
                         TryCloseHumanPromptOnToolOutcome(evt, isError: false);
                         await uiUpdates.WriteAsync(
@@ -153,7 +191,7 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.ToolError:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
-                        StopThinking(state);
+                        _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
                         IngestToolError(state, evt);
                         TryCloseHumanPromptOnToolOutcome(evt, isError: true);
                         // Tolerated tool failures stay in Incantations — not Transcript Error.
@@ -260,7 +298,7 @@ internal sealed class CommandCenterChatRunner(
 
             await coalescer.FlushFinalAsync(CancellationToken.None).ConfigureAwait(false);
 
-            string finalText = assistant.ToString();
+            string finalText = assistant.Snapshot();
             if (cancelled)
             {
                 finalText = string.IsNullOrEmpty(finalText)
@@ -269,6 +307,11 @@ internal sealed class CommandCenterChatRunner(
             }
 
             state.Log.CompleteStreaming(assistantEntry, finalText);
+            if (reasoningEntry is not null)
+            {
+                state.Log.CompleteStreaming(reasoningEntry, reasoning.Snapshot());
+            }
+
             _ = state.Log.RemoveEphemeralGeneratingStatuses();
             state.ThinkingActive = false;
             state.StreamingAssistantText = string.Empty;
@@ -441,9 +484,22 @@ internal sealed class CommandCenterChatRunner(
         _ = humanPromptCoordinator.TryClose(HumanPromptCloseReason.Expired, notice, promptId);
     }
 
-    private static void StopThinking(CommandCenterState state)
+    private static async ValueTask<bool> StopThinkingAsync(
+        CommandCenterState state,
+        ChannelWriter<CommandCenterUiUpdate> uiUpdates,
+        CancellationToken cancellationToken)
     {
+        if (!state.ThinkingActive)
+        {
+            return false;
+        }
+
         state.ThinkingActive = false;
+        await uiUpdates.WriteAsync(
+                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshHeader),
+                cancellationToken)
+            .ConfigureAwait(false);
+        return true;
     }
 
     private static void IngestToolCall(CommandCenterState state, IntelligenceEvent evt)

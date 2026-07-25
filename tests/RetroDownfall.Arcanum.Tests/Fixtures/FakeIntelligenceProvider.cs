@@ -13,6 +13,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
     public List<PromptToolCall>? NextToolCalls { get; set; }
 
+    public IReadOnlyList<ReasoningContentSegment>? NextReasoning { get; set; }
+
     public string? NextFinishReason { get; set; }
 
     public Exception? NextStreamException { get; set; }
@@ -47,6 +49,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     /// for testing the <c>/v1</c> streaming <c>delta.tool_calls</c> bridge.
     /// </summary>
     public List<IntelligenceToolCallEvent>? NextStreamToolCalls { get; set; }
+
+    public IReadOnlyList<IntelligenceEvent>? NextStreamEvents { get; set; }
 
     public List<string>? NextWarnings { get; set; }
 
@@ -88,6 +92,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
             Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
             {
                 Warnings = NextWarnings ?? [],
+                Reasoning = NextReasoning ?? [],
                 PreserveProviderToolCallIds = request.ForwardClientTools,
             }));
 
@@ -111,6 +116,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
         return Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
         {
             Warnings = NextWarnings ?? [],
+            Reasoning = NextReasoning ?? [],
             PreserveProviderToolCallIds = request.ForwardClientTools,
         });
 
@@ -140,7 +146,10 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
         if (NextFailure is Error failure)
         {
 
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, failure.Message);
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                failure.Message,
+                failure.Code);
 
             yield break;
 
@@ -151,6 +160,16 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
 
             throw ex;
 
+        }
+
+        if (NextStreamEvents is { } streamEvents)
+        {
+            foreach (IntelligenceEvent streamEvent in streamEvents)
+            {
+                yield return streamEvent;
+            }
+
+            yield break;
         }
 
         if (NextStreamToolCalls is { Count: > 0 } toolCalls)

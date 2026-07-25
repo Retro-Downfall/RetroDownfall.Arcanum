@@ -69,6 +69,7 @@ public sealed record BillableOperationRecord(
     DateTimeOffset CompletedAt,
     long InputTokens,
     long OutputTokens,
+    long ReasoningTokens,
     long CachedTokens,
     string PricingSnapshotJson,
     decimal ActualCostUsd,

@@ -55,7 +55,7 @@ public static class ProviderResolver
 
         for (int pi = 0; pi < providers.Length; pi++)
         {
-            if (TryFindModelEntry(providers[pi], modelName, out ModelEntry? entry) && entry!.SupportsVision)
+            if (TryResolveModelEntry(providers[pi], modelName, out ModelEntry? entry) && entry!.SupportsVision)
             {
                 return true;
             }
@@ -78,12 +78,26 @@ public static class ProviderResolver
             return false;
         }
 
-        return TryFindModelEntry(provider, modelName, out ModelEntry? entry) && entry!.SupportsVision;
+        return TryResolveModelEntry(provider, modelName, out ModelEntry? entry) && entry!.SupportsVision;
 
     }
 
-    private static bool TryFindModelEntry(ProviderSettings provider, string modelName, out ModelEntry? entry)
+    /// <summary>
+    /// Finds the exact configured model entry on a resolved provider. This is the capability lookup
+    /// seam used after candidate resolution; it performs no provider-name or model-name inference.
+    /// </summary>
+    public static bool TryResolveModelEntry(
+        ProviderSettings provider,
+        string? modelName,
+        out ModelEntry? entry)
     {
+
+        if (string.IsNullOrWhiteSpace(modelName))
+        {
+            entry = null;
+
+            return false;
+        }
 
         IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 

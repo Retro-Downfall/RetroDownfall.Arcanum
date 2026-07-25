@@ -145,6 +145,38 @@ public sealed class HostProcessToolPolicyTests
     }
 
     [Fact]
+    public void Resolve_LocalEditionWithEscapeHatch_ReportsDeniedButFlagged()
+    {
+        HostProcessToolsEscapeHatchScope.Gate.Wait();
+
+        try
+        {
+            string? previousAllow = SysEnv.GetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar);
+
+            try
+            {
+                SysEnv.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, "1");
+
+                HostProcessToolPolicyStatus status = HostProcessToolPolicy.Resolve(ArcanumEdition.Local);
+
+                Assert.Equal(ArcanumEdition.Local, status.Edition);
+                Assert.False(status.Allowed);
+                Assert.False(status.IsHealthDegraded);
+                Assert.True(status.EscapeHatchEnvSet);
+                Assert.Contains("Local edition", status.PublicMessage, StringComparison.Ordinal);
+            }
+            finally
+            {
+                SysEnv.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, previousAllow);
+            }
+        }
+        finally
+        {
+            _ = HostProcessToolsEscapeHatchScope.Gate.Release();
+        }
+    }
+
+    [Fact]
     public void Resolve_DevelopmentWithoutEnv_ReportsWaitingForEscapeHatch()
     {
         HostProcessToolsEscapeHatchScope.Gate.Wait();

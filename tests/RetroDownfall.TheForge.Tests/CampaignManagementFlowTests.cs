@@ -22,6 +22,8 @@ public class CampaignManagementFlowTests
     public async Task NewCampaignCommand_BuildsRegisterRequestAndRefreshes()
     {
 
+        const string campaignPath = "/campaigns/winterhold";
+
         FakeCampaignManagementDataSource management = new()
         {
             CreateResult = DataSourceResult<CampaignDto>.FromResponse(
@@ -30,7 +32,7 @@ public class CampaignManagementFlowTests
 
         FakeCampaignDialogService dialog = new()
         {
-            NewInputs = new NewCampaignInputs("Winterhold", "/campaigns/winterhold", WorkspaceType.Campaign, "North hold"),
+            NewInputs = new NewCampaignInputs("Winterhold", campaignPath, WorkspaceType.Campaign, "North hold"),
         };
 
         RecordingWhispers whispers = new();
@@ -61,7 +63,7 @@ public class CampaignManagementFlowTests
 
         Assert.Equal("Winterhold", management.LastCreateRequest!.Name);
 
-        Assert.Equal("/campaigns/winterhold", management.LastCreateRequest.Path);
+        Assert.Equal(Path.GetFullPath(campaignPath), management.LastCreateRequest.Path);
 
         Assert.Equal(WorkspaceType.Campaign, management.LastCreateRequest.Type);
 

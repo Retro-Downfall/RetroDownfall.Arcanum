@@ -272,6 +272,159 @@ public sealed class ArcanumApiClientTests
     }
 
     [Fact]
+    public async Task AskStreamAsync_yields_reasoning_skips_unknown_type_and_continues()
+    {
+        IntelligenceEvent reasoning = new(
+            IntelligenceEventType.Reasoning,
+            "client-safe summary",
+            Reasoning: new ReasoningContentSegment(
+                "client-safe summary",
+                ReasoningOutputMode.Summary));
+        IntelligenceEvent token = new(IntelligenceEventType.Token, string.Empty, "answer");
+        IntelligenceEvent result = new(IntelligenceEventType.Result, "answer", "answer");
+
+        string ndjson = string.Join(
+            '\n',
+            JsonSerializer.Serialize(reasoning, ArcanumJsonContext.Default.IntelligenceEvent),
+            """{"type":"futureThought","message":"ignore me","data":"secret"}""",
+            JsonSerializer.Serialize(token, ArcanumJsonContext.Default.IntelligenceEvent),
+            JsonSerializer.Serialize(result, ArcanumJsonContext.Default.IntelligenceEvent))
+            + "\n";
+        RecordingHandler handler = new(_ => CreateNdjsonResponse(ndjson));
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<IntelligenceEvent> events = [];
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(new PingRequest("hello"), CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal(
+            [
+                IntelligenceEventType.Reasoning,
+                IntelligenceEventType.Token,
+                IntelligenceEventType.Result,
+            ],
+            events.Select(static evt => evt.Type));
+        Assert.Equal("client-safe summary", events[0].Reasoning?.Text);
+        Assert.DoesNotContain(events, static evt => evt.Message.Contains("Malformed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_reports_malformed_or_missing_type_and_continues()
+    {
+        IntelligenceEvent token = new(IntelligenceEventType.Token, string.Empty, "answer");
+        string ndjson = string.Join(
+            '\n',
+            """{"type":""",
+            """{"message":"missing"}""",
+            """{"type":42,"message":"invalid"}""",
+            JsonSerializer.Serialize(token, ArcanumJsonContext.Default.IntelligenceEvent))
+            + "\n";
+        RecordingHandler handler = new(_ => CreateNdjsonResponse(ndjson));
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<IntelligenceEvent> events = [];
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(new PingRequest("hello"), CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal(3, events.Count(static evt =>
+            evt.Type == IntelligenceEventType.Status
+            && evt.Message == "Malformed data received from server. Skipping frame."));
+        Assert.Equal(IntelligenceEventType.Token, events[^1].Type);
+        Assert.Equal("answer", events[^1].Data);
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_fragmented_frames_mirror_strict_type_semantics_and_continue()
+    {
+        string ndjson = string.Join(
+            '\n',
+            """{"type":"TOKEN","message":"","data":"upper"}""",
+            """{"type":"futureThought","message":"skip"}""",
+            """{"type":" token ","message":"padded"}""",
+            """{"type":"","message":"blank"}""",
+            """{"type":"   ","message":"whitespace"}""",
+            """{"message":"missing"}""",
+            """{"type":42,"message":"numeric"}""",
+            """{"type":"token","message":"","data":"tail"}""")
+            + "\n";
+        FragmentingStreamHandler handler = new(Encoding.UTF8.GetBytes(ndjson), maxChunkBytes: 2);
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<IntelligenceEvent> events = [];
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(
+                           new PingRequest("hello"),
+                           CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal(IntelligenceEventType.Token, events[0].Type);
+        Assert.Equal("upper", events[0].Data);
+        Assert.Equal(
+            5,
+            events.Count(static evt =>
+                evt.Type == IntelligenceEventType.Status
+                && evt.Message == "Malformed data received from server. Skipping frame."));
+        Assert.Equal(IntelligenceEventType.Token, events[^1].Type);
+        Assert.Equal("tail", events[^1].Data);
+        Assert.Equal(7, events.Count);
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_reassembles_split_multibyte_utf8_characters()
+    {
+        const string multibyteText = "before 😀 漢字 after";
+        IntelligenceEvent token = new(
+            IntelligenceEventType.Token,
+            string.Empty,
+            multibyteText);
+        string ndjson = JsonSerializer.Serialize(
+            token,
+            ArcanumJsonContext.Default.IntelligenceEvent) + "\n";
+        FragmentingStreamHandler handler = new(Encoding.UTF8.GetBytes(ndjson), maxChunkBytes: 1);
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<IntelligenceEvent> events = [];
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(
+                           new PingRequest("hello"),
+                           CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        IntelligenceEvent parsed = Assert.Single(events);
+        Assert.Equal(multibyteText, parsed.Data);
+    }
+
+    [Fact]
+    public void IntelligenceEvent_source_generated_deserialization_remains_strict_for_unknown_type()
+    {
+        const string json = """{"type":"futureThought","message":"ignore me"}""";
+
+        _ = Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.IntelligenceEvent));
+    }
+
+    [Fact]
+    public void IntelligenceEvent_discriminator_recognizes_every_defined_wire_value()
+    {
+        foreach (IntelligenceEventType type in Enum.GetValues<IntelligenceEventType>())
+        {
+            string json = JsonSerializer.Serialize(
+                new IntelligenceEvent(type, "test"),
+                ArcanumJsonContext.Default.IntelligenceEvent);
+
+            Assert.Equal(
+                IntelligenceEventDiscriminatorResult.Known,
+                IntelligenceEventDiscriminator.Inspect(json));
+        }
+    }
+
+    [Fact]
     public async Task StreamApprenticeChronicleAsync_parses_sse_frames_via_source_generated_context()
     {
 
@@ -504,6 +657,16 @@ public sealed class ArcanumApiClientTests
 
     }
 
+    private static HttpResponseMessage CreateNdjsonResponse(string ndjson)
+    {
+        HttpResponseMessage response = new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson"),
+        };
+
+        return response;
+    }
+
     private sealed class FakeSecretStore : ISecretStore
     {
 
@@ -687,6 +850,71 @@ public sealed class ArcanumApiClientTests
 
         }
 
+    }
+
+    private sealed class FragmentingStreamHandler(byte[] payload, int maxChunkBytes) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new FragmentingResponseStream(payload, maxChunkBytes)),
+            });
+    }
+
+    private sealed class FragmentingResponseStream(byte[] payload, int maxChunkBytes) : Stream
+    {
+        private int _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => payload.Length;
+
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            if (_position >= payload.Length)
+            {
+                return 0;
+            }
+
+            int count = Math.Min(Math.Min(buffer.Length, maxChunkBytes), payload.Length - _position);
+            payload.AsSpan(_position, count).CopyTo(buffer);
+            _position += count;
+            return count;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Read(buffer.Span);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
 }

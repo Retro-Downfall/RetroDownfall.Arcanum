@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
@@ -30,6 +31,8 @@ public sealed class ModelEntryJsonConverterTests
         Assert.Equal("gpt-4o-mini", entry!.Name);
 
         Assert.False(entry.SupportsVision);
+
+        Assert.Null(entry.Reasoning);
 
     }
 
@@ -66,6 +69,8 @@ public sealed class ModelEntryJsonConverterTests
         Assert.Equal("local.gguf", entry!.Name);
 
         Assert.False(entry.SupportsVision);
+
+        Assert.Null(entry.Reasoning);
 
     }
 
@@ -107,6 +112,150 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Fact]
+    public void Read_ObjectForm_ReadsNestedReasoningCapabilities()
+    {
+
+        const string json =
+            """
+            {
+              "name": "reasoner",
+              "reasoning": {
+                "controlSupport": "effortAndBudget",
+                "supportsSummary": true,
+                "supportsFull": true,
+                "supportsStreaming": true,
+                "reportsReasoningTokens": true,
+                "allowsClientOutput": true,
+                "wireDialect": "openRouter",
+                "maxBudgetTokens": 65536
+              }
+            }
+            """;
+
+        Utf8JsonReader reader = CreateReader(json);
+
+        reader.Read();
+
+        ModelEntry? entry = _converter.Read(ref reader, typeof(ModelEntry), Options);
+
+        Assert.NotNull(entry?.Reasoning);
+        Assert.Equal(ReasoningControlSupport.EffortAndBudget, entry!.Reasoning!.ControlSupport);
+        Assert.True(entry.Reasoning.SupportsSummary);
+        Assert.True(entry.Reasoning.SupportsFull);
+        Assert.True(entry.Reasoning.SupportsStreaming);
+        Assert.True(entry.Reasoning.ReportsReasoningTokens);
+        Assert.True(entry.Reasoning.AllowsClientOutput);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, entry.Reasoning.WireDialect);
+        Assert.Equal(65_536, entry.Reasoning.MaxBudgetTokens);
+
+    }
+
+    [Theory]
+    [InlineData("""{"name":"reasoner","reasoning":{"controlSupport":0}}""")]
+    [InlineData("""{"name":"reasoner","reasoning":{"controlSupport":99}}""")]
+    [InlineData("""{"name":"reasoner","reasoning":{"wireDialect":0}}""")]
+    [InlineData("""{"name":"reasoner","reasoning":{"wireDialect":99}}""")]
+    public void Read_ObjectForm_RejectsNumericReasoningCapabilityEnums(string json)
+    {
+        Assert.Throws<JsonException>(() =>
+        {
+            Utf8JsonReader reader = CreateReader(json);
+            reader.Read();
+            _ = _converter.Read(ref reader, typeof(ModelEntry), Options);
+        });
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("99")]
+    public void ConfigurationSourceContext_RejectsNumericControlSupport(string json)
+    {
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(
+                json,
+                ConfigurationJsonContext.Default.ReasoningControlSupport));
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("99")]
+    public void ConfigurationSourceContext_RejectsNumericWireDialect(string json)
+    {
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize(
+                json,
+                ConfigurationJsonContext.Default.ReasoningWireDialect));
+    }
+
+    [Theory]
+    [InlineData(ReasoningControlSupport.None, "\"none\"")]
+    [InlineData(ReasoningControlSupport.Effort, "\"effort\"")]
+    [InlineData(ReasoningControlSupport.Budget, "\"budget\"")]
+    [InlineData(ReasoningControlSupport.EffortAndBudget, "\"effortAndBudget\"")]
+    public void ConfigurationSourceContext_PreservesControlSupportWireNames(
+        ReasoningControlSupport value,
+        string expected)
+    {
+        Assert.Equal(
+            expected,
+            JsonSerializer.Serialize(
+                value,
+                ConfigurationJsonContext.Default.ReasoningControlSupport));
+    }
+
+    [Theory]
+    [InlineData(ReasoningWireDialect.Standard, "\"standard\"")]
+    [InlineData(ReasoningWireDialect.OpenRouter, "\"openRouter\"")]
+    [InlineData(ReasoningWireDialect.TopLevelReasoningBudget, "\"topLevelReasoningBudget\"")]
+    [InlineData(ReasoningWireDialect.AnthropicThinking, "\"anthropicThinking\"")]
+    public void ConfigurationSourceContext_PreservesWireDialectNames(
+        ReasoningWireDialect value,
+        string expected)
+    {
+        Assert.Equal(
+            expected,
+            JsonSerializer.Serialize(
+                value,
+                ConfigurationJsonContext.Default.ReasoningWireDialect));
+    }
+
+    [Fact]
+    public void Write_WithReasoning_WritesNestedCapabilityObject()
+    {
+
+        ModelEntry entry = new("reasoner")
+        {
+            Reasoning = new ReasoningCapabilities
+            {
+                ControlSupport = ReasoningControlSupport.Budget,
+                SupportsSummary = true,
+                SupportsStreaming = true,
+                ReportsReasoningTokens = true,
+                AllowsClientOutput = true,
+                WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
+                MaxBudgetTokens = 32_768,
+            },
+        };
+
+        using MemoryStream stream = new();
+
+        using (Utf8JsonWriter writer = new(stream))
+        {
+            _converter.Write(writer, entry, Options);
+        }
+
+        using JsonDocument document = JsonDocument.Parse(stream.ToArray());
+
+        JsonElement reasoning = document.RootElement.GetProperty("reasoning");
+
+        Assert.Equal("budget", reasoning.GetProperty("controlSupport").GetString());
+        Assert.True(reasoning.GetProperty("supportsSummary").GetBoolean());
+        Assert.Equal("topLevelReasoningBudget", reasoning.GetProperty("wireDialect").GetString());
+        Assert.Equal(32_768, reasoning.GetProperty("maxBudgetTokens").GetInt32());
+
+    }
+
+    [Fact]
     public void ImplicitConversion_FromString_DefaultsSupportsVisionFalse()
     {
 
@@ -115,6 +264,8 @@ public sealed class ModelEntryJsonConverterTests
         Assert.Equal("llama3", entry.Name);
 
         Assert.False(entry.SupportsVision);
+
+        Assert.Null(entry.Reasoning);
 
     }
 
@@ -127,7 +278,20 @@ public sealed class ModelEntryJsonConverterTests
               "name": "openai",
               "type": "OpenAICompatible",
               "endpoint": "https://api.openai.com/v1",
-              "models": [ { "name": "gpt-4o", "supportsVision": true }, "gpt-4o-mini" ],
+              "models": [
+                {
+                  "name": "gpt-4o",
+                  "supportsVision": true,
+                  "reasoning": {
+                    "controlSupport": "effort",
+                    "supportsSummary": true,
+                    "reportsReasoningTokens": true,
+                    "allowsClientOutput": true,
+                    "wireDialect": "standard"
+                  }
+                },
+                "gpt-4o-mini"
+              ],
               "contextWindowLimit": 128000
             }
             """;
@@ -146,6 +310,13 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(provider.Models[1].SupportsVision);
 
+        Assert.Null(provider.Models[1].Reasoning);
+
+        ReasoningCapabilities reasoning = Assert.IsType<ReasoningCapabilities>(provider.Models[0].Reasoning);
+        Assert.Equal(ReasoningControlSupport.Effort, reasoning.ControlSupport);
+        Assert.True(reasoning.SupportsSummary);
+        Assert.True(reasoning.ReportsReasoningTokens);
+
         string roundTripped = JsonSerializer.Serialize(provider, ConfigurationJsonContext.Default.ProviderSettings);
 
         ProviderSettings? reparsed = JsonSerializer.Deserialize(roundTripped, ConfigurationJsonContext.Default.ProviderSettings);
@@ -155,6 +326,24 @@ public sealed class ModelEntryJsonConverterTests
         Assert.True(reparsed!.Models[0].SupportsVision);
 
         Assert.False(reparsed.Models[1].SupportsVision);
+
+        Assert.Equal(provider.Models[0].Reasoning, reparsed.Models[0].Reasoning);
+        Assert.Null(reparsed.Models[1].Reasoning);
+
+    }
+
+    [Theory]
+    [InlineData(typeof(ReasoningRequestOptions))]
+    [InlineData(typeof(ReasoningEffortLevel))]
+    [InlineData(typeof(ReasoningOutputMode))]
+    [InlineData(typeof(ReasoningContentSegment))]
+    [InlineData(typeof(ReasoningCapabilities))]
+    [InlineData(typeof(ReasoningControlSupport))]
+    [InlineData(typeof(ReasoningWireDialect))]
+    public void ConfigurationJsonContext_RegistersReasoningCapabilityTypes(Type type)
+    {
+
+        Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
 
     }
 

@@ -14,6 +14,13 @@ public static class PingRequestBoundsValidator
 
         SessionSettings sessions = settings.Sessions ?? new SessionSettings();
 
+        Result reasoningOptions = ReasoningRequestValidator.Validate(request.Reasoning);
+
+        if (reasoningOptions.IsFailure)
+        {
+            return reasoningOptions;
+        }
+
         int maxPromptChars = ArcanumSettingClamps.MaxPingPromptChars(intelligence.MaxPingPromptChars);
 
         if (!string.IsNullOrEmpty(request.Prompt) && request.Prompt.Length > maxPromptChars)

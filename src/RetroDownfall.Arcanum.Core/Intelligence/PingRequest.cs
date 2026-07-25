@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
@@ -46,4 +47,6 @@ public sealed record PingRequest(
     /// browse, and client-forwarded tools). Used by OpenAI batches until durable side-effect
     /// semantics exist.
     /// </summary>
-    bool DisableAllTools = false);
+    bool DisableAllTools = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReasoningRequestOptions? Reasoning = null);

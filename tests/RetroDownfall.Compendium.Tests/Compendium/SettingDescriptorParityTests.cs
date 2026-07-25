@@ -118,6 +118,47 @@ public sealed class SettingDescriptorParityTests
 
     }
 
+    [Theory]
+    [InlineData("providers.models.reasoning.controlSupport", typeof(ReasoningControlSupport))]
+    [InlineData("providers.models.reasoning.wireDialect", typeof(ReasoningWireDialect))]
+    public void Reasoning_enum_descriptors_match_contract_types(string key, Type enumType)
+    {
+
+        SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, d => d.Key == key);
+
+        Assert.Equal(SettingKind.Enum, descriptor.Kind);
+        Assert.Equal(enumType, descriptor.EnumType);
+
+    }
+
+    [Fact]
+    public void Reasoning_budget_descriptor_matches_global_request_bounds()
+    {
+
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static d => d.Key == "providers.models.reasoning.maxBudgetTokens");
+
+        Assert.Equal(SettingKind.Int, descriptor.Kind);
+        Assert.Equal(1, descriptor.Min);
+        Assert.Equal(2_097_152, descriptor.Max);
+        Assert.Equal(nameof(ArcanumSettingClamps.ReasoningBudgetTokens), descriptor.ClampName);
+
+    }
+
+    [Fact]
+    public void Pricing_reasoning_descriptor_uses_output_price_bounds()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static d => d.Key == "pricing.defaultPricing.reasoningPer1M");
+
+        Assert.Equal(SettingKind.Float, descriptor.Kind);
+        Assert.Equal(0, descriptor.Min);
+        Assert.Equal(1_000_000, descriptor.Max);
+        Assert.Equal(nameof(ArcanumSettingClamps.PricingOutputPer1M), descriptor.ClampName);
+    }
+
     private static object GetMinValue(Type type)
     {
 

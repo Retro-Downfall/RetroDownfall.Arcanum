@@ -17,7 +17,7 @@ public sealed class ModelCallExecutorTests
 
         ModelCallExecutor executor = new();
 
-        Result<ModelCallResult> result = await executor.ExecuteBufferedAsync(
+        ModelCallOutcome result = await executor.ExecuteBufferedAsync(
             chat,
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
@@ -43,7 +43,7 @@ public sealed class ModelCallExecutorTests
 
         Assert.True(budget.TryConsumeModelCall());
 
-        Result<ModelCallResult> result = await executor.ExecuteBufferedAsync(
+        ModelCallOutcome result = await executor.ExecuteBufferedAsync(
             chat,
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
@@ -56,6 +56,28 @@ public sealed class ModelCallExecutorTests
         Assert.Equal(ErrorCodes.Hub.TurnBudgetExceeded, result.Error.Code);
 
         Assert.Equal(0, chat.CallCount);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_PreservesTypedProviderFailure()
+    {
+        HttpRequestException connectivityFailure = new("connection refused");
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedException = connectivityFailure,
+        };
+
+        ModelCallOutcome outcome = await new ModelCallExecutor().ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "ping")],
+            new ChatOptions(),
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(outcome.IsFailure);
+        Assert.Same(connectivityFailure, outcome.Failure.Cause);
+        Assert.Equal("connection refused", outcome.Error.Message);
     }
 
     [Fact]
@@ -85,10 +107,438 @@ public sealed class ModelCallExecutorTests
         Assert.Equal(0, budget.RemainingModelCalls);
     }
 
+    [Fact]
+    public async Task ExecuteBufferedAsync_ExtractsReasoningWithoutContaminatingAnswer()
+    {
+        TextReasoningContent reasoning = new("visible summary")
+        {
+            ProtectedData = "provider-opaque",
+        };
+        UsageDetails usage = new()
+        {
+            InputTokenCount = 3,
+            OutputTokenCount = 5,
+            ReasoningTokenCount = 2,
+        };
+        ChatResponse response = new(new ChatMessage(
+            ChatRole.Assistant,
+            [
+                reasoning,
+                new TextContent("final answer"),
+            ]))
+        {
+            Usage = usage,
+        };
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedResponse = response,
+        };
+
+        ModelCallExecutor executor = new();
+
+        ModelCallOutcome result = await executor.ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("final answer", result.Value.Response.Text);
+        Assert.Same(response, result.Value.Response);
+        Assert.Same(usage, result.Value.Usage);
+        Assert.Equal(2, result.Value.Usage?.ReasoningTokenCount);
+        Assert.True(result.Value.Reasoning.HasProviderContent);
+        Assert.True(result.Value.Reasoning.HasProtectedData);
+        Assert.Equal(ReasoningOutputMode.Summary, result.Value.Reasoning.RequestedOutput);
+        Assert.Equal(ReasoningOutputMode.Summary, result.Value.Reasoning.EffectiveOutput);
+        ModelCallReasoningSegment segment = Assert.Single(result.Value.Reasoning.Segments);
+        Assert.Equal("visible summary", segment.VisibleText);
+        Assert.Equal(ReasoningOutputMode.Summary, segment.RequestedOutput);
+        Assert.Equal(ReasoningOutputMode.Summary, segment.EffectiveOutput);
+        Assert.True(segment.HasProtectedData);
+        Assert.Same(reasoning, Assert.Single(result.Value.Response.Messages[0].Contents.OfType<TextReasoningContent>()));
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_ProviderIgnoringDisabledOutput_CommitsButDoesNotExposeText()
+    {
+        ChatResponse response = new(new ChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("must remain hidden"),
+                new TextContent("answer"),
+            ]));
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedResponse = response,
+        };
+
+        ModelCallOutcome result = await new ModelCallExecutor().ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.None },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("answer", result.Value.Response.Text);
+        Assert.True(result.Value.Reasoning.HasProviderContent);
+        Assert.False(result.Value.Reasoning.HasProtectedData);
+        Assert.Equal(ReasoningOutputMode.None, result.Value.Reasoning.RequestedOutput);
+        Assert.Equal(ReasoningOutputMode.None, result.Value.Reasoning.EffectiveOutput);
+        Assert.Empty(result.Value.Reasoning.Segments);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_AuxiliaryPurposeNeverExposesReasoning()
+    {
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedResponse = new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                [new TextReasoningContent("auxiliary secret"), new TextContent("{}")])),
+        };
+
+        ModelCallOutcome result = await new ModelCallExecutor().ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "route")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.SpellRouting,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value.Reasoning.HasProviderContent);
+        Assert.Equal(ReasoningOutputMode.Summary, result.Value.Reasoning.RequestedOutput);
+        Assert.Equal(ReasoningOutputMode.None, result.Value.Reasoning.EffectiveOutput);
+        Assert.Empty(result.Value.Reasoning.Segments);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_StructuredOutputRetryExposesReplacementReasoning()
+    {
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedResponse = new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                [
+                    new TextReasoningContent("replacement reasoning"),
+                    new TextContent("""{"name":"fixed"}"""),
+                ])),
+        };
+
+        ModelCallOutcome result = await new ModelCallExecutor().ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "repair")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.StructuredOutputRetry,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        ModelCallReasoningSegment segment = Assert.Single(result.Value.Reasoning.Segments);
+        Assert.Equal("replacement reasoning", segment.VisibleText);
+        Assert.Equal(ReasoningOutputMode.Summary, segment.EffectiveOutput);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_CoalescesOnlyAdjacentCompatibleReasoningSegments()
+    {
+        ChatResponse response = new(new ChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("one"),
+                new TextReasoningContent(" two"),
+                new TextReasoningContent("three") { ProtectedData = "opaque" },
+                new TextReasoningContent(" four") { ProtectedData = "opaque-2" },
+                new TextReasoningContent("five"),
+                new TextContent("answer"),
+            ]));
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedResponse = response,
+        };
+
+        ModelCallOutcome outcome = await new ModelCallExecutor().ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(outcome.IsSuccess);
+        Assert.Collection(
+            outcome.Value.Reasoning.Segments,
+            segment =>
+            {
+                Assert.Equal("one two", segment.VisibleText);
+                Assert.False(segment.HasProtectedData);
+            },
+            segment =>
+            {
+                Assert.Equal("three four", segment.VisibleText);
+                Assert.True(segment.HasProtectedData);
+            },
+            segment =>
+            {
+                Assert.Equal("five", segment.VisibleText);
+                Assert.False(segment.HasProtectedData);
+            });
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_CoalescesHighReasoningDeltaCountIntoOneSegment()
+    {
+        const int deltaCount = 10_000;
+        AIContent[] contents =
+        [
+            .. Enumerable.Range(0, deltaCount)
+                .Select(static _ => (AIContent)new TextReasoningContent("x")),
+            new TextContent("answer"),
+        ];
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedResponse = new ChatResponse(new ChatMessage(ChatRole.Assistant, contents)),
+        };
+
+        ModelCallOutcome outcome = await new ModelCallExecutor().ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(outcome.IsSuccess);
+        ModelCallReasoningSegment segment = Assert.Single(outcome.Value.Reasoning.Segments);
+        Assert.Equal(deltaCount, segment.VisibleText.Length);
+        Assert.All(segment.VisibleText, static character => Assert.Equal('x', character));
+    }
+
+    [Fact]
+    public void ModelCallOutcome_FactoriesRejectNull()
+    {
+        Assert.Throws<ArgumentNullException>(() => ModelCallOutcome.Success(null!));
+        Assert.Throws<ArgumentNullException>(() => ModelCallOutcome.Failed(null!));
+    }
+
+    [Fact]
+    public void ModelCallOutcome_ExposesExactlyOneArm()
+    {
+        ModelCallResult value = new(
+            ModelCallPurpose.MainInference,
+            "success-call",
+            new ChatResponse(new ChatMessage(ChatRole.Assistant, "answer")),
+            Usage: null,
+            new ModelCallReasoningResult(
+                [],
+                RequestedOutput: null,
+                ReasoningOutputMode.None,
+                HasProviderContent: false,
+                HasProtectedData: false));
+        ModelCallFailure failure = new(
+            ModelCallPurpose.MainInference,
+            "failed-call",
+            new Error(ErrorCodes.Hub.Error, "failed"),
+            new HttpRequestException("failed"));
+
+        ModelCallOutcome success = ModelCallOutcome.Success(value);
+        ModelCallOutcome failed = ModelCallOutcome.Failed(failure);
+
+        Assert.True(success.IsSuccess);
+        Assert.False(success.IsFailure);
+        Assert.Same(value, success.Value);
+        Assert.Throws<InvalidOperationException>(() => success.Failure);
+
+        Assert.True(failed.IsFailure);
+        Assert.False(failed.IsSuccess);
+        Assert.Same(failure, failed.Failure);
+        Assert.Throws<InvalidOperationException>(() => failed.Value);
+    }
+
+    [Fact]
+    public async Task ExecuteStreamingAsync_EmitsInterleavedSemanticUpdatesInContentOrder()
+    {
+        ChatResponseUpdate mixed = new(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("think-1"),
+                new TextContent("answer-1"),
+                new TextReasoningContent("think-2"),
+                new TextContent("answer-2"),
+            ]);
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            StreamingUpdates = [mixed],
+        };
+        List<ModelCallUpdate> updates = [];
+
+        await foreach (ModelCallUpdate update in new ModelCallExecutor().ExecuteStreamingAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions
+            {
+                Reasoning = new ReasoningOptions { Output = ReasoningOutput.Full },
+            },
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None))
+        {
+            updates.Add(update);
+        }
+
+        ModelCallUpdate[] semantic = updates
+            .Where(static update => update is ModelCallTextDelta or ModelCallReasoningUpdate)
+            .ToArray();
+        Assert.Collection(
+            semantic,
+            update => Assert.Equal("think-1", Assert.IsType<ModelCallReasoningUpdate>(update).VisibleText),
+            update => Assert.Equal("answer-1", Assert.IsType<ModelCallTextDelta>(update).Text),
+            update => Assert.Equal("think-2", Assert.IsType<ModelCallReasoningUpdate>(update).VisibleText),
+            update => Assert.Equal("answer-2", Assert.IsType<ModelCallTextDelta>(update).Text));
+        Assert.All(
+            semantic.OfType<ModelCallReasoningUpdate>(),
+            update =>
+            {
+                Assert.Equal(ReasoningOutputMode.Full, update.RequestedOutput);
+                Assert.Equal(ReasoningOutputMode.Full, update.EffectiveOutput);
+                Assert.False(update.HasProtectedData);
+            });
+        Assert.Same(mixed, Assert.Single(updates.OfType<ModelCallResponseUpdate>()).Update);
+    }
+
+    [Fact]
+    public async Task ExecuteStreamingAsync_EmitsProtectedOnlyReasoningBeforeRawResponse()
+    {
+        TextReasoningContent protectedReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-roundtrip",
+        };
+        ChatResponseUpdate raw = new(ChatRole.Assistant, [protectedReasoning]);
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            StreamingUpdates = [raw],
+        };
+        List<ModelCallUpdate> updates = [];
+
+        await foreach (ModelCallUpdate update in new ModelCallExecutor().ExecuteStreamingAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions(),
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None))
+        {
+            updates.Add(update);
+        }
+
+        ModelCallReasoningUpdate reasoning = Assert.Single(updates.OfType<ModelCallReasoningUpdate>());
+        ModelCallResponseUpdate response = Assert.Single(updates.OfType<ModelCallResponseUpdate>());
+        Assert.Empty(reasoning.VisibleText);
+        Assert.Null(reasoning.RequestedOutput);
+        Assert.Equal(ReasoningOutputMode.Full, reasoning.EffectiveOutput);
+        Assert.True(reasoning.HasProtectedData);
+        Assert.True(updates.IndexOf(reasoning) < updates.IndexOf(response));
+        Assert.Same(protectedReasoning, Assert.Single(response.Update.Contents.OfType<TextReasoningContent>()));
+    }
+
+    [Fact]
+    public async Task ExecuteStreamingAsync_SurfacesReasoningUsage()
+    {
+        UsageDetails usage = new()
+        {
+            OutputTokenCount = 11,
+            ReasoningTokenCount = 7,
+        };
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            StreamingUpdates =
+            [
+                new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("answer")]),
+                new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usage)]),
+                new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("hidden")]),
+            ],
+        };
+        List<ModelCallUpdate> updates = [];
+
+        await foreach (ModelCallUpdate update in new ModelCallExecutor().ExecuteStreamingAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions(),
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None))
+        {
+            updates.Add(update);
+        }
+
+        ModelCallUsageUpdate usageUpdate = Assert.Single(updates.OfType<ModelCallUsageUpdate>());
+        Assert.Same(usage, usageUpdate.Usage);
+        Assert.Equal(7, usageUpdate.Usage?.ReasoningTokenCount);
+        Assert.Single(updates.OfType<ModelCallReasoningUpdate>());
+    }
+
+    [Fact]
+    public async Task ExecuteStreamingAsync_UsageFreeUpdatesDoNotEmitUsageOrCrash()
+    {
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            StreamingUpdates =
+            [
+                new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("thinking")]),
+                new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("answer")]),
+            ],
+        };
+        List<ModelCallUpdate> updates = [];
+
+        await foreach (ModelCallUpdate update in new ModelCallExecutor().ExecuteStreamingAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "reason")],
+            new ChatOptions(),
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None))
+        {
+            updates.Add(update);
+        }
+
+        Assert.Empty(updates.OfType<ModelCallUsageUpdate>());
+        Assert.Single(updates.OfType<ModelCallReasoningUpdate>());
+        Assert.Single(updates.OfType<ModelCallTextDelta>());
+    }
+
     private sealed class ScriptingChatClient(string text) : IChatClient
     {
 
         public int CallCount { get; private set; }
+
+        public ChatResponse? BufferedResponse { get; init; }
+
+        public Exception? BufferedException { get; init; }
+
+        public IReadOnlyList<ChatResponseUpdate>? StreamingUpdates { get; init; }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> chatMessages,
@@ -97,7 +547,13 @@ public sealed class ModelCallExecutorTests
         {
             CallCount++;
 
-            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, text)));
+            if (BufferedException is not null)
+            {
+                throw BufferedException;
+            }
+
+            return Task.FromResult(
+                BufferedResponse ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, text)));
         }
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -106,6 +562,18 @@ public sealed class ModelCallExecutorTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             CallCount++;
+
+            if (StreamingUpdates is not null)
+            {
+                foreach (ChatResponseUpdate update in StreamingUpdates)
+                {
+                    yield return update;
+
+                    await Task.Yield();
+                }
+
+                yield break;
+            }
 
             foreach (char c in text)
             {

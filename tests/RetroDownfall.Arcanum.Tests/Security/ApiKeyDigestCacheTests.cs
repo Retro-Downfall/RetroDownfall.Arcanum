@@ -8,6 +8,23 @@ public sealed class ApiKeyDigestCacheTests
 {
 
     [Fact]
+    public void Constructor_WithoutTimeProvider_UsesSystemClock()
+    {
+
+        ApiKeyDigestCache cache = new();
+        byte[] digest = [1, 2, 3, 4];
+
+        cache.StoreDigest(digest, ttlSeconds: 60);
+
+        bool found = cache.TryGetDigest(out byte[]? result);
+
+        Assert.True(found);
+
+        Assert.Same(digest, result);
+
+    }
+
+    [Fact]
     public void TryGetDigest_StoredAndNotExpired_ReturnsDigest()
     {
 

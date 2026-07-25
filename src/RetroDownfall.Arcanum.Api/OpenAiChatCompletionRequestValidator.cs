@@ -226,6 +226,13 @@ internal static partial class OpenAiV1Endpoints
             };
         }
 
+        Result reasoningShape = ReasoningRequestValidator.Validate(mapped.Reasoning);
+
+        if (reasoningShape.IsFailure)
+        {
+            return MapReasoningValidationFailure(reasoningShape.Error);
+        }
+
         Result pingBounds = PingRequestBoundsValidator.Validate(mapped, settings);
 
         if (pingBounds.IsFailure)
@@ -248,6 +255,21 @@ internal static partial class OpenAiV1Endpoints
                 "model_not_found",
                 "model",
                 StatusCodes.Status404NotFound);
+        }
+
+        _ = ProviderResolver.TryResolveModelEntry(
+            resolvedProvider,
+            resolvedModel,
+            out ModelEntry? modelEntry);
+        Result reasoningModel = ReasoningRequestValidator.ValidateForModel(
+            mapped.Reasoning,
+            modelEntry?.Reasoning,
+            resolvedModel,
+            resolvedProvider.Name);
+
+        if (reasoningModel.IsFailure)
+        {
+            return MapReasoningValidationFailure(reasoningModel.Error);
         }
 
         if (ScryingValidator.RequestContainsImages(mapped))
@@ -290,6 +312,18 @@ internal static partial class OpenAiV1Endpoints
         ping = mapped;
 
         return null;
+    }
+
+    private static ChatCompletionValidationFailure MapReasoningValidationFailure(Error error)
+    {
+        OpenAiErrorDetail detail = OpenAiStreamErrorMapper.Map(error);
+
+        return new ChatCompletionValidationFailure(
+            detail.Message,
+            detail.Type,
+            detail.Code,
+            detail.Param,
+            ArcanumErrorMapper.ResolveStatusCode(error.Code));
     }
 
 }

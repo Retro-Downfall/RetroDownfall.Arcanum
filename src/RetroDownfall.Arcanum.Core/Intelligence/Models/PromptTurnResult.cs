@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 public sealed record PromptTurnResult(
@@ -8,6 +10,8 @@ public sealed record PromptTurnResult(
 {
 
     public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
 
     public bool PreserveProviderToolCallIds { get; init; }
 

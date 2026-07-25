@@ -1,3 +1,6 @@
+using System.Data.Common;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -35,7 +38,10 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
     {
         if (_db is not null)
         {
+            SqliteConnection connection =
+                (SqliteConnection)_db.Database.GetDbConnection();
             await _db.DisposeAsync();
+            SqliteConnection.ClearPool(connection);
         }
 
         if (File.Exists(_dbPath))
@@ -186,13 +192,29 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
             CompletedAt: DateTimeOffset.UtcNow,
             InputTokens: 10,
             OutputTokens: 5,
+            ReasoningTokens: 3,
             CachedTokens: 2,
-            PricingSnapshotJson: """{"InputPer1M":1,"OutputPer1M":2,"CachedPer1M":0.5}""",
+            PricingSnapshotJson: """{"InputPer1M":1,"OutputPer1M":2,"ReasoningPer1M":3,"CachedPer1M":0.5}""",
             ActualCostUsd: 0.01m,
             Status: BillableOperationStatus.Completed,
             ProviderRequestId: null));
 
         Assert.NotEqual(Guid.Empty, opId);
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+        await using (DbCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """SELECT "ReasoningTokens" FROM "BillableOperations" WHERE "Id" = @id;""";
+            DbParameter parameter = command.CreateParameter();
+            parameter.ParameterName = "@id";
+            parameter.Value = opId.ToString("N");
+            command.Parameters.Add(parameter);
+
+            object? stored = await command.ExecuteScalarAsync();
+
+            Assert.Equal(3L, Convert.ToInt64(stored, System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         await runs.CompleteRunAsync(runId, InferenceRunStatus.Completed);
 

@@ -31,11 +31,9 @@ public sealed class SanctumPathRedactorTests
 
     }
 
-    [SkippableFact]
-    public void Redact_PathWithEmbeddedNull_ReturnsRedactedPlaceholder_WhenGetFileNameThrows()
+    [Fact]
+    public void Redact_PathWithEmbeddedNull_ReturnsRedactedPlaceholder()
     {
-
-        Skip.IfNot(OperatingSystem.IsWindows(), "Path.GetFileName throws for embedded null on Windows.");
 
         string? redacted = SanctumPathRedactor.Redact("bad\u0000path");
 

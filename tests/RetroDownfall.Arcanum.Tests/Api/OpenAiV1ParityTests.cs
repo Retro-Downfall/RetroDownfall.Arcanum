@@ -240,6 +240,118 @@ public sealed class OpenAiV1ParityTests
     }
 
     [SkippableFact]
+    public async Task PostChatCompletions_Streaming_IncludeUsageFalse_EndsWithChoiceOnlyTerminalChunk()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ChatCompletionUsage usage = new(11, 7, 18, CachedTokens: 3, ReasoningTokens: 2);
+
+        _factory.FakeIntelligence.NextStreamEvents =
+        [
+            new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "streamed answer"),
+            new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "streamed answer",
+                "18",
+                usage,
+                FinishReason: "length"),
+        ];
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "stream": true,
+              "stream_options": { "include_usage": false },
+              "messages": [
+                { "role": "user", "content": "hello" }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string sseBody = await response.Content.ReadAsStringAsync();
+        List<OpenAiChatChunk> chunks = ParseSseChunks(sseBody);
+        OpenAiChatChunk terminal = chunks[^1];
+        OpenAiChatStreamChoice terminalChoice = Assert.Single(terminal.Choices);
+
+        Assert.Equal("length", terminalChoice.FinishReason);
+        Assert.Null(terminalChoice.Delta.Role);
+        Assert.Null(terminalChoice.Delta.Content);
+        Assert.Null(terminalChoice.Delta.ToolCalls);
+        Assert.Null(terminal.Usage);
+        Assert.All(chunks, static chunk => Assert.Null(chunk.Usage));
+        Assert.EndsWith("data: [DONE]\n\n", sseBody.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+
+        _factory.FakeIntelligence.NextStreamEvents = null;
+
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_Streaming_IncludeUsageTrue_EmitsSeparateChoicesEmptyUsageChunk()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ChatCompletionUsage usage = new(11, 7, 18, CachedTokens: 3, ReasoningTokens: 2);
+
+        _factory.FakeIntelligence.NextStreamEvents =
+        [
+            new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "streamed answer"),
+            new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "streamed answer",
+                "18",
+                usage,
+                FinishReason: "length"),
+        ];
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "stream": true,
+              "stream_options": { "include_usage": true },
+              "messages": [
+                { "role": "user", "content": "hello" }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string sseBody = await response.Content.ReadAsStringAsync();
+        List<OpenAiChatChunk> chunks = ParseSseChunks(sseBody);
+        OpenAiChatChunk terminal = chunks[^2];
+        OpenAiChatStreamChoice terminalChoice = Assert.Single(terminal.Choices);
+        OpenAiChatChunk usageOnly = chunks[^1];
+
+        Assert.Equal("length", terminalChoice.FinishReason);
+        Assert.Null(terminalChoice.Delta.Role);
+        Assert.Null(terminalChoice.Delta.Content);
+        Assert.Null(terminalChoice.Delta.ToolCalls);
+        Assert.Null(terminal.Usage);
+        Assert.Empty(usageOnly.Choices);
+        Assert.Equal(usage, usageOnly.Usage);
+        Assert.EndsWith("data: [DONE]\n\n", sseBody.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+
+        _factory.FakeIntelligence.NextStreamEvents = null;
+
+    }
+
+    [SkippableFact]
     public async Task PostChatCompletions_Streaming_EmitsToolCallDeltasWithChunkedArguments()
     {
 
@@ -322,6 +434,10 @@ public sealed class OpenAiV1ParityTests
             Assert.Null(d.Function?.Name);
 
         });
+
+        Assert.All(
+            toolCallDeltas,
+            static delta => Assert.InRange(delta.Function?.Arguments?.Length ?? 0, 1, 40));
 
         string reassembledArguments = string.Concat(toolCallDeltas.Select(static d => d.Function?.Arguments ?? string.Empty));
 

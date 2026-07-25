@@ -143,7 +143,7 @@ public sealed class SemanticRouterTests
     }
 
     [Fact]
-    public async Task DetermineActiveSpellAsync_InvalidJson_ReturnsNull()
+    public async Task DetermineActiveSpellAsync_InvalidJson_ReturnsEmptyOutcome()
     {
         FakeChatClient client = new()
         {
@@ -162,7 +162,9 @@ public sealed class SemanticRouterTests
             CancellationToken.None,
             NullLogger.Instance);
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Null(result.Spell);
+        Assert.Empty(result.Entities);
     }
 
     [Fact]

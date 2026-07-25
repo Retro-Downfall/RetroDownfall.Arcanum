@@ -174,7 +174,10 @@ public sealed class WizardIntelligenceProvider(
                         turn.FinishReason,
                         turn.Warnings,
                         request.Request.SessionId,
-                        StructuredOutputWarning: turn.Warnings.Count > 0),
+                        StructuredOutputWarning: turn.Warnings.Count > 0)
+                    {
+                        Reasoning = turn.Reasoning,
+                    },
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -249,6 +252,10 @@ public sealed class WizardIntelligenceProvider(
 
         private IntelligenceEvent? _pendingToolError;
 
+        private readonly StringBuilder _answer = new();
+
+        private readonly List<ReasoningContentRun> _reasoning = [];
+
         public IEnumerable<TurnEvent> Map(IntelligenceEvent frame, TurnEventEmitter emitter)
         {
             TurnEventCorrelation correlation = emitter.NextCorrelation();
@@ -276,8 +283,20 @@ public sealed class WizardIntelligenceProvider(
                     yield break;
 
                 case IntelligenceEventType.Token:
-                    yield return new TextDelta(correlation, frame.Data ?? frame.Message);
+                    string text = frame.Data ?? frame.Message;
+                    _ = _answer.Append(text);
+                    yield return new TextDelta(correlation, text);
 
+                    yield break;
+
+                case IntelligenceEventType.Reasoning when frame.Reasoning is { Text.Length: > 0 } reasoning:
+                    AppendReasoning(reasoning);
+
+                    yield return new ReasoningDelta(correlation, reasoning);
+
+                    yield break;
+
+                case IntelligenceEventType.Reasoning:
                     yield break;
 
                 case IntelligenceEventType.ToolCall:
@@ -339,13 +358,18 @@ public sealed class WizardIntelligenceProvider(
                 case IntelligenceEventType.Result:
                     yield return new RunCompleted(
                         correlation,
-                        frame.Data ?? frame.Message,
+                        _answer.ToString(),
                         frame.Usage,
                         ToolCalls: null,
                         frame.FinishReason,
                         frame.Warnings,
                         SessionId: null,
-                        StructuredOutputWarning: frame.Warnings.Count > 0);
+                        StructuredOutputWarning: frame.Warnings.Count > 0)
+                    {
+                        Reasoning = _reasoning
+                            .Select(static run => run.Materialize())
+                            .ToArray(),
+                    };
 
                     yield break;
 
@@ -366,6 +390,107 @@ public sealed class WizardIntelligenceProvider(
             }
         }
 
+        private void AppendReasoning(ReasoningContentSegment reasoning)
+        {
+            if (_reasoning.Count > 0 && _reasoning[^1].Output == reasoning.Output)
+            {
+                _reasoning[^1].Append(reasoning.Text);
+                return;
+            }
+
+            _reasoning.Add(new ReasoningContentRun(reasoning));
+        }
+
+    }
+
+    private sealed class ReasoningContentRun
+    {
+        private readonly StringBuilder _text;
+
+        public ReasoningContentRun(ReasoningContentSegment initial)
+        {
+            Output = initial.Output;
+            _text = new StringBuilder(initial.Text);
+        }
+
+        public ReasoningOutputMode Output { get; }
+
+        public void Append(string text) => _ = _text.Append(text);
+
+        public ReasoningContentSegment Materialize() => new(_text.ToString(), Output);
+    }
+
+    private sealed class BufferedOutputFrameAccumulator
+    {
+        private readonly List<BufferedOutputRun> _runs = [];
+
+        public bool HasToken { get; private set; }
+
+        public void Clear()
+        {
+            _runs.Clear();
+            HasToken = false;
+        }
+
+        public void AppendToken(string modelCallId, string text)
+        {
+            HasToken = true;
+            Append(modelCallId, IntelligenceEventType.Token, output: null, text);
+        }
+
+        public void AppendReasoning(
+            string modelCallId,
+            ReasoningContentSegment reasoning) =>
+            Append(
+                modelCallId,
+                IntelligenceEventType.Reasoning,
+                reasoning.Output,
+                reasoning.Text);
+
+        public IEnumerable<IntelligenceEvent> Materialize()
+        {
+            foreach (BufferedOutputRun run in _runs)
+            {
+                string text = run.Text.ToString();
+                yield return run.Type == IntelligenceEventType.Reasoning
+                    ? new IntelligenceEvent(
+                        IntelligenceEventType.Reasoning,
+                        text,
+                        Reasoning: new ReasoningContentSegment(text, run.Output!.Value))
+                    : new IntelligenceEvent(
+                        IntelligenceEventType.Token,
+                        string.Empty,
+                        text);
+            }
+        }
+
+        private void Append(
+            string modelCallId,
+            IntelligenceEventType type,
+            ReasoningOutputMode? output,
+            string text)
+        {
+            if (_runs.Count > 0
+                && _runs[^1].ModelCallId == modelCallId
+                && _runs[^1].Type == type
+                && _runs[^1].Output == output)
+            {
+                _ = _runs[^1].Text.Append(text);
+                return;
+            }
+
+            _runs.Add(new BufferedOutputRun(
+                modelCallId,
+                type,
+                output,
+                new StringBuilder(text)));
+        }
+
+        private sealed record BufferedOutputRun(
+            string ModelCallId,
+            IntelligenceEventType Type,
+            ReasoningOutputMode? Output,
+            StringBuilder Text);
     }
 
     private async Task<Result<PromptTurnResult>> ExecutePromptCoreAsync(
@@ -438,6 +563,16 @@ public sealed class WizardIntelligenceProvider(
 
             using (singleLease)
             {
+                Result reasoningValidation = ValidateReasoningForCandidate(
+                    request,
+                    singleLease.Provider,
+                    singleLease.ResolvedModel);
+
+                if (reasoningValidation.IsFailure)
+                {
+                    return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
+                }
+
                 InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(singleLease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
 
                 return single.Result;
@@ -477,6 +612,13 @@ public sealed class WizardIntelligenceProvider(
             (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
 
             bool isLastAttempt = attemptIndex == maxAttempts - 1;
+
+            Result reasoningValidation = ValidateReasoningForCandidate(request, provider, resolvedModel);
+
+            if (reasoningValidation.IsFailure)
+            {
+                return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
+            }
 
             ChatClientLease lease;
 
@@ -526,21 +668,30 @@ public sealed class WizardIntelligenceProvider(
             {
                 InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(lease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
 
+                if (attempt.IsConnectivityFailure)
+                {
+                    healthTracker!.MarkFailed(provider.Name);
+                }
+
                 if (attempt.Result.IsSuccess)
                 {
-                    healthTracker!.MarkHealthy(provider.Name);
+                    if (!attempt.IsConnectivityFailure)
+                    {
+                        healthTracker!.MarkHealthy(provider.Name);
+                    }
 
                     return attempt.Result;
                 }
 
                 lastFailure = attempt.Result;
 
-                if (!attempt.IsConnectivityFailure || isLastAttempt)
+                bool eligibleForFallback = attempt.IsConnectivityFailure
+                    && !attempt.ProviderCommitted
+                    && !isLastAttempt;
+                if (!eligibleForFallback)
                 {
                     return lastFailure;
                 }
-
-                healthTracker!.MarkFailed(provider.Name);
 
                 logger.LogWarning(
                     "Provider {ProviderName} inference failed with a connectivity error (fallback attempt {Attempt}/{MaxAttempts}); trying next candidate.",
@@ -554,6 +705,28 @@ public sealed class WizardIntelligenceProvider(
 
         return lastFailure;
 
+    }
+
+    /// <summary>
+    /// Applies model-capability validation to the actual resolved lease candidate before provider
+    /// I/O. Both direct and resilience-enabled paths use this gate so unsupported explicit controls
+    /// are rejected consistently with provider/model-specific diagnostics.
+    /// </summary>
+    private static Result ValidateReasoningForCandidate(
+        PingRequest request,
+        ProviderSettings provider,
+        string resolvedModel)
+    {
+        ReasoningCapabilities? capabilities =
+            ProviderResolver.TryResolveModelEntry(provider, resolvedModel, out ModelEntry? modelEntry)
+                ? modelEntry!.Reasoning
+                : null;
+
+        return ReasoningRequestValidator.ValidateForModel(
+            request.Reasoning,
+            capabilities,
+            resolvedModel,
+            provider.Name);
     }
 
     private async Task<InferenceAttemptResult> DrainBufferedInferenceAttemptAsync(
@@ -582,13 +755,17 @@ public sealed class WizardIntelligenceProvider(
 
         if (classification.BufferedTerminal is { } terminal)
         {
-            return new InferenceAttemptResult(terminal, classification.IsConnectivityFailure);
+            return new InferenceAttemptResult(
+                terminal,
+                classification.IsConnectivityFailure,
+                classification.ProviderCommitted);
         }
 
         return new InferenceAttemptResult(
             Result<PromptTurnResult>.Failure(
                 new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage)),
-            classification.IsConnectivityFailure);
+            classification.IsConnectivityFailure,
+            classification.ProviderCommitted);
 
     }
 
@@ -683,6 +860,23 @@ public sealed class WizardIntelligenceProvider(
 
             ChatClientLease singleLease = leaseOrNull!;
 
+            Result reasoningValidation = ValidateReasoningForCandidate(
+                request,
+                singleLease.Provider,
+                singleLease.ResolvedModel);
+
+            if (reasoningValidation.IsFailure)
+            {
+                singleLease.Dispose();
+
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    reasoningValidation.Error.Message,
+                    reasoningValidation.Error.Code);
+
+                yield break;
+            }
+
             StreamFailureClassification singleClassification = new();
 
             IAsyncEnumerator<IntelligenceEvent> singleEnumerator = RunInferenceAttemptAsync(
@@ -770,6 +964,21 @@ public sealed class WizardIntelligenceProvider(
             (ProviderSettings candidateProvider, string candidateModel) = streamCandidates[attemptIndex];
 
             bool isLastAttempt = attemptIndex == streamMaxAttempts - 1;
+
+            Result reasoningValidation = ValidateReasoningForCandidate(
+                request,
+                candidateProvider,
+                candidateModel);
+
+            if (reasoningValidation.IsFailure)
+            {
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Error,
+                    reasoningValidation.Error.Message,
+                    reasoningValidation.Error.Code);
+
+                yield break;
+            }
 
             ChatClientLease? candidateLease = null;
 
@@ -977,15 +1186,21 @@ public sealed class WizardIntelligenceProvider(
 
             IntelligenceEvent? gateEvent = commitGateEvent;
 
-            bool gateIsRetryableConnectivityError = gateEvent is { Type: IntelligenceEventType.Error }
-                && classification.IsConnectivityFailure
+            bool gateIsConnectivityError = gateEvent is { Type: IntelligenceEventType.Error }
+                && classification.IsConnectivityFailure;
+            bool providerMarkedFailed = false;
+            bool gateIsRetryableConnectivityError = gateIsConnectivityError
                 && !classification.ProviderCommitted
                 && !isLastAttempt;
 
-            if (gateIsRetryableConnectivityError)
+            if (gateIsConnectivityError)
             {
                 healthTracker!.MarkFailed(candidateProvider.Name);
+                providerMarkedFailed = true;
+            }
 
+            if (gateIsRetryableConnectivityError)
+            {
                 logger.LogWarning(
                     "Provider {ProviderName} streaming connection failed (fallback attempt {Attempt}/{MaxAttempts}); trying next candidate.",
                     candidateProvider.Name,
@@ -998,8 +1213,6 @@ public sealed class WizardIntelligenceProvider(
 
                 continue;
             }
-
-            healthTracker!.MarkHealthy(candidateProvider.Name);
 
             Exception? midStreamFailure = null;
 
@@ -1050,6 +1263,13 @@ public sealed class WizardIntelligenceProvider(
 
             if (midStreamFailure is not null)
             {
+                bool midStreamConnectivityFailure = IsConnectivityFailure(midStreamFailure, callerToken);
+                if (midStreamConnectivityFailure && !providerMarkedFailed)
+                {
+                    healthTracker!.MarkFailed(candidateProvider.Name);
+                    providerMarkedFailed = true;
+                }
+
                 logger.LogError(
                     midStreamFailure,
                     "Streaming inference threw mid-stream for provider {ProviderName} model {RequestedModel}.",
@@ -1059,6 +1279,17 @@ public sealed class WizardIntelligenceProvider(
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
                     PublicInferenceFailureMessage);
+            }
+
+            if (classification.IsConnectivityFailure && !providerMarkedFailed)
+            {
+                healthTracker!.MarkFailed(candidateProvider.Name);
+                providerMarkedFailed = true;
+            }
+
+            if (!providerMarkedFailed)
+            {
+                healthTracker!.MarkHealthy(candidateProvider.Name);
             }
 
             yield break;
@@ -1094,6 +1325,8 @@ public sealed class WizardIntelligenceProvider(
 
         StringBuilder streamAccumulator = new(1024);
 
+        ModelCallReasoningAccumulator ephemeralReasoningSegments = new();
+
         Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
         Channel<IntelligenceEvent>? liveHumanPromptChannel = null;
@@ -1116,6 +1349,12 @@ public sealed class WizardIntelligenceProvider(
         try
         {
             string targetModel = lease.ResolvedModel;
+
+            ReasoningCapabilities? reasoningCapabilities = ResolveReasoningCapabilities(lease);
+            ReasoningOutputMode clientReasoningOutput = ResolveClientReasoningOutput(
+                request.Reasoning?.Output,
+                reasoningCapabilities,
+                streaming);
 
             IChatClient chatClient = lease.ChatClient;
 
@@ -1220,7 +1459,9 @@ public sealed class WizardIntelligenceProvider(
                     surface: streaming ? "stream" : "buffered",
                     purpose: "chat",
                     requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
-                    inferenceToken)
+                    cancellationToken: inferenceToken,
+                    maxOutputTokens: request.MaxOutputTokens,
+                    reasoningBudgetTokens: request.Reasoning?.BudgetTokens)
                 .ConfigureAwait(false);
         }
 
@@ -1287,6 +1528,8 @@ public sealed class WizardIntelligenceProvider(
             Result<ResolvedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
                 request,
                 chatClient,
+                lease.Provider.Name,
+                targetModel,
                 streamSpellWorkspaceRoot,
                 inferenceToken).ConfigureAwait(false);
 
@@ -1331,6 +1574,8 @@ public sealed class WizardIntelligenceProvider(
             request,
             streamResolvedSpell?.Entities ?? Array.Empty<string>(),
             chatClient,
+            lease.Provider.Name,
+            targetModel,
             inferenceToken).ConfigureAwait(false);
 
         int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
@@ -1523,6 +1768,10 @@ public sealed class WizardIntelligenceProvider(
             && ((guardrailsStreamingMode == GuardrailsStreamingMode.Buffered && guardrailsOutputActive)
                 || (request.ResponseFormat is "json_schema" && settings.Value.StructuredOutput.Enabled && settings.Value.StructuredOutput.StrictMode));
 
+        BufferedOutputFrameAccumulator bufferedOutputFrames = new();
+
+        bool replacementOutputPreservesContentOrder = false;
+
         bool suppressInvocationFailures = streaming || settings.Value.Intelligence.TolerateToolFailures;
 
         ChatOptions? lastInferenceChatOptions = null;
@@ -1531,7 +1780,14 @@ public sealed class WizardIntelligenceProvider(
         {
             bool streamOuterRestart = false;
 
+            // The outer loop repeats only for the pre-commit no-tools compatibility restart.
             streamAccumulator.Clear();
+
+            ephemeralReasoningSegments.Clear();
+
+            bufferedOutputFrames.Clear();
+
+            replacementOutputPreservesContentOrder = false;
 
             streamAccumulatedUsage = null;
 
@@ -1630,7 +1886,7 @@ public sealed class WizardIntelligenceProvider(
 
                     if (!streaming)
                     {
-                        Result<ModelCallResult> modelCall;
+                        ModelCallOutcome modelCall;
 
                         try
                         {
@@ -1682,7 +1938,8 @@ public sealed class WizardIntelligenceProvider(
 
                             // Do not break the tool-round loop yet — the inferenceError handler
                             // below owns no-tools compatibility restart.
-                            streamingMoveNextFailure = new InvalidOperationException(modelCall.Error.Message);
+                            streamingMoveNextFailure = modelCall.Failure.Cause
+                                ?? new InvalidOperationException(modelCall.Error.Message);
 
                             inferenceError = BuildInferenceFailureMessage(lease, streamingMoveNextFailure);
 
@@ -1690,9 +1947,22 @@ public sealed class WizardIntelligenceProvider(
                         }
                         else
                         {
-                            bufferedRoundResponse = modelCall.Value.Response;
+                            ModelCallResult bufferedCall = modelCall.Value;
+
+                            bufferedRoundResponse = bufferedCall.Response;
 
                             bufferedFinalResponse = bufferedRoundResponse;
+
+                            ChatCompletionUsage? bufferedUsage = MapUsageDetails(bufferedRoundResponse.Usage);
+
+                            await RecordProviderCallUsageAsync(
+                                    streamAccountingLocal,
+                                    bufferedUsage,
+                                    lease.Provider.Name,
+                                    targetModel,
+                                    streamPurpose,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
 
                             string bufferedText = bufferedRoundResponse.Text ?? string.Empty;
 
@@ -1707,7 +1977,22 @@ public sealed class WizardIntelligenceProvider(
                                 }
                             }
 
-                            streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, MapUsageDetails(bufferedRoundResponse.Usage));
+                            if (ProviderAttemptCommitTracker.CommitsProviderAttempt(bufferedCall.Reasoning))
+                            {
+                                // Buffered responses do not yield ModelCallUpdate instances, so commit
+                                // from the executor's normalized metadata before validation/projection.
+                                classification.ProviderCommitted = true;
+                            }
+
+                            if (bufferedCall.Reasoning.Segments.Count > 0)
+                            {
+                                foreach (ModelCallReasoningSegment segment in bufferedCall.Reasoning.Segments)
+                                {
+                                    ephemeralReasoningSegments.Append(segment);
+                                }
+                            }
+
+                            streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, bufferedUsage);
                         }
                     }
                     else
@@ -1771,11 +2056,59 @@ public sealed class WizardIntelligenceProvider(
 
                         ModelCallUpdate modelUpdate = streamEnumerator.Current;
 
-                        if (modelUpdate is ModelCallTextDelta textDelta
-                            && ProviderAttemptCommitTracker.CommitsProviderAttempt(textDelta))
+                        if (ProviderAttemptCommitTracker.CommitsProviderAttempt(modelUpdate))
                         {
-                            // Commit before any client-visible Token (including when bufferTokens holds it).
+                            // Semantic updates precede their raw response update, so commitment always
+                            // happens before any client-visible Token (including buffered guardrails).
                             classification.ProviderCommitted = true;
+                        }
+
+                        if (modelUpdate is ModelCallReasoningUpdate reasoningUpdate
+                            && (reasoningUpdate.VisibleText.Length > 0 || reasoningUpdate.HasProtectedData))
+                        {
+                            ephemeralReasoningSegments.Append(reasoningUpdate);
+
+                            if (streaming
+                                && TryProjectClientReasoning(
+                                    reasoningUpdate.VisibleText,
+                                    clientReasoningOutput,
+                                    out ReasoningContentSegment? projectedReasoning))
+                            {
+                                if (bufferTokens)
+                                {
+                                    bufferedOutputFrames.AppendReasoning(
+                                        reasoningUpdate.ModelCallId,
+                                        projectedReasoning);
+                                }
+                                else
+                                {
+                                    yield return new IntelligenceEvent(
+                                        IntelligenceEventType.Reasoning,
+                                        projectedReasoning.Text,
+                                        Reasoning: projectedReasoning);
+                                }
+                            }
+                        }
+
+                        if (modelUpdate is ModelCallTextDelta textDelta)
+                        {
+                            _ = streamAccumulator.Append(textDelta.Text);
+
+                            if (bufferTokens)
+                            {
+                                bufferedOutputFrames.AppendToken(
+                                    textDelta.ModelCallId,
+                                    textDelta.Text);
+                            }
+                            else
+                            {
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.Token,
+                                    string.Empty,
+                                    textDelta.Text);
+                            }
+
+                            continue;
                         }
 
                         if (modelUpdate is not ModelCallResponseUpdate responseUpdate)
@@ -1785,25 +2118,7 @@ public sealed class WizardIntelligenceProvider(
 
                         ChatResponseUpdate update = responseUpdate.Update;
 
-                        if (string.IsNullOrEmpty(update.Text))
-                        {
-
-                            roundUpdates.Add(update);
-
-                            continue;
-
-                        }
-
-                        _ = streamAccumulator.Append(update.Text);
-
                         roundUpdates.Add(update);
-
-                        if (!bufferTokens)
-                        {
-
-                            yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, update.Text);
-
-                        }
                     }
                 }
                 finally
@@ -1817,6 +2132,7 @@ public sealed class WizardIntelligenceProvider(
                     bool allowNoToolsRestart = streamUsesTools
                         && streamingMoveNextFailure is { Message: var moveMsg }
                         && LooksLikeModelDoesNotSupportTools(moveMsg)
+                        && !classification.ProviderCommitted
                         && (streaming ? streamAccumulator.Length == 0 : true);
 
                     if (allowNoToolsRestart)
@@ -1870,10 +2186,23 @@ public sealed class WizardIntelligenceProvider(
 
                 if (streaming)
                 {
-                    streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, MapUsageDetails(combinedRound.Usage));
+                    ChatCompletionUsage? streamingUsage = MapUsageDetails(combinedRound.Usage);
+
+                    await RecordProviderCallUsageAsync(
+                            streamAccountingLocal,
+                            streamingUsage,
+                            lease.Provider.Name,
+                            targetModel,
+                            streamPurpose,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+
+                    streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, streamingUsage);
                 }
 
                 List<FunctionCallContent> toolCalls = ToolExecutionPipeline.CollectActionableFunctionCalls(combinedRound);
+                IReadOnlyList<TextReasoningContent> rawRoundReasoning =
+                    CollectRawReasoningContent(combinedRound);
 
                 bool roundHasText = streamAccumulator.Length > 0 || !string.IsNullOrEmpty(combinedRound.Text);
 
@@ -1992,7 +2321,8 @@ public sealed class WizardIntelligenceProvider(
                                             chatMessages,
                                             fcc,
                                             denied.CallId,
-                                            denied.ResultText);
+                                            denied.ResultText,
+                                            toolCallIndex == 0 ? rawRoundReasoning : null);
 
                                         await grimoireTurnWriter.TryAppendToolInteractionAsync(
                                             grimoireTurn.SessionId,
@@ -2013,6 +2343,7 @@ public sealed class WizardIntelligenceProvider(
                                                            grimoireTurn,
                                                            targetModel,
                                                            auditContext,
+                                                           toolCallIndex == 0 ? rawRoundReasoning : null,
                                                            inferenceToken)
                                                            .ConfigureAwait(false))
                                         {
@@ -2037,6 +2368,7 @@ public sealed class WizardIntelligenceProvider(
                                                        grimoireTurn,
                                                        targetModel,
                                                        auditContext,
+                                                       toolCallIndex == 0 ? rawRoundReasoning : null,
                                                        inferenceToken)
                                                        .ConfigureAwait(false))
                                     {
@@ -2174,7 +2506,8 @@ public sealed class WizardIntelligenceProvider(
                                 chatMessages,
                                 invokeFcc,
                                 processed.CallId,
-                                processed.ResultText);
+                                processed.ResultText,
+                                toolCallIndex == 0 ? rawRoundReasoning : null);
 
                             if (processed.AdditionalContextContents is { Count: > 0 } extras)
                             {
@@ -2262,31 +2595,6 @@ public sealed class WizardIntelligenceProvider(
 
         string finalText = streamAccumulator.ToString();
 
-        Result guardrailsStreamOutput = await FilterGuardrailsOutputAsync(
-            finalText,
-            grimoireTurn.SessionId,
-            targetModel,
-            inferenceToken).ConfigureAwait(false);
-
-        if (guardrailsStreamOutput.IsFailure)
-        {
-            if (!streaming)
-            {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(guardrailsStreamOutput.Error);
-            }
-
-            if (!grimoireTurn.IsFinalized)
-            {
-                await grimoireTurnWriter
-                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, guardrailsStreamOutput.Error.Message);
-
-            yield break;
-        }
-
         IReadOnlyList<string> streamWarnings = [];
 
         if (request.ResponseFormat is "json_schema"
@@ -2302,19 +2610,20 @@ public sealed class WizardIntelligenceProvider(
             }
 
             using JsonDocument streamSchema = JsonDocument.Parse(streamSchemaElement.GetRawText());
+            int maxRetries = ArcanumSettingClamps.StructuredOutputMaxValidationRetries(
+                settings.Value.StructuredOutput.MaxValidationRetries);
+            bool useRetryValidator = !streaming
+                || (settings.Value.StructuredOutput.StrictMode && maxRetries > 0);
 
-            if (!streaming)
+            if (useRetryValidator)
             {
-                if (bufferedFinalResponse is null)
+                if (!streaming && bufferedFinalResponse is null)
                 {
                     classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
                         new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
 
                     yield break;
                 }
-
-                int maxRetries = ArcanumSettingClamps.StructuredOutputMaxValidationRetries(
-                    settings.Value.StructuredOutput.MaxValidationRetries);
 
                 int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(
                     settings.Value.StructuredOutput.SchemaMaxDepth);
@@ -2335,7 +2644,8 @@ public sealed class WizardIntelligenceProvider(
                     }
                 };
 
-                ChatResponse responseForValidation = bufferedFinalResponse;
+                ChatResponse responseForValidation = bufferedFinalResponse
+                    ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, finalText));
 
                 Result<StructuredOutputResult> validationResult = await structuredOutputValidator
                     .ValidateAndRetryAsync(
@@ -2352,7 +2662,7 @@ public sealed class WizardIntelligenceProvider(
 
                             chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
 
-                            Result<ModelCallResult> retryCall = await _modelCallExecutor
+                            ModelCallOutcome retryCall = await _modelCallExecutor
                                 .ExecuteBufferedAsync(
                                     chatClient,
                                     chatMessages,
@@ -2369,18 +2679,54 @@ public sealed class WizardIntelligenceProvider(
 
                             if (retryCall.IsFailure)
                             {
-                                throw new InvalidOperationException(retryCall.Error.Message);
+                                throw retryCall.Failure.Cause
+                                    ?? new InvalidOperationException(retryCall.Error.Message);
                             }
 
-                            ChatResponse retryResponse = retryCall.Value.Response;
+                            ModelCallResult retryResult = retryCall.Value;
+
+                            ChatResponse retryResponse = retryResult.Response;
+
+                            ChatCompletionUsage? retryUsage = MapUsageDetails(retryResponse.Usage);
+
+                            await RecordProviderCallUsageAsync(
+                                    streamAccountingLocal,
+                                    retryUsage,
+                                    lease.Provider.Name,
+                                    targetModel,
+                                    ModelCallPurpose.StructuredOutputRetry,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+
+                            if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
+                            {
+                                classification.ProviderCommitted = true;
+                            }
+
+                            ephemeralReasoningSegments.Clear();
+
+                            foreach (ModelCallReasoningSegment reasoning in retryResult.Reasoning.Segments)
+                            {
+                                ephemeralReasoningSegments.Append(reasoning);
+                            }
 
                             responseForValidation = retryResponse;
 
                             bufferedFinalResponse = retryResponse;
 
+                            if (streaming)
+                            {
+                                bufferedOutputFrames.Clear();
+                                AppendReplacementFramesInContentOrder(
+                                    bufferedOutputFrames,
+                                    retryResult,
+                                    clientReasoningOutput);
+                                replacementOutputPreservesContentOrder = true;
+                            }
+
                             streamAccumulatedUsage = AccumulateUsage(
                                 streamAccumulatedUsage,
-                                MapUsageDetails(retryResponse.Usage));
+                                retryUsage);
 
                             return retryResponse;
                         },
@@ -2389,7 +2735,17 @@ public sealed class WizardIntelligenceProvider(
 
                 if (validationResult.IsFailure)
                 {
-                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(validationResult.Error);
+                    if (!streaming)
+                    {
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(validationResult.Error);
+                    }
+                    else
+                    {
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Error,
+                            validationResult.Error.Message,
+                            validationResult.Error.Code);
+                    }
 
                     yield break;
                 }
@@ -2423,8 +2779,9 @@ public sealed class WizardIntelligenceProvider(
                         {
                             yield return new IntelligenceEvent(
                                 IntelligenceEventType.Error,
-                                ErrorCodes.StructuredOutput.ValidationFailed + ": streamed response failed JSON schema validation after generation: "
-                                    + string.Join("; ", streamValidation.Errors));
+                                "Streamed response failed JSON schema validation after generation: "
+                                    + string.Join("; ", streamValidation.Errors),
+                                ErrorCodes.StructuredOutput.ValidationFailed);
 
                             yield break;
                         }
@@ -2438,7 +2795,8 @@ public sealed class WizardIntelligenceProvider(
                     {
                         yield return new IntelligenceEvent(
                             IntelligenceEventType.Error,
-                            ErrorCodes.StructuredOutput.SchemaInvalid + ": invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message);
+                            "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message,
+                            ErrorCodes.StructuredOutput.SchemaInvalid);
 
                         yield break;
                     }
@@ -2448,12 +2806,58 @@ public sealed class WizardIntelligenceProvider(
             }
         }
 
+        IReadOnlyList<ReasoningContentSegment> clientReasoningSegments =
+            ProjectClientReasoningSegments(
+                ephemeralReasoningSegments.Materialize(),
+                clientReasoningOutput);
+
+        string safetyInspectionText = replacementOutputPreservesContentOrder
+            ? BuildSafetyInspectionText(bufferedOutputFrames.Materialize())
+            : BuildSafetyInspectionText(finalText, clientReasoningSegments);
+
+        Result guardrailsStreamOutput = await FilterGuardrailsOutputAsync(
+            safetyInspectionText,
+            grimoireTurn.SessionId,
+            targetModel,
+            inferenceToken).ConfigureAwait(false);
+
+        if (guardrailsStreamOutput.IsFailure)
+        {
+            if (!streaming)
+            {
+                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(guardrailsStreamOutput.Error);
+            }
+
+            if (!grimoireTurn.IsFinalized)
+            {
+                await grimoireTurnWriter
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                guardrailsStreamOutput.Error.Message,
+                guardrailsStreamOutput.Error.Code);
+
+            yield break;
+        }
+
         if (streaming && bufferTokens)
         {
-            yield return new IntelligenceEvent(
-                IntelligenceEventType.Token,
-                string.Empty,
-                finalText);
+            foreach (IntelligenceEvent bufferedOutputFrame in bufferedOutputFrames.Materialize())
+            {
+                yield return bufferedOutputFrame;
+            }
+
+            if (finalText.Length > 0
+                && !bufferedOutputFrames.HasToken)
+            {
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Token,
+                    string.Empty,
+                    finalText);
+            }
         }
 
         bool finalizeOk = streaming
@@ -2483,8 +2887,6 @@ public sealed class WizardIntelligenceProvider(
                 grimoireTurn.SessionId,
                 streamAccumulatedUsage,
                 targetModel,
-                lease.Provider.Name,
-                streamAccountingLocal,
                 inferenceToken)
             .ConfigureAwait(false);
 
@@ -2521,6 +2923,7 @@ public sealed class WizardIntelligenceProvider(
                     streamFinishReason ?? "stop")
                 {
                     Warnings = streamWarnings,
+                    Reasoning = clientReasoningSegments,
                 });
 
             yield break;
@@ -2684,6 +3087,24 @@ public sealed class WizardIntelligenceProvider(
         return filtered;
     }
 
+    private static IReadOnlyList<TextReasoningContent> CollectRawReasoningContent(ChatResponse response)
+    {
+        List<TextReasoningContent> reasoningContents = [];
+
+        foreach (ChatMessage message in response.Messages)
+        {
+            foreach (AIContent content in message.Contents)
+            {
+                if (content is TextReasoningContent reasoning)
+                {
+                    reasoningContents.Add(reasoning);
+                }
+            }
+        }
+
+        return reasoningContents;
+    }
+
     private async IAsyncEnumerable<ChatResponseUpdate> EnumerateModelStreamingUpdatesAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
@@ -2841,6 +3262,7 @@ public sealed class WizardIntelligenceProvider(
         GrimoireTurnWriter.TurnHandle grimoireTurn,
         string targetModel,
         InferenceAuditContext? auditContext,
+        IReadOnlyList<TextReasoningContent>? reasoningContents,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(fcc, message);
@@ -2868,7 +3290,8 @@ public sealed class WizardIntelligenceProvider(
             chatMessages,
             fcc,
             denied.CallId,
-            denied.ResultText);
+            denied.ResultText,
+            reasoningContents);
 
         await grimoireTurnWriter.TryAppendToolInteractionAsync(
             grimoireTurn.SessionId,
@@ -2883,6 +3306,8 @@ public sealed class WizardIntelligenceProvider(
     private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
         PingRequest request,
         IChatClient chatClient,
+        string mainProvider,
+        string mainModel,
         string? spellWorkspaceRoot,
         CancellationToken cancellationToken)
     {
@@ -3011,13 +3436,18 @@ public sealed class WizardIntelligenceProvider(
 
                     routerEntities = routingResult?.Entities ?? Array.Empty<string>();
 
+                    (string routingProvider, string routingModel) = ResolveAuxiliaryAccountingIdentity(
+                        routerLease?.Provider.Name,
+                        routerLease?.ResolvedModel,
+                        mainProvider,
+                        mainModel);
+
                     await TryRecordAuxiliaryUsageAsync(
                             routingResult?.Usage,
                             BillableOperationType.Routing,
                             purpose: "routing",
-                            provider: routerLease?.Provider.Name,
-                            model: routerLease?.ResolvedModel ?? settings.Value.FastModel,
-                            cancellationToken)
+                            provider: routingProvider,
+                            model: routingModel)
                         .ConfigureAwait(false);
                 }
                 finally
@@ -3088,6 +3518,8 @@ public sealed class WizardIntelligenceProvider(
         PingRequest request,
         IReadOnlyList<string> routerEntities,
         IChatClient chatClient,
+        string mainProvider,
+        string mainModel,
         CancellationToken cancellationToken)
     {
         if (!settings.Value.Intelligence.EnableLexiconSystem)
@@ -3142,16 +3574,23 @@ public sealed class WizardIntelligenceProvider(
 
                 entities = extracted;
 
+                (string extractionProvider, string extractionModel) = ResolveAuxiliaryAccountingIdentity(
+                    extractorLease?.Provider.Name,
+                    extractorLease?.ResolvedModel,
+                    mainProvider,
+                    mainModel);
+
                 await TryRecordAuxiliaryUsageAsync(
                         extractionUsage,
                         BillableOperationType.Extraction,
                         purpose: "lexicon",
-                        provider: extractorLease?.Provider.Name,
-                        model: extractorLease?.ResolvedModel ?? settings.Value.FastModel,
-                        cancellationToken)
+                        provider: extractionProvider,
+                        model: extractionModel)
                     .ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (
+                ex is not OperationCanceledException
+                && TurnAccountingAmbient.Current?.AccountingFailed != true)
             {
                 logger.LogWarning(ex, "Lexicon entity extraction failed; continuing without Lexicon context.");
 
@@ -3914,6 +4353,11 @@ public sealed class WizardIntelligenceProvider(
 
         ApplyInferenceParameters(options, request);
 
+        ReasoningChatOptionsAdapter.Apply(
+            options,
+            request.Reasoning,
+            ResolveReasoningWireDialect(lease));
+
         ApplyClientToolMode(options, request);
 
         if (request.DisableAllTools)
@@ -3933,6 +4377,173 @@ public sealed class WizardIntelligenceProvider(
         return options;
     }
 
+    private static ReasoningWireDialect ResolveReasoningWireDialect(ChatClientLease lease) =>
+        ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
+        && modelEntry?.Reasoning is { } reasoning
+            ? reasoning.WireDialect
+            : ReasoningWireDialect.Standard;
+
+    private static ReasoningCapabilities? ResolveReasoningCapabilities(ChatClientLease lease) =>
+        ProviderResolver.TryResolveModelEntry(
+            lease.Provider,
+            lease.ResolvedModel,
+            out ModelEntry? modelEntry)
+            ? modelEntry?.Reasoning
+            : null;
+
+    private static IReadOnlyList<ReasoningContentSegment> ProjectClientReasoningSegments(
+        IReadOnlyList<ModelCallReasoningSegment> segments,
+        ReasoningOutputMode clientReasoningOutput)
+    {
+        List<ReasoningContentRun> projected = [];
+
+        foreach (ModelCallReasoningSegment segment in segments)
+        {
+            if (!TryProjectClientReasoning(
+                    segment.VisibleText,
+                    clientReasoningOutput,
+                    out ReasoningContentSegment? clientSegment))
+            {
+                continue;
+            }
+
+            if (projected.Count > 0 && projected[^1].Output == clientSegment.Output)
+            {
+                projected[^1].Append(clientSegment.Text);
+            }
+            else
+            {
+                projected.Add(new ReasoningContentRun(clientSegment));
+            }
+        }
+
+        return projected
+            .Select(static run => run.Materialize())
+            .ToArray();
+    }
+
+    private static void AppendReplacementFramesInContentOrder(
+        BufferedOutputFrameAccumulator frames,
+        ModelCallResult replacement,
+        ReasoningOutputMode clientReasoningOutput)
+    {
+        foreach (ChatMessage message in replacement.Response.Messages)
+        {
+            foreach (AIContent content in message.Contents)
+            {
+                switch (content)
+                {
+                    case TextContent { Text.Length: > 0 } text:
+                        frames.AppendToken(replacement.ModelCallId, text.Text);
+                        break;
+
+                    case TextReasoningContent reasoning
+                        when TryProjectClientReasoning(
+                            reasoning.Text ?? string.Empty,
+                            clientReasoningOutput,
+                            out ReasoningContentSegment? projected):
+                        frames.AppendReasoning(replacement.ModelCallId, projected);
+                        break;
+                }
+            }
+        }
+    }
+
+    private static bool TryProjectClientReasoning(
+        string visibleText,
+        ReasoningOutputMode clientReasoningOutput,
+        [NotNullWhen(true)] out ReasoningContentSegment? projected)
+    {
+        projected = null;
+
+        if (visibleText.Length == 0
+            || clientReasoningOutput == ReasoningOutputMode.None)
+        {
+            return false;
+        }
+
+        projected = new ReasoningContentSegment(visibleText, clientReasoningOutput);
+        return true;
+    }
+
+    private static ReasoningOutputMode ResolveClientReasoningOutput(
+        ReasoningOutputMode? requestedOutput,
+        ReasoningCapabilities? capabilities,
+        bool streaming)
+    {
+        if (capabilities?.AllowsClientOutput != true
+            || (streaming && !capabilities.SupportsStreaming))
+        {
+            return ReasoningOutputMode.None;
+        }
+
+        return requestedOutput switch
+        {
+            ReasoningOutputMode.None => ReasoningOutputMode.None,
+            ReasoningOutputMode.Summary when capabilities.SupportsSummary =>
+                ReasoningOutputMode.Summary,
+            ReasoningOutputMode.Full when capabilities.SupportsFull =>
+                ReasoningOutputMode.Full,
+            null when capabilities.SupportsFull => ReasoningOutputMode.Full,
+            null when capabilities.SupportsSummary => ReasoningOutputMode.Summary,
+            _ => ReasoningOutputMode.None,
+        };
+    }
+
+    private static string BuildSafetyInspectionText(
+        string finalText,
+        IReadOnlyList<ReasoningContentSegment> reasoning)
+    {
+        if (reasoning.Count == 0)
+        {
+            return finalText;
+        }
+
+        StringBuilder inspection = new(finalText);
+
+        foreach (ReasoningContentSegment segment in reasoning)
+        {
+            if (inspection.Length > 0)
+            {
+                _ = inspection.Append('\n');
+            }
+
+            _ = inspection.Append(segment.Text);
+        }
+
+        return inspection.ToString();
+    }
+
+    private static string BuildSafetyInspectionText(
+        IEnumerable<IntelligenceEvent> orderedFrames)
+    {
+        StringBuilder inspection = new();
+
+        foreach (IntelligenceEvent frame in orderedFrames)
+        {
+            string? text = frame.Type switch
+            {
+                IntelligenceEventType.Token => frame.Data,
+                IntelligenceEventType.Reasoning => frame.Reasoning?.Text,
+                _ => null,
+            };
+
+            if (string.IsNullOrEmpty(text))
+            {
+                continue;
+            }
+
+            if (inspection.Length > 0)
+            {
+                _ = inspection.Append('\n');
+            }
+
+            _ = inspection.Append(text);
+        }
+
+        return inspection.ToString();
+    }
+
     private Result EnsureContextBudget(
         List<MeAiChatMessage> chatMessages,
         ChatOptions chatOptions,
@@ -3940,8 +4551,11 @@ public sealed class WizardIntelligenceProvider(
         PingRequest request)
     {
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
-        int reserved = request.MaxOutputTokens
+        int requestedOutput = request.MaxOutputTokens
             ?? ArcanumSettingClamps.ReservedOutputTokens(settings.Value.Intelligence.ReservedOutputTokens);
+        int reserved = Math.Max(
+            requestedOutput,
+            request.Reasoning?.BudgetTokens ?? 0);
 
         Tokenizer tokenizer = tokenizerResolver
             .ResolveTokenizer(settings.Value.Intelligence.TokenizerEncoding);
@@ -4099,15 +4713,22 @@ public sealed class WizardIntelligenceProvider(
             return null;
         }
 
-        int prompt = ClampUsageToInt(usage.InputTokenCount ?? 0L);
+        long providerPrompt = usage.InputTokenCount ?? 0L;
+        long providerCompletion = usage.OutputTokenCount ?? 0L;
 
-        int completion = ClampUsageToInt(usage.OutputTokenCount ?? 0L);
+        int prompt = ClampUsageToInt(providerPrompt);
 
-        int total = ClampUsageToInt((long)prompt + completion);
+        int completion = ClampUsageToInt(providerCompletion);
+
+        int total = ClampUsageToInt(
+            usage.TotalTokenCount
+            ?? SaturatingAdd(prompt, completion));
 
         int cached = ReadCachedTokens(usage);
 
-        return new ChatCompletionUsage(prompt, completion, total, cached);
+        int reasoning = ClampUsageToInt(usage.ReasoningTokenCount ?? 0L);
+
+        return new ChatCompletionUsage(prompt, completion, total, cached, reasoning);
     }
 
     private static int ReadCachedTokens(UsageDetails usage)
@@ -4135,15 +4756,44 @@ public sealed class WizardIntelligenceProvider(
         return (int)value;
     }
 
+    private static long SaturatingAdd(long left, long right)
+    {
+        if (right > 0 && left > long.MaxValue - right)
+        {
+            return long.MaxValue;
+        }
+
+        if (right < 0 && left < long.MinValue - right)
+        {
+            return long.MinValue;
+        }
+
+        return left + right;
+    }
+
     private static ChatCompletionUsage AccumulateUsage(ChatCompletionUsage? running, ChatCompletionUsage? round)
     {
-        int p = (running?.PromptTokens ?? 0) + (round?.PromptTokens ?? 0);
+        int p = ClampUsageToInt(
+            (long)(running?.PromptTokens ?? 0)
+            + (round?.PromptTokens ?? 0));
 
-        int c = (running?.CompletionTokens ?? 0) + (round?.CompletionTokens ?? 0);
+        int c = ClampUsageToInt(
+            (long)(running?.CompletionTokens ?? 0)
+            + (round?.CompletionTokens ?? 0));
 
-        int cached = (running?.CachedTokens ?? 0) + (round?.CachedTokens ?? 0);
+        int total = ClampUsageToInt(
+            (long)(running?.TotalTokens ?? 0)
+            + (round?.TotalTokens ?? 0));
 
-        return new ChatCompletionUsage(p, c, p + c, cached);
+        int cached = ClampUsageToInt(
+            (long)(running?.CachedTokens ?? 0)
+            + (round?.CachedTokens ?? 0));
+
+        int reasoning = ClampUsageToInt(
+            (long)(running?.ReasoningTokens ?? 0)
+            + (round?.ReasoningTokens ?? 0));
+
+        return new ChatCompletionUsage(p, c, total, cached, reasoning);
     }
 
     /// <summary>
@@ -4188,6 +4838,14 @@ public sealed class WizardIntelligenceProvider(
                 new KeyValuePair<string, object?>("model", model),
                 new KeyValuePair<string, object?>("direction", "completion"));
 
+        }
+
+        if (usage.ReasoningTokens > 0)
+        {
+            ArcanumMetrics.ReasoningTokensTotal.Add(
+                usage.ReasoningTokens,
+                new KeyValuePair<string, object?>("provider", providerName),
+                new KeyValuePair<string, object?>("model", model));
         }
 
         // Prompt-cache metrics: only record when the provider has not explicitly disabled caching
@@ -4255,7 +4913,8 @@ public sealed class WizardIntelligenceProvider(
                 FinishReason: finishReason,
                 ClientIp: auditContext.ClientIp,
                 SpellName: spellName,
-                CampaignId: campaignId?.ToString());
+                CampaignId: campaignId?.ToString(),
+                ReasoningTokens: usage?.ReasoningTokens ?? 0);
 
             await inferenceAuditLogger.LogAsync(record, cancellationToken).ConfigureAwait(false);
 
@@ -4277,13 +4936,65 @@ public sealed class WizardIntelligenceProvider(
 
     }
 
+    internal static (string Provider, string Model) ResolveAuxiliaryAccountingIdentity(
+        string? auxiliaryProvider,
+        string? auxiliaryModel,
+        string mainProvider,
+        string mainModel) =>
+        (
+            string.IsNullOrWhiteSpace(auxiliaryProvider) ? mainProvider : auxiliaryProvider,
+            string.IsNullOrWhiteSpace(auxiliaryModel) ? mainModel : auxiliaryModel
+        );
+
+    private async Task RecordProviderCallUsageAsync(
+        TurnAccountingHandle accounting,
+        ChatCompletionUsage? usage,
+        string provider,
+        string model,
+        ModelCallPurpose callPurpose,
+        CancellationToken cancellationToken)
+    {
+        if (usage is null || !HasReportedUsage(usage))
+        {
+            return;
+        }
+
+        ModelPricingEntry pricing = settings.Value.Pricing.ResolveForModel(model);
+
+        BillableOperationType operationType = callPurpose is
+            ModelCallPurpose.StructuredOutputRetry or ModelCallPurpose.ToolCompatibilityRetry
+                ? BillableOperationType.Retry
+                : BillableOperationType.Chat;
+
+        string purpose = callPurpose switch
+        {
+            ModelCallPurpose.ToolContinuation => "tool-continuation",
+            ModelCallPurpose.StructuredOutputRetry => "structured-output-retry",
+            ModelCallPurpose.ToolCompatibilityRetry => "tool-compatibility-retry",
+            _ => "chat",
+        };
+
+        await accounting.RecordUsageAsync(
+                turnRunWriter,
+                operationType,
+                provider,
+                model,
+                purpose,
+                usage.PromptTokens,
+                usage.CompletionTokens,
+                usage.CachedTokens,
+                usage.ReasoningTokens,
+                pricing,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     private async Task TryRecordAuxiliaryUsageAsync(
         UsageDetails? usage,
         BillableOperationType operationType,
         string purpose,
         string? provider,
-        string? model,
-        CancellationToken cancellationToken)
+        string? model)
     {
         if (TurnAccountingAmbient.Current is not TurnAccountingHandle accounting)
         {
@@ -4292,94 +5003,47 @@ public sealed class WizardIntelligenceProvider(
 
         ChatCompletionUsage? mapped = MapUsageDetails(usage);
 
-        if (mapped is null || mapped.TotalTokens <= 0 || string.IsNullOrWhiteSpace(model))
+        if (mapped is null || !HasReportedUsage(mapped) || string.IsNullOrWhiteSpace(model))
         {
             return;
         }
 
-        ModelPricingEntry pricing = settings.Value.Pricing.DefaultPricing;
+        ModelPricingEntry pricing = settings.Value.Pricing.ResolveForModel(model);
 
-        if (settings.Value.Pricing.ModelPricing.TryGetValue(model, out ModelPricingEntry? explicitPricing))
-        {
-            pricing = explicitPricing;
-        }
-
-        try
-        {
-            await accounting.RecordUsageAsync(
-                    TurnAccountingAmbient.Writer ?? turnRunWriter,
-                    operationType,
-                    provider ?? "unknown",
-                    model,
-                    purpose,
-                    mapped.PromptTokens,
-                    mapped.CompletionTokens,
-                    mapped.CachedTokens,
-                    pricing,
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to record {OperationType} billable operation for model {Model}.", operationType, model);
-        }
+        await accounting.RecordUsageAsync(
+                TurnAccountingAmbient.Writer ?? turnRunWriter,
+                operationType,
+                provider ?? "unknown",
+                model,
+                purpose,
+                mapped.PromptTokens,
+                mapped.CompletionTokens,
+                mapped.CachedTokens,
+                mapped.ReasoningTokens,
+                pricing,
+                CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private async Task TryIncrementSessionTokensAsync(
         Guid? sessionId,
         ChatCompletionUsage? usage,
         string? model,
-        string? provider,
-        TurnAccountingHandle? accounting,
         CancellationToken cancellationToken)
     {
-        if (usage is null || usage.TotalTokens <= 0)
+        if (usage is null || !HasReportedUsage(usage))
         {
             return;
         }
 
-        ModelPricingEntry pricing = settings.Value.Pricing.DefaultPricing;
-
-        if (model is not null
-            && settings.Value.Pricing.ModelPricing.TryGetValue(model, out ModelPricingEntry? explicitPricing))
-        {
-            pricing = explicitPricing;
-        }
+        ModelPricingEntry pricing = settings.Value.Pricing.ResolveForModel(model);
 
         decimal costUsd = CostCalculator.CalculateCost(
             usage.PromptTokens,
             usage.CompletionTokens,
             usage.CachedTokens,
+            usage.ReasoningTokens,
             pricing);
-
-        if (accounting is not null && model is not null)
-        {
-            try
-            {
-                await accounting.RecordChatUsageAsync(
-                        turnRunWriter,
-                        provider ?? "unknown",
-                        model,
-                        usage.PromptTokens,
-                        usage.CompletionTokens,
-                        usage.CachedTokens,
-                        pricing,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to record billable operation for model {Model}.", model);
-            }
-        }
 
         if (!settings.Value.Intelligence.EnableTokenTracking || !sessionId.HasValue)
         {
@@ -4401,6 +5065,13 @@ public sealed class WizardIntelligenceProvider(
             logger.LogWarning(ex, "Grimoire could not increment token totals for session {SessionId}.", sessionId);
         }
     }
+
+    private static bool HasReportedUsage(ChatCompletionUsage usage) =>
+        usage.PromptTokens > 0
+        || usage.CompletionTokens > 0
+        || usage.TotalTokens > 0
+        || usage.CachedTokens > 0
+        || usage.ReasoningTokens > 0;
 
     /// <summary>
     /// RAG Phase 4 — enqueues Saga memory extraction for <paramref name="sessionId"/> after a
@@ -4732,7 +5403,10 @@ public sealed class WizardIntelligenceProvider(
 
     }
 
-    private readonly record struct InferenceAttemptResult(Result<PromptTurnResult> Result, bool IsConnectivityFailure);
+    private readonly record struct InferenceAttemptResult(
+        Result<PromptTurnResult> Result,
+        bool IsConnectivityFailure,
+        bool ProviderCommitted);
 
     private sealed class StreamFailureClassification
     {
@@ -4740,8 +5414,8 @@ public sealed class WizardIntelligenceProvider(
         public bool IsConnectivityFailure { get; set; }
 
         /// <summary>
-        /// True once this provider attempt has committed (text delta, actionable tool proposal,
-        /// or empty successful round). Status/SessionBound alone do not commit.
+        /// True once this provider attempt has committed (answer or reasoning content, actionable
+        /// tool proposal, or empty successful round). Status/SessionBound alone do not commit.
         /// </summary>
         public bool ProviderCommitted { get; set; }
 

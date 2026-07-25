@@ -1,5 +1,8 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.TheForge.Core.Models.Traces;
+using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
+using System.Text.Json;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -59,6 +62,50 @@ public class InferenceTraceViewModelTests
 
         Assert.Contains("Test", trace.StatusText, StringComparison.OrdinalIgnoreCase);
 
+    }
+
+    [Fact]
+    public void Reasoning_capture_and_export_retain_event_metadata_but_redact_body()
+    {
+        const string sensitive = "sensitive client-safe reasoning body";
+        InferenceTraceViewModel trace = new();
+        trace.BeginCapture("session", Guid.NewGuid().ToString("D"));
+
+        trace.Capture(new IntelligenceEvent(
+            IntelligenceEventType.Reasoning,
+            sensitive,
+            sensitive,
+            Usage: new ChatCompletionUsage(
+                PromptTokens: 11,
+                CompletionTokens: 13,
+                TotalTokens: 24,
+                CachedTokens: 3,
+                ReasoningTokens: 7),
+            Reasoning: new RetroDownfall.Arcanum.Core.Intelligence.ReasoningContentSegment(
+                sensitive,
+                RetroDownfall.Arcanum.Core.Intelligence.ReasoningOutputMode.Summary)));
+
+        InferenceTraceEntryViewModel entry = Assert.Single(trace.Entries);
+        Assert.Equal(nameof(IntelligenceEventType.Reasoning), entry.Type);
+        Assert.DoesNotContain(sensitive, entry.DisplayLine, StringComparison.Ordinal);
+        Assert.DoesNotContain(sensitive, entry.Message, StringComparison.Ordinal);
+        Assert.Null(entry.Data);
+        Assert.Equal("Summary", entry.ReasoningOutputMode);
+        Assert.Equal(7, entry.ReasoningTokens);
+
+        string json = trace.BuildExportJson();
+        Assert.Contains(nameof(IntelligenceEventType.Reasoning), json, StringComparison.Ordinal);
+        Assert.Contains("\"reasoningOutputMode\":\"Summary\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"reasoningTokens\":7", json, StringComparison.Ordinal);
+        Assert.DoesNotContain(sensitive, json, StringComparison.Ordinal);
+
+        InferenceTraceRecord? exported = JsonSerializer.Deserialize(
+            json,
+            TheForgeInferenceTracesJsonContext.Default.InferenceTraceRecord);
+        InferenceTraceEventRecord exportedReasoning = Assert.Single(exported!.Events);
+        Assert.Equal("Summary", exportedReasoning.ReasoningOutputMode);
+        Assert.Equal(7, exportedReasoning.ReasoningTokens);
+        Assert.Null(exportedReasoning.Data);
     }
 
 }

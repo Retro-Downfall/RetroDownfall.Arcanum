@@ -182,6 +182,66 @@ public sealed class SessionLogBufferTests
             buffer.Snapshot(),
             static e => SessionLogBuffer.IsEphemeralGeneratingStatus(e.Text));
     }
+
+    [Fact]
+    public void Reasoning_entry_is_distinct_in_memory_and_can_precede_streaming_answer()
+    {
+        SessionLogBuffer buffer = new(maxAssistantChars: 256);
+        buffer.Append(SessionLogEntryKind.User, "question");
+        SessionLogEntry assistant = buffer.Append(
+            SessionLogEntryKind.Assistant,
+            string.Empty,
+            streaming: true);
+
+        SessionLogEntry reasoning = buffer.InsertBefore(
+            assistant,
+            SessionLogEntryKind.Reasoning,
+            "thinking",
+            streaming: true);
+        buffer.UpdateStreaming(reasoning, "thinking more");
+        buffer.CompleteStreaming(reasoning);
+        buffer.CompleteStreaming(assistant, "answer");
+
+        IReadOnlyList<SessionLogEntry> snapshot = buffer.Snapshot();
+        Assert.Equal(
+            [
+                SessionLogEntryKind.User,
+                SessionLogEntryKind.Reasoning,
+                SessionLogEntryKind.Assistant,
+            ],
+            snapshot.Select(static entry => entry.Kind));
+        Assert.False(reasoning.Streaming);
+        Assert.Equal("answer", assistant.Text);
+
+        ObservableCollection<string> lines = [];
+        buffer.CopyLinesTo(lines, wrapWidth: 80);
+        string rendered = string.Join('\n', lines);
+        Assert.Contains("Reasoning (ephemeral):", rendered, StringComparison.Ordinal);
+        Assert.Contains("thinking more", rendered, StringComparison.Ordinal);
+        Assert.Contains("Mage: answer", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReplaceWithHistory_drops_reasoning_entries()
+    {
+        SessionLogBuffer buffer = new();
+
+        buffer.ReplaceWithHistory(
+            [
+                (SessionLogEntryKind.User, "question"),
+                (SessionLogEntryKind.Reasoning, "must remain ephemeral"),
+                (SessionLogEntryKind.Assistant, "answer"),
+            ],
+            showOlderMessagesMarker: false);
+
+        Assert.DoesNotContain(
+            buffer.Snapshot(),
+            static entry => entry.Kind == SessionLogEntryKind.Reasoning);
+        Assert.DoesNotContain(
+            "must remain ephemeral",
+            buffer.RenderPlainText(),
+            StringComparison.Ordinal);
+    }
 }
 
 public sealed class SessionIdLineParserTests

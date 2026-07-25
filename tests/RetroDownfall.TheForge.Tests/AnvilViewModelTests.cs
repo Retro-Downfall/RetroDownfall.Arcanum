@@ -90,22 +90,28 @@ public class AnvilViewModelTests
     }
 
     [Fact]
-    public void ConnectionState_UpdatesStatusText()
+    public void ConnectionState_InitializesStatusText()
     {
 
-        FakeArcanumConnection connection = new();
+        using AnvilViewModel disconnected = Create(
+            new FakeArcanumConnection(),
+            new FakeAnvilDataSource(),
+            new NavigationService());
 
-        AnvilViewModel viewModel = Create(connection, new FakeAnvilDataSource(), new NavigationService());
+        Assert.Equal("Arcanum disconnected", disconnected.ConnectionStatusText);
 
-        Assert.Equal("Arcanum disconnected", viewModel.ConnectionStatusText);
+        FakeArcanumConnection connectedState = new();
 
-        connection.SetState(ConnectionState.Connected);
+        connectedState.SetState(ConnectionState.Connected);
 
-        Assert.Equal(ConnectionState.Connected, viewModel.ConnectionState);
+        using AnvilViewModel connected = Create(
+            connectedState,
+            new FakeAnvilDataSource(),
+            new NavigationService());
 
-        Assert.Equal("Arcanum connected", viewModel.ConnectionStatusText);
+        Assert.Equal(ConnectionState.Connected, connected.ConnectionState);
 
-        viewModel.Dispose();
+        Assert.Equal("Arcanum connected", connected.ConnectionStatusText);
 
     }
 
@@ -113,37 +119,15 @@ public class AnvilViewModelTests
     public void ConnectionStatusText_MapsDistinctErrorCodes()
     {
 
-        FakeArcanumConnection connection = new();
+        AssertConnectionStatus("Security.MissingApiKey", "API key required", showEnterApiKey: true);
 
-        AnvilViewModel viewModel = Create(connection, new FakeAnvilDataSource(), new NavigationService());
+        AssertConnectionStatus("Auth.Unauthorized", "API key rejected", showEnterApiKey: true);
 
-        connection.SetError("Security.MissingApiKey");
+        AssertConnectionStatus("Connection.Timeout", "Arcanum timed out", showEnterApiKey: false);
 
-        Assert.Equal("API key required", viewModel.ConnectionStatusText);
+        AssertConnectionStatus("Connection.Failed", "Arcanum connection failed", showEnterApiKey: false);
 
-        Assert.True(viewModel.ShowEnterApiKey);
-
-        connection.SetError("Auth.Unauthorized");
-
-        Assert.Equal("API key rejected", viewModel.ConnectionStatusText);
-
-        Assert.True(viewModel.ShowEnterApiKey);
-
-        connection.SetError("Connection.Timeout");
-
-        Assert.Equal("Arcanum timed out", viewModel.ConnectionStatusText);
-
-        Assert.False(viewModel.ShowEnterApiKey);
-
-        connection.SetError("Connection.Failed");
-
-        Assert.Equal("Arcanum connection failed", viewModel.ConnectionStatusText);
-
-        connection.SetError("Http.503");
-
-        Assert.Equal("Arcanum unreachable", viewModel.ConnectionStatusText);
-
-        viewModel.Dispose();
+        AssertConnectionStatus("Http.503", "Arcanum unreachable", showEnterApiKey: false);
 
     }
 
@@ -153,9 +137,12 @@ public class AnvilViewModelTests
 
         FakeArcanumConnection connection = new();
 
-        AnvilViewModel viewModel = Create(connection, new FakeAnvilDataSource(), new NavigationService());
-
         connection.SetConnectingWithError("Security.MissingApiKey");
+
+        using AnvilViewModel viewModel = Create(
+            connection,
+            new FakeAnvilDataSource(),
+            new NavigationService());
 
         Assert.Equal(ConnectionState.Connecting, viewModel.ConnectionState);
 
@@ -163,7 +150,26 @@ public class AnvilViewModelTests
 
         Assert.True(viewModel.ShowEnterApiKey);
 
-        viewModel.Dispose();
+    }
+
+    private static void AssertConnectionStatus(
+        string errorCode,
+        string expectedText,
+        bool showEnterApiKey)
+    {
+
+        FakeArcanumConnection connection = new();
+
+        connection.SetError(errorCode);
+
+        using AnvilViewModel viewModel = Create(
+            connection,
+            new FakeAnvilDataSource(),
+            new NavigationService());
+
+        Assert.Equal(expectedText, viewModel.ConnectionStatusText);
+
+        Assert.Equal(showEnterApiKey, viewModel.ShowEnterApiKey);
 
     }
 

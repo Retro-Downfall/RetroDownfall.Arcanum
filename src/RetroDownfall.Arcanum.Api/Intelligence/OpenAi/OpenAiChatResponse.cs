@@ -12,6 +12,8 @@ public sealed record OpenAiChatResponse(
     [property: JsonPropertyName("created")] long Created,
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("choices")] List<OpenAiChatChoice> Choices,
-    [property: JsonPropertyName("usage")] ChatCompletionUsage? Usage,
+    [property: JsonPropertyName("usage")]
+    [property: JsonConverter(typeof(OpenAiChatUsageJsonConverter))]
+    ChatCompletionUsage? Usage,
     [property: JsonPropertyName("system_fingerprint")] string? SystemFingerprint = null,
     [property: JsonPropertyName("service_tier")] string? ServiceTier = null);

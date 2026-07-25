@@ -31,6 +31,15 @@ public static class ArcanumMetrics
     public static readonly Counter<long> InferenceTokensTotal = Meter.CreateCounter<long>(
         "arcanum_inference_tokens_total", "{tokens}", "Total tokens consumed");
 
+    /// <summary>
+    /// Total reasoning tokens reported by providers. Reasoning is already included in completion
+    /// tokens; this dedicated counter is observational only. Labels: <c>provider</c>, <c>model</c>.
+    /// </summary>
+    public static readonly Counter<long> ReasoningTokensTotal = Meter.CreateCounter<long>(
+        "arcanum_inference_reasoning_tokens_total",
+        "{tokens}",
+        "Reasoning tokens reported by inference providers");
+
     /// <summary>Total tool invocations. Labels: <c>tool_name</c>, <c>outcome</c> (<c>success</c> | <c>denied</c> | <c>error</c>).</summary>
     public static readonly Counter<long> ToolInvocationsTotal = Meter.CreateCounter<long>(
         "arcanum_tool_invocations_total", description: "Total tool invocations");

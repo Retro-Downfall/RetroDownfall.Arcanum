@@ -296,6 +296,27 @@ public sealed class StreamingUiCoalescerTests
     }
 
     [Fact]
+    public async Task Snapshot_callback_runs_only_when_a_refresh_is_flushed()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
+        int snapshots = 0;
+        await using StreamingUiCoalescer coalescer = new(
+            channel.Writer,
+            flushInterval: TimeSpan.FromMilliseconds(50),
+            utcNow: () => now,
+            beforeFlush: () => snapshots++);
+
+        await coalescer.NoteTokenAsync("a");
+        await coalescer.NoteTokenAsync("b");
+        Assert.Equal(0, snapshots);
+
+        await coalescer.FlushFinalAsync();
+        Assert.Equal(1, snapshots);
+        Assert.Equal(1, coalescer.FlushCount);
+    }
+
+    [Fact]
     public async Task NoteToken_with_newline_flushes_immediately()
     {
         Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();

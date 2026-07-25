@@ -39,4 +39,5 @@ public sealed record SettingDescriptor(
     Type? EnumType = null,
     string Placeholder = "",
     string? ClampName = null,
-    string? Group = null);
+    string? Group = null,
+    bool AllowUnset = false);

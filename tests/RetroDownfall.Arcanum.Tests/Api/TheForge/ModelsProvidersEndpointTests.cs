@@ -74,7 +74,7 @@ public sealed class ModelsProvidersEndpointTests
     }
 
     [SkippableFact]
-    public async Task GetModels_ReportsSupportsVisionFromModelEntry()
+    public async Task GetModels_ReportsCapabilitiesFromModelEntry()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -84,7 +84,24 @@ public sealed class ModelsProvidersEndpointTests
             Name = "vision-provider",
             Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1",
-            Models = [new ModelEntry("vision-model", SupportsVision: true), new ModelEntry("text-model")],
+            Models =
+            [
+                new ModelEntry("vision-model", SupportsVision: true)
+                {
+                    Reasoning = new ReasoningCapabilities
+                    {
+                        ControlSupport = ReasoningControlSupport.EffortAndBudget,
+                        SupportsSummary = true,
+                        SupportsFull = true,
+                        SupportsStreaming = true,
+                        ReportsReasoningTokens = true,
+                        AllowsClientOutput = true,
+                        WireDialect = ReasoningWireDialect.OpenRouter,
+                        MaxBudgetTokens = 65_536,
+                    },
+                },
+                new ModelEntry("text-model"),
+            ],
         };
 
         await using ArcanumWebApplicationFactory isolatedFactory = new();
@@ -144,6 +161,20 @@ public sealed class ModelsProvidersEndpointTests
         Assert.True(body!.Data!.Single(m => m.Model == "vision-model").SupportsVision);
 
         Assert.False(body.Data!.Single(m => m.Model == "text-model").SupportsVision);
+
+        ModelInfoDto reasoner = body.Data!.Single(m => m.Model == "vision-model");
+
+        Assert.NotNull(reasoner.Reasoning);
+        Assert.Equal(ReasoningControlSupport.EffortAndBudget, reasoner.Reasoning!.ControlSupport);
+        Assert.True(reasoner.Reasoning.SupportsSummary);
+        Assert.True(reasoner.Reasoning.SupportsFull);
+        Assert.True(reasoner.Reasoning.SupportsStreaming);
+        Assert.True(reasoner.Reasoning.ReportsReasoningTokens);
+        Assert.True(reasoner.Reasoning.AllowsClientOutput);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, reasoner.Reasoning.WireDialect);
+        Assert.Equal(65_536, reasoner.Reasoning.MaxBudgetTokens);
+
+        Assert.Null(body.Data!.Single(m => m.Model == "text-model").Reasoning);
 
     }
 

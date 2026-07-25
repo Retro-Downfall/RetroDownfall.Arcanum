@@ -19,7 +19,11 @@ internal static class ProviderAttemptCommitTracker
 {
 
     public static bool CommitsProviderAttempt(ModelCallUpdate update) =>
-        update is ModelCallTextDelta { Text.Length: > 0 };
+        update is ModelCallTextDelta { Text.Length: > 0 }
+            or ModelCallReasoningUpdate;
+
+    public static bool CommitsProviderAttempt(ModelCallReasoningResult reasoning) =>
+        reasoning.HasProviderContent;
 
     public static bool CommitsOnCompleteToolProposal(bool hasActionableToolCalls) => hasActionableToolCalls;
 

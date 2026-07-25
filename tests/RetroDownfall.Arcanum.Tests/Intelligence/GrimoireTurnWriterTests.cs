@@ -409,16 +409,273 @@ public sealed class GrimoireTurnWriterTests
 
     }
 
+    [Fact]
+    public async Task ResolveInterruptedAsync_MissingEntry_IsNoOp()
+    {
+        TrackingGrimoireRepository grimoire = new();
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+
+        await writer.ResolveInterruptedAsync(
+            new GrimoireTurnWriter.TurnHandle(),
+            "partial",
+            CancellationToken.None);
+
+        Assert.Equal(0, grimoire.FinalizeCallCount);
+        Assert.Equal(0, grimoire.DiscardCallCount);
+    }
+
+    [Fact]
+    public async Task ResolveInterruptedAsync_PersistenceFailure_IsLoggedAndSwallowed()
+    {
+        TrackingGrimoireRepository grimoire = new() { FinalizeThrows = true };
+        CapturingLogger logger = new();
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+            AssistantEntryId = Guid.NewGuid(),
+        };
+
+        await writer.ResolveInterruptedAsync(handle, "partial", CancellationToken.None);
+
+        Assert.Equal(1, grimoire.FinalizeCallCount);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Exception is InvalidOperationException
+                && entry.Message.Contains("resolve interrupted", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ResolveInterruptedAsync_Cancellation_IsRethrown()
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            FinalizeException = new OperationCanceledException("cancelled"),
+        };
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+            AssistantEntryId = Guid.NewGuid(),
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => writer.ResolveInterruptedAsync(handle, "partial", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ResolveInterruptedAndMarkFinalizedAsync_AlreadyFinalized_IsNoOp()
+    {
+        TrackingGrimoireRepository grimoire = new();
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+            AssistantEntryId = Guid.NewGuid(),
+            IsFinalized = true,
+        };
+
+        await writer.ResolveInterruptedAndMarkFinalizedAsync(
+            handle,
+            "ignored",
+            CancellationToken.None);
+
+        Assert.Equal(0, grimoire.FinalizeCallCount);
+        Assert.Equal(0, grimoire.DiscardCallCount);
+    }
+
+    [Fact]
+    public async Task TryResolveInterruptedOnStreamExitAsync_UnexpectedCancellation_IsLogged()
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            DiscardException = new OperationCanceledException("unexpected cleanup cancellation"),
+        };
+        CapturingLogger logger = new();
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+            AssistantEntryId = Guid.NewGuid(),
+        };
+
+        await writer.TryResolveInterruptedOnStreamExitAsync(handle, streamedContent: null);
+
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Exception is OperationCanceledException
+                && entry.Message.Contains("during cleanup", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task TryAppendToolInteractionAsync_PersistsAndPublishesSavedEntries()
+    {
+        Guid sessionId = Guid.NewGuid();
+        Guid entryId = Guid.NewGuid();
+        DateTimeOffset createdAt = DateTimeOffset.UnixEpoch.AddMinutes(1);
+        TrackingGrimoireRepository grimoire = new()
+        {
+            RecentEntries =
+            [
+                new GrimoireEntryDto(
+                    entryId,
+                    MessageRole.Tool,
+                    "result",
+                    "test-model",
+                    createdAt),
+            ],
+        };
+        SessionEventHub hub = CreateHub();
+        GrimoireTurnWriter writer = CreateWriter(
+            grimoire,
+            NullLogger<GrimoireTurnWriter>.Instance,
+            hub);
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        Task<Entry?> publishedTask = ReadOneAsync(hub, sessionId, timeout.Token);
+
+        await writer.TryAppendToolInteractionAsync(
+            sessionId,
+            "lookup",
+            """{"id":1}""",
+            "result",
+            "test-model",
+            CancellationToken.None);
+
+        Entry published = Assert.IsType<Entry>(await publishedTask);
+        Assert.Equal(1, grimoire.AppendCallCount);
+        Assert.Equal(entryId, published.Id);
+        Assert.Equal(sessionId, published.SessionId);
+        Assert.Equal(MessageRole.Tool, published.Role);
+        Assert.Equal("result", published.Content);
+        Assert.Equal("test-model", published.ModelUsed);
+        Assert.Equal(createdAt, published.CreatedAt);
+    }
+
+    [Fact]
+    public async Task TryAppendToolInteractionAsync_PersistenceFailure_IsLoggedAndSwallowed()
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            AppendException = new InvalidOperationException("append failed"),
+        };
+        CapturingLogger logger = new();
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+
+        await writer.TryAppendToolInteractionAsync(
+            Guid.NewGuid(),
+            "lookup",
+            "{}",
+            "result",
+            "model",
+            CancellationToken.None);
+
+        Assert.Equal(1, grimoire.AppendCallCount);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Exception is InvalidOperationException
+                && entry.Message.Contains("could not append", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task TryAppendToolInteractionAsync_Cancellation_IsRethrown()
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            AppendException = new OperationCanceledException("append cancelled"),
+        };
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            writer.TryAppendToolInteractionAsync(
+                Guid.NewGuid(),
+                "lookup",
+                "{}",
+                "result",
+                "model",
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TryBeginBufferedAssistantReplyAsync_PublishFailure_PreservesHandleAndLogs()
+    {
+        Guid sessionId = Guid.NewGuid();
+        TrackingGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            RecentEntriesException = new InvalidOperationException("read failed"),
+        };
+        CapturingLogger logger = new();
+        GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+
+        GrimoireTurnWriter.TurnHandle handle = await writer.TryBeginBufferedAssistantReplyAsync(
+            new PingRequest("hello", SessionId: sessionId),
+            "hello",
+            "test-model",
+            CancellationToken.None);
+
+        Assert.Equal(sessionId, handle.SessionId);
+        Assert.NotNull(handle.AssistantEntryId);
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Exception is InvalidOperationException
+                && entry.Message.Contains("could not publish begin", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task TryFinalizeBufferedAssistantEntryAsync_Cancellation_IsRethrown()
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            FinalizeException = new OperationCanceledException("finalize cancelled"),
+        };
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+            AssistantEntryId = Guid.NewGuid(),
+            SessionId = Guid.NewGuid(),
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            writer.TryFinalizeBufferedAssistantEntryAsync(
+                handle,
+                "done",
+                "test-model",
+                CancellationToken.None));
+
+        Assert.False(handle.IsFinalized);
+        Assert.Equal(0, grimoire.DiscardCallCount);
+    }
+
     private static GrimoireTurnWriter CreateWriter(IGrimoireRepository grimoire) =>
         CreateWriter(grimoire, NullLogger<GrimoireTurnWriter>.Instance);
 
     private static GrimoireTurnWriter CreateWriter(
         IGrimoireRepository grimoire,
         ILogger<GrimoireTurnWriter> logger) =>
+        CreateWriter(grimoire, logger, CreateHub());
+
+    private static GrimoireTurnWriter CreateWriter(
+        IGrimoireRepository grimoire,
+        ILogger<GrimoireTurnWriter> logger,
+        SessionEventHub hub) =>
         new(
             grimoire,
-            new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SessionEventHub>.Instance),
+            hub,
             logger);
+
+    private static SessionEventHub CreateHub() =>
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLogger<SessionEventHub>.Instance);
+
+    private static async Task<Entry?> ReadOneAsync(
+        SessionEventHub hub,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await foreach (Entry entry in hub.SubscribeAsync(sessionId, cancellationToken))
+        {
+            return entry;
+        }
+
+        return null;
+    }
 
     private sealed class CapturingLogger : ILogger<GrimoireTurnWriter>
     {
@@ -476,6 +733,8 @@ public sealed class GrimoireTurnWriterTests
 
         public int DiscardCallCount { get; private set; }
 
+        public int AppendCallCount { get; private set; }
+
         public int RecentEntriesPublishCount { get; private set; }
 
         public int EntryByIdPublishCount { get; private set; }
@@ -488,7 +747,17 @@ public sealed class GrimoireTurnWriterTests
 
         public bool FinalizeThrows { get; init; }
 
+        public Exception? FinalizeException { get; init; }
+
         public bool DiscardThrows { get; init; }
+
+        public Exception? DiscardException { get; init; }
+
+        public Exception? AppendException { get; init; }
+
+        public Exception? RecentEntriesException { get; init; }
+
+        public List<GrimoireEntryDto>? RecentEntries { get; init; }
 
         public bool EntryByIdThrows { get; init; }
 
@@ -528,6 +797,13 @@ public sealed class GrimoireTurnWriterTests
 
             FinalizeCallCount++;
 
+            if (FinalizeException is not null)
+            {
+
+                throw FinalizeException;
+
+            }
+
             if (FinalizeThrows)
             {
 
@@ -546,6 +822,13 @@ public sealed class GrimoireTurnWriterTests
 
             LastDiscardToken = cancellationToken;
 
+            if (DiscardException is not null)
+            {
+
+                throw DiscardException;
+
+            }
+
             if (DiscardThrows)
             {
 
@@ -563,8 +846,21 @@ public sealed class GrimoireTurnWriterTests
             string arguments,
             string result,
             string modelUsed,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+
+            AppendCallCount++;
+
+            if (AppendException is not null)
+            {
+
+                throw AppendException;
+
+            }
+
+            return Task.CompletedTask;
+
+        }
 
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -580,7 +876,14 @@ public sealed class GrimoireTurnWriterTests
 
             RecentEntriesPublishCount++;
 
-            return Task.FromResult<List<GrimoireEntryDto>?>(null);
+            if (RecentEntriesException is not null)
+            {
+
+                throw RecentEntriesException;
+
+            }
+
+            return Task.FromResult(RecentEntries);
 
         }
 

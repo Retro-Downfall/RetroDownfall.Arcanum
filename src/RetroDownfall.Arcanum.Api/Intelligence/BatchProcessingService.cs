@@ -41,6 +41,11 @@ internal sealed class BatchProcessingService(
 
     private readonly ConcurrentDictionary<Guid, byte> _expiryRequested = new();
 
+    private sealed record PreparedBatchRequestLine(
+        int Line,
+        BatchJsonlRequestLine? Request,
+        string? ParseError);
+
     // Best-effort early-rejection guard, not a correctness guarantee — there is a race window between
     // this check and the status reset. The real double-processing guard is the worker's
     // _inFlight.TryAdd(batch.Id, 0) before processing (BatchProcessingService.cs:131), which prevents
@@ -452,7 +457,7 @@ internal sealed class BatchProcessingService(
 
             {
 
-                List<(int Line, string Text)> requestLines = await CollectRequestLinesAsync(
+                List<PreparedBatchRequestLine> requestLines = await CollectRequestLinesAsync(
                     inputPath,
                     maxRequests,
                     stoppingToken).ConfigureAwait(false);
@@ -466,7 +471,13 @@ internal sealed class BatchProcessingService(
                         turnRunWriter,
                         budgetReservations,
                         settings.Pricing ?? new PricingSettings(),
-                        requestLines.Count,
+                        requestLines
+                            .Where(static line => line.Request?.Body is not null)
+                            .Select(static line => new BatchReservationLine(
+                                line.Request!.Body.Model,
+                                line.Request.Body.MaxCompletionTokens ?? line.Request.Body.MaxTokens,
+                                line.Request.Body.ReasoningBudget))
+                            .ToArray(),
                         requestId: $"batch-{batch.Id:N}",
                         stoppingToken)
                     .ConfigureAwait(false);
@@ -491,52 +502,47 @@ internal sealed class BatchProcessingService(
                 }
 
                 TurnAccountingHandle batchAccounting = batchAccountingBegin.Value;
-                TurnAccountingHandle? previousAmbient = TurnAccountingAmbient.Current;
-                ITurnRunWriter? previousAmbientWriter = TurnAccountingAmbient.Writer;
-                TurnAccountingAmbient.Publish(batchAccounting, turnRunWriter);
-
                 InferenceRunStatus batchRunStatus = InferenceRunStatus.Completed;
 
                 try
                 {
-                    await using BatchJsonlWriters writers = BatchJsonlWriters.Create(outputTempPath, errorTempPath);
-
-                    cancelledMidway = await RunRequestLinesAsync(
-                        requestLines,
-                        maxConcurrentRequests,
-                        batch.Id,
-                        batches,
-                        intelligence,
-                        settings,
-                        writers,
-                        stoppingToken).ConfigureAwait(false);
-
-                    outputLineCount = writers.OutputLineCount;
-
-                    errorLineCount = writers.ErrorLineCount;
-
-                    if (cancelledMidway)
+                    using (TurnAccountingAmbient.Push(batchAccounting, turnRunWriter))
                     {
-                        batchRunStatus = InferenceRunStatus.Abandoned;
-                    }
-                }
-                catch
-                {
-                    batchRunStatus = InferenceRunStatus.Failed;
+                        try
+                        {
+                            await using BatchJsonlWriters writers = BatchJsonlWriters.Create(outputTempPath, errorTempPath);
 
-                    throw;
+                            cancelledMidway = await RunRequestLinesAsync(
+                                requestLines,
+                                maxConcurrentRequests,
+                                batch.Id,
+                                batches,
+                                intelligence,
+                                settings,
+                                writers,
+                                batchAccounting,
+                                turnRunWriter,
+                                stoppingToken).ConfigureAwait(false);
+
+                            outputLineCount = writers.OutputLineCount;
+
+                            errorLineCount = writers.ErrorLineCount;
+
+                            if (cancelledMidway)
+                            {
+                                batchRunStatus = InferenceRunStatus.Abandoned;
+                            }
+                        }
+                        catch
+                        {
+                            batchRunStatus = InferenceRunStatus.Failed;
+
+                            throw;
+                        }
+                    }
                 }
                 finally
                 {
-                    if (previousAmbient is null)
-                    {
-                        TurnAccountingAmbient.Clear();
-                    }
-                    else
-                    {
-                        TurnAccountingAmbient.Publish(previousAmbient, previousAmbientWriter);
-                    }
-
                     try
                     {
                         await batchAccounting.CompleteAsync(
@@ -607,17 +613,30 @@ internal sealed class BatchProcessingService(
     /// Materializes non-empty JSONL request lines up to <paramref name="maxRequests"/> so the
     /// batch can reserve budget once for the full line count.
     /// </summary>
-    private static async Task<List<(int Line, string Text)>> CollectRequestLinesAsync(
+    private static async Task<List<PreparedBatchRequestLine>> CollectRequestLinesAsync(
         string inputPath,
         int maxRequests,
         CancellationToken cancellationToken)
     {
-        List<(int Line, string Text)> lines = [];
+        List<PreparedBatchRequestLine> lines = [];
 
         await foreach ((int Line, string Text) item in EnumerateRequestLinesAsync(inputPath, maxRequests, cancellationToken)
             .ConfigureAwait(false))
         {
-            lines.Add(item);
+            try
+            {
+                BatchJsonlRequestLine? request = JsonSerializer.Deserialize(
+                    item.Text,
+                    ArcanumJsonContext.Default.BatchJsonlRequestLine);
+
+                lines.Add(request?.Body is null
+                    ? new PreparedBatchRequestLine(item.Line, request, "Line did not contain a 'body' object.")
+                    : new PreparedBatchRequestLine(item.Line, request, ParseError: null));
+            }
+            catch (JsonException ex)
+            {
+                lines.Add(new PreparedBatchRequestLine(item.Line, Request: null, ex.Message));
+            }
         }
 
         return lines;
@@ -687,13 +706,15 @@ internal sealed class BatchProcessingService(
     /// <see langword="true"/> when a mid-batch cancellation was observed.
     /// </summary>
     private async Task<bool> RunRequestLinesAsync(
-        IReadOnlyList<(int Line, string Text)> requestLines,
+        IReadOnlyList<PreparedBatchRequestLine> requestLines,
         int maxConcurrentRequests,
         Guid batchId,
         IBatchRepository batches,
         IArcanumIntelligenceProvider intelligence,
         ArcanumSettings settings,
         BatchJsonlWriters writers,
+        TurnAccountingHandle batchAccounting,
+        ITurnRunWriter? turnRunWriter,
         CancellationToken stoppingToken)
     {
 
@@ -711,8 +732,11 @@ internal sealed class BatchProcessingService(
                 new ParallelOptions { MaxDegreeOfParallelism = maxConcurrentRequests, CancellationToken = linkedCts.Token },
                 async (item, ct) =>
                 {
-
-                    await ProcessRequestLineAsync(item.Line, item.Text, intelligence, settings, writers, ct).ConfigureAwait(false);
+                    TurnAccountingHandle lineAccounting = batchAccounting.CreateNestedOperationHandle();
+                    using (TurnAccountingAmbient.Push(lineAccounting, turnRunWriter))
+                    {
+                        await ProcessRequestLineAsync(item, intelligence, settings, writers, ct).ConfigureAwait(false);
+                    }
 
                 }).ConfigureAwait(false);
 
@@ -779,39 +803,21 @@ internal sealed class BatchProcessingService(
     }
 
     private static async Task ProcessRequestLineAsync(
-        int lineNumber,
-        string rawLine,
+        PreparedBatchRequestLine prepared,
         IArcanumIntelligenceProvider intelligence,
         ArcanumSettings settings,
         BatchJsonlWriters writers,
         CancellationToken cancellationToken)
     {
 
-        BatchJsonlRequestLine? requestLine;
-
-        try
-        {
-
-            requestLine = JsonSerializer.Deserialize(rawLine, ArcanumJsonContext.Default.BatchJsonlRequestLine);
-
-        }
-        catch (JsonException ex)
-        {
-
-            await writers.WriteErrorLineAsync(
-                JsonSerializer.Serialize(new BatchJsonlParseError(lineNumber, ex.Message), ArcanumJsonContext.Default.BatchJsonlParseError),
-                cancellationToken).ConfigureAwait(false);
-
-            return;
-
-        }
-
-        if (requestLine is null || requestLine.Body is null)
+        if (prepared.ParseError is not null || prepared.Request?.Body is null)
         {
 
             await writers.WriteErrorLineAsync(
                 JsonSerializer.Serialize(
-                    new BatchJsonlParseError(lineNumber, "Line did not contain a 'body' object."),
+                    new BatchJsonlParseError(
+                        prepared.Line,
+                        prepared.ParseError ?? "Line did not contain a 'body' object."),
                     ArcanumJsonContext.Default.BatchJsonlParseError),
                 cancellationToken).ConfigureAwait(false);
 
@@ -819,7 +825,8 @@ internal sealed class BatchProcessingService(
 
         }
 
-        string customId = string.IsNullOrWhiteSpace(requestLine.CustomId) ? $"line-{lineNumber}" : requestLine.CustomId;
+        BatchJsonlRequestLine requestLine = prepared.Request;
+        string customId = string.IsNullOrWhiteSpace(requestLine.CustomId) ? $"line-{prepared.Line}" : requestLine.CustomId;
 
         Result<OpenAiChatResponse> result = await OpenAiV1Endpoints
             .ExecuteChatRequestForBatchAsync(requestLine.Body, intelligence, settings, cancellationToken)

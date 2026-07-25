@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -22,7 +23,10 @@ internal static class CliTestHarness
     public static CliTestResult Run(IServiceCollection services, params string[] args) =>
         RunAsync(services, args).GetAwaiter().GetResult();
 
-    public static async Task<CliTestResult> RunAsync(IServiceCollection services, string[] args)
+    public static async Task<CliTestResult> RunAsync(
+        IServiceCollection services,
+        string[] args,
+        string? input = null)
     {
 
         ServiceProvider provider = services.BuildServiceProvider();
@@ -31,6 +35,10 @@ internal static class CliTestHarness
 
         TextWriter originalError = Console.Error;
 
+        TextReader originalIn = Console.In;
+
+        IAnsiConsole originalAnsiConsole = AnsiConsole.Console;
+
         StringWriter outWriter = new();
 
         StringWriter errorWriter = new();
@@ -38,6 +46,16 @@ internal static class CliTestHarness
         Console.SetOut(outWriter);
 
         Console.SetError(errorWriter);
+        if (input is not null)
+        {
+            Console.SetIn(new StringReader(input));
+        }
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(outWriter),
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+        });
 
         try
         {
@@ -50,6 +68,8 @@ internal static class CliTestHarness
             Console.SetOut(originalOut);
 
             Console.SetError(originalError);
+            Console.SetIn(originalIn);
+            AnsiConsole.Console = originalAnsiConsole;
 
             provider.Dispose();
         }

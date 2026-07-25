@@ -66,9 +66,13 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         string path = _workspace.WriteFile("cached/CODEX.md", "cached text");
 
+        DateTime initialLastWriteTimeUtc = File.GetLastWriteTimeUtc(path);
+
         string? first = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
 
         File.WriteAllText(path, "mutated text");
+
+        File.SetLastWriteTimeUtc(path, initialLastWriteTimeUtc.AddSeconds(1));
 
         string? second = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
 

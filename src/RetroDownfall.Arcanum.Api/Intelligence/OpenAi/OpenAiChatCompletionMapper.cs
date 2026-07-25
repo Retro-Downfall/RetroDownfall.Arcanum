@@ -55,7 +55,8 @@ internal static class OpenAiChatCompletionMapper
             ParallelToolCalls: request.ParallelToolCalls,
             ClientTools: forwardClientTools ? request.Tools : null,
             ClientToolChoice: forwardClientTools ? request.ToolChoice : null,
-            ForwardClientTools: forwardClientTools);
+            ForwardClientTools: forwardClientTools,
+            Reasoning: ToReasoningOptions(request));
     }
 
     internal static CoreChatMessage ToCoreChatMessage(OpenAiChatMessage m)
@@ -222,4 +223,32 @@ internal static class OpenAiChatCompletionMapper
 
         return jsonSchema.Clone();
     }
+
+    private static ReasoningRequestOptions? ToReasoningOptions(OpenAiChatRequest request)
+    {
+        if (request.ReasoningEffort is null
+            && request.ReasoningBudget is null
+            && request.ReasoningOutput is null)
+        {
+            return null;
+        }
+
+        return new ReasoningRequestOptions(
+            MapReasoningEffort(request.ReasoningEffort),
+            request.ReasoningBudget,
+            request.ReasoningOutput);
+    }
+
+    private static ReasoningEffortLevel? MapReasoningEffort(OpenAiReasoningEffort? effort) =>
+        effort switch
+        {
+            null => null,
+            OpenAiReasoningEffort.None => ReasoningEffortLevel.None,
+            OpenAiReasoningEffort.Minimal => ReasoningEffortLevel.Minimal,
+            OpenAiReasoningEffort.Low => ReasoningEffortLevel.Low,
+            OpenAiReasoningEffort.Medium => ReasoningEffortLevel.Medium,
+            OpenAiReasoningEffort.High => ReasoningEffortLevel.High,
+            OpenAiReasoningEffort.XHigh => ReasoningEffortLevel.ExtraHigh,
+            _ => throw new ArgumentOutOfRangeException(nameof(effort), effort, "Unknown OpenAI reasoning effort."),
+        };
 }

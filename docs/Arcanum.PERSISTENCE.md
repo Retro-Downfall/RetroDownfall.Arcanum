@@ -21,7 +21,7 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 | Daemon execution history | — | Deferred (in-memory, `InMemoryDaemonExecutionRepository`) |
 | **Sanctum breach history** (per-campaign audit trail: tool, breach type, description, JSON details) | `SanctumBreaches` | Existing — replaces the former in-memory ring buffer (`SanctumBreachStore`, retired) |
 | **Idempotency-Key claims** (replay cache for side-effecting inference; DESIGN.md §11.17) | `IdempotencyClaims` | Existing — claim-key ≠ fingerprint; state machine + lease; TTL swept hourly by `UnseenServantService`. Legacy `IdempotencyKeys` may still exist for sweep compatibility. |
-| **Inference accounting** (runs, billable ops, budget reservations, cost adjustments; ADR 0002) | `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments` | Existing — hand-authored SQL migration `20260721010000_AddInferenceAccountingAndIdempotencyClaims`; raw SQL via `ITurnRunWriter` / `IBudgetReservationService`. **Not** part of the compiled EF model. Session `TotalCostUsd` remains a projection only. |
+| **Inference accounting** (runs, billable ops, budget reservations, cost adjustments; ADR 0002) | `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments` | Existing — hand-authored SQL migration `20260721010000_AddInferenceAccountingAndIdempotencyClaims`; raw SQL via `ITurnRunWriter` / `IBudgetReservationService`. `BillableOperations.ReasoningTokens` is a non-null count and reasoning remains a subset of output. **Not** part of the compiled EF model. Session `TotalCostUsd` remains a projection only. |
 | **Uploaded file metadata** (`POST /v1/files`; DESIGN.md §11.20) | `UploadedFiles` | Existing — row is metadata only; file bytes live on disk under `ArcanumPaths.FilesDirectory`, named by a fresh GUID (never the client filename) |
 | **Session attachment metadata** (Command Center + host; DESIGN.md §10.2.5) | `SessionAttachments` | Existing — hand-authored SQL migration `20260719180000_AddSessionAttachments`; raw SQL via `ISessionAttachmentStore` / `SessionAttachmentStore`. Bytes under `ArcanumPaths.AttachmentsDirectory` (original filenames preserved under version folders). **Not** part of the compiled EF model. |
 | **Batch job metadata** (`/v1/batches`; DESIGN.md §11.21) | `Batches` | Existing — no request-count columns; `GET` computes `request_counts` on the fly by reading the input/output/error files off disk (all three are themselves `UploadedFiles` rows) |
@@ -49,6 +49,12 @@ Future tables that need structured payloads (e.g. a daemon execution's correlate
 
 If none of these fit a new payload shape, add a new `JsonSerializerContext` rather than extending an unrelated one — keeps AOT trim analysis scoped and avoids accidentally widening an existing context's reachability graph.
 
+### 2.1 Reasoning is an ephemeral boundary
+
+Client-safe reasoning may appear in native buffered `reasoning` segments, live `IntelligenceEvent` NDJSON `reasoning` frames, or additive OpenAI `reasoning_summary` / `reasoning_content` fields, but it is not conversation history. CLI `ask`/`chat`, Command Center, and The Forge Tome render it only in bounded in-memory views; reload/export paths remain answer-only. Grimoire `Entries` persist only user and assistant answer text.
+
+Provider `TextReasoningContent.ProtectedData` is stricter still: it may remain on the raw in-memory assistant message long enough for a tool result to continue with the same provider, but is never projected, logged, audited, traced, exported, or stored. Reasoning does not enter Apprentice step results, Master context, prompts, checkpoints, or Chronicle events: `ApprenticeStreamFramePolicy` explicitly ignores `Reasoning` and defaults unknown future event kinds to ignore. Provider-reported `BillableOperations.ReasoningTokens` and `InferenceAuditRecord.ReasoningTokens` are counts only. The Forge's separate local inference-trace store may retain event type, output mode, and token count, but replaces the message with a fixed redaction and nulls data before local persistence or JSON export.
+
 ## 3. Migration strategy
 
 New tables ship as embedded `.sql` files under `src/RetroDownfall.Arcanum.Infrastructure/Data/SqlMigrations/`, named `<yyyyMMddHHmmss>_<Name>.sql` (14-digit UTC timestamp prefix, matching every existing migration). The file is:
@@ -58,6 +64,8 @@ New tables ship as embedded `.sql` files under `src/RetroDownfall.Arcanum.Infras
 3. Applied by `GrimoireSqlSchemaMigrator.ApplyPendingAsync` on first host start, one script per `SqliteTransaction` alongside its `__EFMigrationsHistory` insert (the migrator owns both; scripts contain DDL only — no `BEGIN`/`COMMIT`, no history row)
 
 **Squashing.** Because Arcanum has no production Grimoire databases in the wild, there is no installed base whose upgrade path would break if the incremental history were collapsed. When the migration list grows long enough that it reads more like archaeology than documentation, it is squashed back down to a single `InitialCreate` migration id — both the EF Core `.cs`/`.Designer.cs` pair (regenerated via `dotnet ef migrations add InitialCreate` against a clean `Data/Migrations/` folder) and its hand-authored SQL twin under `SqlMigrations/` sharing that same id, with `GrimoireSqlSchemaMigrator.MigrationOrder` reset to the single entry. A squash is only valid if the resulting schema is byte-for-byte identical to what the old chain produced — verified by replaying the deleted scripts in order against a scratch SQLite file and diffing `pragma_table_info`, index, trigger, and foreign-key output against the new single script. The `UnseenServantWatermarks` and `SanctumBreaches` tables (previously separate additive migrations) are folded into the current `InitialCreate.sql` baseline this way — both are single `CREATE TABLE` statements with no changes to other tables or columns, so folding them in changed nothing about their shape.
+
+**Reasoning-accounting install-script exception.** `20260721010000_AddInferenceAccountingAndIdempotencyClaims.sql` was edited in place so the original `CREATE TABLE BillableOperations` declares `ReasoningTokens INTEGER NOT NULL DEFAULT 0` directly; there is no follow-up `ALTER TABLE` and no new migration. Because an existing database has already recorded that migration id, it cannot receive the changed column by replay. The supported upgrade path is a mandatory stop/delete/reinstall of the local Grimoire (§10), not a data migration.
 
 ## 4. Retention/eviction policy
 
@@ -133,6 +141,23 @@ The table introduces no configuration elements and modifies no existing ones. `D
 
 Daily budget admission authority is **`BillableOperations` (completed UTC day) + outstanding `BudgetReservations`** (ADR 0002). `Sessions.TotalCostUsd` / `TotalTokensUsed` remain a **projection/cache** updated via `IncrementSessionTokensAndCostAsync` for UI convenience — not the spend authority. `BudgetMonitor.CheckAsync` prefers `IBudgetReservationService` and falls back to session-sum spend only when the reservation service is unavailable. Pricing, alert deduplication (`BudgetAlerts`), and `GET /api/budget` are documented in [Arcanum.DESIGN.md §22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumpricing-arcanumbudget).
 
+`BillableOperations` is deliberately outside `ArcanumDbContext` and its compiled EF model. `TurnRunWriter` inserts/reads it through parameterized raw SQL; do not add a `DbSet`, create an EF migration, or regenerate the compiled model for reasoning accounting. Each completed provider call stores prompt, completion, cached, and reasoning counts plus the pricing snapshot before in-memory cost accumulation or response post-processing. Reasoning is a completion subset; cached input is a prompt subset. A present provider `TotalTokenCount` remains authoritative even when inconsistent (including zero); only a missing total is derived from prompt + completion. Missing usage is safe and contributes no ledger row/cost.
+
+`ReasoningPer1M` is nullable. Null falls back to `OutputPer1M`; explicit zero remains a real zero price. Reservations treat a supplied reasoning budget as conservative output headroom (`max(output limit, reasoning budget)`), while reconciliation uses actual provider counts. If a durable operation insert fails, the run is marked failed and its reservation remains outstanding until expiry; Arcanum does not reconcile or release spend it could not prove.
+
+**Mandatory developer action:** before running this version with a Grimoire created from the older install script, stop every Arcanum host/background daemon and back up anything needed. Delete the database and both SQLite sidecars, then restart Arcanum so the current embedded scripts install a fresh database. There is intentionally no incremental migration.
+
+```bash
+rm -f -- "$HOME/.config/arcanum/arcanum.db" "$HOME/.config/arcanum/arcanum.db-wal" "$HOME/.config/arcanum/arcanum.db-shm"
+```
+
+```powershell
+Remove-Item -Force -ErrorAction SilentlyContinue `
+  "$HOME\.config\arcanum\arcanum.db", `
+  "$HOME\.config\arcanum\arcanum.db-wal", `
+  "$HOME\.config\arcanum\arcanum.db-shm"
+```
+
 The `BudgetAlerts` table follows the same raw-SQL-via-`ArcanumDbContext`-connection pattern as `UnseenServantWatermarks` and `SanctumBreaches` — deliberately **not** part of the compiled EF model, so it required no `dotnet ef dbcontext optimize` regeneration. The `Sessions.TotalCostUsd` column, by contrast, is a change to an existing compiled-model entity, so the compiled model was regenerated with `dotnet ef dbcontext optimize` and the generated files under `src/RetroDownfall.Arcanum.Infrastructure/Generated/` were updated in place.
 
 ## 11. Prompt caching
@@ -141,7 +166,7 @@ Prompt caching is provider-managed for OpenAI-compatible endpoints. Arcanum read
 
 ## 12. EF migration snapshot drift
 
-The EF Core `InitialCreate` migration C# file and `ArcanumDbContextModelSnapshot.cs` are intentionally **stale** — `Sessions.TotalCostUsd` (precision 18, scale 8), `Entries.IsPinned`, `Session.ForkedFromSessionId` (with index), and several additive tables (`UnseenServantWatermarks`, `SanctumBreaches`, `IdempotencyKeys`, `UploadedFiles`, `Batches`, `BudgetAlerts`) were added via hand-authored SQL migrations (Section 3) and the compiled EF model (`src/RetroDownfall.Arcanum.Infrastructure/Generated/`), not via `dotnet ef migrations add`. **`SessionAttachments`** is likewise a hand-authored SQL migration but is **not** on the compiled EF model (raw SQL only — see §13). The `ArcanumDbContextModelSnapshot.cs` was hand-edited to include `Session.TotalCostUsd` and `Session.ForkedFromSessionId` (with `HasIndex`) so `dotnet ef migrations add` produces an empty migration rather than a spurious "add column" migration. The compiled model is canonical; the EF migration snapshot exists only for `dotnet ef` tooling compatibility and would need full regeneration (via `dotnet ef migrations add InitialCreate` against a clean `Data/Migrations/` folder) only if `dotnet ef` tooling is ever needed again. Runtime behavior is unaffected — `GrimoireSqlSchemaMigrator` applies the authoritative SQL migrations, and the compiled model handles all EF-tracked entities.
+The EF Core `InitialCreate` migration C# file and `ArcanumDbContextModelSnapshot.cs` are intentionally **stale** — `Sessions.TotalCostUsd` (precision 18, scale 8), `Entries.IsPinned`, `Session.ForkedFromSessionId` (with index), and several additive tables (`UnseenServantWatermarks`, `SanctumBreaches`, `IdempotencyKeys`, `UploadedFiles`, `Batches`, `BudgetAlerts`) were added via hand-authored SQL migrations (Section 3) and the compiled EF model (`src/RetroDownfall.Arcanum.Infrastructure/Generated/`), not via `dotnet ef migrations add`. **`SessionAttachments`** and the inference-accounting tables (`InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments`) are hand-authored/raw-SQL surfaces and are **not** on the compiled EF model; `BillableOperations.ReasoningTokens` therefore changes neither the EF snapshot nor generated model. The `ArcanumDbContextModelSnapshot.cs` was hand-edited to include `Session.TotalCostUsd` and `Session.ForkedFromSessionId` (with `HasIndex`) so `dotnet ef migrations add` produces an empty migration rather than a spurious "add column" migration. The compiled model is canonical for EF-tracked entities; runtime raw-SQL schemas are applied by `GrimoireSqlSchemaMigrator`.
 
 ## 13. Session attachments (`attachments/` + `SessionAttachments`)
 

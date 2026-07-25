@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -30,6 +31,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     private readonly TestApiKeySecretStore _secretStore = new(TestApiKey);
 
     private readonly Dictionary<string, string?> _originalEnvironment = new();
+
+    private int _isolatedResourcesDisposed;
 
     public ArcanumWebApplicationFactory()
     {
@@ -64,6 +67,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         _originalEnvironment["APPDATA"] = global::System.Environment.GetEnvironmentVariable("APPDATA");
         _originalEnvironment["USERPROFILE"] = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
         _originalEnvironment["XDG_DATA_HOME"] = global::System.Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        _originalEnvironment["ARCANUM_TEST_HOME"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
         _originalEnvironment["ARCANUM_SKIP_KEY_BOOTSTRAP"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP");
         _originalEnvironment["ASPNETCORE_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
         _originalEnvironment["DOTNET_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
@@ -172,6 +176,10 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                     {
                         Workspace = _tempHome,
                     },
+                    Server = built.Server with
+                    {
+                        PidFilePath = null,
+                    },
                     Perception = built.Perception with
                     {
                         AllowedWorkspaceRoots = [_tempHome],
@@ -221,6 +229,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     private void ApplyIsolatedUserProfile()
     {
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _tempHome);
 
         global::System.Environment.SetEnvironmentVariable("HOME", _tempHome);
 
@@ -291,12 +301,71 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     protected override void Dispose(bool disposing)
     {
 
-        if (disposing)
+        if (!disposing)
         {
 
-            RestoreEnvironment();
+            base.Dispose(disposing);
+
+            return;
+
+        }
+
+        try
+        {
+
+            base.Dispose(true);
+
+        }
+        catch (ObjectDisposedException)
+        {
+
+        }
+        finally
+        {
+
+            DisposeIsolatedResources();
+
+        }
+
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+
+        try
+        {
+
+            await base.DisposeAsync();
+
+        }
+        finally
+        {
+
+            DisposeIsolatedResources();
+
+        }
+
+    }
+
+    private void DisposeIsolatedResources()
+    {
+
+        if (Interlocked.Exchange(ref _isolatedResourcesDisposed, 1) != 0)
+        {
+
+            return;
+
+        }
+
+        try
+        {
 
             _grimoireFixture?.Dispose();
+
+            // The application host uses the normal pooled SQLite connection string. Once the host
+            // and Grimoire checkpoint have stopped, release those test-process pools before deleting
+            // this factory's isolated database tree on Windows.
+            SqliteConnection.ClearAllPools();
 
             try
             {
@@ -315,15 +384,10 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
             }
 
         }
-
-        try
+        finally
         {
 
-            base.Dispose(disposing);
-
-        }
-        catch (ObjectDisposedException)
-        {
+            RestoreEnvironment();
 
         }
 

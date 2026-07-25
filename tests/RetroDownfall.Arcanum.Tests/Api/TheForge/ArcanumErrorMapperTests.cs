@@ -14,6 +14,10 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Validation.InvalidPrompt, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Validation.AttachedFiles, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Validation.InvalidBody, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Validation.UnsupportedReasoningControl, StatusCodes.Status400BadRequest)]
+    [InlineData(
+        ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive,
+        StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Hub.ToolLoop, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Hub.Timeout, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Hub.Model, StatusCodes.Status404NotFound)]

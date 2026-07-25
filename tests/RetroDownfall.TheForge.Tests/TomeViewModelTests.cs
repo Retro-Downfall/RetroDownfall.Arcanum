@@ -82,6 +82,134 @@ public class TomeViewModelTests
     }
 
     [Fact]
+    public async Task SendAsync_streams_reasoning_into_separate_live_message_without_contaminating_answer()
+    {
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            PingEvents =
+            [
+                new IntelligenceEvent(
+                    IntelligenceEventType.Reasoning,
+                    "think ",
+                    Reasoning: new ReasoningContentSegment("think ", ReasoningOutputMode.Summary)),
+                new IntelligenceEvent(
+                    IntelligenceEventType.Reasoning,
+                    "carefully",
+                    Reasoning: new ReasoningContentSegment("carefully", ReasoningOutputMode.Summary)),
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "answer"),
+            ],
+        };
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+        await viewModel.LoadAsync(CancellationToken.None);
+        viewModel.InputText = "question";
+
+        await viewModel.SendAsync(CancellationToken.None);
+
+        Assert.Equal(["user", "reasoning", "assistant"], viewModel.Messages.Select(static message => message.Role));
+        ChatMessageViewModel reasoning = viewModel.Messages[1];
+        ChatMessageViewModel assistant = viewModel.Messages[2];
+        Assert.True(reasoning.IsReasoning);
+        Assert.Equal("think carefully", reasoning.Content);
+        Assert.Null(reasoning.EntryId);
+        Assert.Equal("answer", assistant.Content);
+        Assert.DoesNotContain("think", assistant.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Chat_message_high_delta_appends_are_bounded_and_coalesced()
+    {
+        ChatMessageViewModel message = new("reasoning", string.Empty);
+        int contentNotifications = 0;
+        message.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ChatMessageViewModel.Content))
+            {
+                contentNotifications++;
+            }
+        };
+
+        for (int i = 0; i < 7_000; i++)
+        {
+            message.AppendContent("abcdefghij");
+        }
+
+        Assert.True(message.Content.Length <= ChatMessageViewModel.DefaultMaxReasoningChars);
+        Assert.StartsWith("abcdefghijabcdefghij", message.Content, StringComparison.Ordinal);
+        Assert.EndsWith(ChatMessageViewModel.ReasoningTruncationMarker, message.Content, StringComparison.Ordinal);
+        Assert.True(
+            contentNotifications < 300,
+            $"Expected coalesced content notifications, got {contentNotifications}.");
+    }
+
+    [Fact]
+    public void Chat_message_completion_flushes_content_and_supports_later_appends()
+    {
+        ChatMessageViewModel message = new("assistant", string.Empty);
+        int contentNotifications = 0;
+        message.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(ChatMessageViewModel.Content))
+            {
+                contentNotifications++;
+            }
+        };
+
+        message.AppendContent("first");
+        Assert.Equal(string.Empty, message.Content);
+
+        message.CompleteStreamingContent();
+
+        Assert.Equal("first", message.Content);
+        Assert.Equal(1, contentNotifications);
+
+        message.AppendContent(" second");
+        message.CompleteStreamingContent();
+
+        Assert.Equal("first second", message.Content);
+        Assert.Equal(2, contentNotifications);
+    }
+
+    [Fact]
+    public async Task SendAsync_high_delta_reasoning_is_bounded_and_final_answer_order_is_preserved()
+    {
+        const string answerChunk = "ab";
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            PingEvents =
+            [
+                .. Enumerable.Range(0, 7_000).Select(static _ =>
+                    new IntelligenceEvent(
+                        IntelligenceEventType.Reasoning,
+                        "abcdefghij",
+                        Reasoning: new ReasoningContentSegment(
+                            "abcdefghij",
+                            ReasoningOutputMode.Summary))),
+                .. Enumerable.Range(0, 1_001).Select(static _ =>
+                    new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, answerChunk)),
+                new IntelligenceEvent(IntelligenceEventType.Result, "complete"),
+            ],
+        };
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+        await viewModel.LoadAsync(CancellationToken.None);
+        viewModel.InputText = "question";
+
+        await viewModel.SendAsync(CancellationToken.None);
+
+        ChatMessageViewModel reasoning = Assert.Single(
+            viewModel.Messages,
+            static message => message.IsReasoning);
+        ChatMessageViewModel assistant = Assert.Single(
+            viewModel.Messages,
+            static message => message.IsAssistant);
+        Assert.True(reasoning.Content.Length <= ChatMessageViewModel.DefaultMaxReasoningChars);
+        Assert.EndsWith(ChatMessageViewModel.ReasoningTruncationMarker, reasoning.Content, StringComparison.Ordinal);
+        Assert.Equal(string.Concat(Enumerable.Repeat(answerChunk, 1_001)), assistant.Content);
+        Assert.DoesNotContain("abcdefghij", assistant.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SendAsync_HandlesToolCallResultErrorStatusWardedAndResult()
     {
 

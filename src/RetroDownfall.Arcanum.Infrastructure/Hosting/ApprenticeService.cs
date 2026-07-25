@@ -2787,6 +2787,15 @@ internal sealed class ApprenticeService(
                 .ConfigureAwait(false))
             {
 
+                ApprenticeStreamFrameDisposition disposition =
+                    ApprenticeStreamFramePolicy.Classify(frame.Type);
+                if (disposition == ApprenticeStreamFrameDisposition.Ignore)
+                {
+                    // Reasoning and unknown future frames remain ephemeral and never enter the
+                    // Apprentice result, Chronicle, checkpoint, or subsequent Master context.
+                    continue;
+                }
+
                 if (IsPassThrough(frame.Type))
                 {
 

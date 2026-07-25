@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Threading.Channels;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -13,6 +14,8 @@ internal sealed class IntelligenceEventProjection
 
     private readonly ChannelWriter<IntelligenceEvent> _writer;
 
+    private bool _reasoningEmitted;
+
     public IntelligenceEventProjection(ChannelWriter<IntelligenceEvent> writer)
     {
         _writer = writer ?? throw new ArgumentNullException(nameof(writer));
@@ -22,9 +25,19 @@ internal sealed class IntelligenceEventProjection
     {
         ArgumentNullException.ThrowIfNull(evt);
 
-        foreach (IntelligenceEvent frame in Map(evt))
+        IEnumerable<IntelligenceEvent> frames = evt is RunCompleted completed && _reasoningEmitted
+            ? MapCompleted(completed, includeReasoning: false)
+            : Map(evt);
+
+        foreach (IntelligenceEvent frame in frames)
         {
             await _writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (evt is ReasoningDelta
+            || evt is RunCompleted { Reasoning.Count: > 0 } && !_reasoningEmitted)
+        {
+            _reasoningEmitted = true;
         }
 
         if (evt.IsTerminal)
@@ -61,6 +74,14 @@ internal sealed class IntelligenceEventProjection
             TextDelta delta =>
             [
                 new IntelligenceEvent(IntelligenceEventType.Token, delta.Text, delta.Text),
+            ],
+
+            ReasoningDelta delta =>
+            [
+                new IntelligenceEvent(
+                    IntelligenceEventType.Reasoning,
+                    delta.Reasoning.Text,
+                    Reasoning: delta.Reasoning),
             ],
 
             ToolCallProposed proposed =>
@@ -140,18 +161,7 @@ internal sealed class IntelligenceEventProjection
                         completed.ResultText)),
             ],
 
-            RunCompleted completed =>
-            [
-                new IntelligenceEvent(
-                    IntelligenceEventType.Result,
-                    completed.FinalText,
-                    completed.FinalText,
-                    completed.Usage,
-                    FinishReason: completed.FinishReason)
-                {
-                    Warnings = completed.Warnings,
-                },
-            ],
+            RunCompleted completed => MapCompleted(completed, includeReasoning: true),
 
             RunFailed failed =>
             [
@@ -171,5 +181,31 @@ internal sealed class IntelligenceEventProjection
 
             _ => [],
         };
+
+    private static IEnumerable<IntelligenceEvent> MapCompleted(
+        RunCompleted completed,
+        bool includeReasoning)
+    {
+        if (includeReasoning)
+        {
+            foreach (Core.Intelligence.ReasoningContentSegment reasoning in completed.Reasoning)
+            {
+                yield return new IntelligenceEvent(
+                    IntelligenceEventType.Reasoning,
+                    reasoning.Text,
+                    Reasoning: reasoning);
+            }
+        }
+
+        yield return new IntelligenceEvent(
+            IntelligenceEventType.Result,
+            completed.FinalText,
+            completed.Usage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0",
+            completed.Usage,
+            FinishReason: completed.FinishReason)
+        {
+            Warnings = completed.Warnings,
+        };
+    }
 
 }

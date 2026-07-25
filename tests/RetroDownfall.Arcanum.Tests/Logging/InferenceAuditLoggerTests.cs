@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
@@ -91,6 +93,52 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         Assert.Equal(record.TotalTokens, found.TotalTokens);
 
+    }
+
+    [Fact]
+    public void AuditJson_RoundTripsReasoningCountAndDropsReasoningText()
+    {
+        const string secretReasoning = "never-persist-this-reasoning";
+        string sourceJson =
+            $$"""
+            {
+              "timestamp": "2026-07-24T00:00:00.0000000+00:00",
+              "sessionId": null,
+              "requestType": "ping",
+              "model": "reasoner",
+              "provider": "test",
+              "promptTokens": 10,
+              "completionTokens": 8,
+              "reasoningTokens": 7,
+              "totalTokens": 18,
+              "latencyMs": 42,
+              "toolCalls": 0,
+              "toolNames": [],
+              "toolArgumentsJson": null,
+              "finishReason": "stop",
+              "clientIp": null,
+              "spellName": null,
+              "campaignId": null,
+              "reasoningText": "{{secretReasoning}}"
+            }
+            """;
+
+        InferenceAuditRecord? record = JsonSerializer.Deserialize(
+            sourceJson,
+            AuditJsonContext.Default.InferenceAuditRecord);
+
+        Assert.NotNull(record);
+
+        string persisted = JsonSerializer.Serialize(
+            record,
+            AuditJsonContext.Default.InferenceAuditRecord);
+        using JsonDocument document = JsonDocument.Parse(persisted);
+
+        Assert.Equal(
+            7,
+            document.RootElement.GetProperty("reasoningTokens").GetInt32());
+        Assert.False(document.RootElement.TryGetProperty("reasoningText", out _));
+        Assert.DoesNotContain(secretReasoning, persisted, StringComparison.Ordinal);
     }
 
     [Fact]

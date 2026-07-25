@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
@@ -205,7 +206,27 @@ public sealed class ArcanumApiClient
 
                 }
 
-                TFrame? frame = DeserializeOrLog(line, frameTypeInfo, path);
+                byte[]? utf8Line = null;
+                if (typeof(TFrame) == typeof(IntelligenceEvent))
+                {
+                    utf8Line = Encoding.UTF8.GetBytes(line);
+                    IntelligenceEventDiscriminatorResult discriminator =
+                        IntelligenceEventDiscriminator.InspectAndNormalize(utf8Line);
+                    if (discriminator == IntelligenceEventDiscriminatorResult.Unknown)
+                    {
+                        continue;
+                    }
+
+                    if (discriminator == IntelligenceEventDiscriminatorResult.Malformed)
+                    {
+                        _logger.LogWarning("Failed to deserialize response from {Path}.", path);
+                        continue;
+                    }
+                }
+
+                TFrame? frame = utf8Line is null
+                    ? DeserializeOrLog(line, frameTypeInfo, path)
+                    : DeserializeOrLog(utf8Line, frameTypeInfo, path);
 
                 if (frame is not null)
                 {
@@ -431,6 +452,19 @@ public sealed class ArcanumApiClient
 
         }
 
+    }
+
+    private T? DeserializeOrLog<T>(ReadOnlySpan<byte> json, JsonTypeInfo<T> typeInfo, string path)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize(json, typeInfo);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Failed to deserialize response from {Path}.", path);
+            return default;
+        }
     }
 
 }

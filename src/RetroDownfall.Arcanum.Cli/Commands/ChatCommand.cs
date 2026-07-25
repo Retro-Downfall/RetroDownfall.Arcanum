@@ -1546,7 +1546,7 @@ public sealed class ChatCommand(
 
         Console.CancelKeyPress += OnCancelKeyPress;
 
-        StringBuilder full = new();
+        CliStreamContent streamContent = new();
 
         int linesPrinted = 0;
 
@@ -1647,7 +1647,8 @@ public sealed class ChatCommand(
                             break;
                         }
 
-                        full.Append(chunk);
+                        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
+                        streamContent.AppendAnswer(chunk);
 
                         if (streamWithMarkdownRewrite)
                         {
@@ -1655,6 +1656,12 @@ public sealed class ChatCommand(
 
                             AdvanceLineCounter(chunk, width, ref linesPrinted, ref currentLineLen);
                         }
+
+                        break;
+
+                    case IntelligenceEventType.Reasoning:
+
+                        _ = streamContent.AppendReasoning(evt);
 
                         break;
 
@@ -1713,6 +1720,7 @@ public sealed class ChatCommand(
 
                     case IntelligenceEventType.Result:
 
+                        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
                         if (evt.Usage is { } usageTurn)
                         {
                             session.SessionMana = AccumulateSessionMana(session.SessionMana, usageTurn);
@@ -1725,12 +1733,13 @@ public sealed class ChatCommand(
                                 new ChatCompletionUsage(0, 0, parsedUsage));
                         }
 
-                        finalText = full.ToString();
+                        finalText = streamContent.AnswerText;
 
                         break;
 
                     case IntelligenceEventType.Error:
 
+                        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
                         AnsiConsole.WriteLine();
 
                         Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(evt.Message))))
@@ -1754,6 +1763,7 @@ public sealed class ChatCommand(
                 }
             }
 
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
             AskHumanResult? hitlResult = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
             if (hitlResult == AskHumanResult.SubmitFailed)
             {
@@ -1764,6 +1774,7 @@ public sealed class ChatCommand(
         catch (OperationCanceledException)
         {
             hitl?.Cancel();
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
             if (hitl is not null)
             {
                 _ = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1774,6 +1785,7 @@ public sealed class ChatCommand(
         catch (Exception ex)
         {
 
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
             AnsiConsole.WriteLine();
 
             Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(ex.Message))))
@@ -1812,7 +1824,7 @@ public sealed class ChatCommand(
             return false;
         }
 
-        string body = finalText ?? full.ToString();
+        string body = finalText ?? streamContent.AnswerText;
 
         if (string.IsNullOrEmpty(body))
         {
@@ -1821,7 +1833,7 @@ public sealed class ChatCommand(
             return true;
         }
 
-        if (streamWithMarkdownRewrite && full.Length > 0)
+        if (streamWithMarkdownRewrite && streamContent.AnswerLength > 0)
         {
 
             AnsiConsole.WriteLine();
@@ -1856,7 +1868,7 @@ public sealed class ChatCommand(
         CancellationToken cancellationToken)
     {
 
-        StringBuilder assistantText = new();
+        CliStreamContent streamContent = new();
 
         List<ToolDiagnosticLine> liveDiagnostics = new();
 
@@ -1870,9 +1882,8 @@ public sealed class ChatCommand(
 
         ConsoleAskHumanCoordinator? hitl = null;
 
-        int tokenSinceRefresh = 0;
-
         System.Diagnostics.Stopwatch refreshClock = System.Diagnostics.Stopwatch.StartNew();
+        StreamingRenderCadence renderCadence = new(() => refreshClock.ElapsedMilliseconds);
 
         ChatLayoutContext BuildCtx(bool generating) => new(
             StatusBarRenderer.RenderCompact(
@@ -1882,7 +1893,8 @@ public sealed class ChatCommand(
                 _mcpUnavailable,
                 _serveLaunch.Status,
                 themePalette),
-            assistantText.ToString(),
+            streamContent.AnswerText,
+            streamContent.ReasoningText,
             liveDiagnostics,
             Array.Empty<IRenderable>(),
             _mcpServers,
@@ -1902,18 +1914,14 @@ public sealed class ChatCommand(
                 {
                     void Refresh(bool force)
                     {
-                        if (!force
-                            && tokenSinceRefresh < 32
-                            && refreshClock.ElapsedMilliseconds < 75)
+                        if (!renderCadence.ShouldRefresh(force))
                         {
                             return;
                         }
 
                         live.UpdateTarget(ChatLayoutRenderer.Build(BuildCtx(generating: true)));
 
-                        tokenSinceRefresh = 0;
-
-                        refreshClock.Restart();
+                        renderCadence.MarkRefreshed();
                     }
 
                     await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, cancellationToken).ConfigureAwait(false))
@@ -1944,11 +1952,21 @@ public sealed class ChatCommand(
                                     break;
                                 }
 
-                                assistantText.Append(chunk);
+                                streamContent.AppendAnswer(chunk);
 
-                                tokenSinceRefresh++;
+                                renderCadence.NoteChunk();
 
                                 Refresh(force: false);
+
+                                break;
+
+                            case IntelligenceEventType.Reasoning:
+
+                                if (streamContent.AppendReasoning(evt))
+                                {
+                                    renderCadence.NoteChunk();
+                                    Refresh(force: false);
+                                }
 
                                 break;
 
@@ -2038,7 +2056,7 @@ public sealed class ChatCommand(
                                         new ChatCompletionUsage(0, 0, parsedUsage));
                                 }
 
-                                finalText = assistantText.ToString();
+                                finalText = streamContent.AnswerText;
 
                                 Refresh(force: true);
 
@@ -2088,6 +2106,7 @@ public sealed class ChatCommand(
         }
         catch (Exception ex)
         {
+            _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
             AnsiConsole.WriteLine();
 
             Panel errorPanel = new(new Markup(themePalette.TextMarkup(Markup.Escape(ex.Message))))
@@ -2103,6 +2122,7 @@ public sealed class ChatCommand(
             return false;
         }
 
+        _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
         if (cancelled)
         {
             AnsiConsole.WriteLine();
@@ -2113,7 +2133,7 @@ public sealed class ChatCommand(
                 Style = themePalette.MutedStyle(),
             });
 
-            string partial = assistantText.ToString();
+            string partial = streamContent.AnswerText;
 
             if (!string.IsNullOrEmpty(partial))
             {
@@ -2130,7 +2150,7 @@ public sealed class ChatCommand(
             return false;
         }
 
-        string body = finalText ?? assistantText.ToString();
+        string body = finalText ?? streamContent.AnswerText;
 
         if (string.IsNullOrEmpty(body))
         {
@@ -2233,28 +2253,29 @@ public sealed class ChatCommand(
 
     internal static ChatCompletionUsage AccumulateSessionMana(ChatCompletionUsage? running, ChatCompletionUsage round)
     {
-        int p = (running?.PromptTokens ?? 0) + round.PromptTokens;
+        int roundPrompt = Math.Max(0, round.PromptTokens);
 
-        int c = (running?.CompletionTokens ?? 0) + round.CompletionTokens;
+        int roundCompletion = Math.Max(0, round.CompletionTokens);
 
-        // Prefer the provider-reported total when the round itself reports one; providers can
-        // (and do) include extra tokens beyond prompt+completion (reasoning tokens, cached
-        // prefills, tool-call framing, etc.) and re-summing locally would understate usage.
-        // When the provider returned 0/missing, fall back to the recomputed p+c so the bar
-        // still reflects observable activity.
+        int p = SaturatingTokenAdd(running?.PromptTokens ?? 0, roundPrompt);
+
+        int c = SaturatingTokenAdd(running?.CompletionTokens ?? 0, roundCompletion);
+
+        // Sum the normalized provider-reported total directly, including an explicit zero.
+        // Reasoning is already a completion-token subset and must never be added to this total.
         int previousTotal = running?.TotalTokens ?? 0;
 
-        int roundTotal = round.TotalTokens > 0 ? round.TotalTokens : (round.PromptTokens + round.CompletionTokens);
+        int total = SaturatingTokenAdd(previousTotal, round.TotalTokens);
 
-        int total = previousTotal + roundTotal;
+        int cached = SaturatingTokenAdd(running?.CachedTokens ?? 0, round.CachedTokens);
 
-        if (total < p + c)
-        {
-            total = p + c;
-        }
+        int reasoning = SaturatingTokenAdd(running?.ReasoningTokens ?? 0, round.ReasoningTokens);
 
-        return new ChatCompletionUsage(p, c, total);
+        return new ChatCompletionUsage(p, c, total, cached, reasoning);
     }
+
+    private static int SaturatingTokenAdd(int left, int right) =>
+        (int)Math.Clamp((long)Math.Max(0, left) + Math.Max(0, right), 0L, int.MaxValue);
 
     private async Task TryShowManaPanelAsync(SessionMut session, CancellationToken cancellationToken)
     {

@@ -11,7 +11,11 @@ public class CompendiumLauncherTests
     public void TryLaunch_WhenExecutableExists_StartsProcess()
     {
 
-        string exe = Path.Combine(Path.GetTempPath(), "RetroDownfall.Compendium.Ux");
+        string fileName = OperatingSystem.IsWindows()
+            ? "RetroDownfall.Compendium.Ux.exe"
+            : "RetroDownfall.Compendium.Ux";
+
+        string exe = Path.Combine(Path.GetTempPath(), fileName);
 
         ProcessStartInfo? started = null;
 

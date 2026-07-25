@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
+[Collection("OutboundUrlGuardDns")]
 public sealed class A2AClientTests : IDisposable
 {
 

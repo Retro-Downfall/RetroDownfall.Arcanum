@@ -50,6 +50,7 @@ internal sealed class BufferedTurnProjection
                 _completed.FinishReason)
             {
                 Warnings = _completed.Warnings,
+                Reasoning = _completed.Reasoning,
             };
 
             return Result<PromptTurnResult>.Success(turn);

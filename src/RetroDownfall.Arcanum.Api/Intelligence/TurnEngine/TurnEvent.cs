@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -34,6 +35,10 @@ internal sealed record ModelCallStarted(TurnEventCorrelation Correlation, Core.I
     : TurnEvent(Correlation);
 
 internal sealed record TextDelta(TurnEventCorrelation Correlation, string Text) : TurnEvent(Correlation);
+
+internal sealed record ReasoningDelta(
+    TurnEventCorrelation Correlation,
+    ReasoningContentSegment Reasoning) : TurnEvent(Correlation);
 
 internal sealed record ModelCallCompleted(TurnEventCorrelation Correlation, ChatCompletionUsage? Usage)
     : TurnEvent(Correlation);
@@ -103,7 +108,10 @@ internal sealed record RunCompleted(
     IReadOnlyList<string> Warnings,
     Guid? SessionId,
     bool StructuredOutputWarning,
-    TurnTerminationReason Reason = TurnTerminationReason.Completed) : TurnEvent(Correlation);
+    TurnTerminationReason Reason = TurnTerminationReason.Completed) : TurnEvent(Correlation)
+{
+    public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
+}
 
 internal sealed record RunFailed(
     TurnEventCorrelation Correlation,

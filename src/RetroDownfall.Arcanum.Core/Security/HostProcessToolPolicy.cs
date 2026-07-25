@@ -45,7 +45,7 @@ public static class HostProcessToolPolicy
         string detail = allowed
             ? "Host process tools enabled (Development edition + ARCANUM_ALLOW_HOST_PROCESS_TOOLS). "
               + "This is an unsafe escape hatch — process is Degraded."
-            : edition == ArcanumEdition.Development && !envFlag
+            : edition == ArcanumEdition.Development
                 ? "Development edition: host process tools remain off until ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1."
                 : "Local edition: host process tools disabled (execute_command / run_spell_script).";
 

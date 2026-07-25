@@ -56,42 +56,31 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     public void MacOsProfile_DoesNotGrantWholeVolumeRead()
     {
 
-        string temp = Path.Combine(Path.GetTempPath(), "arcanum-sb-test-" + Guid.NewGuid().ToString("N"));
+        const string workspace = "/Users/arcanum-test/workspace";
 
-        Directory.CreateDirectory(temp);
+        const string temp = "/private/tmp/arcanum-sb-test-invocation";
 
-        try
-        {
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [workspace],
+            ["/usr", "/bin", "/System"],
+            temp);
 
-            string profile = MacOsSandboxExecProfileBuilder.Build(
-                [_workspace],
-                ["/usr", "/bin", "/System"],
-                temp);
+        Assert.False(
+            MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile),
+            profile);
 
-            Assert.False(
-                MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile),
-                profile);
+        Assert.DoesNotContain("(subpath \"/\")", profile, StringComparison.Ordinal);
 
-            Assert.DoesNotContain("(subpath \"/\")", profile, StringComparison.Ordinal);
+        Assert.DoesNotContain("(literal \"/\")", profile, StringComparison.Ordinal);
 
-            Assert.DoesNotContain("(literal \"/\")", profile, StringComparison.Ordinal);
+        Assert.DoesNotContain("(subpath \"/tmp\")", profile, StringComparison.Ordinal);
 
-            Assert.DoesNotContain("(subpath \"/tmp\")", profile, StringComparison.Ordinal);
+        Assert.Contains("(allow network*)", profile, StringComparison.Ordinal);
 
-            Assert.Contains("(allow network*)", profile, StringComparison.Ordinal);
+        Assert.Contains(temp, profile, StringComparison.Ordinal);
 
-            Assert.Contains(temp, profile, StringComparison.Ordinal);
-
-            Assert.Throws<ArgumentException>(() =>
-                MacOsSandboxExecProfileBuilder.Build([_workspace], ["/"], temp));
-
-        }
-        finally
-        {
-
-            TryDelete(temp);
-
-        }
+        Assert.Throws<ArgumentException>(() =>
+            MacOsSandboxExecProfileBuilder.Build([workspace], ["/"], temp));
 
     }
 

@@ -167,6 +167,32 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecutePromptAsync_retries_buffered_connectivity_failure_before_commit()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        ScriptingChatClient chatA = new();
+        chatA.EnqueueException(new HttpRequestException("connection refused during buffered inference"));
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueText("answer from B");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("answer from B", result.Value.Text);
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+        Assert.False(tracker.IsHealthy(providerA.Name));
+        Assert.True(tracker.IsHealthy(providerB.Name));
+    }
+
+    [Fact]
     public async Task ExecutePromptAsync_LeaseBuildFailure_NonConnectivity_DoesNotMarkProviderUnhealthy_OrRetry()
     {
 
@@ -334,6 +360,490 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         Assert.Empty(tracker.GetAllStatuses());
 
+    }
+
+    [Fact]
+    public async Task ExecutePromptAsync_resilience_disabled_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
+    {
+
+        ProviderSettings provider = MakeProvider("provider-a");
+
+        provider.Models =
+        [
+            new ModelEntry(ModelName)
+            {
+                Reasoning = new ReasoningCapabilities
+                {
+                    ControlSupport = ReasoningControlSupport.Effort,
+                    WireDialect = ReasoningWireDialect.Standard,
+                },
+            },
+        ];
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must not be called");
+
+        RecordingChatClientFactory factory = new()
+        {
+            SingleResolver = () => MakeLease(chat, provider),
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            CreateTracker(),
+            resilienceEnabled: false,
+            provider);
+
+        PingRequest request = BaseRequest() with
+        {
+            Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
+        };
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, result.Error.Code);
+        Assert.Contains(provider.Name, result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(ModelName, result.Error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, factory.SingleCallCount);
+        Assert.Equal(0, chat.BufferedCallCount);
+        Assert.Equal(1, chat.DisposeCount);
+
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_resilience_disabled_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
+    {
+
+        ProviderSettings provider = MakeProvider("provider-a");
+
+        provider.Models =
+        [
+            new ModelEntry(ModelName)
+            {
+                Reasoning = new ReasoningCapabilities
+                {
+                    ControlSupport = ReasoningControlSupport.Budget,
+                    WireDialect = ReasoningWireDialect.OpenRouter,
+                },
+            },
+        ];
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("must not be called");
+
+        RecordingChatClientFactory factory = new()
+        {
+            SingleResolver = () => MakeLease(chat, provider),
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            CreateTracker(),
+            resilienceEnabled: false,
+            provider);
+
+        PingRequest request = BaseRequest() with
+        {
+            Reasoning = new ReasoningRequestOptions(Effort: ReasoningEffortLevel.High),
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+        IntelligenceEvent error = Assert.Single(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, error.Data);
+        Assert.Contains(provider.Name, error.Message, StringComparison.Ordinal);
+        Assert.Contains(ModelName, error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, factory.SingleCallCount);
+        Assert.Equal(0, chat.StreamingCallCount);
+        Assert.Equal(1, chat.DisposeCount);
+
+    }
+
+    [Fact]
+    public async Task ExecutePromptAsync_rejects_unsupported_reasoning_before_fallback_provider_io()
+    {
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        providerA.Models =
+        [
+            new ModelEntry(ModelName)
+            {
+                Reasoning = new ReasoningCapabilities
+                {
+                    ControlSupport = ReasoningControlSupport.Budget,
+                    WireDialect = ReasoningWireDialect.OpenRouter,
+                },
+            },
+        ];
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateExceptions[providerA.Name] = new HttpRequestException("connection refused");
+
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueText("must not be called");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        PingRequest request = BaseRequest() with
+        {
+            Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
+        };
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, result.Error.Code);
+        Assert.Contains(providerB.Name, result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(ModelName, result.Error.Message, StringComparison.Ordinal);
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_rejects_unsupported_reasoning_before_fallback_provider_io()
+    {
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        providerA.Models =
+        [
+            new ModelEntry(ModelName)
+            {
+                Reasoning = new ReasoningCapabilities
+                {
+                    ControlSupport = ReasoningControlSupport.Effort,
+                    WireDialect = ReasoningWireDialect.Standard,
+                },
+            },
+        ];
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateExceptions[providerA.Name] = new HttpRequestException("connection refused");
+
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueStreamTokens("must not be called");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        PingRequest request = BaseRequest() with
+        {
+            Reasoning = new ReasoningRequestOptions(Effort: ReasoningEffortLevel.High),
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+        IntelligenceEvent error = Assert.Single(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, error.Data);
+        Assert.Contains("does not declare support", error.Message, StringComparison.Ordinal);
+        Assert.Contains(providerB.Name, error.Message, StringComparison.Ordinal);
+        Assert.Contains(ModelName, error.Message, StringComparison.Ordinal);
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+
+    }
+
+    [Fact]
+    public async Task ExecutePromptAsync_uses_healthy_compatible_candidate_when_first_configured_provider_is_unhealthy_and_incompatible()
+    {
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        providerB.Models =
+        [
+            new ModelEntry(ModelName)
+            {
+                Reasoning = new ReasoningCapabilities
+                {
+                    ControlSupport = ReasoningControlSupport.Budget,
+                    WireDialect = ReasoningWireDialect.OpenRouter,
+                },
+            },
+        ];
+
+        RecordingChatClientFactory factory = new();
+
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueText("answer from compatible B");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        tracker.MarkFailed(providerA.Name);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        PingRequest request = BaseRequest() with
+        {
+            Reasoning = new ReasoningRequestOptions(BudgetTokens: 1024),
+        };
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("answer from compatible B", result.Value.Text);
+        Assert.Equal([providerB.Name], factory.CandidateCallOrder);
+
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_uses_healthy_compatible_candidate_when_first_configured_provider_is_unhealthy_and_incompatible()
+    {
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        providerB.Models =
+        [
+            new ModelEntry(ModelName)
+            {
+                Reasoning = new ReasoningCapabilities
+                {
+                    ControlSupport = ReasoningControlSupport.Effort,
+                    WireDialect = ReasoningWireDialect.Standard,
+                },
+            },
+        ];
+
+        RecordingChatClientFactory factory = new();
+
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueStreamTokens("answer ", "from compatible B");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        tracker.MarkFailed(providerA.Name);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        PingRequest request = BaseRequest() with
+        {
+            Reasoning = new ReasoningRequestOptions(Effort: ReasoningEffortLevel.High),
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+        Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+        Assert.Equal([providerB.Name], factory.CandidateCallOrder);
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StreamPromptAsync_does_not_fallback_after_visible_or_protected_reasoning_commit(
+        bool protectedOnly)
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            SupportsSummary = true,
+            SupportsStreaming = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+        ProviderSettings providerA = MakeProvider("provider-a");
+        providerA.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        ProviderSettings providerB = MakeProvider("provider-b");
+        providerB.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+
+        TextReasoningContent reasoning = new(protectedOnly ? string.Empty : "visible reasoning");
+        if (protectedOnly)
+        {
+            reasoning.ProtectedData = "opaque-provider-state";
+        }
+
+        ScriptingChatClient chatA = new();
+        chatA.EnqueueReasoningThenStreamFailure(
+            reasoning,
+            new HttpRequestException("connection dropped after reasoning"));
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueStreamTokens("must not be reached");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Reasoning = new ReasoningRequestOptions(
+                    Output: protectedOnly ? ReasoningOutputMode.None : ReasoningOutputMode.Summary),
+            });
+
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Error);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
+        if (protectedOnly)
+        {
+            Assert.DoesNotContain(
+                events,
+                static evt => evt.Type == IntelligenceEventType.Reasoning);
+        }
+        else
+        {
+            IntelligenceEvent reasoningFrame = Assert.Single(
+                events,
+                static evt => evt.Type == IntelligenceEventType.Reasoning);
+            Assert.Equal("visible reasoning", reasoningFrame.Reasoning?.Text);
+            Assert.True(
+                events.IndexOf(reasoningFrame)
+                < events.FindIndex(static evt => evt.Type == IntelligenceEventType.Error));
+        }
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+        Assert.Equal(0, chatB.StreamingCallCount);
+        Assert.False(tracker.IsHealthy(providerA.Name));
+        ProviderHealthStatus failed = Assert.Single(
+            tracker.GetAllStatuses(),
+            status => status.ProviderName == providerA.Name);
+        Assert.Equal(1, failed.ConsecutiveFailures);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task StreamPromptAsync_uses_resolved_fallback_streaming_reasoning_capability(
+        bool supportsStreaming,
+        bool expectsReasoning)
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        providerB.Models =
+        [
+            new ModelEntry(
+                ModelName,
+                Reasoning: new ReasoningCapabilities
+                {
+                    SupportsSummary = true,
+                    SupportsFull = false,
+                    SupportsStreaming = supportsStreaming,
+                    AllowsClientOutput = true,
+                    WireDialect = ReasoningWireDialect.Standard,
+                }),
+        ];
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueStreamUpdates(new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("fallback summary"),
+                new TextContent("fallback answer"),
+            ]));
+        RecordingChatClientFactory factory = new();
+        factory.CandidateExceptions[providerA.Name] = new HttpRequestException("connection refused");
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            CreateTracker(healthFailureThreshold: 1),
+            providerA,
+            providerB);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, BaseRequest());
+
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+        Assert.Equal(
+            expectsReasoning,
+            events.Any(static evt => evt.Type == IntelligenceEventType.Reasoning));
+        if (expectsReasoning)
+        {
+            ReasoningContentSegment? reasoning = Assert.Single(
+                events,
+                static evt => evt.Type == IntelligenceEventType.Reasoning).Reasoning;
+            Assert.Equal("fallback summary", reasoning?.Text);
+            Assert.Equal(ReasoningOutputMode.Summary, reasoning?.Output);
+        }
+        Assert.Contains(
+            events,
+            static evt => evt.Type == IntelligenceEventType.Token
+                && evt.Data == "fallback answer");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecutePromptAsync_does_not_fallback_after_buffered_reasoning_commit(
+        bool protectedOnly)
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            SupportsSummary = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+        ProviderSettings providerA = MakeProvider("provider-a");
+        providerA.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        ProviderSettings providerB = MakeProvider("provider-b");
+        providerB.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        TextReasoningContent reasoning = new(protectedOnly ? string.Empty : "visible reasoning");
+        if (protectedOnly)
+        {
+            reasoning.ProtectedData = "opaque-provider-state";
+        }
+
+        ScriptingChatClient chatA = new();
+        chatA.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                reasoning,
+                new FunctionCallContent(
+                    ArcanumLocalTimeTool.ToolName,
+                    ArcanumLocalTimeTool.ToolName,
+                    new Dictionary<string, object?>()),
+            ])));
+        chatA.EnqueueException(new HttpRequestException("connection dropped during tool continuation"));
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueText("must not be reached");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                DisableMcpTools = false,
+                Reasoning = new ReasoningRequestOptions(
+                    Output: protectedOnly ? ReasoningOutputMode.None : ReasoningOutputMode.Summary),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+        Assert.Equal(0, chatB.BufferedCallCount);
+        Assert.False(tracker.IsHealthy(providerA.Name));
+        ProviderHealthStatus failed = Assert.Single(
+            tracker.GetAllStatuses(),
+            status => status.ProviderName == providerA.Name);
+        Assert.Equal(1, failed.ConsecutiveFailures);
     }
 
     // ===== Helpers =====
@@ -677,6 +1187,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         public Exception? SingleCallException { get; set; }
 
+        public Func<ChatClientLease>? SingleResolver { get; set; }
+
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
         {
 
@@ -685,6 +1197,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             if (SingleCallException is not null)
             {
                 throw SingleCallException;
+            }
+
+            if (SingleResolver is not null)
+            {
+                return Task.FromResult(SingleResolver());
             }
 
             throw new InvalidOperationException("No AI model could be resolved.");
@@ -719,8 +1236,17 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         private readonly Queue<Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>> _streaming = new();
 
+        public int BufferedCallCount { get; private set; }
+
+        public int StreamingCallCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
+
         public void EnqueueText(string text) =>
             _buffered.Enqueue(_ => Task.FromResult(new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, text))));
+
+        public void EnqueueResponse(ChatResponse response) =>
+            _buffered.Enqueue(_ => Task.FromResult(response));
 
         public void EnqueueException(Exception ex) =>
             _buffered.Enqueue(_ => throw ex);
@@ -728,8 +1254,17 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public void EnqueueStreamTokens(params string[] tokens) =>
             _streaming.Enqueue(_ => StreamTokens(tokens));
 
+        public void EnqueueStreamUpdates(params ChatResponseUpdate[] updates) =>
+            _streaming.Enqueue(_ => StreamUpdates(updates));
+
+        public void EnqueueReasoningThenStreamFailure(
+            TextReasoningContent reasoning,
+            Exception exception) =>
+            _streaming.Enqueue(_ => ReasoningThenFail(reasoning, exception));
+
         public void Dispose()
         {
+            DisposeCount++;
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
@@ -739,6 +1274,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            BufferedCallCount++;
 
             if (_buffered.Count == 0)
             {
@@ -754,6 +1290,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            StreamingCallCount++;
 
             if (_streaming.Count == 0)
             {
@@ -776,6 +1313,32 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
                 await Task.Yield();
             }
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> StreamUpdates(
+            IEnumerable<ChatResponseUpdate> updates,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (ChatResponseUpdate update in updates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return update;
+                await Task.Yield();
+            }
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> ReasoningThenFail(
+            TextReasoningContent reasoning,
+            Exception exception,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [reasoning]);
+
+            await Task.Yield();
+
+            throw exception;
         }
 
     }

@@ -11,6 +11,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 /// <summary>
 /// Sole semantic consumer of <see cref="TurnEvent"/>s. Applies exactly one projection per request.
 /// Does not serialize HTTP — streaming projections write typed output into transport channels.
+/// Production <c>/v1</c> currently selects the native intelligence-event projection and performs a
+/// parity-tested OpenAI reshape in the endpoint writer; <see cref="OpenAiSseProjection"/> remains a
+/// separate semantic projection path rather than the instance used by that route.
 /// </summary>
 internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource) : ITurnExecutionFacade
 {
@@ -104,7 +107,12 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
         IntelligenceEventProjection projection = new(transport.Writer);
 
-        Task produce = ProjectStreamingAsync(request, projection, executionToken, auditContext);
+        Task produce = ProjectStreamingAsync(
+            request,
+            projection,
+            transport.Writer,
+            executionToken,
+            auditContext);
 
         await foreach (IntelligenceEvent frame in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
         {
@@ -159,7 +167,12 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
         OpenAiSseProjection projection = new(transport.Writer, completionId, model);
 
-        Task produce = ProjectOpenAiAsync(request, projection, executionToken, auditContext);
+        Task produce = ProjectOpenAiAsync(
+            request,
+            projection,
+            transport.Writer,
+            executionToken,
+            auditContext);
 
         await foreach (OpenAiChatChunk chunk in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
         {
@@ -172,6 +185,7 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
     private async Task ProjectStreamingAsync(
         TurnExecutionRequest request,
         IntelligenceEventProjection projection,
+        ChannelWriter<IntelligenceEvent> writer,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext)
     {
@@ -186,25 +200,41 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
                 await projection.ApplyAsync(evt, executionToken).ConfigureAwait(false);
             }
         }
+        catch (Exception exception) when (writer.TryComplete(exception))
+        {
+            // The channel propagates producer failures to its reader.
+        }
         finally
         {
-            // Ensure readers unblock if the producer exits without a terminal.
+            _ = writer.TryComplete();
         }
     }
 
     private async Task ProjectOpenAiAsync(
         TurnExecutionRequest request,
         OpenAiSseProjection projection,
+        ChannelWriter<OpenAiChatChunk> writer,
         CancellationToken executionToken,
         InferenceAuditContext? auditContext)
     {
-        IAsyncEnumerable<TurnEvent> events = _turnEventSource is TurnEngine engine
-            ? engine.RunTurnAsync(request, auditContext, executionToken)
-            : _turnEventSource.RunTurnAsync(request, executionToken);
-
-        await foreach (TurnEvent evt in events.ConfigureAwait(false))
+        try
         {
-            await projection.ApplyAsync(evt, executionToken).ConfigureAwait(false);
+            IAsyncEnumerable<TurnEvent> events = _turnEventSource is TurnEngine engine
+                ? engine.RunTurnAsync(request, auditContext, executionToken)
+                : _turnEventSource.RunTurnAsync(request, executionToken);
+
+            await foreach (TurnEvent evt in events.ConfigureAwait(false))
+            {
+                await projection.ApplyAsync(evt, executionToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (writer.TryComplete(exception))
+        {
+            // The channel propagates producer failures to its reader.
+        }
+        finally
+        {
+            _ = writer.TryComplete();
         }
     }
 

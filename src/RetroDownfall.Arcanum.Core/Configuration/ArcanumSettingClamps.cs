@@ -82,6 +82,8 @@ public static class ArcanumSettingClamps
 
     public static int ContextWindowLimit(int value) => Math.Clamp(value, 256, 2_097_152);
 
+    public static int ReasoningBudgetTokens(int value) => Math.Clamp(value, 1, 2_097_152);
+
     public static int ExecuteCommandTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int InferenceTimeoutSeconds(int value) => Math.Clamp(value, 5, 3600);
@@ -362,6 +364,8 @@ public static class ArcanumSettingClamps
     public static double PricingInputPer1M(double value) => Math.Clamp(value, 0.0, 1_000_000.0);
 
     public static double PricingOutputPer1M(double value) => Math.Clamp(value, 0.0, 1_000_000.0);
+
+    public static decimal PricingRatePer1M(decimal value) => Math.Clamp(value, 0m, 1_000_000m);
 
     public static decimal BudgetDailyLimitUsd(decimal value) => Math.Clamp(value, 0.00m, 1_000_000.00m);
 

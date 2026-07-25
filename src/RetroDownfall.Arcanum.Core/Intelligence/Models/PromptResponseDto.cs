@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 /// <summary>
@@ -8,4 +10,17 @@ public sealed record PromptResponseDto(
     string Text,
     ChatCompletionUsage? Usage,
     List<PromptToolCall>? ToolCalls = null,
-    string? FinishReason = null);
+    string? FinishReason = null)
+{
+    public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
+
+    public static PromptResponseDto From(PromptTurnResult turn) =>
+        new(
+            turn.Text,
+            turn.Usage,
+            turn.ToolCalls,
+            turn.FinishReason)
+        {
+            Reasoning = turn.Reasoning,
+        };
+}

@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -162,11 +163,7 @@ public sealed partial class McpConnectionManager
 
     private static string GetGlobalMcpConfigPath()
     {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config",
-            "arcanum",
-            "mcp.json");
+        return ArcanumPaths.GlobalMcpConfigFile;
     }
 
 }

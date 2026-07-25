@@ -59,6 +59,8 @@ internal sealed class CommandCenterWindow : Window
 
     private int _preservedSelectedItem;
 
+    private int _preservedLogEntryLineOffset;
+
     private int _preservedIncantationSelectedItem;
 
     private SessionLogBuffer? _boundLog;
@@ -1615,6 +1617,13 @@ internal sealed class CommandCenterWindow : Window
             if (_logLineAnchors.Count > 0)
             {
                 _preservedLogEntryId = _logLineAnchors[idx];
+                _preservedLogEntryLineOffset = 0;
+                for (int i = idx - 1;
+                     i >= 0 && _logLineAnchors[i] == _preservedLogEntryId;
+                     i--)
+                {
+                    _preservedLogEntryLineOffset++;
+                }
             }
 
             _preservedSelectedItem = idx;
@@ -1673,6 +1682,7 @@ internal sealed class CommandCenterWindow : Window
             LogView.SelectedItem = last;
             _preservedSelectedItem = last;
             _preservedLogEntryId = _logLineAnchors.Count > last ? _logLineAnchors[last] : null;
+            _preservedLogEntryLineOffset = 0;
         }
         else if (_preservedLogEntryId is { } entryId)
         {
@@ -1686,7 +1696,24 @@ internal sealed class CommandCenterWindow : Window
                 }
             }
 
-            int idx = found >= 0 ? found : Math.Clamp(_preservedSelectedItem, 0, _logLines.Count - 1);
+            int idx;
+            if (found >= 0)
+            {
+                idx = found;
+                for (int offset = 0;
+                     offset < _preservedLogEntryLineOffset
+                     && idx + 1 < _logLineAnchors.Count
+                     && _logLineAnchors[idx + 1] == entryId;
+                     offset++)
+                {
+                    idx++;
+                }
+            }
+            else
+            {
+                idx = Math.Clamp(_preservedSelectedItem, 0, _logLines.Count - 1);
+            }
+
             LogView.SelectedItem = idx;
             _preservedSelectedItem = idx;
         }

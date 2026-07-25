@@ -154,7 +154,7 @@ internal static class SemanticRouter
 
         if (string.IsNullOrWhiteSpace(response.Text))
         {
-            return null;
+            return new SemanticSpellRoutingResult(null, [], response.Usage);
         }
 
         string trimmed = response.Text.Trim();
@@ -173,17 +173,17 @@ internal static class SemanticRouter
 
             logger?.LogWarning("SemanticRouter failed to parse JSON response: {ResponseText}", logSnippet);
 
-            return null;
+            return new SemanticSpellRoutingResult(null, [], response.Usage);
         }
 
         if (parsed is null)
         {
-            return null;
+            return new SemanticSpellRoutingResult(null, [], response.Usage);
         }
 
         IReadOnlyList<string> entities = NormalizeEntities(parsed.Entities);
 
-        string spellName = parsed.SpellName.Trim();
+        string spellName = parsed.SpellName?.Trim() ?? string.Empty;
 
         if (string.IsNullOrEmpty(spellName) || spellName.Equals("NONE", StringComparison.OrdinalIgnoreCase))
         {

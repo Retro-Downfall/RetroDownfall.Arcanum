@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 using Serilog.Core;
@@ -31,10 +32,7 @@ public static class LoggingBootstrapper
     public static IServiceCollection AddArcanumSerilog(this IServiceCollection services)
     {
 
-        string logDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "logs");
+        string logDirectory = ResolveLogDirectory();
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(logDirectory);
 
@@ -105,6 +103,8 @@ public static class LoggingBootstrapper
         return services;
 
     }
+
+    internal static string ResolveLogDirectory() => ArcanumPaths.LogDirectory;
 
     private static bool IsTesting(IServiceProvider serviceProvider)
     {

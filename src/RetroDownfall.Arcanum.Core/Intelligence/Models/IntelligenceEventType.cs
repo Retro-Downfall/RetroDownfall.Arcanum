@@ -22,6 +22,9 @@ public enum IntelligenceEventType
     [JsonStringEnumMemberName("token")]
     Token,
 
+    [JsonStringEnumMemberName("reasoning")]
+    Reasoning,
+
     [JsonStringEnumMemberName("result")]
     Result,
 

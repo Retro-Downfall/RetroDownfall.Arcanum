@@ -16,22 +16,26 @@ TurnEngine (producer)               logical run lifecycle (preflight, fallback, 
         ↓
 TurnEventEmitter                    ordered Channel<TurnEvent> (semantic, internal)
         ↓
-Exactly one projection
+Exactly one coordinator projection
   ├── BufferedTurnProjection → PromptTurnResult
-  ├── IntelligenceEventProjection → Channel<IntelligenceEvent> (NDJSON)
-  └── OpenAiSseProjection → Channel<OpenAiChatChunk>
+  └── IntelligenceEventProjection → Channel<IntelligenceEvent> (production streams)
         ↓
-HTTP writer                         live serialization + exact-byte idempotency capture
+HTTP writer
+  ├── native NDJSON serialization
+  └── production /v1 IntelligenceEvent → OpenAI SSE mapping
+
+Semantic helper/characterization path (not the production /v1 instance):
+  OpenAiSseProjection → Channel<OpenAiChatChunk>
 ```
 
-`WizardIntelligenceProvider.ExecutePromptAsync` / `StreamPromptAsync` build a `TurnExecutionRequest` (including `HasIdempotencyKey` from `TurnIdempotencyAmbient`, never from the public `PingRequest` body) and delegate to `TurnExecutionCoordinator`. The coordinator consumes semantic `TurnEvent`s and applies exactly one projection; it does **not** serialize HTTP. Keep-alives remain transport-only.
+`WizardIntelligenceProvider.ExecutePromptAsync` / `StreamPromptAsync` build a `TurnExecutionRequest` (including `HasIdempotencyKey` from `TurnIdempotencyAmbient`, never from the public `PingRequest` body) and delegate to `TurnExecutionCoordinator`. The coordinator consumes semantic `TurnEvent`s and applies exactly one projection; it does **not** serialize HTTP. Production `/v1` currently receives native `IntelligenceEvent` frames and reshapes them in the authoritative compatibility mapper in `OpenAiV1Endpoints`; it does not use the available `OpenAiSseProjection` instance path. The helper shares reasoning-field and typed-error rules only, while production endpoint tests own terminal usage and tool-fragmentation behavior. Keep-alives remain transport-only.
 
 All turn-pipeline chat provider calls go through Core `IModelCallExecutor` (`ExecuteBufferedAsync` / `ExecuteStreamingAsync`), including main inference, tool continuation, structured-output retries, spell routing, and Lexicon extraction. Mode policy for tool failures is preserved: buffered uses `Arcanum:Intelligence:TolerateToolFailures`; streaming always suppresses invocation failures (ADR 0004).
 
 There are two response shapes that share the same engine:
 
 - **Buffered** — `BufferedTurnProjection` materializes `RunCompleted` into `Result<PromptTurnResult>`.
-- **Streaming** — `IntelligenceEventProjection` (native NDJSON) or `OpenAiSseProjection` (`/v1` SSE) write typed frames into a transport channel for the HTTP writer.
+- **Streaming** — production routes use `IntelligenceEventProjection`; native endpoints serialize those frames as NDJSON and `/v1` maps the same typed frames to SSE. `OpenAiSseProjection` remains a separate semantic helper/characterization path for shared reasoning and error rules, not an exact wire-equivalent implementation.
 
 Both run the same pre-flight gates, the same context assembly, and the same iterative tool-call loop. They diverge only at projection and at how the model call is consumed (buffered vs streaming executor APIs).
 
@@ -193,22 +197,22 @@ Both modes of `RunInferenceAttemptAsync` (buffered and streaming) perform the sa
 
 This is the core of the workflow. `RunInferenceAttemptAsync` (shared by buffered and streaming via `TurnResponseMode`) contains **two nested `while (true)` loops**:
 
-- **Outer loop** — normally runs once. Only `continue`s if the model throws an exception that looks like "model does not support tools"; then it rebuilds `chatOptions` without tools and retries inference once.
+- **Outer loop** — normally runs once. It may `continue` once if the model rejects tools, but only while the provider attempt is uncommitted. Any answer content, visible or protected-only reasoning, complete actionable tool proposal, or successful empty round commits the attempt and prohibits this no-tools restart.
 - **Inner loop — the chat loop** — the bounded tool-call loop. Each iteration is one inference round:
 
 Each iteration of the inner loop:
 
 1. **Build messages + apply context compression** (outer-loop body, once per outer iteration) — `InferenceContextBuilder.BuildInitialMeAiChatMessages` constructs the message list from the thread + prompt; the dynamic system prompt is prepended; `TryApplyContextCompressionIfNeeded` may swap old Entries for a `Session.Summary` near the context limit (read-time compression — never deletes rows). Watermark/compact paths drop orphan ToolCall/ToolResult halves so exchanges stay paired.
-2. **Context + turn-budget preflight** — before each provider call: `IModelCallExecutor.TryBeginModelCall` (`Hub.TurnBudgetExceeded`) and `EnsureContextBudget` (messages + tool schemas + reserved output vs context window; may trim oldest complete in-memory tool exchanges; else `Hub.ContextBudgetExceeded`).
-3. **Call the model** — `IModelCallExecutor.ExecuteBufferedAsync` / `ExecuteStreamingAsync` (sole chat I/O boundary; Core purpose-tagged).
-4. **Accumulate usage** — `AccumulateUsage` adds prompt/completion/total tokens across rounds.
+2. **Context + turn-budget preflight** — before each provider call: `IModelCallExecutor.TryBeginModelCall` (`Hub.TurnBudgetExceeded`) and `EnsureContextBudget` (messages + tool schemas + `max(request MaxOutputTokens or configured ReservedOutputTokens default, Reasoning.BudgetTokens)` vs context window; may trim oldest complete in-memory tool exchanges; else `Hub.ContextBudgetExceeded`).
+3. **Call the model** — `IModelCallExecutor.ExecuteBufferedAsync` / `ExecuteStreamingAsync` (sole chat I/O boundary; Core purpose-tagged). `TextContent` becomes answer text; `TextReasoningContent` becomes a distinct normalized reasoning update/result. Streaming preserves interleaving order. Provider `ProtectedData` is retained only on the raw in-memory assistant content needed for same-provider tool continuation.
+4. **Accumulate usage** — `AccumulateUsage` adds prompt/completion/provider-total/cached/reasoning counts across rounds. Reasoning is already a completion subset and cached input is already a prompt subset, so neither is added to totals. A present provider total is authoritative; only a missing total is derived from prompt + completion.
 5. **Collect actionable function calls** — `ToolExecutionPipeline.CollectActionableFunctionCalls(response)` walks `response.Messages` extracting `FunctionCallContent` items where `!InformationalOnly`.
 6. **No tool calls → break** — the model produced a final text answer; exit the loop and proceed to finalization.
 7. **Forward-client-tools branch** — when `ForwardClientTools=true`, the Wizard **does not execute** the calls server-side: it records them as `PromptToolCall`s, sets `finishReason=tool_calls`, and breaks so the OpenAI v1 layer can echo them back to the client for client-side execution.
 8. **Tool round budget check** — increment `toolRoundsExecuted`; if it exceeds `MaxToolInferenceRounds`, return `ErrorCodes.Hub.ToolLoop`.
 9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token-budget materialized for the model. The result is appended to `observedToolCalls` and the audit context.
-10. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id) and a tool message containing `FunctionResultContent(callId, resultText)`. **This is the feedback that feeds the next inference round.**
-11. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` calls `grimoire.AppendToolInteractionAsync` then publishes recent Entries to `SessionEventHub`, so `/sessions/{id}/stream` subscribers see the tool interaction appear live.
+10. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id), any raw `TextReasoningContent` from that provider round, and a tool message containing `FunctionResultContent(callId, resultText)`. This is the feedback that feeds the next inference round. Raw reasoning never crosses to a fallback provider and exists only for this same-provider continuation.
+11. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` persists only the tool interaction and publishes recent Entries to `SessionEventHub`; raw or client-safe reasoning is never written to Grimoire.
 12. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) is sent to the model again. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 6). Step 10 is what makes this a loop rather than a single call.
 
 ### 6.1 Sequence diagram for a single tool round
@@ -228,7 +232,7 @@ sequenceDiagram
     participant Hub as SessionEventHub
 
     W->>M: GetResponseAsync(chatMessages, chatOptions)
-    M-->>W: ChatResponse (text + FunctionCallContent[])
+    M-->>W: ChatResponse (answer + reasoning + FunctionCallContent[])
     W->>W: CollectActionableFunctionCalls
     Note over W: calls.Count > 0 → continue loop
     W->>W: toolRoundsExecuted++ (≤ MaxToolInferenceRounds)
@@ -284,15 +288,15 @@ Finally `InvokeToolCallAsync` resolves the `AIFunction` from `chatOptions.Tools`
 
 ## 8. Streaming path structure
 
-`StreamCommittedInferenceAsync` mirrors the buffered path with `IAsyncEnumerable<IntelligenceEvent>` yield semantics and a streaming provider call. It has **three nested loops**:
+The streaming branch of `RunInferenceAttemptAsync` uses `IAsyncEnumerable<IntelligenceEvent>` yield semantics over the same loop. It has **three nested loops**:
 
 - **Outer `while (true)`** — the "model doesn't support tools" restart; normally runs once.
 - **Middle `while (true)`** — the streaming tool-call loop; each iteration is one streaming inference round (analogous to the buffered inner loop).
-- **Inner `while (true)`** — the chunk pump. Consumes `chatClient.GetStreamingResponseAsync(...)` one `ChatResponseUpdate` at a time via `MoveNextAsync`, appends text to `streamAccumulator`, and (unless `bufferTokens`) yields a `Token` IntelligenceEvent per chunk. Non-text updates (tool call deltas, usage, finish reason) are collected into `roundUpdates`.
+- **Inner `while (true)`** — the chunk pump. Consumes `IModelCallExecutor.ExecuteStreamingAsync(...)` semantic updates. `ModelCallTextDelta` appends only to `streamAccumulator` and may yield `Token`; `ModelCallReasoningUpdate` appends only to the ephemeral reasoning accumulator and may yield the typed `Reasoning` frame. Raw response updates (tool calls, usage, finish reason, and provider-protected reasoning needed for continuation) are collected into `roundUpdates`. The first explicit reasoning update commits the provider before any projection, including protected-only reasoning or reasoning withheld from the client.
 
-Per streaming round: stream chunks → combine `roundUpdates.ToChatResponse()` → accumulate usage → collect tool calls → (no calls → break with finish reason; forward-client-tools → yield `ToolCall` events and break; else increment `streamToolRoundCount`, and for each call yield a `ToolCall` event, run `ProcessSingleToolCallAsync` with `suppressInvocationFailures: true`, yield any `Warded`/`WardResolved` events, yield `ToolError` if the tool failed, yield `ToolResult`, append the exchange to `chatMessages`, persist to Grimoire) → loop back to a fresh `GetStreamingResponseAsync`.
+Per streaming round: stream chunks → combine `roundUpdates.ToChatResponse()` → accumulate usage → collect tool calls → (no calls → break with finish reason; forward-client-tools → yield `ToolCall` events and break; else increment `streamToolRoundCount`, and for each call yield a `ToolCall` event, run `ProcessSingleToolCallAsync` with `suppressInvocationFailures: true`, yield any `Warded`/`WardResolved` events, yield `ToolError` if the tool failed, yield `ToolResult`, append the exchange to `chatMessages`, persist to Grimoire) → loop back to a fresh `IModelCallExecutor.ExecuteStreamingAsync`.
 
-**Streaming guardrails modes** — `Guardrails.StreamingMode` defaults to **`buffered`** (`GuardrailsStreamingMode.Buffered`); explicit **`passthrough`** is honored with a configuration warning (ADR 0001). When `buffered`, `bufferTokens=true` and tokens are NOT yielded per-chunk; instead the full `finalText` is yielded as a single `Token` event after the output guardrails filter runs, so the output guardrails can scan the complete text before any of it reaches the client. Provider fallback still commits on the first provider content delta even while tokens are withheld (see ADR 0004).
+**Streaming guardrails/strict modes** — `Guardrails.StreamingMode` defaults to **`buffered`** (`GuardrailsStreamingMode.Buffered`); explicit **`passthrough`** is honored with a configuration warning (ADR 0001). Buffered guardrails and strict JSON-schema output set `bufferTokens=true`, withholding both answer and reasoning frames while preserving their relative runs. Safety inspection scans the final answer plus projectable reasoning. On success the buffered runs are released in order; on rejection none are released. Provider commitment still occurs on the raw answer/reasoning update, before this visibility decision. Passthrough can expose content before the post-hoc filter and retains the explicit leakage warning.
 
 ---
 
@@ -302,15 +306,15 @@ After the tool loop breaks with a final text answer:
 
 **Buffered** (`RunInferenceAttemptAsync` with `TurnResponseMode.Buffered`):
 
-1. **Structured output validation** — when `ResponseFormat=="json_schema"` and `StructuredOutput.Enabled`, `StructuredOutputValidator.ValidateAndRetryAsync` can re-prompt the model with an error message up to `MaxValidationRetries` times (a bounded retry loop inside finalization).
-2. **Guardrails output filter** — `FilterGuardrailsOutputAsync` → `GuardrailsPipeline.FilterOutputAsync`. Scans for toxicity/blocked topics (not PII — that was input-only). On failure, the Grimoire turn is resolved as interrupted and the turn fails.
-3. **Grimoire finalize** — `grimoireTurnWriter.TryFinalizeBufferedAssistantEntryAsync` → `grimoire.FinalizeAssistantEntryAsync(entryId, finalText)`. Publishes the finalized Entry to `SessionEventHub`.
+1. **Structured output validation** — when `ResponseFormat=="json_schema"` and `StructuredOutput.Enabled`, `StructuredOutputValidator.ValidateAndRetryAsync` can re-prompt the model with an error message up to `MaxValidationRetries` times (a bounded retry loop inside finalization). Validation consumes answer text only. Each corrective call replaces both the rejected answer and its ephemeral reasoning; only the accepted replacement is eligible for projection.
+2. **Guardrails output filter** — `FilterGuardrailsOutputAsync` → `GuardrailsPipeline.FilterOutputAsync`. Scans the accepted answer plus projectable reasoning for toxicity/blocked topics (not PII — that was input-only). On failure, the Grimoire turn is resolved as interrupted and the turn fails without exposing buffered output.
+3. **Grimoire finalize** — `grimoireTurnWriter.TryFinalizeBufferedAssistantEntryAsync` → `grimoire.FinalizeAssistantEntryAsync(entryId, finalText)`. Publishes the finalized answer-only Entry to `SessionEventHub`; reasoning is never persisted.
 4. **Session token increment** — `TryIncrementSessionTokensAsync`.
 5. **Saga extraction enqueue** — `TryEnqueueSagaExtraction` — background service extracts Saga memories from the turn.
 6. **Metrics + audit logging.**
-7. **Return** `PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)`.
+7. **Return** `PromptTurnResult(finalText, accumulatedUsage, observedToolCalls, finishReason)` with a separate ordered `Reasoning` segment list.
 
-**Streaming** (`RunInferenceAttemptAsync` with `TurnResponseMode.Streaming`): mirrors the above but yields events — `Error` on guardrails/validation failure (preserving any streamed partial text and resolving the Grimoire turn as interrupted), a single `Token` flush when `bufferTokens`, then the terminal `Result` event with usage, finish reason, and warnings. A `finally` block calls `TryResolveInterruptedOnStreamExitAsync` so the Grimoire turn is never left in-flight if the enumerator is abandoned (e.g. client disconnect). Structured-output retries (`ValidateAndRetryAsync`) remain buffered-only; streaming validates post-hoc.
+**Streaming** (`RunInferenceAttemptAsync` with `TurnResponseMode.Streaming`): mirrors the above but yields events. Best-effort structured output validates post-hoc without retry. Strict mode with `MaxValidationRetries > 0` uses bounded **buffered replacement calls** through `ValidateAndRetryAsync`; it clears rejected answer/reasoning runs and releases only the accepted replacement after validation and guardrails. Strict mode with zero retries still withholds and fails post-hoc. Failure yields `Error` and no terminal `Result`; success releases buffered `Reasoning`/`Token` runs in order, then yields `Result` with usage, finish reason, and warnings. A `finally` block calls `TryResolveInterruptedOnStreamExitAsync` so the Grimoire turn is never left in-flight if the enumerator is abandoned.
 
 ---
 
@@ -323,7 +327,7 @@ The sequence of events a streaming client sees for a typical multi-round tool tu
 3. `ConversationBound` — (if stateful) the conversation anchor
 4. `Status` — memory compression notice (if compression ran)
 5. **For each tool round:**
-   - `Token` × N — the model's text chunks (skipped when `bufferTokens`)
+   - `Reasoning` / `Token` × N — typed client-safe reasoning and answer chunks in provider order. Reasoning payload is `{ text, output }`; it never appears in token `data`. Frames are withheld together when `bufferTokens`.
    - **For each tool call in the round:**
      - `ToolCall` — name + args
      - `Warded` — (only if the Ward gate triggers) approval prompt to the DM
@@ -332,7 +336,7 @@ The sequence of events a streaming client sees for a typical multi-round tool tu
      - `ToolResult` — the stringified result returned to the model
      - *(session attachments)* after **all** tool results in the round are appended, a **successful** `attach_session_file` (`!Failed && !Denied`) queues untrusted-framed `TextContent`/`DataContent` for the **next** round (budget/inject-once consumed only after materialization; images need Scrying + vision; Ward/Sanctum denial and post-process failures do not inject)
 6. (loop repeats with more `Token`s for the next round)
-7. `Result` — terminal: "Complete" with usage, finish reason, warnings
+7. `Result` — terminal: accumulated answer text in `result.message`, the legacy total-token string in `result.data`, plus typed usage, finish reason, and warnings
 8. Or `Error` — terminal: inference error, guardrails rejection, or validation failure
 
 The **session live-stream** (`/sessions/{id}/stream`) is a **separate, independent SSE channel** — it replays recent Entries then pumps `SessionEventHub` for live Entry additions. The Grimoire turn writer publishes to this hub on begin/finalize/tool-interaction, so a UI watching a Session sees assistant Entries and tool interactions appear in real time, decoupled from the inference stream.
@@ -343,15 +347,15 @@ The **session live-stream** (`/sessions/{id}/stream`) is a **separate, independe
 
 | # | Loop | Location | Purpose | Termination |
 |---|---|---|---|---|
-| 1 | Provider fallback | `WizardIntelligenceProvider.ExecutePromptWithFallbackAsync` (buffered) and the streaming analog | Retry on next healthy provider on a connectivity failure | Success, non-connectivity error, or `MaxFallbackAttempts` exhausted |
-| 2 | Outer "no tools" restart | `RunInferenceAttemptAsync` outer `while (true)` | Retry inference without tools if the model rejects them | Runs once, then breaks |
+| 1 | Provider fallback | `WizardIntelligenceProvider.ExecutePromptWithFallbackAsync` (buffered) and the streaming analog | Retry the next healthy provider on a **pre-commit** connectivity failure | First provider commitment, success, non-connectivity error, or `MaxFallbackAttempts` exhausted |
+| 2 | Outer "no tools" restart | `RunInferenceAttemptAsync` outer `while (true)` | Retry inference without tools only if the model rejects them **before commitment** | Runs at most once; any answer/reasoning/tool/empty-success commitment prohibits restart |
 | 3 | **Tool-call loop** | `RunInferenceAttemptAsync` inner `while (true)` | Model → tool calls → execute → append → re-inference (mode branches for buffered vs streaming I/O and events) | `calls.Count==0` (final answer), `MaxToolInferenceRounds` exceeded, or client-tool-forward break |
 | 4 | Chunk pump (streaming) | `RunInferenceAttemptAsync` streaming branch innermost `while (true)` | Consume `IModelCallExecutor.ExecuteStreamingAsync` updates | `!hasNext` or read error |
 | 5 | _(removed)_ | — | Streaming tool loop is the same as #3 (`TurnResponseMode`) | — |
 | 6 | Structured output retry | `StructuredOutputValidator.ValidateAndRetryAsync` callback | Re-prompt model on JSON Schema validation failure | Schema valid or `MaxValidationRetries` |
 | 7 | Tool round budget check | `toolRoundsExecuted > maxToolRounds` | Hard cap on tool iterations | `ErrorCodes.Hub.ToolLoop` |
 
-The **core chat loop** is #3: `IModelCallExecutor` → `CollectActionableFunctionCalls` → if 0 calls, break to finalization; else for each call `ProcessSingleToolCallAsync` (Ward → Sanctum → invoke) → `AppendToolExchangeToMessages` → `TryAppendToolInteractionAsync` (Grimoire + SessionEventHub) → loop back with the augmented message list. The bounded retry (#6) and provider fallback (#1) are outer loops around this core.
+The **core chat loop** is #3: `IModelCallExecutor` → separate answer/reasoning updates → `CollectActionableFunctionCalls` → if 0 calls, break to finalization; else for each call `ProcessSingleToolCallAsync` (Ward → Sanctum → invoke) → `AppendToolExchangeToMessages` (including raw same-provider reasoning only) → `TryAppendToolInteractionAsync` (answer/tool persistence only) → loop back with the augmented message list. The bounded retry (#6) and pre-commit provider fallback (#1) are outer loops around this core.
 
 ---
 

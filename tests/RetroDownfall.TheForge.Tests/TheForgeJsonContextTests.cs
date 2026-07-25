@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,6 +17,21 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class TheForgeJsonContextTests
 {
+
+    [Theory]
+    [InlineData(typeof(ReasoningRequestOptions))]
+    [InlineData(typeof(ReasoningEffortLevel))]
+    [InlineData(typeof(ReasoningOutputMode))]
+    [InlineData(typeof(ReasoningContentSegment))]
+    [InlineData(typeof(ReasoningCapabilities))]
+    [InlineData(typeof(ReasoningControlSupport))]
+    [InlineData(typeof(ReasoningWireDialect))]
+    public void ReasoningContracts_HaveSourceGeneratedTypeInfo(Type type)
+    {
+
+        Assert.NotNull(TheForgeJsonContext.Default.GetTypeInfo(type));
+
+    }
 
     [Fact]
     public void ApiResponse_SpellDetail_RoundTrips()

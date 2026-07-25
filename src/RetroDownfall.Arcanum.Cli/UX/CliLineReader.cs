@@ -14,6 +14,23 @@ internal static class CliLineReader
 
         AnsiConsole.Markup(promptMarkup);
 
+        if (Console.IsInputRedirected)
+        {
+            while (true)
+            {
+                string? redirectedLine = Console.ReadLine();
+                if (redirectedLine is null)
+                {
+                    throw new InvalidOperationException("Redirected console input ended.");
+                }
+
+                if (allowEmpty || !string.IsNullOrWhiteSpace(redirectedLine))
+                {
+                    return redirectedLine;
+                }
+            }
+        }
+
         StringBuilder sb = new();
 
         while (true)

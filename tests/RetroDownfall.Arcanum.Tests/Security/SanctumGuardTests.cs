@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -1071,6 +1072,93 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ValidateNetworkAsync_AllowListLiteralIpMismatch_Denies()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(
+            campaignId,
+            _workspace.Root,
+            new SanctumConfig
+            {
+                Enabled = true,
+                NetworkPolicy = NetworkPolicy.AllowList,
+                AllowedDomains = ["127.0.0.2"],
+            }));
+
+        SanctumResult result = await CreateGuard(repository).ValidateNetworkAsync(
+            campaignId.ToString(),
+            "http://127.0.0.1/",
+            "fetch_url");
+
+        Assert.False(result.Allowed);
+
+        Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ValidateNetworkAsync_AllowListResolvedHostnameMismatch_Denies()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(
+            campaignId,
+            _workspace.Root,
+            new SanctumConfig
+            {
+                Enabled = true,
+                NetworkPolicy = NetworkPolicy.AllowList,
+                AllowedDomains = ["localhost"],
+            }));
+
+        SanctumResult result = await CreateGuard(repository).ValidateNetworkAsync(
+            campaignId.ToString(),
+            "http://192.0.2.1/",
+            "fetch_url");
+
+        Assert.False(result.Allowed);
+
+        Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ValidateNetworkAsync_AllowListUnresolvableAllowedDomain_DeniesResolvableHost()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(
+            campaignId,
+            _workspace.Root,
+            new SanctumConfig
+            {
+                Enabled = true,
+                NetworkPolicy = NetworkPolicy.AllowList,
+                AllowedDomains = ["this-domain-definitely-does-not-exist-12345.invalid"],
+            }));
+
+        SanctumResult result = await CreateGuard(repository).ValidateNetworkAsync(
+            campaignId.ToString(),
+            "http://127.0.0.1/",
+            "fetch_url");
+
+        Assert.False(result.Allowed);
+
+        Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
     public async Task GetEffectiveResourceLimitsForWorkspaceAsync_KnownCampaign_ReturnsClampedLimits()
     {
 
@@ -1126,6 +1214,281 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task GetChildProcessBoundaryForWorkspaceAsync_EmptyWorkspace_ReturnsNullWithoutLookup(
+        string? workspaceRoot)
+    {
+
+        FakeCampaignRepository repository = new();
+
+        SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
+            .GetChildProcessBoundaryForWorkspaceAsync(workspaceRoot);
+
+        Assert.Null(boundary);
+
+        Assert.False(repository.WasQueried);
+
+    }
+
+    [Fact]
+    public async Task GetChildProcessBoundaryForWorkspaceAsync_InvalidWorkspace_ReturnsNullWithoutLookup()
+    {
+
+        FakeCampaignRepository repository = new();
+
+        SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
+            .GetChildProcessBoundaryForWorkspaceAsync("bad\u0000path");
+
+        Assert.Null(boundary);
+
+        Assert.False(repository.WasQueried);
+
+    }
+
+    [Fact]
+    public async Task GetChildProcessBoundaryForWorkspaceAsync_UnknownWorkspace_ReturnsNull()
+    {
+
+        FakeCampaignRepository repository = new();
+
+        SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
+            .GetChildProcessBoundaryForWorkspaceAsync(_workspace.CreateSubdir("unknown-campaign"));
+
+        Assert.Null(boundary);
+
+        Assert.True(repository.WasQueried);
+
+    }
+
+    [Theory]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    public async Task GetChildProcessBoundaryForWorkspaceAsync_KnownCampaign_CombinesSanctumFlags(
+        bool enabled,
+        bool enforcePathBoundary,
+        bool expectedBoundaryRequired)
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        string allowedPath = _workspace.CreateSubdir("shared-" + campaignId.ToString("N"));
+
+        SanctumConfig config = new()
+        {
+            Enabled = enabled,
+            EnforcePathBoundary = enforcePathBoundary,
+            AllowedPaths = [allowedPath],
+        };
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(campaignId, _workspace.Root, config));
+
+        SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
+            .GetChildProcessBoundaryForWorkspaceAsync(_workspace.Root);
+
+        Assert.NotNull(boundary);
+
+        Assert.Equal(Path.GetFullPath(_workspace.Root), boundary.WorkspaceRoot);
+
+        Assert.Equal(expectedBoundaryRequired, boundary.PathBoundaryRequired);
+
+        Assert.Collection(boundary.AllowedPaths, path => Assert.Equal(allowedPath, path));
+
+    }
+
+    [Fact]
+    public async Task GetChildProcessBoundaryForWorkspaceAsync_InvalidCampaignPath_UsesResolvedLookupPath()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        Campaign campaign = CreateCampaign(
+            campaignId,
+            "bad\u0000campaign-path",
+            EnabledPathBoundaryConfig());
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaignForPath(campaign, _workspace.Root);
+
+        SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
+            .GetChildProcessBoundaryForWorkspaceAsync(_workspace.Root);
+
+        Assert.NotNull(boundary);
+
+        Assert.Equal(Path.GetFullPath(_workspace.Root), boundary.WorkspaceRoot);
+
+        Assert.True(boundary.PathBoundaryRequired);
+
+    }
+
+    [Theory]
+    [InlineData(ResourceLimitKind.Cpu, "CPU time", "31s")]
+    [InlineData(ResourceLimitKind.Memory, "memory", null)]
+    [InlineData(ResourceLimitKind.FileDescriptors, "open file descriptor", "2049")]
+    [InlineData((ResourceLimitKind)int.MaxValue, "resource", "unexpected")]
+    public async Task RecordResourceLimitBreachAsync_KnownCampaign_RecordsResourceDescriptionAndDetails(
+        ResourceLimitKind resource,
+        string resourceName,
+        string? actualValue)
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        const int maxBreachCount = 321;
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(
+            campaignId,
+            _workspace.Root,
+            new SanctumConfig { MaxBreachCount = maxBreachCount }));
+
+        FakeSanctumBreachRepository breachRepository = new();
+
+        await CreateGuard(repository, breachRepository).RecordResourceLimitBreachAsync(
+            _workspace.Root,
+            "execute_command",
+            resource,
+            "30",
+            actualValue);
+
+        SanctumBreachRecord record = Assert.Single(breachRepository.Records);
+
+        Assert.Equal(campaignId.ToString(), record.CampaignId);
+
+        Assert.Equal("execute_command", record.ToolName);
+
+        Assert.Equal("ResourceLimit", record.BreachType);
+
+        Assert.Equal(
+            $"Tool 'execute_command' exceeded {resourceName} limit: {actualValue ?? "unknown"} > 30",
+            record.Description);
+
+        Assert.NotNull(record.Details);
+
+        Assert.Equal(_workspace.Root, record.Details.WorkspaceRoot);
+
+        Assert.Equal("30", record.Details.LimitValue);
+
+        Assert.Equal(actualValue, record.Details.ActualValue);
+
+        Assert.Equal(maxBreachCount, breachRepository.LastMaxBreachCount);
+
+    }
+
+    [Fact]
+    public async Task RecordResourceLimitBreachAsync_EmptyWorkspace_DoesNotQueryOrPersist()
+    {
+
+        FakeCampaignRepository repository = new();
+
+        FakeSanctumBreachRepository breachRepository = new();
+
+        await CreateGuard(repository, breachRepository).RecordResourceLimitBreachAsync(
+            "   ",
+            "execute_command",
+            ResourceLimitKind.Cpu,
+            "30s",
+            "31s");
+
+        Assert.False(repository.WasQueried);
+
+        Assert.False(breachRepository.WasCalled);
+
+        Assert.Empty(breachRepository.Records);
+
+    }
+
+    [Fact]
+    public async Task RecordResourceLimitBreachAsync_UnknownWorkspace_DoesNotPersist()
+    {
+
+        FakeCampaignRepository repository = new();
+
+        FakeSanctumBreachRepository breachRepository = new();
+
+        await CreateGuard(repository, breachRepository).RecordResourceLimitBreachAsync(
+            _workspace.CreateSubdir("unknown-resource-campaign"),
+            "execute_command",
+            ResourceLimitKind.Memory,
+            "512MB",
+            "513MB");
+
+        Assert.True(repository.WasQueried);
+
+        Assert.False(breachRepository.WasCalled);
+
+        Assert.Empty(breachRepository.Records);
+
+    }
+
+    [Fact]
+    public async Task RecordResourceLimitBreachAsync_PersistenceFailure_DoesNotEscape()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(campaignId, _workspace.Root, new SanctumConfig()));
+
+        FakeSanctumBreachRepository breachRepository = new()
+        {
+            ExceptionToThrow = new IOException("simulated persistence failure"),
+        };
+
+        await CreateGuard(repository, breachRepository).RecordResourceLimitBreachAsync(
+            _workspace.Root,
+            "execute_command",
+            ResourceLimitKind.Cpu,
+            "30s",
+            "31s");
+
+        Assert.True(breachRepository.WasCalled);
+
+        Assert.Empty(breachRepository.Records);
+
+    }
+
+    [Fact]
+    public async Task RecordResourceLimitBreachAsync_Cancellation_Propagates()
+    {
+
+        Guid campaignId = Guid.NewGuid();
+
+        FakeCampaignRepository repository = new();
+
+        repository.SetCampaign(CreateCampaign(campaignId, _workspace.Root, new SanctumConfig()));
+
+        var expected = new OperationCanceledException("simulated cancellation");
+
+        FakeSanctumBreachRepository breachRepository = new()
+        {
+            ExceptionToThrow = expected,
+        };
+
+        OperationCanceledException actual = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CreateGuard(repository, breachRepository).RecordResourceLimitBreachAsync(
+                _workspace.Root,
+                "execute_command",
+                ResourceLimitKind.Cpu,
+                "30s",
+                "31s"));
+
+        Assert.Same(expected, actual);
+
+        Assert.True(breachRepository.WasCalled);
+
+        Assert.Empty(breachRepository.Records);
+
+    }
+
     private static SanctumGuard CreateGuard(FakeCampaignRepository repository, FakeSanctumBreachRepository? breachRepository = null) =>
         new(repository, breachRepository ?? new FakeSanctumBreachRepository(), NullLogger<SanctumGuard>.Instance);
 
@@ -1174,6 +1537,15 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         }
 
+        public void SetCampaignForPath(Campaign campaign, string lookupPath)
+        {
+
+            _byId[campaign.Id] = campaign;
+
+            _byPath[Path.GetFullPath(lookupPath.Trim())] = campaign;
+
+        }
+
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
 
@@ -1187,6 +1559,8 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default)
         {
+
+            WasQueried = true;
 
             string full = Path.GetFullPath(path.Trim());
 
@@ -1225,8 +1599,25 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public List<SanctumBreachRecord> Records { get; } = [];
 
+        public bool WasCalled { get; private set; }
+
+        public int? LastMaxBreachCount { get; private set; }
+
+        public Exception? ExceptionToThrow { get; init; }
+
         public Task RecordAsync(SanctumBreachRecord breach, int maxBreachCount, CancellationToken ct = default)
         {
+
+            WasCalled = true;
+
+            LastMaxBreachCount = maxBreachCount;
+
+            if (ExceptionToThrow is not null)
+            {
+
+                return Task.FromException(ExceptionToThrow);
+
+            }
 
             Records.Add(breach with { Id = Guid.NewGuid().ToString("N") });
 

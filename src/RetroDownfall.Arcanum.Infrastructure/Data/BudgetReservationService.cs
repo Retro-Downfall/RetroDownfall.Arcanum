@@ -241,30 +241,44 @@ internal sealed class BudgetReservationService(
     /// <summary>
     /// Worst-case reservation estimate from <see cref="TurnLimitsDefaults"/> and default pricing.
     /// </summary>
-    public static decimal EstimateWorstCaseTurnUsd(ModelPricingEntry pricing, int? maxOutputTokens = null)
-    {
-        long maxPerCall = maxOutputTokens is > 0 ? maxOutputTokens.Value : 4096L;
-        long maxInput = maxPerCall;
-        int calls = TurnLimitsDefaults.MaxModelCalls;
-
-        return CostCalculator.CalculateCost(
-            inputTokens: maxInput * calls,
-            outputTokens: maxPerCall * calls,
-            cachedTokens: 0L,
-            pricing);
-    }
+    public static decimal EstimateWorstCaseTurnUsd(
+        ModelPricingEntry pricing,
+        int? maxOutputTokens = null,
+        int? reasoningBudgetTokens = null) =>
+        EstimateWorstCaseCallsUsd(
+            pricing,
+            maxOutputTokens,
+            reasoningBudgetTokens,
+            TurnLimitsDefaults.MaxModelCalls);
 
     /// <summary>
     /// Worst-case USD for one OpenAI batch JSONL line (single model call; batches force zero tools).
     /// </summary>
-    public static decimal EstimateWorstCaseBatchLineUsd(ModelPricingEntry pricing, int? maxOutputTokens = null)
+    public static decimal EstimateWorstCaseBatchLineUsd(
+        ModelPricingEntry pricing,
+        int? maxOutputTokens = null,
+        int? reasoningBudgetTokens = null) =>
+        EstimateWorstCaseCallsUsd(pricing, maxOutputTokens, reasoningBudgetTokens, callCount: 1);
+
+    private static decimal EstimateWorstCaseCallsUsd(
+        ModelPricingEntry pricing,
+        int? maxOutputTokens,
+        int? reasoningBudgetTokens,
+        int callCount)
     {
-        long maxPerCall = maxOutputTokens is > 0 ? maxOutputTokens.Value : 4096L;
+        long requestedOutput = maxOutputTokens is > 0 ? maxOutputTokens.Value : 4096L;
+        long requestedReasoning = reasoningBudgetTokens is > 0 ? reasoningBudgetTokens.Value : 0L;
+        long maxPerCall = Math.Max(requestedOutput, requestedReasoning);
+        decimal outputRate = Math.Max(0m, pricing.OutputPer1M);
+        decimal reasoningRate = Math.Max(0m, pricing.ReasoningPer1M ?? outputRate);
+        long conservativelyPricedReasoning =
+            reasoningRate > outputRate ? Math.Min(requestedReasoning, maxPerCall) : 0L;
 
         return CostCalculator.CalculateCost(
-            inputTokens: maxPerCall,
-            outputTokens: maxPerCall,
+            inputTokens: maxPerCall * callCount,
+            outputTokens: maxPerCall * callCount,
             cachedTokens: 0L,
+            reasoningTokens: conservativelyPricedReasoning * callCount,
             pricing);
     }
 
@@ -304,7 +318,7 @@ internal sealed class BudgetReservationService(
 
         object? scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
-        return Convert.ToDecimal(scalar ?? 0m, CultureInfo.InvariantCulture);
+        return Convert.ToDecimal(scalar, CultureInfo.InvariantCulture);
     }
 
     private static async Task<decimal> SumOutstandingAsync(
@@ -327,7 +341,7 @@ internal sealed class BudgetReservationService(
 
         object? scalar = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
-        return Convert.ToDecimal(scalar ?? 0m, CultureInfo.InvariantCulture);
+        return Convert.ToDecimal(scalar, CultureInfo.InvariantCulture);
     }
 
     private static async Task ExecuteNonQueryAsync(DbConnection connection, string sql, CancellationToken cancellationToken)

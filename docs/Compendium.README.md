@@ -68,12 +68,15 @@ The Host section includes optional HTTPS settings (`host.https.*`) and a **Gener
 - **Models**: UI-only types — `ConfigSection`/`SectionDescriptor` (nav) and the `SettingDescriptor` metadata table (see below). The domain model is reused from `RetroDownfall.Arcanum.Core`.
 - **Services**: `ArcanumConfigurationStore`, `ArcanumDataProtectionSecretProtector`, `DialogService` (via `IMainWindowProvider`), `IUiDispatcher`. All filesystem paths are composed with `Path.Combine` and `ArcanumPaths.*`.
 - **ViewModels**: one root `ConfigurationViewModel` plus 14 polished `SectionViewModel` classes. Several sections group multiple config domains: **Storage** covers Grimoire + Sessions + EventBus + Logs + Workspaces; **Forge** covers Spells + Campaigns + Perception + Prompts + Codex; **Orchestration** covers Daemon + Apprentices + Conclave (top-level only — the nested `Conclave.A2A` sub-record round-trips untouched); **Security** covers Security + Ward. Core settings types are `record` POCOs with **`{ get; set; }`** (required for the configuration binding generator — not `init`-only). Compendium VMs expose mutable `[ObservableProperty]` fields and rebuild settings snapshots via `with` expressions on save.
+- **Provider model capabilities:** the polished `ProvidersPage` rows edit only model name and vision support. An existing optional reasoning capability object is retained as opaque metadata and round-trips unchanged; legacy string entries do not gain invented capabilities. `ProvidersPage` does not author or edit reasoning metadata. Operators make capability changes by editing raw `arcanum.json`. The `providers.models.reasoning.*` descriptors provide schema/help and parity metadata only; they are not a generic editor surface for provider rows. Compendium intentionally has no unplanned full reasoning-capability panel.
 - **Generic descriptor editor:** domains without a polished hand-authored view (Resilience, Moderations, Pricing, Budget, StructuredOutput, WebBrowsing, ClientToolForwarding, Guardrails, Embeddings, Metrics, Files, Batches) open `GenericSettingsSectionView`, which renders fields from `SettingDescriptors` grouped by subdomain. Edits live in `GenericSettingFieldViewModel` instances; `_snapshot` stays the last loaded baseline until Save/Reload. On save, `BuildSettings()` applies polished `with` edits then a reflection-based key updater (`GenericSettingsUpdater`) for generic fields. Compendium is a desktop editor and is not Native AOT-shipped.
 - **Views**: `MainWindow` + one Avalonia `UserControl` per polished section + `GenericSettingsSectionView`, and reusable controls (`LabeledEntry`, `LabeledStepper`/`NumericUpDown`, `LabeledToggle`, `ChipsEditor`, `LabeledPicker`, `LabeledColorEntry`, `SaveBar`).
 
 ## SettingDescriptor metadata table
 
 A single `SettingDescriptor` table (`src/RetroDownfall.Compendium.Ux/Models/SettingDescriptors.cs`) is the visual mirror of the `arcanum.json` configuration reference in [`docs/Arcanum.DESIGN.md`](Arcanum.DESIGN.md) §3.4. Each row pairs one setting with:
+
+For polished sections such as `ProvidersPage`, descriptor presence documents schema/help and supports coverage/parity checks; it does not imply that the generic editor renders that field.
 
 - `Key` — the dot-path pointer that matches `ConfigurationValidationError.Pointer` (e.g. `host.port`, `security.allowUnsandboxedToolChildren`, `mcp.requestTimeoutSeconds`, `cli.themeColors.light.text`), so validation errors route back to the offending field.
 - `Section`, `Label`, `Description` — nav grouping, field label, and the help text shown under the field.
@@ -82,6 +85,7 @@ A single `SettingDescriptor` table (`src/RetroDownfall.Compendium.Ux/Models/Sett
 - `Min` / `Max` / `Increment` — copied from the matching `ArcanumSettingClamps.*` method and locked in by `SettingDescriptorParityTests`.
 - `EnumType` — the enum whose `Enum.GetValues()` populates the picker.
 - `ClampName` — the `ArcanumSettingClamps` method name used by the parity test.
+- `AllowUnset` — distinguishes an absent nullable value from an explicit zero; used by `pricing.defaultPricing.reasoningPer1M`, where null falls back to the output rate and zero means free reasoning.
 
 Two tests in `tests/RetroDownfall.Compendium.Tests` guard the table against drift:
 

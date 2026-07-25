@@ -151,14 +151,19 @@ internal sealed class SessionWorkspaceService(
             state.Incantations.Clear();
             foreach (EntryDto e in chronological)
             {
+                if (SessionLogBuffer.IsEphemeralReasoningRole(e.Role))
+                {
+                    continue;
+                }
+
+                SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(e.Role);
                 if (PersistedToolInteraction.IsToolInteraction(e)
-                    || SessionLogBuffer.MapEntryRole(e.Role) == SessionLogEntryKind.Tool)
+                    || kind == SessionLogEntryKind.Tool)
                 {
                     IngestHistoryTool(state.Incantations, e);
                     continue;
                 }
 
-                SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(e.Role);
                 mapped.Add((kind, FormatEntryContent(e)));
             }
 

@@ -223,7 +223,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Trials / Logs / Audit | `/proving-grounds/trials/run`, `/logs`, `/audit`, `/guardrails/audit` | Ephemeral trials; ring buffer; JSONL audits |
 | Tools / Docs | `POST /api/tools/invoke`, `/openapi/v1.json`, `/scalar` | Built-in invoke; OpenAPI; Scalar opt-in |
 
-**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Compression + Idempotency-Key: [§8.25](Arcanum.DESIGN.md#825-http-response-compression) / [§11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
+**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [§8.25](Arcanum.DESIGN.md#825-http-response-compression) / [§11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
 
 
 ## Inference engine details
@@ -231,6 +231,9 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 Summaries only — full contracts live in DESIGN.
 
 - **Providers:** `Arcanum:Providers[]` with `type: "OpenAICompatible"` (Ollama via `/v1`). Obsolete managed-local / `Ollama` / `Arcanum:Cache` keys are hard-rejected by `ConfigurationValidator`.
+- **First-class reasoning:** native requests use `reasoning:{effort?,budgetTokens?,output?}` where effort is `none|minimal|low|medium|high|extraHigh`, output is `none|summary|full`, and effort/budget are mutually exclusive. OpenAI requests use `reasoning_effort` (`xhigh` maps to native `extraHigh`), additive `reasoning_budget`, and `reasoning_output`. `reasoning_output` is an Arcanum-local exposure preference plus a Microsoft.Extensions.AI best-effort hint, not a guaranteed provider wire control; Arcanum never invents an unsupported provider field. When output is omitted, a full-capable model defaults to `full`, otherwise a summary-only model defaults to `summary` (subject to `allowsClientOutput`, and `supportsStreaming` on streams). Reasoning and capability/dialect enums are string-only; numeric or unknown enum JSON fails strict binding. Model objects opt in with `reasoning:{controlSupport,supportsSummary,supportsFull,supportsStreaming,reportsReasoningTokens,allowsClientOutput,wireDialect,maxBudgetTokens?}`; control support is `none|effort|budget|effortAndBudget`, and the closed dialects are `standard|openRouter|topLevelReasoningBudget|anthropicThinking`. No dialect is inferred from provider/model names.
+- **OpenAI reasoning errors:** semantic validation is identical for buffered and `stream:true` requests and returns HTTP 400, `type:"invalid_request_error"`, `param:"reasoning"`, with `invalid_reasoning_options`, `invalid_reasoning_budget`, `unsupported_reasoning_control`, `reasoning_budget_exceeds_model_limit`, or `unsupported_reasoning_output`. Unknown enum strings and defined/undefined integer enum values fail earlier as strict JSON binding: HTTP 400, code `invalid_json`, no `param`.
+- **Reasoning separation:** native buffered responses expose an ordered `reasoning` array; NDJSON uses typed `reasoning` frames; OpenAI buffered/SSE uses additive `reasoning_summary` / `reasoning_content`; native usage exposes additive `cached_tokens` and `reasoning_tokens`, while OpenAI usage uses `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`. Answer fields remain answer-only. Visible reasoning is ephemeral, provider `ProtectedData` stays in memory only for same-provider tool continuation, and no reasoning body enters Grimoire, logs/audit, trace export, Master/Apprentice handoff, checkpoints, or Chronicles. The Forge Tome renders a live reasoning role and traces retain only redacted type/output/count metadata.
 - **Agentic layers:** spell routing (+ optional embedding pre-filter), Arcane Resonance, Artifact Attunement, MCP tool loops, read-time compression, Wards, Sanctum. See [DESIGN §10](Arcanum.DESIGN.md#10-intelligence-pipeline) and [CHAT-LOOP](Arcanum.CHAT-LOOP.md).
 - **Scrying / attachments:** [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) / [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default).
@@ -243,7 +246,7 @@ Summaries only — full contracts live in DESIGN.
 
 Settings bind under the `Arcanum` object in **`arcanum.json`** (`~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows). Override with **`ARCANUM_`** + `__` nesting. Clamps live in `ArcanumSettingClamps`; serve validates before listening. Obsolete removed keys are hard-rejected.
 
-> **Compendium** edits the same file visually — [`Compendium.README.md`](Compendium.README.md). Descriptors mirror [DESIGN §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings).
+> **Compendium** edits the same file visually — [`Compendium.README.md`](Compendium.README.md). Custom provider rows edit model name/vision and preserve optional reasoning metadata opaquely; operators author reasoning capabilities by editing raw `arcanum.json`. The reasoning descriptors mirror [DESIGN §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings) as schema/help and coverage-parity metadata only; they are not a generic editor surface for provider rows.
 
 **Full key reference (types, defaults, clamps):** [DESIGN.md §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings). Sections at a glance:
 
@@ -251,7 +254,7 @@ Settings bind under the `Arcanum` object in **`arcanum.json`** (`~/.config/arcan
 |---------|----------|
 | `Host` | Port, HTTPS, CORS, body cap, rate limit, Scalar, ListenAny |
 | `Security` | API-key header/cache; Idempotency-Key TTL/size |
-| `DefaultModel` / `FastModel` / `Providers` | Multi-provider hub |
+| `DefaultModel` / `FastModel` / `Providers` | Multi-provider hub; per-model vision/reasoning capabilities and closed reasoning wire dialect |
 | `Intelligence` | Timeouts, tool rounds, Lexicon, compression, injection bounds |
 | `Mcp` | Client timeouts, tools/list bounds, bootstrap |
 | `Ward` / Sanctum / `AllowUnsandboxedToolChildren` | Forbidden Arts, sandbox, FS-jail escape hatch |
@@ -291,13 +294,53 @@ Settings bind under the `Arcanum` object in **`arcanum.json`** (`~/.config/arcan
 }
 ```
 
-Ollama must use its `/v1` endpoint. `models` entries may be bare strings or `{ "name", "supportsVision" }` objects.
+Ollama must use its `/v1` endpoint. `models` entries may be bare strings or objects. A reasoning-capable model entry is explicit:
+
+```json
+{
+  "name": "example-reasoner",
+  "supportsVision": false,
+  "reasoning": {
+    "controlSupport": "effortAndBudget",
+    "supportsSummary": true,
+    "supportsFull": false,
+    "supportsStreaming": true,
+    "reportsReasoningTokens": true,
+    "allowsClientOutput": true,
+    "wireDialect": "openRouter",
+    "maxBudgetTokens": 32768
+  }
+}
+```
+
+`standard` uses typed Microsoft.Extensions.AI/OpenAI controls and does not accept a numeric budget. Numeric budgets require exactly one explicit nonstandard shape: `openRouter` → `reasoning.max_tokens`, `topLevelReasoningBudget` → top-level `reasoning_budget`, or `anthropicThinking` → `thinking.budget_tokens`.
 
 ```bash
 export ARCANUM_Arcanum__Providers__1__ApiKey='your-key-here'
 ```
 
 `DefaultModel`/`FastModel` must match a `models` entry on some provider — matching is a case-insensitive **exact** match, with no bare-name or tag-stripping fallback. OpenAI-compatible `endpoint`s usually include `/v1`. **MCP servers** are wired via `~/.config/arcanum/mcp.json` (`mcpServers` schema) over **stdio** (`command`/`args`, with an optional `inheritEnv` allowlist for `npx`-style launches) or **Streamable HTTP** (`type: "http"` or a bare `url`, SSRF-guarded and `https`-by-default); workspace-local `mcp.json` is merged only after `POST /api/mcp/trust-workspace`. See [DESIGN.md §3.4](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings) and the MCP host limits there.
+
+### Mandatory local Grimoire reinstall
+
+First-class reasoning adds `BillableOperations.ReasoningTokens` by changing the existing embedded install script in place. A database that already recorded that script's migration id will not replay it. **Before running this build, stop every Arcanum host/background daemon, back up anything you need, delete the local Grimoire database, and restart Arcanum to install a fresh schema.**
+
+macOS/Linux (Bash):
+
+```bash
+rm -f -- "$HOME/.config/arcanum/arcanum.db" "$HOME/.config/arcanum/arcanum.db-wal" "$HOME/.config/arcanum/arcanum.db-shm"
+```
+
+Windows (PowerShell):
+
+```powershell
+Remove-Item -Force -ErrorAction SilentlyContinue `
+  "$HOME\.config\arcanum\arcanum.db", `
+  "$HOME\.config\arcanum\arcanum.db-wal", `
+  "$HOME\.config\arcanum\arcanum.db-shm"
+```
+
+There is intentionally no data migration and no EF-model regeneration for this raw-SQL accounting table. See [PERSISTENCE §10](Arcanum.PERSISTENCE.md#10-cost-tracking-and-budget-enforcement).
 
 ### Optional HTTPS
 
@@ -312,6 +355,8 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 **Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `ask`, `chat`, `--help`, …) stay frameless Spectre/CAF as before.
 
 **Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+
+**Ephemeral reasoning:** `ask` and `chat` render client-safe reasoning in a dimmed, labeled block separate from the Mage answer; their reasoning buffer has a 64 KiB default cap with an explicit truncation marker, and the live `chat` layout coalesces reasoning on the same refresh cadence as answer tokens. Command Center stops its synthetic Thinking indicator and refreshes the header exactly once on the first token or reasoning frame, coalesces reasoning into one separately bounded in-memory `Reasoning (ephemeral)` entry, and preserves both the source entry and exact line offset of a scrolled multiline viewport. Reasoning is never appended to stdout answer text, mana totals, structured output, or reloaded session history.
 
 
 

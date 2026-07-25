@@ -7,6 +7,8 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 {
 
+    private readonly string _baseDir;
+
     private readonly string _rootA;
 
     private readonly string _rootB;
@@ -17,11 +19,11 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
     {
         _hostProcessTools = new HostProcessToolsEscapeHatchScope();
 
-        string baseDir = Path.Combine(Path.GetTempPath(), "arcanum-scripttool-" + Guid.NewGuid().ToString("N"));
+        _baseDir = Path.Combine(Path.GetTempPath(), "arcanum-scripttool-" + Guid.NewGuid().ToString("N"));
 
-        _rootA = Path.Combine(baseDir, "a", "scripts");
+        _rootA = Path.Combine(_baseDir, "a", "scripts");
 
-        _rootB = Path.Combine(baseDir, "b", "scripts");
+        _rootB = Path.Combine(_baseDir, "b", "scripts");
 
         Directory.CreateDirectory(_rootA);
 
@@ -34,11 +36,9 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
         try
         {
-            string? parent = Directory.GetParent(_rootA)?.Parent?.Parent?.FullName;
-
-            if (parent is not null && Directory.Exists(parent))
+            if (Directory.Exists(_baseDir))
             {
-                Directory.Delete(parent, recursive: true);
+                Directory.Delete(_baseDir, recursive: true);
             }
         }
         catch
@@ -49,9 +49,15 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
     [Fact]
     public async Task Invoke_ResolvesScriptAcrossSingleRoot()
     {
-        string scriptPath = Path.Combine(_rootA, "hello.sh");
+        string scriptName = OperatingSystem.IsWindows() ? "hello.ps1" : "hello.sh";
 
-        await File.WriteAllTextAsync(scriptPath, "#!/bin/sh\necho ok\n");
+        string scriptPath = Path.Combine(_rootA, scriptName);
+
+        string script = OperatingSystem.IsWindows()
+            ? "Write-Output 'ok'\n"
+            : "#!/bin/sh\necho ok\n";
+
+        await File.WriteAllTextAsync(scriptPath, script);
 
         if (!OperatingSystem.IsWindows())
         {
@@ -64,12 +70,14 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
             10,
             allowUnsandboxedToolChildren: true);
 
-        string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "hello.sh" }))
+        string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = scriptName }))
             as string;
 
         Assert.NotNull(result);
 
-        Assert.Contains("--- exit code ---", result, StringComparison.Ordinal);
+        Assert.Contains("ok", result, StringComparison.Ordinal);
+
+        Assert.EndsWith("--- exit code ---\n0", result, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -70,5 +70,18 @@ else
 fi
 
 if [ "$THRESHOLD" -eq 1 ]; then
-  python3 "$ROOT/scripts/coverage_threshold.py" "$COBERTURA"
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+    python3 "$ROOT/scripts/coverage_threshold.py" "$COBERTURA"
+  elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+    python "$ROOT/scripts/coverage_threshold.py" "$COBERTURA"
+  elif command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -File "$ROOT/scripts/coverage_threshold.ps1" "$COBERTURA"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass \
+      -File "$(cygpath -w "$ROOT/scripts/coverage_threshold.ps1")" \
+      "$(cygpath -w "$COBERTURA")"
+  else
+    echo "coverage.sh: Python or PowerShell is required to enforce thresholds" >&2
+    exit 1
+  fi
 fi

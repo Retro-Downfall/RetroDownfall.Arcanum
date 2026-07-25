@@ -18,7 +18,7 @@ public interface IModelCallExecutor
     bool TryBeginModelCall(ITurnBudget budget);
 
     /// <summary>Buffered provider invocation with budget begin + purpose metadata.</summary>
-    Task<Result<ModelCallResult>> ExecuteBufferedAsync(
+    Task<ModelCallOutcome> ExecuteBufferedAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
         ChatOptions options,
@@ -26,7 +26,10 @@ public interface IModelCallExecutor
         ModelCallPurpose purpose,
         CancellationToken cancellationToken);
 
-    /// <summary>Streaming provider invocation; yields text/response updates then completes.</summary>
+    /// <summary>
+    /// Streaming provider invocation; yields semantic answer/reasoning/usage updates before each
+    /// corresponding raw response update, then completes.
+    /// </summary>
     IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
@@ -43,7 +46,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
     public bool TryBeginModelCall(ITurnBudget budget) => budget.TryConsumeModelCall();
 
-    public async Task<Result<ModelCallResult>> ExecuteBufferedAsync(
+    public async Task<ModelCallOutcome> ExecuteBufferedAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
         ChatOptions options,
@@ -53,13 +56,18 @@ public sealed class ModelCallExecutor : IModelCallExecutor
     {
         ArgumentNullException.ThrowIfNull(chatClient);
         ArgumentNullException.ThrowIfNull(messages);
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
 
         if (!TryBeginModelCall(budget))
         {
-            return Result<ModelCallResult>.Failure(new Error(
-                ErrorCodes.Hub.TurnBudgetExceeded,
-                "Model call limit reached for this turn."));
+            return ModelCallOutcome.Failed(new ModelCallFailure(
+                purpose,
+                string.Empty,
+                new Error(
+                    ErrorCodes.Hub.TurnBudgetExceeded,
+                    "Model call limit reached for this turn."),
+                Cause: null));
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
@@ -69,9 +77,15 @@ public sealed class ModelCallExecutor : IModelCallExecutor
             ChatResponse response = await chatClient
                 .GetResponseAsync(messages, options, cancellationToken)
                 .ConfigureAwait(false);
+            (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
+                ResolveReasoningOutput(options, purpose);
+            ModelCallReasoningResult reasoning = ExtractReasoning(
+                response,
+                requestedOutput,
+                effectiveOutput);
 
-            return Result<ModelCallResult>.Success(
-                new ModelCallResult(purpose, modelCallId, response, response.Usage));
+            return ModelCallOutcome.Success(
+                new ModelCallResult(purpose, modelCallId, response, response.Usage, reasoning));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -79,9 +93,11 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
         catch (Exception ex)
         {
-            return Result<ModelCallResult>.Failure(new Error(
-                ErrorCodes.Hub.Error,
-                ex.Message));
+            return ModelCallOutcome.Failed(new ModelCallFailure(
+                purpose,
+                modelCallId,
+                new Error(ErrorCodes.Hub.Error, ex.Message),
+                ex));
         }
     }
 
@@ -95,6 +111,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
     {
         ArgumentNullException.ThrowIfNull(chatClient);
         ArgumentNullException.ThrowIfNull(messages);
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
 
         if (!TryBeginModelCall(budget))
@@ -103,32 +120,128 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
+        (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
+            ResolveReasoningOutput(options, purpose);
 
         await foreach (ChatResponseUpdate update in chatClient
             .GetStreamingResponseAsync(messages, options, cancellationToken)
             .WithCancellation(cancellationToken)
             .ConfigureAwait(false))
         {
-            yield return new ModelCallResponseUpdate(purpose, modelCallId, update);
-
-            string? text = update.Text;
-
-            if (!string.IsNullOrEmpty(text))
-            {
-                yield return new ModelCallTextDelta(purpose, modelCallId, text);
-            }
-
             if (update.Contents is { Count: > 0 })
             {
                 foreach (AIContent content in update.Contents)
                 {
-                    if (content is UsageContent usageContent)
+                    switch (content)
                     {
-                        yield return new ModelCallUsageUpdate(purpose, modelCallId, usageContent.Details);
+                        case TextContent { Text.Length: > 0 } text:
+                            yield return new ModelCallTextDelta(purpose, modelCallId, text.Text);
+                            break;
+
+                        case TextReasoningContent reasoning:
+                            yield return new ModelCallReasoningUpdate(
+                                purpose,
+                                modelCallId,
+                                effectiveOutput == ReasoningOutputMode.None
+                                    ? string.Empty
+                                    : reasoning.Text ?? string.Empty,
+                                requestedOutput,
+                                effectiveOutput,
+                                !string.IsNullOrEmpty(reasoning.ProtectedData));
+                            break;
+
+                        case UsageContent usageContent:
+                            yield return new ModelCallUsageUpdate(purpose, modelCallId, usageContent.Details);
+                            break;
                     }
                 }
             }
+
+            // Semantic updates are emitted first so provider commitment is recorded before any raw
+            // response update can be projected to a client.
+            yield return new ModelCallResponseUpdate(purpose, modelCallId, update);
         }
+    }
+
+    private static ModelCallReasoningResult ExtractReasoning(
+        ChatResponse response,
+        ReasoningOutputMode? requestedOutput,
+        ReasoningOutputMode effectiveOutput)
+    {
+        ModelCallReasoningAccumulator segments = new();
+        bool hasProviderContent = false;
+        bool hasProtectedData = false;
+
+        foreach (ChatMessage message in response.Messages)
+        {
+            foreach (AIContent content in message.Contents)
+            {
+                if (content is not TextReasoningContent reasoning)
+                {
+                    continue;
+                }
+
+                hasProviderContent = true;
+                bool segmentHasProtectedData = !string.IsNullOrEmpty(reasoning.ProtectedData);
+                hasProtectedData |= segmentHasProtectedData;
+                string visibleText = effectiveOutput == ReasoningOutputMode.None
+                    ? string.Empty
+                    : reasoning.Text ?? string.Empty;
+
+                if (visibleText.Length > 0 || segmentHasProtectedData)
+                {
+                    segments.Append(
+                        visibleText,
+                        requestedOutput,
+                        effectiveOutput,
+                        segmentHasProtectedData);
+                }
+            }
+        }
+
+        return new ModelCallReasoningResult(
+            segments.Materialize(),
+            requestedOutput,
+            effectiveOutput,
+            hasProviderContent,
+            hasProtectedData);
+    }
+
+    private static (ReasoningOutputMode? Requested, ReasoningOutputMode Effective) ResolveReasoningOutput(
+        ChatOptions options,
+        ModelCallPurpose purpose)
+    {
+        ReasoningOutputMode? requested = options.Reasoning?.Output switch
+        {
+            null => null,
+            ReasoningOutput.None => ReasoningOutputMode.None,
+            ReasoningOutput.Summary => ReasoningOutputMode.Summary,
+            ReasoningOutput.Full => ReasoningOutputMode.Full,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.Reasoning.Output,
+                "Unknown reasoning output mode."),
+        };
+
+        bool clientFacing = purpose is ModelCallPurpose.MainInference
+            or ModelCallPurpose.ToolContinuation
+            or ModelCallPurpose.ToolCompatibilityRetry
+            or ModelCallPurpose.StructuredOutputRetry;
+
+        ReasoningOutputMode effective = clientFacing
+            ? requested switch
+            {
+                ReasoningOutputMode.None => ReasoningOutputMode.None,
+                ReasoningOutputMode.Summary => ReasoningOutputMode.Summary,
+                ReasoningOutputMode.Full or null => ReasoningOutputMode.Full,
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(options),
+                    requested,
+                    "Unknown reasoning output mode."),
+            }
+            : ReasoningOutputMode.None;
+
+        return (requested, effective);
     }
 
 }

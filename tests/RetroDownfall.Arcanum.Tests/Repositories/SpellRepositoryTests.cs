@@ -20,7 +20,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
-[Collection("Grimoire")]
+[Collection("ProcessEnvironment")]
 public sealed class SpellRepositoryTests : IAsyncLifetime
 {
 
@@ -992,11 +992,23 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         string? priorHome = System.Environment.GetEnvironmentVariable("HOME");
 
+        string? priorTestHome = System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? priorDotnetEnvironment = System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        string? priorAspNetCoreEnvironment = System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
         string tempHome = Path.Combine(Path.GetTempPath(), "arcanum-spell-builtin", Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(tempHome);
 
         System.Environment.SetEnvironmentVariable("HOME", tempHome);
+
+        System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", tempHome);
+
+        System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
 
         try
         {
@@ -1045,6 +1057,12 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             {
                 System.Environment.SetEnvironmentVariable("HOME", priorHome);
             }
+
+            System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", priorTestHome);
+
+            System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", priorDotnetEnvironment);
+
+            System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", priorAspNetCoreEnvironment);
 
             if (Directory.Exists(tempHome))
             {

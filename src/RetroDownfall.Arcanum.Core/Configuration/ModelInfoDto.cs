@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed record ModelInfoDto(
@@ -6,4 +8,6 @@ public sealed record ModelInfoDto(
     string ProviderType,
     string Endpoint,
     int ContextWindowLimit,
-    bool SupportsVision = false);
+    bool SupportsVision = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReasoningCapabilities? Reasoning = null);

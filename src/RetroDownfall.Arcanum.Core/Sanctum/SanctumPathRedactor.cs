@@ -17,6 +17,11 @@ public static class SanctumPathRedactor
             return path;
         }
 
+        if (path.Contains('\0'))
+        {
+            return "[redacted]";
+        }
+
         try
         {
             return Path.GetFileName(path.Trim());

@@ -1,6 +1,8 @@
 using System.Reflection;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -14,6 +16,8 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
+
+    private SqliteConnection? _connection;
 
     public GrimoireSqlSchemaMigratorTests(GrimoireFixture fixture)
     {
@@ -33,6 +37,10 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
     public Task DisposeAsync()
     {
+        if (_connection is not null)
+        {
+            SqliteConnection.ClearPool(_connection);
+        }
 
         if (File.Exists(_dbPath))
         {
@@ -43,6 +51,17 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         return Task.CompletedTask;
 
+    }
+
+    [Fact]
+    public void CompiledEfModel_DoesNotMapRawSqlBillableOperationsTable()
+    {
+        Assert.DoesNotContain(
+            ArcanumDbContextModel.Instance.GetEntityTypes(),
+            static entityType => string.Equals(
+                entityType.GetTableName(),
+                "BillableOperations",
+                StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -230,6 +249,56 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task ApplyPendingAsync_creates_non_null_reasoning_tokens_column_with_zero_default()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SqliteConnection connection = await OpenConnectionAsync();
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+
+        (bool exists, bool notNull, string? defaultValue) =
+            await ReadReasoningTokensColumnAsync(connection, CancellationToken.None);
+
+        Assert.True(exists);
+        Assert.True(notNull);
+        Assert.Equal("0", defaultValue);
+    }
+
+    [SkippableFact]
+    public async Task ApplyPendingAsync_can_reapply_inference_accounting_migration_idempotently()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SqliteConnection connection = await OpenConnectionAsync();
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+
+        await using (SqliteCommand deleteHistory = connection.CreateCommand())
+        {
+            deleteHistory.CommandText = """
+                DELETE FROM "__EFMigrationsHistory"
+                WHERE "MigrationId" = $migrationId;
+                """;
+            deleteHistory.Parameters.AddWithValue(
+                "$migrationId",
+                "20260721010000_AddInferenceAccountingAndIdempotencyClaims");
+
+            _ = await deleteHistory.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+
+        Assert.Equal(ExpectedMigrationCount, await CountAppliedMigrationsAsync(connection, CancellationToken.None));
+
+        (bool exists, bool notNull, string? defaultValue) =
+            await ReadReasoningTokensColumnAsync(connection, CancellationToken.None);
+        Assert.True(exists);
+        Assert.True(notNull);
+        Assert.Equal("0", defaultValue);
+    }
+
     private async Task<SqliteConnection> OpenConnectionAsync()
     {
 
@@ -240,6 +309,8 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
         }.ToString());
 
         await connection.OpenAsync(CancellationToken.None);
+
+        _connection = connection;
 
         return connection;
 
@@ -338,6 +409,32 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         return result is not null && result != DBNull.Value;
 
+    }
+
+    private static async Task<(bool Exists, bool NotNull, string? DefaultValue)> ReadReasoningTokensColumnAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """PRAGMA table_info("BillableOperations");""";
+
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!string.Equals(reader.GetString(1), "ReasoningTokens", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            bool notNull = reader.GetInt32(3) == 1;
+            string? defaultValue = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+            return (true, notNull, defaultValue);
+        }
+
+        return (false, false, null);
     }
 
 }

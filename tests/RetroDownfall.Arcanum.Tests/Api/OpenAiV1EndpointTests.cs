@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -87,6 +88,206 @@ public sealed class OpenAiV1EndpointTests
 
         Assert.Equal("model_not_found", body.Error.Code);
 
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_ReasoningFields_MapToNormalizedRequest()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ReasoningCapabilities capabilities = new()
+        {
+            ControlSupport = ReasoningControlSupport.Effort,
+            SupportsSummary = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+
+        using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "reasoner",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "explicitly-configured",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("reasoner", Reasoning: capabilities)],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "reasoner",
+              "messages": [
+                { "role": "user", "content": "solve" }
+              ],
+              "reasoning_effort": "xhigh",
+              "reasoning_output": "summary"
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+            new ReasoningRequestOptions(
+                Effort: ReasoningEffortLevel.ExtraHigh,
+                Output: ReasoningOutputMode.Summary),
+            factory.FakeIntelligence.LastRequest?.Reasoning);
+    }
+
+    [SkippableFact]
+    public async Task PostChatCompletions_DefinedAndUndefinedNumericReasoningEnums_ReturnInvalidJson()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ReasoningCapabilities capabilities = new()
+        {
+            ControlSupport = ReasoningControlSupport.Effort,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+
+        using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "reasoner",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "explicitly-configured",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("reasoner", Reasoning: capabilities)],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        foreach (string propertyName in new[] { "reasoning_effort", "reasoning_output" })
+        {
+            foreach (int numericValue in new[] { 0, 99 })
+            {
+                string payload = $$"""
+                    {
+                      "model": "reasoner",
+                      "messages": [
+                        { "role": "user", "content": "solve" }
+                      ],
+                      "{{propertyName}}": {{numericValue}}
+                    }
+                    """;
+
+                HttpResponseMessage response = await client.PostAsync(
+                    "/v1/chat/completions",
+                    new StringContent(payload, Encoding.UTF8, "application/json"));
+
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                string json = await response.Content.ReadAsStringAsync();
+                OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+                    json,
+                    ArcanumJsonContext.Default.OpenAiErrorResponse);
+                Assert.Equal("invalid_json", body?.Error.Code);
+            }
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PostChatCompletions_SemanticReasoningValidation_UsesSharedTypedErrors(
+        bool stream)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ReasoningCapabilities capabilities = new()
+        {
+            ControlSupport = ReasoningControlSupport.Budget,
+            AllowsClientOutput = false,
+            WireDialect = ReasoningWireDialect.OpenRouter,
+            MaxBudgetTokens = 64,
+        };
+        using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "reasoner",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "reasoning-validation",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("reasoner", Reasoning: capabilities)],
+                    },
+                ],
+            },
+        };
+        HttpClient client = factory.CreateAuthenticatedClient();
+        (string Fields, string InternalCode)[] cases =
+        [
+            (
+                "\"reasoning_effort\": \"low\", \"reasoning_budget\": 32",
+                ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive),
+            (
+                "\"reasoning_budget\": 0",
+                ErrorCodes.Validation.InvalidReasoningBudget),
+            (
+                "\"reasoning_budget\": 2097153",
+                ErrorCodes.Validation.InvalidReasoningBudget),
+            (
+                "\"reasoning_budget\": 65",
+                ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit),
+            (
+                "\"reasoning_effort\": \"low\"",
+                ErrorCodes.Validation.UnsupportedReasoningControl),
+            (
+                "\"reasoning_output\": \"summary\"",
+                ErrorCodes.Validation.UnsupportedReasoningOutput),
+        ];
+
+        foreach ((string fields, string internalCode) in cases)
+        {
+            string payload = $$"""
+                {
+                  "model": "reasoner",
+                  "messages": [
+                    { "role": "user", "content": "solve" }
+                  ],
+                  "stream": {{stream.ToString().ToLowerInvariant()}},
+                  {{fields}}
+                }
+                """;
+
+            HttpResponseMessage response = await client.PostAsync(
+                "/v1/chat/completions",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            string json = await response.Content.ReadAsStringAsync();
+            OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+                json,
+                ArcanumJsonContext.Default.OpenAiErrorResponse);
+            Assert.NotNull(body);
+            Assert.Equal(
+                OpenAiStreamErrorMapper.Map(new Error(internalCode, "unsafe detail")),
+                body!.Error);
+            Assert.Null(factory.FakeIntelligence.LastRequest);
+        }
     }
 
     [SkippableFact]
@@ -331,10 +532,12 @@ public sealed class OpenAiV1EndpointTests
 
         Assert.Equal("test", model.OwnedBy);
 
+        Assert.Null(model.Reasoning);
+
     }
 
     [SkippableFact]
-    public async Task GetModels_VisionCapableModel_ReportsSupportsVisionTrue()
+    public async Task GetModels_CapableModel_ReportsVisionAndReasoningMetadata()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -351,7 +554,22 @@ public sealed class OpenAiV1EndpointTests
                         Name = "vision-provider",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                        Models =
+                        [
+                            new ModelEntry("vision-model", SupportsVision: true)
+                            {
+                                Reasoning = new ReasoningCapabilities
+                                {
+                                    ControlSupport = ReasoningControlSupport.Budget,
+                                    SupportsSummary = true,
+                                    SupportsStreaming = true,
+                                    ReportsReasoningTokens = true,
+                                    AllowsClientOutput = true,
+                                    WireDialect = ReasoningWireDialect.AnthropicThinking,
+                                    MaxBudgetTokens = 32_768,
+                                },
+                            },
+                        ],
                     },
                 ],
             },
@@ -374,6 +592,15 @@ public sealed class OpenAiV1EndpointTests
         Assert.True(model.SupportsVision);
 
         Assert.Equal("vision-provider", model.ProviderName);
+
+        Assert.NotNull(model.Reasoning);
+        Assert.Equal(ReasoningControlSupport.Budget, model.Reasoning!.ControlSupport);
+        Assert.True(model.Reasoning.SupportsSummary);
+        Assert.True(model.Reasoning.SupportsStreaming);
+        Assert.True(model.Reasoning.ReportsReasoningTokens);
+        Assert.True(model.Reasoning.AllowsClientOutput);
+        Assert.Equal(ReasoningWireDialect.AnthropicThinking, model.Reasoning.WireDialect);
+        Assert.Equal(32_768, model.Reasoning.MaxBudgetTokens);
 
     }
 

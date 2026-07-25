@@ -74,6 +74,94 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     }
 
     [Fact]
+    public void TryOpenForRead_rejects_path_outside_workspace()
+    {
+
+        bool opened = SandboxedFileIo.TryOpenForRead(
+            _workspace.Root,
+            _outsideFile,
+            out FileStream? stream,
+            out McpToolsCallResultWire? error);
+
+        Assert.False(opened);
+
+        Assert.Null(stream);
+
+        AssertSandboxError(error);
+
+    }
+
+    [Fact]
+    public void TryOpenForRead_rejects_path_that_escapes_on_second_validation()
+    {
+
+        string target = Path.Combine(_workspace.Root, "changed-between-validations.txt");
+
+        File.WriteAllText(target, "inside");
+
+        int relativePathCalls = 0;
+
+        WorkspacePathPolicy.SetRelativePathResolverForTests((root, candidate) =>
+        {
+
+            relativePathCalls++;
+
+            return relativePathCalls == 1
+                ? Path.GetRelativePath(root, candidate)
+                : "..";
+
+        });
+
+        try
+        {
+
+            bool opened = SandboxedFileIo.TryOpenForRead(
+                _workspace.Root,
+                target,
+                out FileStream? stream,
+                out McpToolsCallResultWire? error);
+
+            Assert.False(opened);
+
+            Assert.Null(stream);
+
+            Assert.Equal(2, relativePathCalls);
+
+            AssertSandboxError(error);
+
+        }
+        finally
+        {
+
+            WorkspacePathPolicy.ResetTestSeams();
+
+        }
+
+    }
+
+    [Fact]
+    public void TryOpenForRead_rejects_missing_file_when_identity_cannot_be_resolved()
+    {
+
+        string missing = Path.Combine(_workspace.Root, "missing.txt");
+
+        bool opened = SandboxedFileIo.TryOpenForRead(
+            _workspace.Root,
+            missing,
+            out FileStream? stream,
+            out McpToolsCallResultWire? error);
+
+        Assert.False(opened);
+
+        Assert.Null(stream);
+
+        Assert.False(File.Exists(missing));
+
+        AssertSandboxError(error);
+
+    }
+
+    [Fact]
     public async Task TryWriteAllTextAtomicallyAsync_writes_inside_workspace()
     {
 
@@ -113,6 +201,95 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         {
 
             Assert.Equal("inside", new StreamReader(stream).ReadToEnd());
+
+        }
+
+    }
+
+    [Fact]
+    public void TryRevalidateOpenedHandle_rejects_stream_with_blank_opened_path()
+    {
+
+        string target = Path.Combine(_workspace.Root, "blank-name.txt");
+
+        File.WriteAllText(target, "inside");
+
+        using FileStream stream = new BlankNameFileStream(target);
+
+        bool valid = SandboxedFileIo.TryRevalidateOpenedHandle(
+            _workspace.Root,
+            stream,
+            expectedIdentity: default,
+            out McpToolsCallResultWire? error);
+
+        Assert.False(valid);
+
+        AssertSandboxError(error);
+
+    }
+
+    [Fact]
+    public void TryRevalidateOpenedHandle_rejects_open_file_outside_workspace()
+    {
+
+        Assert.True(
+            FileHandleIdentityInterop.TryGetPathIdentity(_outsideFile, out FileHandleIdentity expectedIdentity));
+
+        using FileStream stream = new(
+            _outsideFile,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+
+        bool valid = SandboxedFileIo.TryRevalidateOpenedHandle(
+            _workspace.Root,
+            stream,
+            expectedIdentity,
+            out McpToolsCallResultWire? error);
+
+        Assert.False(valid);
+
+        AssertSandboxError(error);
+
+    }
+
+    [Fact]
+    public void TryRevalidateOpenedHandle_rejects_when_handle_identity_cannot_be_resolved()
+    {
+
+        string target = Path.Combine(_workspace.Root, "missing-handle-identity.txt");
+
+        File.WriteAllText(target, "inside");
+
+        Assert.True(
+            FileHandleIdentityInterop.TryGetPathIdentity(target, out FileHandleIdentity expectedIdentity));
+
+        using FileStream stream = new(
+            target,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+
+        FileHandleIdentityInterop.TryGetHandleIdentityForTests = _ => null;
+
+        try
+        {
+
+            bool valid = SandboxedFileIo.TryRevalidateOpenedHandle(
+                _workspace.Root,
+                stream,
+                expectedIdentity,
+                out McpToolsCallResultWire? error);
+
+            Assert.False(valid);
+
+            AssertSandboxError(error);
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
 
         }
 
@@ -234,6 +411,31 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.True(handleOk);
 
         Assert.True(FileHandleIdentity.IdentitiesMatch(pathIdentity, handleIdentity));
+
+    }
+
+    private static void AssertSandboxError(McpToolsCallResultWire? error)
+    {
+
+        Assert.NotNull(error);
+
+        Assert.True(error!.IsError);
+
+        McpToolContentTextWire content = Assert.IsType<McpToolContentTextWire>(Assert.Single(error.Content!));
+
+        Assert.Contains("sandbox", content.Text!, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    private sealed class BlankNameFileStream : FileStream
+    {
+
+        public BlankNameFileStream(string path)
+            : base(path, FileMode.Open, FileAccess.Read, FileShare.Read)
+        {
+        }
+
+        public override string Name => " ";
 
     }
 

@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,7 +18,17 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(ApiResponse<string>))]
     [InlineData(typeof(ApiResponse<PromptResponseDto>))]
     [InlineData(typeof(IntelligenceEvent))]
+    [InlineData(typeof(PromptTurnResult))]
     [InlineData(typeof(PingRequest))]
+    [InlineData(typeof(ReasoningRequestOptions))]
+    [InlineData(typeof(ReasoningEffortLevel))]
+    [InlineData(typeof(ReasoningOutputMode))]
+    [InlineData(typeof(ReasoningContentSegment))]
+    [InlineData(typeof(List<ReasoningContentSegment>))]
+    [InlineData(typeof(ReasoningCapabilities))]
+    [InlineData(typeof(ReasoningControlSupport))]
+    [InlineData(typeof(ReasoningWireDialect))]
+    [InlineData(typeof(OpenAiReasoningEffort))]
     [InlineData(typeof(SubmitHumanResponseRequest))]
     [InlineData(typeof(Error))]
     public void TypeInfo_RegisteredForType(Type type)
@@ -65,6 +77,40 @@ public sealed class ArcanumJsonContextCompletenessTests
 
         Assert.Equal(original.Message, result.Message);
 
+    }
+
+    [Fact]
+    public void RoundTrip_ReasoningEvent_UsesTypedClientSafePayload()
+    {
+        IntelligenceEvent original = new(
+            IntelligenceEventType.Reasoning,
+            "safe summary",
+            Reasoning: new ReasoningContentSegment(
+                "safe summary",
+                ReasoningOutputMode.Summary));
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(
+            original,
+            ArcanumJsonContext.Default.IntelligenceEvent);
+        string json = System.Text.Encoding.UTF8.GetString(bytes);
+        IntelligenceEvent? result = JsonSerializer.Deserialize(
+            bytes,
+            ArcanumJsonContext.Default.IntelligenceEvent);
+
+        Assert.NotNull(result);
+        Assert.Equal(IntelligenceEventType.Reasoning, result.Type);
+        Assert.Equal(original.Reasoning, result.Reasoning);
+        Assert.Contains("\"type\":\"reasoning\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"reasoning\":", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("protected", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PromptResponseDto_HasOptionalTypedReasoningSegments()
+    {
+        Assert.Equal(
+            typeof(IReadOnlyList<ReasoningContentSegment>),
+            typeof(PromptResponseDto).GetProperty("Reasoning")?.PropertyType);
     }
 
 }

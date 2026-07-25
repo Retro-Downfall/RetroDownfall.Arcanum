@@ -76,4 +76,115 @@ public sealed class CostCalculatorTests
         Assert.Equal(6.40m, cost);
     }
 
+    [Fact]
+    public void ModelPricingEntry_ExposesNullableReasoningRate()
+    {
+        ModelPricingEntry pricing = new();
+
+        Assert.Null(pricing.ReasoningPer1M);
+
+        pricing.ReasoningPer1M = 42m;
+
+        Assert.Equal(42m, pricing.ReasoningPer1M);
+    }
+
+    [Fact]
+    public void CalculateCost_WithReasoningRate_SplitsCompletionWithoutDoubleBilling()
+    {
+        ModelPricingEntry pricing = new()
+        {
+            OutputPer1M = 20m,
+            ReasoningPer1M = 80m,
+        };
+
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens: 0,
+            outputTokens: 1_000_000,
+            cachedTokens: 0,
+            reasoningTokens: 250_000,
+            pricing);
+
+        Assert.Equal(35m, cost);
+    }
+
+    [Fact]
+    public void CalculateCost_WithoutReasoningRate_FallsBackToOutputRate()
+    {
+        ModelPricingEntry pricing = new() { OutputPer1M = 30m };
+
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens: 0,
+            outputTokens: 1_000_000,
+            cachedTokens: 0,
+            reasoningTokens: 400_000,
+            pricing);
+
+        Assert.Equal(30m, cost);
+    }
+
+    [Fact]
+    public void CalculateCost_WithExplicitZeroReasoningRate_DoesNotFallBackToOutputRate()
+    {
+        ModelPricingEntry pricing = new()
+        {
+            OutputPer1M = 20m,
+            ReasoningPer1M = 0m,
+        };
+
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens: 0,
+            outputTokens: 1_000_000,
+            cachedTokens: 0,
+            reasoningTokens: 250_000,
+            pricing);
+
+        Assert.Equal(15m, cost);
+    }
+
+    [Theory]
+    [InlineData(100, 200, 0, 0.008)]
+    [InlineData(100, -50, 0.002, 0)]
+    public void CalculateCost_ClampsInconsistentReasoningOnlyForCostSafety(
+        long outputTokens,
+        long reasoningTokens,
+        decimal expectedOutputCost,
+        decimal expectedReasoningCost)
+    {
+        ModelPricingEntry pricing = new()
+        {
+            OutputPer1M = 20m,
+            ReasoningPer1M = 80m,
+        };
+
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens: 0,
+            outputTokens,
+            cachedTokens: 0,
+            reasoningTokens,
+            pricing);
+
+        Assert.Equal(expectedOutputCost + expectedReasoningCost, cost);
+    }
+
+    [Fact]
+    public void CalculateCost_ClampsNegativeAndExtremeRatesAtSupportedBoundary()
+    {
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = -1m,
+            OutputPer1M = decimal.MaxValue,
+            CachedPer1M = decimal.MaxValue,
+            ReasoningPer1M = decimal.MaxValue,
+        };
+
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens: long.MaxValue,
+            outputTokens: long.MaxValue,
+            cachedTokens: long.MaxValue,
+            reasoningTokens: long.MaxValue,
+            pricing);
+
+        Assert.Equal(18_446_744_073_709_551_614m, cost);
+    }
+
 }

@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS "BillableOperations" (
     "CompletedAt" TEXT NOT NULL,
     "InputTokens" INTEGER NOT NULL,
     "OutputTokens" INTEGER NOT NULL,
+    "ReasoningTokens" INTEGER NOT NULL DEFAULT 0,
     "CachedTokens" INTEGER NOT NULL,
     "PricingSnapshotJson" TEXT NOT NULL,
     "ActualCostUsd" NUMERIC NOT NULL,

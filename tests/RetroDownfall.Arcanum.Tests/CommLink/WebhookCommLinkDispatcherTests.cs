@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.CommLink;
 
+[Collection("OutboundUrlGuardDns")]
 public sealed class WebhookCommLinkDispatcherTests : IDisposable
 {
 

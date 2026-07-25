@@ -27,34 +27,26 @@ public static class ComparisonCostEstimator
 
         }
 
-        ModelPricingEntry entry = ResolvePricing(model, pricing);
+        ModelPricingEntry entry = pricing.ResolveForModel(model);
 
-        if (entry.InputPer1M == 0m && entry.OutputPer1M == 0m)
+        if (entry.InputPer1M == 0m
+            && entry.OutputPer1M == 0m
+            && entry.CachedPer1M == 0m
+            && (entry.ReasoningPer1M ?? 0m) == 0m)
         {
 
             return (CostUnavailable, null);
 
         }
 
-        decimal cost = CostCalculator.CalculateCost(usage.PromptTokens, usage.CompletionTokens, entry);
+        decimal cost = CostCalculator.CalculateCost(
+            usage.PromptTokens,
+            usage.CompletionTokens,
+            usage.CachedTokens,
+            usage.ReasoningTokens,
+            entry);
 
         return ($"{EstimatedPrefix} ${cost.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)}", cost);
-
-    }
-
-    private static ModelPricingEntry ResolvePricing(string? model, PricingSettings pricing)
-    {
-
-        if (!string.IsNullOrWhiteSpace(model)
-            && pricing.ModelPricing.TryGetValue(model, out ModelPricingEntry? entry)
-            && entry is not null)
-        {
-
-            return entry;
-
-        }
-
-        return pricing.DefaultPricing;
 
     }
 

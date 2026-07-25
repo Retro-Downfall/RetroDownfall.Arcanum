@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Api.OpenAi;
@@ -61,6 +62,84 @@ public sealed class OpenAiChatCompletionMapperTests
         PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
 
         Assert.Equal(["a", "b"], ping.Stop);
+    }
+
+    [Fact]
+    public void ToPingRequest_MapsNormalizedReasoningEffortAndOutput()
+    {
+        OpenAiChatRequest request = JsonSerializer.Deserialize(
+            """
+            {
+              "model": "reasoner",
+              "messages": [{ "role": "user", "content": "solve" }],
+              "reasoning_effort": "minimal",
+              "reasoning_output": "summary"
+            }
+            """,
+            ArcanumJsonContext.Default.OpenAiChatRequest)!;
+
+        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
+
+        Assert.Equal(
+            new ReasoningRequestOptions(
+                Effort: ReasoningEffortLevel.Minimal,
+                BudgetTokens: null,
+                Output: ReasoningOutputMode.Summary),
+            ping.Reasoning);
+    }
+
+    [Fact]
+    public void ToPingRequest_MapsOpenAiXHighToNormalizedExtraHigh()
+    {
+        OpenAiChatRequest request = JsonSerializer.Deserialize(
+            """
+            {
+              "model": "reasoner",
+              "messages": [{ "role": "user", "content": "solve" }],
+              "reasoning_effort": "xhigh"
+            }
+            """,
+            ArcanumJsonContext.Default.OpenAiChatRequest)!;
+
+        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
+
+        Assert.Equal(ReasoningEffortLevel.ExtraHigh, ping.Reasoning?.Effort);
+    }
+
+    [Fact]
+    public void ToPingRequest_MapsAdditiveReasoningBudget()
+    {
+        OpenAiChatRequest request = JsonSerializer.Deserialize(
+            """
+            {
+              "model": "reasoner",
+              "messages": [{ "role": "user", "content": "solve" }],
+              "reasoning_budget": 4096,
+              "reasoning_output": "full"
+            }
+            """,
+            ArcanumJsonContext.Default.OpenAiChatRequest)!;
+
+        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
+
+        Assert.Equal(
+            new ReasoningRequestOptions(
+                Effort: null,
+                BudgetTokens: 4096,
+                Output: ReasoningOutputMode.Full),
+            ping.Reasoning);
+    }
+
+    [Fact]
+    public void ToPingRequest_WithoutReasoningFields_LeavesReasoningUnset()
+    {
+        OpenAiChatRequest request = new(
+            Model: "m",
+            Messages: [new OpenAiChatMessage("user", OpenAiMessageContent.FromText("x"))]);
+
+        PingRequest ping = OpenAiChatCompletionMapper.ToPingRequest(request);
+
+        Assert.Null(ping.Reasoning);
     }
 
     [Fact]

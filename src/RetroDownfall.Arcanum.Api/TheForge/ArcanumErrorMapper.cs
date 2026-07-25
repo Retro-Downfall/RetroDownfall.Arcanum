@@ -11,7 +11,18 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
-            ErrorCodes.Validation.InvalidPrompt or ErrorCodes.Validation.AttachedFiles or ErrorCodes.Validation.InvalidBody or ErrorCodes.Validation.InvalidQuery or ErrorCodes.Validation.InvalidProviderType =>
+            ErrorCodes.Validation.InvalidPrompt
+                or ErrorCodes.Validation.AttachedFiles
+                or ErrorCodes.Validation.InvalidBody
+                or ErrorCodes.Validation.InvalidQuery
+                or ErrorCodes.Validation.InvalidProviderType
+                or ErrorCodes.Validation.InvalidReasoningEffort
+                or ErrorCodes.Validation.InvalidReasoningOutput
+                or ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive
+                or ErrorCodes.Validation.InvalidReasoningBudget
+                or ErrorCodes.Validation.UnsupportedReasoningControl
+                or ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit
+                or ErrorCodes.Validation.UnsupportedReasoningOutput =>
                 StatusCodes.Status400BadRequest,
 
             // FeatureDisabled means an operator turned Embeddings off in config, not that the caller

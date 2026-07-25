@@ -237,10 +237,7 @@ public sealed class DoctorCommand(
 
         healthy &= AddPathRow(table, "Grimoire database", dbFile, File.Exists(dbFile), optional: false);
 
-        string securityFile = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "security.dat");
+        string securityFile = ArcanumPaths.ApiKeyStoreFile;
 
         healthy &= AddPathRow(table, "API key store (Data Protection)", securityFile, File.Exists(securityFile), optional: false);
 
@@ -397,11 +394,7 @@ public sealed class DoctorCommand(
     private (bool Healthy, Table Table) BuildMcpConfigPanelCore()
     {
 
-        string globalMcpPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config",
-            "arcanum",
-            "mcp.json");
+        string globalMcpPath = ArcanumPaths.GlobalMcpConfigFile;
 
         Table table = new();
 
@@ -493,11 +486,7 @@ public sealed class DoctorCommand(
     private (bool Healthy, DoctorCheck Check) BuildMcpConfigCheck()
     {
 
-        string globalMcpPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config",
-            "arcanum",
-            "mcp.json");
+        string globalMcpPath = ArcanumPaths.GlobalMcpConfigFile;
 
         if (!File.Exists(globalMcpPath))
         {

@@ -13,4 +13,10 @@ public sealed record OpenAiChatMessage(
     [property: JsonPropertyName("content")] OpenAiMessageContent? Content = null,
     [property: JsonPropertyName("name")] string? Name = null,
     [property: JsonPropertyName("tool_call_id")] string? ToolCallId = null,
-    [property: JsonPropertyName("tool_calls")] OpenAiToolCall[]? ToolCalls = null);
+    [property: JsonPropertyName("tool_calls")] OpenAiToolCall[]? ToolCalls = null,
+    [property: JsonPropertyName("reasoning_content")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ReasoningContent = null,
+    [property: JsonPropertyName("reasoning_summary")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ReasoningSummary = null);

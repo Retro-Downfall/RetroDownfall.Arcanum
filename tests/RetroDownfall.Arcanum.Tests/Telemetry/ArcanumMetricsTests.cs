@@ -170,6 +170,34 @@ public sealed class ArcanumMetricsTests
 
     }
 
+    [Fact]
+    public void ReasoningTokensTotal_increments_with_low_cardinality_labels()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        ConcurrentQueue<long> captured = new();
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) =>
+                activeListener.EnableMeasurementEvents(instrument),
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (instrument.Name == "arcanum_inference_reasoning_tokens_total"
+                && TagsContainMarker(tags, marker))
+            {
+                captured.Enqueue(measurement);
+            }
+        });
+        listener.Start();
+
+        ArcanumMetrics.ReasoningTokensTotal.Add(
+            75,
+            new KeyValuePair<string, object?>("provider", marker),
+            new KeyValuePair<string, object?>("model", "test-model"));
+
+        Assert.Equal(75, Assert.Single(captured));
+    }
+
     private static bool TagsContainMarker(ReadOnlySpan<KeyValuePair<string, object?>> tags, string marker)
     {
 

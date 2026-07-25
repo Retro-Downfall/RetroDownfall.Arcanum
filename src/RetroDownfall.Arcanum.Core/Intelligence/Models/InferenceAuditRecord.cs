@@ -24,4 +24,5 @@ public sealed record InferenceAuditRecord(
     string? FinishReason,
     string? ClientIp,
     string? SpellName,
-    string? CampaignId);
+    string? CampaignId,
+    int ReasoningTokens = 0);

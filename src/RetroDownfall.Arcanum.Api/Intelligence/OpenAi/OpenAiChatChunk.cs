@@ -11,5 +11,10 @@ public sealed record OpenAiChatChunk(
     [property: JsonPropertyName("created")] long Created,
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("choices")] List<OpenAiChatStreamChoice> Choices,
-    [property: JsonPropertyName("usage")] ChatCompletionUsage? Usage = null,
-    [property: JsonPropertyName("system_fingerprint")] string? SystemFingerprint = null);
+    [property: JsonPropertyName("usage")]
+    [property: JsonConverter(typeof(OpenAiChatUsageJsonConverter))]
+    ChatCompletionUsage? Usage = null,
+    [property: JsonPropertyName("system_fingerprint")] string? SystemFingerprint = null,
+    [property: JsonPropertyName("error")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    OpenAiErrorDetail? Error = null);

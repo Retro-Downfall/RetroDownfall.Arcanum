@@ -102,6 +102,35 @@ public sealed class McpSecurityLimitsInheritEnvTests
     }
 
     [Fact]
+    public void BuildChildProcessEnvironment_without_reader_inherits_from_process_environment()
+    {
+
+        string name = $"MCP_TEST_INHERIT_{Guid.NewGuid():N}";
+
+        const string expected = "from-process-environment";
+
+        try
+        {
+
+            System.Environment.SetEnvironmentVariable(name, expected);
+
+            Dictionary<string, string> result = McpSecurityLimits.BuildChildProcessEnvironment(
+                source: null,
+                inheritAllowlist: new HashSet<string>(StringComparer.Ordinal) { name });
+
+            Assert.Equal(expected, result[name]);
+
+        }
+        finally
+        {
+
+            System.Environment.SetEnvironmentVariable(name, null);
+
+        }
+
+    }
+
+    [Fact]
     public void BuildChildProcessEnvironment_empty_non_null_allowlist_blocks_and_skips_host_inherit()
     {
 
@@ -161,6 +190,72 @@ public sealed class McpSecurityLimitsInheritEnvTests
         Assert.False(result.ContainsKey(string.Empty));
 
         Assert.Equal("1", result["MCP_OK"]);
+
+    }
+
+    [Fact]
+    public void ScrubProcessEnvironment_without_strip_returns_null_for_null_source()
+    {
+
+        IReadOnlyDictionary<string, string>? scrubbed = McpSecurityLimits.ScrubProcessEnvironment(
+            source: null,
+            stripUserEnvironment: false);
+
+        Assert.Null(scrubbed);
+
+    }
+
+    [Fact]
+    public void ScrubProcessEnvironment_without_strip_returns_null_for_empty_source()
+    {
+
+        IReadOnlyDictionary<string, string>? scrubbed = McpSecurityLimits.ScrubProcessEnvironment(
+            source: new Dictionary<string, string>(StringComparer.Ordinal),
+            stripUserEnvironment: false);
+
+        Assert.Null(scrubbed);
+
+    }
+
+    [Fact]
+    public void ScrubProcessEnvironment_without_strip_returns_null_when_all_entries_are_blocked()
+    {
+
+        Dictionary<string, string> source = new(StringComparer.Ordinal)
+        {
+            ["PATH"] = "/untrusted/bin",
+            ["LD_PRELOAD"] = "/untrusted/library",
+        };
+
+        IReadOnlyDictionary<string, string>? scrubbed = McpSecurityLimits.ScrubProcessEnvironment(
+            source,
+            stripUserEnvironment: false);
+
+        Assert.Null(scrubbed);
+
+    }
+
+    [Fact]
+    public void ScrubProcessEnvironment_without_strip_returns_only_allowed_entries()
+    {
+
+        Dictionary<string, string> source = new(StringComparer.Ordinal)
+        {
+            ["MCP_ALLOWED"] = "1",
+            ["PATH"] = "/untrusted/bin",
+        };
+
+        IReadOnlyDictionary<string, string>? scrubbed = McpSecurityLimits.ScrubProcessEnvironment(
+            source,
+            stripUserEnvironment: false);
+
+        Assert.NotNull(scrubbed);
+
+        KeyValuePair<string, string> entry = Assert.Single(scrubbed);
+
+        Assert.Equal("MCP_ALLOWED", entry.Key);
+
+        Assert.Equal("1", entry.Value);
 
     }
 

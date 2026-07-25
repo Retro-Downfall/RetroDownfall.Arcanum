@@ -6,6 +6,7 @@ internal enum SessionLogEntryKind
 {
     Status,
     User,
+    Reasoning,
     Assistant,
     Tool,
     Command,
@@ -48,7 +49,11 @@ internal sealed class SessionLogBuffer
 
     public const int DefaultMaxAssistantChars = 200_000;
 
+    public const int DefaultMaxReasoningChars = 64 * 1024;
+
     public const string TruncationMarker = "\n… [truncated]";
+
+    public const string ReasoningTruncationMarker = "\n… [reasoning truncated]";
 
     /// <summary>API placeholder that must not linger in the scrollback.</summary>
     public const string GeneratingStatusMessage = "Mage is generating response...";
@@ -61,12 +66,14 @@ internal sealed class SessionLogBuffer
         int maxEntries = DefaultMaxEntries,
         int maxCommandChars = DefaultMaxCommandChars,
         int maxToolChars = DefaultMaxToolChars,
-        int maxAssistantChars = DefaultMaxAssistantChars)
+        int maxAssistantChars = DefaultMaxAssistantChars,
+        int maxReasoningChars = DefaultMaxReasoningChars)
     {
         MaxEntries = Math.Max(1, maxEntries);
         MaxCommandChars = Math.Max(64, maxCommandChars);
         MaxToolChars = Math.Max(64, maxToolChars);
         MaxAssistantChars = Math.Max(256, maxAssistantChars);
+        MaxReasoningChars = Math.Max(64, maxReasoningChars);
     }
 
     public int MaxEntries { get; }
@@ -76,6 +83,8 @@ internal sealed class SessionLogBuffer
     public int MaxToolChars { get; }
 
     public int MaxAssistantChars { get; }
+
+    public int MaxReasoningChars { get; }
 
     public int Count
     {
@@ -101,6 +110,30 @@ internal sealed class SessionLogBuffer
         lock (_gate)
         {
             _entries.Add(entry);
+            TrimUnlocked();
+        }
+
+        return entry;
+    }
+
+    public SessionLogEntry InsertBefore(
+        SessionLogEntry before,
+        SessionLogEntryKind kind,
+        string text,
+        bool streaming = false)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        SessionLogEntry entry = new(kind, ClampForKind(kind, text ?? string.Empty), streaming);
+
+        lock (_gate)
+        {
+            int index = _entries.FindIndex(candidate => ReferenceEquals(candidate, before));
+            if (index < 0)
+            {
+                throw new ArgumentException("The anchor entry does not belong to this log.", nameof(before));
+            }
+
+            _entries.Insert(index, entry);
             TrimUnlocked();
         }
 
@@ -173,16 +206,21 @@ internal sealed class SessionLogBuffer
                 _entries.Add(new SessionLogEntry(SessionLogEntryKind.Status, OlderMessagesMarker));
             }
 
-            if (entries.Count == 0)
+            bool addedHistory = false;
+            foreach ((SessionLogEntryKind kind, string text) in entries)
+            {
+                if (kind == SessionLogEntryKind.Reasoning)
+                {
+                    continue;
+                }
+
+                _entries.Add(new SessionLogEntry(kind, ClampForKind(kind, text ?? string.Empty)));
+                addedHistory = true;
+            }
+
+            if (!addedHistory)
             {
                 _entries.Add(new SessionLogEntry(SessionLogEntryKind.Status, EmptySessionMessage));
-            }
-            else
-            {
-                foreach ((SessionLogEntryKind kind, string text) in entries)
-                {
-                    _entries.Add(new SessionLogEntry(kind, ClampForKind(kind, text ?? string.Empty)));
-                }
             }
 
             TrimUnlocked();
@@ -213,6 +251,11 @@ internal sealed class SessionLogBuffer
             return SessionLogEntryKind.Tool;
         }
 
+        if (role.Equals("reasoning", StringComparison.OrdinalIgnoreCase))
+        {
+            return SessionLogEntryKind.Reasoning;
+        }
+
         if (role.Equals("system", StringComparison.OrdinalIgnoreCase)
             || role.Equals("ward", StringComparison.OrdinalIgnoreCase))
         {
@@ -221,6 +264,9 @@ internal sealed class SessionLogBuffer
 
         return SessionLogEntryKind.Status;
     }
+
+    public static bool IsEphemeralReasoningRole(string? role) =>
+        string.Equals(role?.Trim(), "reasoning", StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<SessionLogEntry> Snapshot()
     {
@@ -379,6 +425,7 @@ internal sealed class SessionLogBuffer
         string prefix = entry.Kind switch
         {
             SessionLogEntryKind.User => "Dungeon Master: ",
+            SessionLogEntryKind.Reasoning => "Reasoning (ephemeral): ",
             SessionLogEntryKind.Assistant => entry.Streaming
                 ? (string.IsNullOrEmpty(entry.Text) ? "Mage is generating…" : "Mage (streaming): ")
                 : "Mage: ",
@@ -398,6 +445,7 @@ internal sealed class SessionLogBuffer
         {
             SessionLogEntryKind.Command => MaxCommandChars,
             SessionLogEntryKind.Tool => MaxToolChars,
+            SessionLogEntryKind.Reasoning => MaxReasoningChars,
             SessionLogEntryKind.Assistant => MaxAssistantChars,
             SessionLogEntryKind.User => MaxAssistantChars,
             _ => MaxCommandChars,
@@ -408,8 +456,11 @@ internal sealed class SessionLogBuffer
             return text;
         }
 
-        int keep = Math.Max(0, max - TruncationMarker.Length);
-        return text[..keep] + TruncationMarker;
+        string marker = kind == SessionLogEntryKind.Reasoning
+            ? ReasoningTruncationMarker
+            : TruncationMarker;
+        int keep = Math.Max(0, max - marker.Length);
+        return text[..keep] + marker;
     }
 
     private void TrimUnlocked()

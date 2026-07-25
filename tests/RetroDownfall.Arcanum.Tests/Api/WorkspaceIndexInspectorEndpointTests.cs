@@ -304,14 +304,16 @@ public sealed class WorkspaceIndexInspectorEndpointTests
 
         WorkspaceInfo other = await RegisterWorkspaceAsync(client, enabled.TempHome, "chunks-filter-other");
 
-        await SeedChunkAsync(enabled, target.Path, "src/Shared.cs", "chunk-target-shared", 0, "target shared", DateTimeOffset.UtcNow, dim: 3);
+        string sharedRelativePath = Path.Combine("src", "Shared.cs");
 
-        await SeedChunkAsync(enabled, target.Path, "src/Other.cs", "chunk-target-other", 0, "target other", DateTimeOffset.UtcNow, dim: 3);
+        await SeedChunkAsync(enabled, target.Path, sharedRelativePath, "chunk-target-shared", 0, "target shared", DateTimeOffset.UtcNow, dim: 3);
+
+        await SeedChunkAsync(enabled, target.Path, Path.Combine("src", "Other.cs"), "chunk-target-other", 0, "target other", DateTimeOffset.UtcNow, dim: 3);
 
         // Same relative path under a different workspace must NOT leak into the target's filtered page.
-        await SeedChunkAsync(enabled, other.Path, "src/Shared.cs", "chunk-other-shared", 0, "other shared", DateTimeOffset.UtcNow, dim: 3);
+        await SeedChunkAsync(enabled, other.Path, sharedRelativePath, "chunk-other-shared", 0, "other shared", DateTimeOffset.UtcNow, dim: 3);
 
-        HttpResponseMessage response = await GetChunksAsync(client, target.Id, "src/Shared.cs", null, null);
+        HttpResponseMessage response = await GetChunksAsync(client, target.Id, sharedRelativePath, null, null);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -319,13 +321,13 @@ public sealed class WorkspaceIndexInspectorEndpointTests
 
         WorkspaceFileChunkDto hit = Assert.Single(page.Chunks);
 
-        Assert.Equal("src/Shared.cs", hit.RelativePath);
+        Assert.Equal(sharedRelativePath, hit.RelativePath);
 
         Assert.Equal("chunk-target-shared", hit.ChunkId, StringComparer.Ordinal);
 
         Assert.Equal(1, page.Total);
 
-        Assert.Equal("src/Shared.cs", page.RelativePathFilter, StringComparer.Ordinal);
+        Assert.Equal(sharedRelativePath, page.RelativePathFilter, StringComparer.Ordinal);
 
     }
 

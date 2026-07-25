@@ -8,6 +8,11 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
+internal sealed record BatchReservationLine(
+    string? Model,
+    int? MaxOutputTokens,
+    int? ReasoningBudgetTokens);
+
 /// <summary>
 /// Per-turn (or per-batch) run + reservation + model-call budget handle. Failures are logged by the
 /// caller; reservation acquisition failures surface as <see cref="ErrorCodes.Budget.Exceeded"/>.
@@ -19,18 +24,24 @@ internal sealed class TurnAccountingHandle
 
     private readonly object _costGate = new();
 
+    private readonly SemaphoreSlim _writerGate = new(1, 1);
+
+    private readonly TurnAccountingHandle? _accountingOwner;
+
     private TurnAccountingHandle(
         ITurnBudget budget,
         Guid? runId,
         Guid? reservationId,
         bool reservationActive,
-        bool ownsLifecycle)
+        bool ownsLifecycle,
+        TurnAccountingHandle? accountingOwner = null)
     {
         Budget = budget;
         RunId = runId;
         ReservationId = reservationId;
         ReservationActive = reservationActive;
         OwnsLifecycle = ownsLifecycle;
+        _accountingOwner = accountingOwner;
     }
 
     public ITurnBudget Budget { get; }
@@ -44,9 +55,41 @@ internal sealed class TurnAccountingHandle
     /// <summary>When false, this handle is shared ambient accounting — do not complete it.</summary>
     public bool OwnsLifecycle { get; }
 
-    public decimal AccumulatedCostUsd { get; private set; }
+    public decimal AccumulatedCostUsd
+    {
+        get
+        {
+            TurnAccountingHandle root = AccountingRoot;
+
+            lock (root._costGate)
+            {
+                return root._accumulatedCostUsd;
+            }
+        }
+    }
+
+    public bool AccountingFailed
+    {
+        get
+        {
+            TurnAccountingHandle root = AccountingRoot;
+
+            lock (root._costGate)
+            {
+                return root._accountingFailed;
+            }
+        }
+    }
+
+    private decimal _accumulatedCostUsd;
+
+    private bool _accountingFailed;
+
+    private bool _hasRecordedOperations;
 
     private bool _finished;
+
+    private TurnAccountingHandle AccountingRoot => _accountingOwner ?? this;
 
     public void AddCost(decimal costUsd)
     {
@@ -55,11 +98,22 @@ internal sealed class TurnAccountingHandle
             return;
         }
 
-        lock (_costGate)
+        TurnAccountingHandle root = AccountingRoot;
+
+        lock (root._costGate)
         {
-            AccumulatedCostUsd += costUsd;
+            root._accumulatedCostUsd = SaturatingCostAdd(root._accumulatedCostUsd, costUsd);
         }
     }
+
+    public TurnAccountingHandle CreateNestedOperationHandle() =>
+        new(
+            new TurnBudget(),
+            RunId,
+            ReservationId,
+            ReservationActive,
+            ownsLifecycle: false,
+            AccountingRoot);
 
     public async Task CompleteAsync(
         ITurnRunWriter? turnRunWriter,
@@ -75,15 +129,27 @@ internal sealed class TurnAccountingHandle
         _finished = true;
 
         decimal accumulated;
+        bool hasRecordedOperations;
 
-        lock (_costGate)
+        TurnAccountingHandle root = AccountingRoot;
+
+        lock (root._costGate)
         {
-            accumulated = AccumulatedCostUsd;
+            accumulated = root._accumulatedCostUsd;
+            hasRecordedOperations = root._hasRecordedOperations;
+
+            if (root._accountingFailed)
+            {
+                status = InferenceRunStatus.Failed;
+            }
         }
 
-        if (ReservationActive && ReservationId is Guid reservationId && budgetReservations is not null)
+        if (!AccountingFailed
+            && ReservationActive
+            && ReservationId is Guid reservationId
+            && budgetReservations is not null)
         {
-            if (status == InferenceRunStatus.Completed || accumulated > 0m)
+            if (status == InferenceRunStatus.Completed || accumulated > 0m || hasRecordedOperations)
             {
                 await budgetReservations.ReconcileAsync(reservationId, accumulated, cancellationToken)
                     .ConfigureAwait(false);
@@ -110,6 +176,8 @@ internal sealed class TurnAccountingHandle
         string purpose,
         string requestId,
         CancellationToken cancellationToken,
+        int? maxOutputTokens = null,
+        int? reasoningBudgetTokens = null,
         decimal? reservedUsdOverride = null)
     {
         TurnBudget budget = new();
@@ -137,10 +205,13 @@ internal sealed class TurnAccountingHandle
                 new TurnAccountingHandle(budget, runId, reservationId: null, reservationActive: false, ownsLifecycle: true));
         }
 
-        ModelPricingEntry entry = ResolvePricing(pricing, model);
+        ModelPricingEntry entry = pricing.ResolveForModel(model);
 
         decimal reservedUsd = reservedUsdOverride
-            ?? BudgetReservationService.EstimateWorstCaseTurnUsd(entry);
+            ?? BudgetReservationService.EstimateWorstCaseTurnUsd(
+                entry,
+                maxOutputTokens,
+                reasoningBudgetTokens);
 
         string period = BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow);
 
@@ -168,20 +239,27 @@ internal sealed class TurnAccountingHandle
     }
 
     /// <summary>
-    /// One reservation for an entire OpenAI batch (lineCount × single-call worst case; batches force
-    /// zero tools so MaxModelCalls does not apply per line).
+    /// One reservation for an entire OpenAI batch, summed from each valid line's resolved pricing and
+    /// typed output/reasoning budget. Batches force zero tools, so each line reserves one model call.
     /// </summary>
     public static Task<Result<TurnAccountingHandle>> BeginBatchAsync(
         ITurnRunWriter? turnRunWriter,
         IBudgetReservationService? budgetReservations,
         PricingSettings pricing,
-        int lineCount,
+        IReadOnlyList<BatchReservationLine> lines,
         string requestId,
         CancellationToken cancellationToken)
     {
-        int clampedLines = Math.Max(0, lineCount);
-        ModelPricingEntry entry = ResolvePricing(pricing, model: null);
-        decimal reservedUsd = BudgetReservationService.EstimateWorstCaseBatchLineUsd(entry) * clampedLines;
+        decimal reservedUsd = 0m;
+
+        foreach (BatchReservationLine line in lines)
+        {
+            ModelPricingEntry entry = pricing.ResolveForModel(line.Model);
+            reservedUsd += BudgetReservationService.EstimateWorstCaseBatchLineUsd(
+                entry,
+                line.MaxOutputTokens,
+                line.ReasoningBudgetTokens);
+        }
 
         return BeginAsync(
             turnRunWriter,
@@ -203,6 +281,7 @@ internal sealed class TurnAccountingHandle
         long promptTokens,
         long completionTokens,
         long cachedTokens,
+        long reasoningTokens,
         ModelPricingEntry pricing,
         CancellationToken cancellationToken) =>
         RecordUsageAsync(
@@ -214,6 +293,7 @@ internal sealed class TurnAccountingHandle
             promptTokens,
             completionTokens,
             cachedTokens,
+            reasoningTokens,
             pricing,
             cancellationToken);
 
@@ -226,6 +306,7 @@ internal sealed class TurnAccountingHandle
         long inputTokens,
         long outputTokens,
         long cachedTokens,
+        long reasoningTokens,
         ModelPricingEntry pricing,
         CancellationToken cancellationToken)
     {
@@ -234,48 +315,76 @@ internal sealed class TurnAccountingHandle
             return;
         }
 
-        decimal cost = CostCalculator.CalculateCost(inputTokens, outputTokens, cachedTokens, pricing);
-        AddCost(cost);
-
+        decimal cost = CostCalculator.CalculateCost(
+            inputTokens,
+            outputTokens,
+            cachedTokens,
+            reasoningTokens,
+            pricing);
         string snapshot =
             "{\"InputPer1M\":"
             + pricing.InputPer1M.ToString(CultureInfo.InvariantCulture)
             + ",\"OutputPer1M\":"
             + pricing.OutputPer1M.ToString(CultureInfo.InvariantCulture)
+            + ",\"ReasoningPer1M\":"
+            + (pricing.ReasoningPer1M?.ToString(CultureInfo.InvariantCulture) ?? "null")
             + ",\"CachedPer1M\":"
             + pricing.CachedPer1M.ToString(CultureInfo.InvariantCulture)
             + "}";
 
-        _ = await turnRunWriter.RecordBillableOperationAsync(
-                new BillableOperationRecord(
-                    runId,
-                    operationType,
-                    provider,
-                    model,
-                    Purpose: purpose,
-                    StartedAt: DateTimeOffset.UtcNow,
-                    CompletedAt: DateTimeOffset.UtcNow,
-                    InputTokens: inputTokens,
-                    OutputTokens: outputTokens,
-                    CachedTokens: cachedTokens,
-                    PricingSnapshotJson: snapshot,
-                    ActualCostUsd: cost,
-                    Status: BillableOperationStatus.Completed,
-                    ProviderRequestId: null),
-                cancellationToken)
-            .ConfigureAwait(false);
-    }
+        TurnAccountingHandle accountingRoot = AccountingRoot;
 
-    private static ModelPricingEntry ResolvePricing(PricingSettings pricing, string? model)
-    {
-        ModelPricingEntry entry = pricing.DefaultPricing;
+        await accountingRoot._writerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        if (model is not null && pricing.ModelPricing.TryGetValue(model, out ModelPricingEntry? explicitPricing))
+        try
         {
-            entry = explicitPricing;
+            _ = await turnRunWriter.RecordBillableOperationAsync(
+                    new BillableOperationRecord(
+                        runId,
+                        operationType,
+                        provider,
+                        model,
+                        Purpose: purpose,
+                        StartedAt: DateTimeOffset.UtcNow,
+                        CompletedAt: DateTimeOffset.UtcNow,
+                        InputTokens: inputTokens,
+                        OutputTokens: outputTokens,
+                        ReasoningTokens: reasoningTokens,
+                        CachedTokens: cachedTokens,
+                        PricingSnapshotJson: snapshot,
+                        ActualCostUsd: cost,
+                        Status: BillableOperationStatus.Completed,
+                        ProviderRequestId: null),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (accountingRoot._costGate)
+            {
+                accountingRoot._accountingFailed = true;
+            }
+
+            throw;
+        }
+        finally
+        {
+            accountingRoot._writerGate.Release();
         }
 
-        return entry;
+        lock (accountingRoot._costGate)
+        {
+            accountingRoot._hasRecordedOperations = true;
+
+            if (cost > 0m)
+            {
+                accountingRoot._accumulatedCostUsd =
+                    SaturatingCostAdd(accountingRoot._accumulatedCostUsd, cost);
+            }
+        }
     }
+
+    private static decimal SaturatingCostAdd(decimal left, decimal right) =>
+        right >= decimal.MaxValue - left ? decimal.MaxValue : left + right;
 
 }

@@ -175,6 +175,28 @@ public partial class GenericSettingsSectionView : UserControl
             Source = root,
         });
 
+        if (field.Descriptor.AllowUnset)
+        {
+            CheckBox enabled = new()
+            {
+                Content = "Set an explicit value",
+                DataContext = field,
+                Margin = new Avalonia.Thickness(0, 0, 0, 4),
+            };
+
+            enabled.Bind(CheckBox.IsCheckedProperty, new Binding(nameof(GenericSettingFieldViewModel.IsSet)));
+            stepper.Bind(Control.IsEnabledProperty, new Binding(nameof(GenericSettingFieldViewModel.IsSet)));
+
+            return new StackPanel
+            {
+                Children =
+                {
+                    enabled,
+                    stepper,
+                },
+            };
+        }
+
         return stepper;
 
     }

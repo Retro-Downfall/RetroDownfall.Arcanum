@@ -310,10 +310,7 @@ internal static class McpSecurityLimits
 
         if (key.Equals("HTTP_PROXY", StringComparison.OrdinalIgnoreCase)
             || key.Equals("HTTPS_PROXY", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("ALL_PROXY", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("http_proxy", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("https_proxy", StringComparison.OrdinalIgnoreCase)
-            || key.Equals("all_proxy", StringComparison.OrdinalIgnoreCase))
+            || key.Equals("ALL_PROXY", StringComparison.OrdinalIgnoreCase))
         {
 
             return true;

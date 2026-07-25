@@ -37,7 +37,8 @@ internal static class ModelInfoBuilder
                     provider.Type.ToString(),
                     redactedEndpoint,
                     provider.ContextWindowLimit,
-                    model.SupportsVision));
+                    model.SupportsVision,
+                    model.Reasoning));
 
             }
 

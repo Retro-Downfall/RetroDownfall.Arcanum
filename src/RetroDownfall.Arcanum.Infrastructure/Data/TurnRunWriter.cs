@@ -87,10 +87,10 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
                     """
                     INSERT INTO "BillableOperations"
                         ("Id", "RunId", "OperationType", "Provider", "Model", "Purpose", "StartedAt", "CompletedAt",
-                         "InputTokens", "OutputTokens", "CachedTokens", "PricingSnapshotJson", "ActualCostUsd", "Status", "ProviderRequestId")
+                         "InputTokens", "OutputTokens", "ReasoningTokens", "CachedTokens", "PricingSnapshotJson", "ActualCostUsd", "Status", "ProviderRequestId")
                     VALUES
                         (@id, @runId, @opType, @provider, @model, @purpose, @startedAt, @completedAt,
-                         @input, @output, @cached, @pricing, @cost, @status, @providerRequestId)
+                         @input, @output, @reasoning, @cached, @pricing, @cost, @status, @providerRequestId)
                     """;
 
                 AddParameter(cmd, "@id", id.ToString("N"));
@@ -103,6 +103,7 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
                 AddParameter(cmd, "@completedAt", operation.CompletedAt.ToString("o", CultureInfo.InvariantCulture));
                 AddParameter(cmd, "@input", operation.InputTokens);
                 AddParameter(cmd, "@output", operation.OutputTokens);
+                AddParameter(cmd, "@reasoning", operation.ReasoningTokens);
                 AddParameter(cmd, "@cached", operation.CachedTokens);
                 AddParameter(cmd, "@pricing", operation.PricingSnapshotJson);
                 AddParameter(cmd, "@cost", operation.ActualCostUsd);

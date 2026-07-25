@@ -41,6 +41,54 @@ public class ComparisonCostEstimatorTests
 
     }
 
+    [Fact]
+    public void Estimate_WithReasoningUsage_SplitsCompletionCost()
+    {
+
+        PricingSettings pricing = new()
+        {
+            DefaultPricing = new ModelPricingEntry
+            {
+                OutputPer1M = 2m,
+                ReasoningPer1M = 8m,
+            },
+        };
+
+        ChatCompletionUsage usage = new(
+            PromptTokens: 0,
+            CompletionTokens: 1_000_000,
+            TotalTokens: 1_000_000,
+            ReasoningTokens: 250_000);
+
+        (_, decimal? usd) = ComparisonCostEstimator.Estimate(usage, "unknown", pricing);
+
+        Assert.Equal(3.5m, usd);
+
+    }
+
+    [Fact]
+    public void Estimate_WithReasoningOnlyPricing_IsAvailable()
+    {
+
+        PricingSettings pricing = new()
+        {
+            DefaultPricing = new ModelPricingEntry { ReasoningPer1M = 8m },
+        };
+
+        ChatCompletionUsage usage = new(
+            PromptTokens: 0,
+            CompletionTokens: 1_000_000,
+            TotalTokens: 1_000_000,
+            ReasoningTokens: 250_000);
+
+        (string label, decimal? usd) =
+            ComparisonCostEstimator.Estimate(usage, "unknown", pricing);
+
+        Assert.StartsWith(ComparisonCostEstimator.EstimatedPrefix, label, StringComparison.Ordinal);
+        Assert.Equal(2m, usd);
+
+    }
+
 }
 
 public class ComparisonRunStoreTests

@@ -163,10 +163,7 @@ public static class SecureFilePermissions
 
         }
 
-        string logDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "logs");
+        string logDirectory = ArcanumPaths.LogDirectory;
 
         if (Directory.Exists(logDirectory))
         {
@@ -217,10 +214,7 @@ public static class SecureFilePermissions
 
         string sessionFile = Path.Combine(grimoireDir, "cli-session.txt");
 
-        string logDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "logs");
+        string logDirectory = ArcanumPaths.LogDirectory;
 
         CheckPath(logger, grimoireDir, isDirectory: true);
 

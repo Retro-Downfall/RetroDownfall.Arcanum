@@ -72,7 +72,7 @@ public sealed class ChatCommandHelperTests
     }
 
     [Fact]
-    public void AccumulateSessionMana_sums_prompt_and_completion_tokens()
+    public void AccumulateSessionMana_preserves_explicit_zero_round_total()
     {
 
         ChatCompletionUsage running = new(10, 5, 20);
@@ -85,7 +85,7 @@ public sealed class ChatCommandHelperTests
 
         Assert.Equal(7, total.CompletionTokens);
 
-        Assert.Equal(25, total.TotalTokens);
+        Assert.Equal(20, total.TotalTokens);
 
     }
 
@@ -104,7 +104,22 @@ public sealed class ChatCommandHelperTests
     }
 
     [Fact]
-    public void AccumulateSessionMana_never_reports_total_below_prompt_plus_completion()
+    public void AccumulateSessionMana_TracksReasoningWithoutAddingItToTotal()
+    {
+        ChatCompletionUsage running = new(10, 5, 15, CachedTokens: 2, ReasoningTokens: 3);
+        ChatCompletionUsage round = new(3, 2, 5, CachedTokens: 1, ReasoningTokens: 4);
+
+        ChatCompletionUsage total = ChatCommand.AccumulateSessionMana(running, round);
+
+        Assert.Equal(13, total.PromptTokens);
+        Assert.Equal(7, total.CompletionTokens);
+        Assert.Equal(20, total.TotalTokens);
+        Assert.Equal(3, total.CachedTokens);
+        Assert.Equal(7, total.ReasoningTokens);
+    }
+
+    [Fact]
+    public void AccumulateSessionMana_preserves_sum_of_provider_reported_round_totals()
     {
 
         ChatCompletionUsage running = new(100, 100, 150);
@@ -113,10 +128,28 @@ public sealed class ChatCommandHelperTests
 
         ChatCompletionUsage total = ChatCommand.AccumulateSessionMana(running, round);
 
-        Assert.True(total.TotalTokens >= total.PromptTokens + total.CompletionTokens);
+        Assert.Equal(160, total.TotalTokens);
 
-        Assert.Equal(300, total.TotalTokens);
+    }
 
+    [Fact]
+    public void AccumulateSessionMana_saturates_all_counters_without_overflow()
+    {
+        ChatCompletionUsage running = new(
+            int.MaxValue,
+            int.MaxValue,
+            int.MaxValue,
+            int.MaxValue,
+            int.MaxValue);
+        ChatCompletionUsage round = new(1, 1, 1, 1, 1);
+
+        ChatCompletionUsage total = ChatCommand.AccumulateSessionMana(running, round);
+
+        Assert.Equal(int.MaxValue, total.PromptTokens);
+        Assert.Equal(int.MaxValue, total.CompletionTokens);
+        Assert.Equal(int.MaxValue, total.TotalTokens);
+        Assert.Equal(int.MaxValue, total.CachedTokens);
+        Assert.Equal(int.MaxValue, total.ReasoningTokens);
     }
 
 }

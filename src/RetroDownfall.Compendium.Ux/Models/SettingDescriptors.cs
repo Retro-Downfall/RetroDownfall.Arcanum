@@ -91,6 +91,22 @@ public static class SettingDescriptors
 
         new("providers.models.supportsVision", ConfigSection.Providers, "Supports vision", "When true, this model accepts image content (Scrying). The Scrying capability gate rejects images to models where this is false.", SettingKind.Bool),
 
+        new("providers.models.reasoning.controlSupport", ConfigSection.Providers, "Reasoning controls", "Explicit reasoning controls accepted by this model: none, effort, budget, or effort and budget. Callers must still choose either effort or budget per request.", SettingKind.Enum, EnumType: typeof(ReasoningControlSupport)),
+
+        new("providers.models.reasoning.supportsSummary", ConfigSection.Providers, "Supports reasoning summaries", "When true, the provider/model can return a client-safe summary separately from assistant answer text.", SettingKind.Bool),
+
+        new("providers.models.reasoning.supportsFull", ConfigSection.Providers, "Supports full reasoning output", "When true, the provider/model can return client-safe full reasoning separately from assistant answer text. This never authorizes hidden or protected chain-of-thought disclosure.", SettingKind.Bool),
+
+        new("providers.models.reasoning.supportsStreaming", ConfigSection.Providers, "Streams reasoning output", "When true, supported client-safe reasoning output may arrive incrementally while inference is running.", SettingKind.Bool),
+
+        new("providers.models.reasoning.reportsReasoningTokens", ConfigSection.Providers, "Reports reasoning tokens", "When true, provider usage can report reasoning tokens as a subset of completion tokens.", SettingKind.Bool),
+
+        new("providers.models.reasoning.allowsClientOutput", ConfigSection.Providers, "Allow client reasoning output", "Explicit permission for Arcanum to project provider-returned client-safe summaries or full reasoning. When false, summary/full output requests are rejected.", SettingKind.Bool),
+
+        new("providers.models.reasoning.wireDialect", ConfigSection.Providers, "Reasoning wire dialect", "Explicit request-wire shape. Standard uses Microsoft.Extensions.AI/OpenAI options; numeric budgets require OpenRouter reasoning.max_tokens, top-level reasoning_budget, or Anthropic-style thinking.budget_tokens. Never inferred from provider/model names.", SettingKind.Enum, EnumType: typeof(ReasoningWireDialect)),
+
+        new("providers.models.reasoning.maxBudgetTokens", ConfigSection.Providers, "Maximum reasoning budget tokens", "Optional per-model maximum for explicit numeric reasoning budgets. Valid only when budget control is supported.", SettingKind.Int, 1, 2_097_152, 1, ClampName: nameof(ArcanumSettingClamps.ReasoningBudgetTokens)),
+
         new("providers.contextWindowLimit", ConfigSection.Providers, "Context window limit", "Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152.", SettingKind.Int, 256, 2_097_152, 128, ClampName: nameof(ArcanumSettingClamps.ContextWindowLimit)),
 
         new("providers.supportsPromptCaching", ConfigSection.Providers, "Supports prompt caching", "When true (default for OpenAI-compatible providers), Arcanum records arcanum_prompt_cache_tokens metrics when the response usage reports cached prompt tokens. Set false for providers that do not support caching.", SettingKind.Bool),
@@ -572,9 +588,11 @@ public static class SettingDescriptors
 
         new("pricing.defaultPricing.outputPer1M", ConfigSection.Pricing, "Default output price (USD / 1M tokens)", "Fallback cost per 1M output tokens when a model has no explicit pricing entry. Default free.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingOutputPer1M)),
 
+        new("pricing.defaultPricing.reasoningPer1M", ConfigSection.Pricing, "Default reasoning price (USD / 1M tokens)", "Optional fallback cost per 1M reasoning tokens. Reasoning is included in output token counts; when unset, the output price applies.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingOutputPer1M), AllowUnset: true),
+
         new("pricing.defaultPricing.cachedPer1M", ConfigSection.Pricing, "Default cached input price (USD / 1M tokens)", "Fallback cost per 1M cached input tokens. Default 0.00 — set explicitly; cached tokens are not assumed free forever.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.PricingInputPer1M)),
 
-        new("pricing.modelPricing", ConfigSection.Pricing, "Per-model pricing", "Dictionary keyed by model name. Each entry supplies input, output, and cached USD cost per 1M tokens.", SettingKind.Dictionary),
+        new("pricing.modelPricing", ConfigSection.Pricing, "Per-model pricing", "Dictionary keyed by model name. Each entry supplies input, output, optional reasoning, and cached USD cost per 1M tokens.", SettingKind.Dictionary),
 
         // ===== Budget =====
 

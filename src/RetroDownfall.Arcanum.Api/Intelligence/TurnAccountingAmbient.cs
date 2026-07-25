@@ -31,10 +31,41 @@ internal static class TurnAccountingAmbient
         Writer = writer;
     }
 
+    public static IDisposable Push(TurnAccountingHandle handle, ITurnRunWriter? writer)
+    {
+        RestorationScope scope = new(Current, Writer);
+        Publish(handle, writer);
+        return scope;
+    }
+
     public static void Clear()
     {
         Current = null;
         Writer = null;
+    }
+
+    private sealed class RestorationScope(
+        TurnAccountingHandle? previousHandle,
+        ITurnRunWriter? previousWriter) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (previousHandle is null)
+            {
+                Clear();
+                return;
+            }
+
+            Publish(previousHandle, previousWriter);
+        }
     }
 
 }

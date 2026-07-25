@@ -58,6 +58,21 @@ public sealed class ChatLayoutRendererTests
     }
 
     [Fact]
+    public void Body_shows_reasoning_in_a_separate_ephemeral_block()
+    {
+        TestConsole console = new TestConsole().Width(160).Height(50);
+
+        console.Write(ChatLayoutRenderer.Build(CreateContext(
+            assistantText: "answer only",
+            reasoningText: "client-safe summary",
+            generating: true)));
+
+        Assert.Contains("Reasoning (ephemeral)", console.Output, StringComparison.Ordinal);
+        Assert.Contains("client-safe summary", console.Output, StringComparison.Ordinal);
+        Assert.Contains("answer only", console.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Body_shows_capped_tool_diagnostics_separate_from_assistant_text()
     {
 
@@ -125,11 +140,13 @@ public sealed class ChatLayoutRendererTests
 
     private static ChatLayoutContext CreateContext(
         string assistantText = "",
+        string reasoningText = "",
         bool generating = false,
         IReadOnlyList<ToolDiagnosticLine>? diagnostics = null) =>
         new(
             HeaderMarkup: "header",
             AssistantText: assistantText,
+            ReasoningText: reasoningText,
             LiveDiagnostics: diagnostics ?? [],
             TranscriptTail: [],
             McpServers: [],

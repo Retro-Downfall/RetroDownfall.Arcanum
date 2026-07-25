@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
@@ -20,18 +21,30 @@ public sealed record ModelEntry
     {
     }
 
-    public ModelEntry(string Name, bool SupportsVision = false)
+    public ModelEntry(
+        string Name,
+        bool SupportsVision = false,
+        ReasoningCapabilities? Reasoning = null)
     {
 
         this.Name = Name;
 
         this.SupportsVision = SupportsVision;
 
+        this.Reasoning = Reasoning;
+
     }
 
     public string Name { get; set; } = string.Empty;
 
     public bool SupportsVision { get; set; }
+
+    /// <summary>
+    /// Explicit provider/model reasoning metadata. <see langword="null"/> preserves legacy behavior
+    /// and means no reasoning controls or client output have been declared.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ReasoningCapabilities? Reasoning { get; set; }
 
     /// <summary>
     /// Implicit conversion from a bare model name — mirrors the JSON string-or-object back-compat
@@ -44,9 +57,9 @@ public sealed record ModelEntry
 
 /// <summary>
 /// AOT-safe converter accepting either a bare JSON string (<c>"gpt-4o"</c>, back-compat form —
-/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c>) or an object
-/// (<c>{ "name": "gpt-4o", "supportsVision": true }</c>). Writes are always the object form so a
-/// round-tripped configuration file preserves the declared capability.
+/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c> and
+/// <see cref="ModelEntry.Reasoning"/> to <see langword="null"/>) or an object. Writes are always the
+/// object form and omit reasoning when it was not declared.
 /// </summary>
 public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 {
@@ -61,6 +74,8 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                 string name = string.Empty;
 
                 bool supportsVision = false;
+
+                ReasoningCapabilities? reasoning = null;
 
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                 {
@@ -82,17 +97,25 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                         supportsVision = reader.TokenType is JsonTokenType.True or JsonTokenType.False
                             && reader.GetBoolean();
                     }
+                    else if (string.Equals(propertyName, "reasoning", StringComparison.OrdinalIgnoreCase))
+                    {
+                        reasoning = reader.TokenType == JsonTokenType.Null
+                            ? null
+                            : JsonSerializer.Deserialize(
+                                ref reader,
+                                ConfigurationJsonContext.Default.ReasoningCapabilities);
+                    }
                     else
                     {
                         reader.Skip();
                     }
                 }
 
-                return new ModelEntry(name, supportsVision);
+                return new ModelEntry(name, supportsVision, reasoning);
 
             default:
                 throw new JsonException(
-                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision' (got {reader.TokenType}).");
+                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning' (got {reader.TokenType}).");
         }
     }
 
@@ -103,6 +126,16 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
         writer.WriteString("name", value.Name);
 
         writer.WriteBoolean("supportsVision", value.SupportsVision);
+
+        if (value.Reasoning is not null)
+        {
+            writer.WritePropertyName("reasoning");
+
+            JsonSerializer.Serialize(
+                writer,
+                value.Reasoning,
+                ConfigurationJsonContext.Default.ReasoningCapabilities);
+        }
 
         writer.WriteEndObject();
     }

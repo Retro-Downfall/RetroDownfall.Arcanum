@@ -25,8 +25,19 @@ internal static class ChatLayoutRenderer
 
         Layout header = new Layout("header").Update(new Markup(ctx.HeaderMarkup)).Size(1);
 
+        Layout transcript = new Layout("assistant").Update(BuildAssistantRenderable(ctx));
+        if (!string.IsNullOrEmpty(ctx.ReasoningText))
+        {
+            int reasoningLines = ctx.ReasoningText.Count(static c => c == '\n') + 1;
+            transcript = new Layout("transcript").SplitRows(
+                new Layout("reasoning")
+                    .Update(EphemeralReasoningRenderer.Build(ctx.ReasoningText, ctx.Theme))
+                    .Size(Math.Clamp(reasoningLines + 2, 3, 8)),
+                new Layout("assistant").Update(BuildAssistantRenderable(ctx)));
+        }
+
         Layout body = new Layout("body").Ratio(3).SplitRows(
-            new Layout("assistant").Update(BuildAssistantRenderable(ctx)),
+            transcript,
             new Layout("diagnostics")
                 .Update(BuildDiagnosticsRenderable(ctx))
                 .Size(MaxLiveDiagnosticLines + 2));
@@ -164,6 +175,7 @@ internal static class ChatLayoutRenderer
 internal sealed record ChatLayoutContext(
     string HeaderMarkup,
     string AssistantText,
+    string ReasoningText,
     IReadOnlyList<ToolDiagnosticLine> LiveDiagnostics,
     IReadOnlyList<IRenderable> TranscriptTail,
     IReadOnlyList<McpServerInfo> McpServers,

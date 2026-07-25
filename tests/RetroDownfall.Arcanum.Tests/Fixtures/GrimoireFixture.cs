@@ -53,22 +53,27 @@ public sealed class GrimoireFixture : IDisposable
             _saltStatic = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
             _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromApiKey(TestApiKey, _saltStatic);
 
-            using SqliteConnection probe = new(new SqliteConnectionStringBuilder
             {
-                DataSource = probePath,
-                Password = _passphraseStatic,
-            }.ToString());
+                using SqliteConnection probe = new(new SqliteConnectionStringBuilder
+                {
+                    DataSource = probePath,
+                    Password = _passphraseStatic,
+                    Pooling = false,
+                }.ToString());
 
-            probe.Open();
+                probe.Open();
 
-            probe.Close();
+                probe.Close();
 
-            try
-            {
-                File.Delete(probePath);
             }
-            catch
+
+            File.Delete(probePath);
+
+            if (File.Exists(probePath))
             {
+
+                throw new IOException($"SQLCipher availability probe was not deleted: {probePath}");
+
             }
 
             SqlCipherAvailable = true;
@@ -165,8 +170,6 @@ public sealed class GrimoireFixture : IDisposable
 
     public string Passphrase => _passphrase;
 
-    private static readonly object CopyLock = new();
-
     private static readonly object BuildLock = new();
 
     public string CopyDatabase()
@@ -180,40 +183,31 @@ public sealed class GrimoireFixture : IDisposable
 
         _copyPaths.Add(copySidecarPath);
 
-        lock (CopyLock)
+        lock (BuildLock)
         {
 
-            const int maxAttempts = 5;
-
-            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            try
             {
 
-                try
-                {
+                File.Copy(_templatePath, copyPath, overwrite: true);
 
-                    File.Copy(_templatePath, copyPath, overwrite: true);
+                File.Copy(_templateSidecarPath, copySidecarPath, overwrite: true);
 
-                    File.Copy(_templateSidecarPath, copySidecarPath, overwrite: true);
+                return copyPath;
 
-                    return copyPath;
+            }
+            catch
+            {
 
-                }
-                catch (IOException) when (attempt < maxAttempts - 1)
-                {
+                File.Delete(copyPath);
 
-                    Thread.Sleep(50 * (attempt + 1));
+                File.Delete(copySidecarPath);
 
-                }
+                throw;
 
             }
 
         }
-
-        File.Copy(_templatePath, copyPath, overwrite: true);
-
-        File.Copy(_templateSidecarPath, copySidecarPath, overwrite: true);
-
-        return copyPath;
 
     }
 
@@ -231,12 +225,20 @@ public sealed class GrimoireFixture : IDisposable
             {
                 DataSource = databasePath,
                 Password = _passphrase,
+                Pooling = false,
             }.ToString())
             .UseModel(ArcanumDbContextModel.Instance)
             .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance)
             .Options;
 
-        return new ArcanumDbContext(options, secretStore, passphraseSource);
+        ArcanumDbContext context = new(options, secretStore, passphraseSource);
+
+        // Keep the non-pooled SQLCipher connection open for the context lifetime. Reopening an
+        // encrypted database for every EF operation is prohibitively slow on Windows because each
+        // open repeats key derivation; disposing the context still releases the file handle.
+        context.Database.OpenConnection();
+
+        return context;
 
     }
 
@@ -252,6 +254,7 @@ public sealed class GrimoireFixture : IDisposable
         {
             DataSource = _templatePath,
             Password = _passphrase,
+            Pooling = false,
         }.ToString());
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -335,6 +338,7 @@ public sealed class GrimoireFixture : IDisposable
             {
                 DataSource = templatePath,
                 Password = passphrase,
+                Pooling = false,
             }.ToString());
 
             await probe.OpenAsync(cancellationToken).ConfigureAwait(false);

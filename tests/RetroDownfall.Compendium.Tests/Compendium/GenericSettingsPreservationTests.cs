@@ -115,6 +115,105 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Nullable_reasoning_price_preserves_null_and_can_set_then_clear_zero()
+    {
+        await SeedAsync(new ArcanumSettings
+        {
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry
+                {
+                    OutputPer1M = 5m,
+                    ReasoningPer1M = null,
+                },
+            },
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Pricing);
+        GenericSettingFieldViewModel reasoning = Assert.Single(
+            section.Fields,
+            static field => field.Descriptor.Key == "pricing.defaultPricing.reasoningPer1M");
+
+        Assert.True(reasoning.Descriptor.AllowUnset);
+        Assert.False(reasoning.IsSet);
+        Assert.Null(vm.BuildSettings().Pricing.DefaultPricing.ReasoningPer1M);
+
+        reasoning.IsSet = true;
+        reasoning.NumericValue = 0;
+        Assert.Equal(0m, vm.BuildSettings().Pricing.DefaultPricing.ReasoningPer1M);
+
+        reasoning.IsSet = false;
+        ArcanumSettings cleared = vm.BuildSettings();
+        Assert.Null(cleared.Pricing.DefaultPricing.ReasoningPer1M);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(cleared, CancellationToken.None);
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        Assert.Null(saved.Pricing.DefaultPricing.ReasoningPer1M);
+    }
+
+    [Fact]
+    public async Task Provider_reasoning_capabilities_survive_load_build_and_save_round_trip()
+    {
+
+        ReasoningCapabilities expected = new()
+        {
+            ControlSupport = ReasoningControlSupport.EffortAndBudget,
+            SupportsSummary = true,
+            SupportsFull = true,
+            SupportsStreaming = true,
+            ReportsReasoningTokens = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.OpenRouter,
+            MaxBudgetTokens = 32768,
+        };
+
+        await SeedAsync(new ArcanumSettings
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "reasoning-provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://reasoning.example/v1",
+                    Models = [new ModelEntry("reasoner", SupportsVision: true, Reasoning: expected)],
+                },
+            ],
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        ProvidersSectionViewModel.ModelEntryViewModel model = Assert.Single(
+            Assert.Single(vm.Providers.Providers).Models);
+
+        Assert.Equal(expected, model.Reasoning);
+
+        ArcanumSettings built = vm.BuildSettings();
+        ReasoningCapabilities builtReasoning = Assert.IsType<ReasoningCapabilities>(
+            Assert.Single(Assert.Single(built.Providers).Models).Reasoning);
+
+        Assert.Equal(expected, builtReasoning);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
+
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        ReasoningCapabilities savedReasoning = Assert.IsType<ReasoningCapabilities>(
+            Assert.Single(Assert.Single(saved.Providers).Models).Reasoning);
+
+        Assert.Equal(expected, savedReasoning);
+
+    }
+
     private static ConfigurationViewModel CreateViewModel()
     {
 

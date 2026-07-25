@@ -1079,17 +1079,34 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                         continue;
                     }
 
-                    IntelligenceEvent? item;
-                    bool malformed = false;
-
-                    try
+                    byte[] utf8Line = Encoding.UTF8.GetBytes(line);
+                    IntelligenceEventDiscriminatorResult discriminator =
+                        IntelligenceEventDiscriminator.InspectAndNormalize(utf8Line);
+                    if (discriminator == IntelligenceEventDiscriminatorResult.Unknown)
                     {
-                        item = JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent);
+                        continue;
                     }
-                    catch (JsonException)
+
+                    IntelligenceEvent? item;
+                    bool malformed = discriminator == IntelligenceEventDiscriminatorResult.Malformed;
+
+                    if (!malformed)
+                    {
+                        try
+                        {
+                            item = JsonSerializer.Deserialize(
+                                utf8Line,
+                                ArcanumJsonContext.Default.IntelligenceEvent);
+                        }
+                        catch (JsonException)
+                        {
+                            item = null;
+                            malformed = true;
+                        }
+                    }
+                    else
                     {
                         item = null;
-                        malformed = true;
                     }
 
                     if (malformed)

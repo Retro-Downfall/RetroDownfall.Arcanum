@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -74,6 +75,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
         {
 
             await _db.DisposeAsync();
+            SqliteConnection.ClearAllPools();
 
         }
 
@@ -200,6 +202,95 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Assert.Contains("\"line\":1", errorContent, StringComparison.Ordinal);
 
+    }
+
+    [SkippableFact]
+    public async Task ProcessBatchAsync_ReservesValidLinesUsingResolvedPricingAndTypedBudgets()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = new()
+        {
+            DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+            ModelPricing =
+            {
+                ["reasoner"] = new ModelPricingEntry
+                {
+                    InputPer1M = 3m,
+                    OutputPer1M = 4m,
+                    ReasoningPer1M = 8m,
+                },
+            },
+        };
+        BatchProcessingService service = CreateService(
+            new FakeIntelligenceProvider(),
+            turnRunWriter: writer,
+            budgetReservations: reservations,
+            pricing: pricing);
+        string jsonl =
+            "{ not-json\n"
+            + """{"custom_id":"reasoning","method":"POST","url":"/v1/chat/completions","body":{"model":"reasoner","max_completion_tokens":1000,"reasoning_budget":600,"messages":[{"role":"user","content":"hi"}]}}"""
+            + "\n"
+            + """{"custom_id":"legacy","method":"POST","url":"/v1/chat/completions","body":{"model":"other","max_tokens":200,"messages":[{"role":"user","content":"hi"}]}}"""
+            + "\n";
+        Guid inputFileId = await SeedInputFileAsync(jsonl);
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        decimal expected =
+            BudgetReservationService.EstimateWorstCaseBatchLineUsd(
+                pricing.ModelPricing["reasoner"],
+                maxOutputTokens: 1_000,
+                reasoningBudgetTokens: 600)
+            + BudgetReservationService.EstimateWorstCaseBatchLineUsd(
+                pricing.DefaultPricing,
+                maxOutputTokens: 200,
+                reasoningBudgetTokens: null);
+        Assert.Equal(expected, reservations.LastRequest?.ReservedUsd);
+    }
+
+    [SkippableFact]
+    public async Task ProcessBatchAsync_ConcurrentLines_SerializesSharedSqliteAccountingWriter()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        AccountingFakeIntelligenceProvider intelligence = new(expectedConcurrentCalls: 2);
+        ConcurrentCallDetectingTurnRunWriter writer = new(new TurnRunWriter(_db!));
+        BatchProcessingService service = CreateService(intelligence, turnRunWriter: writer);
+        string jsonl =
+            """{"custom_id":"first","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+            + "\n"
+            + """{"custom_id":"second","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"two"}]}}"""
+            + "\n";
+        Guid inputFileId = await SeedInputFileAsync(jsonl);
+        Guid batchId = Guid.NewGuid();
+        BatchRecord batch = new(
+            batchId,
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        Assert.False(writer.ConcurrentRecordDetected);
+        Assert.Equal(2, await CountBillableOperationsAsync($"batch-{batchId:N}"));
     }
 
     [SkippableFact]
@@ -365,7 +456,12 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
-    private BatchProcessingService CreateService(IArcanumIntelligenceProvider intelligence, int? batchExpiryHours = null)
+    private BatchProcessingService CreateService(
+        IArcanumIntelligenceProvider intelligence,
+        int? batchExpiryHours = null,
+        ITurnRunWriter? turnRunWriter = null,
+        IBudgetReservationService? budgetReservations = null,
+        PricingSettings? pricing = null)
     {
 
         BatchesSettings batches = new()
@@ -386,12 +482,19 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
                     Name = "test",
                     Type = AiProviderKind.OpenAICompatible,
                     Endpoint = "http://localhost",
-                    Models = [new ModelEntry("m"), new ModelEntry("missing")],
+                    Models =
+                    [
+                        new ModelEntry("m"),
+                        new ModelEntry("missing"),
+                        new ModelEntry("reasoner"),
+                        new ModelEntry("other"),
+                    ],
                 },
             ],
+            Pricing = pricing ?? new PricingSettings(),
         };
 
-        ServiceProvider root = BuildServiceProvider(intelligence);
+        ServiceProvider root = BuildServiceProvider(intelligence, turnRunWriter, budgetReservations);
 
         return new BatchProcessingService(
             root.GetRequiredService<IServiceScopeFactory>(),
@@ -401,7 +504,10 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
-    private ServiceProvider BuildServiceProvider(IArcanumIntelligenceProvider intelligence)
+    private ServiceProvider BuildServiceProvider(
+        IArcanumIntelligenceProvider intelligence,
+        ITurnRunWriter? turnRunWriter = null,
+        IBudgetReservationService? budgetReservations = null)
     {
 
         ServiceCollection services = new();
@@ -416,12 +522,174 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         services.AddSingleton<IBatchRecoveryService>(_ => new NoOpBatchRecoveryService());
 
+        if (turnRunWriter is not null)
+        {
+            services.AddSingleton(turnRunWriter);
+        }
+
+        if (budgetReservations is not null)
+        {
+            services.AddSingleton(budgetReservations);
+        }
+
         return services.BuildServiceProvider();
 
     }
 
     private IServiceScopeFactory BuildScopeFactory(IArcanumIntelligenceProvider intelligence) =>
         BuildServiceProvider(intelligence).GetRequiredService<IServiceScopeFactory>();
+
+    private sealed class RecordingTurnRunWriter : ITurnRunWriter
+    {
+        public Task<Guid> StartRunAsync(
+            InferenceRunStart start,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Guid.NewGuid());
+
+        public Task CompleteRunAsync(
+            Guid runId,
+            InferenceRunStatus status,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<Guid> RecordBillableOperationAsync(
+            BillableOperationRecord operation,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Guid.NewGuid());
+    }
+
+    private sealed class ConcurrentCallDetectingTurnRunWriter(ITurnRunWriter inner) : ITurnRunWriter
+    {
+        private int _activeRecords;
+
+        public bool ConcurrentRecordDetected { get; private set; }
+
+        public Task<Guid> StartRunAsync(
+            InferenceRunStart start,
+            CancellationToken cancellationToken = default) =>
+            inner.StartRunAsync(start, cancellationToken);
+
+        public Task CompleteRunAsync(
+            Guid runId,
+            InferenceRunStatus status,
+            CancellationToken cancellationToken = default) =>
+            inner.CompleteRunAsync(runId, status, cancellationToken);
+
+        public async Task<Guid> RecordBillableOperationAsync(
+            BillableOperationRecord operation,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _activeRecords) != 1)
+            {
+                ConcurrentRecordDetected = true;
+                _ = Interlocked.Decrement(ref _activeRecords);
+                throw new InvalidOperationException("Concurrent access to the shared SQLite accounting writer.");
+            }
+
+            try
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                return await inner.RecordBillableOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _ = Interlocked.Decrement(ref _activeRecords);
+            }
+        }
+    }
+
+    private sealed class AccountingFakeIntelligenceProvider(int expectedConcurrentCalls)
+        : IArcanumIntelligenceProvider
+    {
+        private readonly TaskCompletionSource _providersReady =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
+        {
+            if (Interlocked.Increment(ref _calls) >= expectedConcurrentCalls)
+            {
+                _providersReady.TrySetResult();
+            }
+
+            await _providersReady.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)
+                .ConfigureAwait(false);
+
+            TurnAccountingHandle accounting = Assert.IsType<TurnAccountingHandle>(TurnAccountingAmbient.Current);
+            ITurnRunWriter writer = Assert.IsAssignableFrom<ITurnRunWriter>(TurnAccountingAmbient.Writer);
+            await accounting.RecordUsageAsync(
+                    writer,
+                    BillableOperationType.Chat,
+                    "test-provider",
+                    request.Model ?? "m",
+                    purpose: "batch-line",
+                    inputTokens: 10,
+                    outputTokens: 5,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return Result<PromptTurnResult>.Success(
+                new PromptTurnResult("ok", null, null, "stop"));
+        }
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
+        {
+            await Task.CompletedTask.ConfigureAwait(false);
+            yield break;
+        }
+    }
+
+    private sealed class RecordingBudgetReservationService : IBudgetReservationService
+    {
+        public BudgetReservationRequest? LastRequest { get; private set; }
+
+        public Task<Result<BudgetReservation>> ReserveAsync(
+            BudgetReservationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            LastRequest = request;
+            return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
+                Guid.NewGuid(),
+                request.RunId,
+                request.BudgetPeriod,
+                request.ReservedUsd,
+                0m,
+                BudgetReservationStatus.Reserved,
+                request.ExpiresAt,
+                DateTimeOffset.UtcNow)));
+        }
+
+        public Task ReconcileAsync(
+            Guid reservationId,
+            decimal actualCostUsd,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task ReleaseAsync(
+            Guid reservationId,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
+
+        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
+
+        public Task<int> SweepExpiredAsync(
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+    }
 
     private sealed class NoOpBatchRecoveryService : IBatchRecoveryService
     {
@@ -452,6 +720,32 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         return id;
 
+    }
+
+    private async Task<int> CountBillableOperationsAsync(string requestId)
+    {
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM "BillableOperations" AS operations
+            INNER JOIN "InferenceRuns" AS runs ON runs."Id" = operations."RunId"
+            WHERE runs."RequestId" = @requestId
+            """;
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+        parameter.ParameterName = "@requestId";
+        parameter.Value = requestId;
+        _ = command.Parameters.Add(parameter);
+
+        object? value = await command.ExecuteScalarAsync();
+        return Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
 }

@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -144,6 +146,64 @@ public sealed class WeaveServiceTests
 
         Assert.Equal([2, 2, 1], factory.Generator.CallSizes);
 
+    }
+
+    [Fact]
+    public async Task EmbedBatchAsync_ReservesSanitizedInputBeforeProviderAndLedgersEachBatch()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        ArcanumSettings settings = EnabledSettings(batchSize: 2) with
+        {
+            Embeddings = EnabledSettings(batchSize: 2).Embeddings! with { ChunkSizeChars = 128 },
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry { InputPer1M = 1_000_000m },
+            },
+        };
+        factory.Generator.BeforeGenerate = () => Assert.NotNull(reservations.LastRequest);
+        WeaveService service = CreateService(settings, factory, writer, reservations);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(
+            [new string('a', 300), "b", "c"],
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(34m, reservations.LastRequest?.ReservedUsd);
+        Assert.Collection(
+            writer.Operations,
+            first => Assert.Equal(33L, first.InputTokens),
+            second => Assert.Equal(1L, second.InputTokens));
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.Equal(34m, reservations.ReconciledUsd);
+    }
+
+    [Fact]
+    public async Task EmbedBatchAsync_LaterProviderFailureRetainsEarlierBatchSpend()
+    {
+        FakeEmbeddingGeneratorFactory factory = new();
+        factory.Generator.ThrowOnCallNumber = 2;
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        ArcanumSettings settings = EnabledSettings(batchSize: 2) with
+        {
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry { InputPer1M = 1_000_000m },
+            },
+        };
+        WeaveService service = CreateService(settings, factory, writer, reservations);
+
+        Result<Embedding<float>[]> result = await service.EmbedBatchAsync(
+            ["a", "b", "c"],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        BillableOperationRecord operation = Assert.Single(writer.Operations);
+        Assert.Equal(2L, operation.InputTokens);
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
 
     [Fact]
@@ -304,15 +364,106 @@ public sealed class WeaveServiceTests
             },
         };
 
-    private static WeaveService CreateService(ArcanumSettings settings, FakeEmbeddingGeneratorFactory? factory = null)
+    private static WeaveService CreateService(
+        ArcanumSettings settings,
+        FakeEmbeddingGeneratorFactory? factory = null,
+        ITurnRunWriter? writer = null,
+        IBudgetReservationService? reservations = null)
     {
-        ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+        ServiceCollection collection = new();
+
+        if (writer is not null)
+        {
+            collection.AddSingleton(writer);
+        }
+
+        if (reservations is not null)
+        {
+            collection.AddSingleton(reservations);
+        }
+
+        ServiceProvider services = collection.BuildServiceProvider();
 
         return new(
             factory ?? new FakeEmbeddingGeneratorFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             services.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<WeaveService>.Instance);
+    }
+
+    private sealed class RecordingTurnRunWriter : ITurnRunWriter
+    {
+        public List<BillableOperationRecord> Operations { get; } = [];
+
+        public Task<Guid> StartRunAsync(
+            InferenceRunStart start,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Guid.NewGuid());
+
+        public Task CompleteRunAsync(
+            Guid runId,
+            InferenceRunStatus status,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<Guid> RecordBillableOperationAsync(
+            BillableOperationRecord operation,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add(operation);
+            return Task.FromResult(Guid.NewGuid());
+        }
+    }
+
+    private sealed class RecordingBudgetReservationService : IBudgetReservationService
+    {
+        public BudgetReservationRequest? LastRequest { get; private set; }
+
+        public decimal? ReconciledUsd { get; private set; }
+
+        public int ReconcileCount { get; private set; }
+
+        public Task<Result<BudgetReservation>> ReserveAsync(
+            BudgetReservationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            LastRequest = request;
+            return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
+                Guid.NewGuid(),
+                request.RunId,
+                request.BudgetPeriod,
+                request.ReservedUsd,
+                0m,
+                BudgetReservationStatus.Reserved,
+                request.ExpiresAt,
+                DateTimeOffset.UtcNow)));
+        }
+
+        public Task ReconcileAsync(
+            Guid reservationId,
+            decimal actualCostUsd,
+            CancellationToken cancellationToken = default)
+        {
+            ReconciledUsd = actualCostUsd;
+            ReconcileCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task ReleaseAsync(
+            Guid reservationId,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
+
+        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
+
+        public Task<int> SweepExpiredAsync(
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
     }
 
     private sealed class FakeEmbeddingGeneratorFactory : IEmbeddingGeneratorFactory
@@ -342,6 +493,10 @@ public sealed class WeaveServiceTests
 
         public TimeSpan? DelayOnGenerate { get; set; }
 
+        public Action? BeforeGenerate { get; set; }
+
+        public int? ThrowOnCallNumber { get; set; }
+
         public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
             IEnumerable<string> values,
             EmbeddingGenerationOptions? options = null,
@@ -352,15 +507,17 @@ public sealed class WeaveServiceTests
 
             CallSizes.Add(list.Count);
 
+            BeforeGenerate?.Invoke();
+
             if (DelayOnGenerate is { } delay)
             {
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
 
             }
 
-            if (ThrowOnGenerate is not null)
+            if (ThrowOnGenerate is not null || ThrowOnCallNumber == CallSizes.Count)
             {
-                throw ThrowOnGenerate;
+                throw ThrowOnGenerate ?? new InvalidOperationException("scripted embedding failure");
 
             }
 

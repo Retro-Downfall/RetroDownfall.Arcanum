@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
@@ -21,4 +22,6 @@ public sealed record OpenAiModel(
     [property: JsonPropertyName("provider_name")] string ProviderName = "",
     [property: JsonPropertyName("provider_type")] string ProviderType = "",
     [property: JsonPropertyName("supports_tools")] bool SupportsTools = true,
-    [property: JsonPropertyName("supports_streaming")] bool SupportsStreaming = true);
+    [property: JsonPropertyName("supports_streaming")] bool SupportsStreaming = true,
+    [property: JsonPropertyName("reasoning"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReasoningCapabilities? Reasoning = null);

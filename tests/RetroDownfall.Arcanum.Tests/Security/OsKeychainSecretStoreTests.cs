@@ -1,19 +1,29 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
 public sealed class OsKeychainSecretStoreTests : IDisposable
 {
 
     private readonly string _storeDir = Path.Combine(Path.GetTempPath(), $"arcanum-oskey-{Guid.NewGuid():N}");
 
+    private readonly Dictionary<string, string?> _originalEnvironment = new();
+
     public OsKeychainSecretStoreTests()
     {
+
+        SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
+
+        SetEnvironment("ARCANUM_TEST_HOME", _storeDir);
 
         Directory.CreateDirectory(_storeDir);
 
@@ -24,10 +34,10 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     public void Dispose()
     {
 
-        DeleteSecurityDat();
-
         try
         {
+
+            DeleteSecurityDat();
 
             if (Directory.Exists(_storeDir))
             {
@@ -41,6 +51,17 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         {
 
             // Best-effort cleanup.
+
+        }
+        finally
+        {
+
+            foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
+            {
+
+                global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
+
+            }
 
         }
 
@@ -139,10 +160,7 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     private static void DeleteSecurityDat()
     {
 
-        string path = Path.Combine(
-            System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "security.dat");
+        string path = ArcanumPaths.ApiKeyStoreFile;
 
         try
         {
@@ -161,6 +179,15 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
             // Best-effort cleanup.
 
         }
+
+    }
+
+    private void SetEnvironment(string name, string value)
+    {
+
+        _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
+
+        global::System.Environment.SetEnvironmentVariable(name, value);
 
     }
 

@@ -45,6 +45,7 @@ public sealed class SessionLogBufferHistoryTests
     [InlineData("assistant", nameof(SessionLogEntryKind.Assistant))]
     [InlineData("tool", nameof(SessionLogEntryKind.Tool))]
     [InlineData("system", nameof(SessionLogEntryKind.Status))]
+    [InlineData("reasoning", nameof(SessionLogEntryKind.Reasoning))]
     public void MapEntryRole_maps_known_roles(string role, string expected) =>
         Assert.Equal(Enum.Parse<SessionLogEntryKind>(expected), SessionLogBuffer.MapEntryRole(role));
 }
@@ -83,6 +84,33 @@ public sealed class SessionWorkspaceServiceTests
         int firstIdx = text.IndexOf("first", StringComparison.Ordinal);
         int secondIdx = text.IndexOf("second", StringComparison.Ordinal);
         Assert.True(firstIdx >= 0 && secondIdx > firstIdx);
+    }
+
+    [Fact]
+    public async Task Resume_drops_defensive_reasoning_rows_from_persisted_history()
+    {
+        Guid id = Guid.Parse("abababab-abab-abab-abab-abababababab");
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-24T12:00:00Z");
+        EntryDto[] apiEntries =
+        [
+            new(Guid.NewGuid(), id, "assistant", "answer", null, null, now.AddSeconds(2)),
+            new(Guid.NewGuid(), id, "reasoning", "sensitive reasoning", null, null, now.AddSeconds(1)),
+            new(Guid.NewGuid(), id, "user", "question", null, null, now),
+        ];
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(id, null, "Defensive", "Active", EntryCount: 3, now, now, null, 0),
+            entries: apiEntries);
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        SessionResumeResult result = await workspace.ResumeSessionAsync(state, id, CancellationToken.None);
+
+        Assert.Equal(SessionResumeOutcome.Success, result.Outcome);
+        Assert.Equal(
+            [SessionLogEntryKind.User, SessionLogEntryKind.Assistant],
+            state.Log.Snapshot().Select(static entry => entry.Kind));
+        Assert.DoesNotContain("sensitive reasoning", state.Log.RenderPlainText(), StringComparison.Ordinal);
+        Assert.Contains("answer", state.Log.RenderPlainText(), StringComparison.Ordinal);
     }
 
     [Fact]

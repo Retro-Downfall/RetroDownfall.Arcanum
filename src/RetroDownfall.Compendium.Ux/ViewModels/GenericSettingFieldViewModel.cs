@@ -34,6 +34,27 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
     [ObservableProperty]
     private object? _value;
 
+    public bool IsSet
+    {
+        get => Value is not null;
+        set
+        {
+            if (!Descriptor.AllowUnset)
+            {
+                return;
+            }
+
+            if (value && Value is null)
+            {
+                Value = descriptorKindConvert(0);
+            }
+            else if (!value)
+            {
+                Value = null;
+            }
+        }
+    }
+
     public bool BoolValue
     {
 
@@ -104,6 +125,19 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             _ => value,
         };
 
+    }
+
+    partial void OnValueChanged(object? oldValue, object? newValue)
+    {
+        if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float)
+        {
+            OnPropertyChanged(nameof(NumericValue));
+        }
+
+        if ((oldValue is null) != (newValue is null))
+        {
+            OnPropertyChanged(nameof(IsSet));
+        }
     }
 
     private static string DeriveGroup(string key)

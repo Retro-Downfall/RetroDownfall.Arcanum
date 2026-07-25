@@ -34,6 +34,8 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
     private ChatMessageViewModel? _streamingAssistant;
 
+    private ChatMessageViewModel? _streamingReasoning;
+
     private readonly Dictionary<string, ToolCallCardViewModel> _toolCardsByCallId = new(StringComparer.Ordinal);
 
     private bool _disposed;
@@ -174,6 +176,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         Messages.Add(new ChatMessageViewModel("user", prompt));
 
         _streamingAssistant = null;
+        _streamingReasoning = null;
 
         _sendCts?.Cancel();
 
@@ -217,9 +220,12 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         finally
         {
 
+            CompleteStreamingContent();
+
             IsStreaming = false;
 
             _streamingAssistant = null;
+            _streamingReasoning = null;
 
         }
 
@@ -322,6 +328,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         _toolCardsByCallId.Clear();
 
         _streamingAssistant = null;
+        _streamingReasoning = null;
 
         if (result.Data is { } entries)
         {
@@ -600,8 +607,21 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         Trace.Capture(ev);
 
+        if (ev.Type is not IntelligenceEventType.Token and not IntelligenceEventType.Reasoning)
+        {
+            PublishStreamingContent();
+        }
+
         switch (ev.Type)
         {
+            case IntelligenceEventType.Reasoning
+                when ev.Reasoning is { Text.Length: > 0 } reasoning:
+                AppendReasoning(reasoning.Text);
+                break;
+
+            case IntelligenceEventType.Reasoning:
+                break;
+
             case IntelligenceEventType.Token:
                 AppendToken(ev.Data ?? string.Empty);
                 break;
@@ -708,6 +728,35 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         _streamingAssistant.AppendContent(data);
 
+    }
+
+    private void AppendReasoning(string data)
+    {
+        if (string.IsNullOrEmpty(data))
+        {
+            return;
+        }
+
+        if (_streamingReasoning is null)
+        {
+            _streamingReasoning = new ChatMessageViewModel("reasoning", data);
+            Messages.Add(_streamingReasoning);
+            return;
+        }
+
+        _streamingReasoning.AppendContent(data);
+    }
+
+    private void PublishStreamingContent()
+    {
+        _streamingReasoning?.PublishPendingContent();
+        _streamingAssistant?.PublishPendingContent();
+    }
+
+    private void CompleteStreamingContent()
+    {
+        _streamingReasoning?.CompleteStreamingContent();
+        _streamingAssistant?.CompleteStreamingContent();
     }
 
     private void ApplyToolCall(IntelligenceEvent ev)

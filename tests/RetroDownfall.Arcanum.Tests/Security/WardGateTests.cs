@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
@@ -10,6 +11,8 @@ public sealed class WardGateTests
 {
 
     private const string TimeoutReason = "The ward held until timeout — action was not allowed";
+
+    private const string CapacityReason = "Maximum active wards reached — action was not allowed";
 
     [Fact]
     public async Task WardAsync_ResolveAllow_ReturnsAllowedResolution()
@@ -147,6 +150,100 @@ public sealed class WardGateTests
     }
 
     [Fact]
+    public async Task Resolve_ConcurrentLateAttempts_ReturnAlreadyResolved()
+    {
+
+        WardGate gate = CreateGate();
+
+        Task<WardResolution> wardTask = gate.WardAsync(
+            "ward-concurrent-late",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        Assert.Equal(
+            ResolveStatus.Success,
+            gate.Resolve("ward-concurrent-late", allow: true, reason: "first"));
+
+        WardResolution first = await wardTask;
+
+        Assert.True(first.Allowed);
+
+        ResolveStatus[] lateStatuses = await Task.WhenAll(
+            Enumerable.Range(0, 16)
+                .Select(_ => Task.Run(() =>
+                    gate.Resolve("ward-concurrent-late", allow: false, reason: "late"))));
+
+        Assert.All(lateStatuses, status => Assert.Equal(ResolveStatus.AlreadyResolved, status));
+
+    }
+
+    [Fact]
+    public async Task Resolve_ConcurrentAttempts_OneSucceedsAndRestAreAlreadyResolved()
+    {
+
+        const int iterationCount = 10;
+
+        const int resolverCount = 32;
+
+        for (int iteration = 0; iteration < iterationCount; iteration++)
+        {
+
+            string wardId = $"ward-concurrent-{iteration}";
+
+            WardGate gate = CreateGate();
+
+            Task<WardResolution> wardTask = gate.WardAsync(
+                wardId,
+                "write_file",
+                arguments: null,
+                sessionId: null,
+                timeout: TimeSpan.FromSeconds(30),
+                CancellationToken.None);
+
+            using var start = new Barrier(resolverCount + 1);
+
+            Task<ResolveStatus>[] attempts = Enumerable.Range(0, resolverCount)
+                .Select(i => Task.Factory.StartNew(
+                    () =>
+                    {
+
+                        if (!start.SignalAndWait(TimeSpan.FromSeconds(10)))
+                        {
+
+                            throw new TimeoutException("Concurrent resolvers did not reach the start barrier.");
+
+                        }
+
+                        return gate.Resolve(wardId, allow: i == 0, reason: $"resolver-{i}");
+
+                    },
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default))
+                .ToArray();
+
+            Assert.True(start.SignalAndWait(TimeSpan.FromSeconds(10)));
+
+            ResolveStatus[] statuses = await Task.WhenAll(attempts);
+
+            Assert.Equal(1, statuses.Count(status => status == ResolveStatus.Success));
+
+            Assert.Equal(
+                resolverCount - 1,
+                statuses.Count(status => status == ResolveStatus.AlreadyResolved));
+
+            Assert.DoesNotContain(ResolveStatus.NotFound, statuses);
+
+            _ = await wardTask;
+
+        }
+
+    }
+
+    [Fact]
     public async Task WardAsync_CallerCancellation_ThrowsOperationCanceledException()
     {
 
@@ -225,26 +322,54 @@ public sealed class WardGateTests
     }
 
     [Fact]
-    public async Task WardAsync_CompletedWard_PrunesResolvedTombstone()
+    public async Task Resolve_ExpiredTombstone_ReturnsNotFoundWhileFreshTombstoneIsRetained()
     {
 
-        WardGate gate = CreateGate(timeoutSeconds: 1);
+        const int configuredTimeoutSeconds = 10;
 
-        Task<WardResolution> wardTask = gate.WardAsync(
-            "ward-prune",
+        FakeTimeProvider timeProvider = new();
+
+        WardGate gate = CreateGate(
+            timeoutSeconds: configuredTimeoutSeconds,
+            timeProvider: timeProvider);
+
+        Task<WardResolution> staleWardTask = gate.WardAsync(
+            "ward-stale",
             "write_file",
             arguments: null,
             sessionId: null,
             timeout: TimeSpan.FromSeconds(30),
             CancellationToken.None);
 
-        Assert.Equal(ResolveStatus.Success, gate.Resolve("ward-prune", allow: true, reason: "ok"));
+        Assert.Equal(ResolveStatus.Success, gate.Resolve("ward-stale", allow: true, reason: "ok"));
 
-        _ = await wardTask;
+        _ = await staleWardTask;
 
-        Assert.Equal(ResolveStatus.AlreadyResolved, gate.Resolve("ward-prune", allow: false, reason: "late"));
+        Assert.Equal(
+            ResolveStatus.AlreadyResolved,
+            gate.Resolve("ward-stale", allow: false, reason: "still retained"));
 
-        Assert.Equal(ResolveStatus.AlreadyResolved, gate.Resolve("ward-prune", allow: true, reason: "tombstone retained"));
+        int retentionSeconds = ArcanumSettingClamps.WardTimeoutSeconds(configuredTimeoutSeconds) + 60;
+
+        timeProvider.Advance(TimeSpan.FromSeconds(retentionSeconds + 1));
+
+        Task<WardResolution> freshWardTask = gate.WardAsync(
+            "ward-fresh",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        Assert.Equal(ResolveStatus.Success, gate.Resolve("ward-fresh", allow: true, reason: "fresh"));
+
+        _ = await freshWardTask;
+
+        Assert.Equal(ResolveStatus.NotFound, gate.Resolve("ward-stale", allow: false, reason: "expired"));
+
+        Assert.Equal(
+            ResolveStatus.AlreadyResolved,
+            gate.Resolve("ward-fresh", allow: false, reason: "fresh tombstone retained"));
 
     }
 
@@ -272,9 +397,54 @@ public sealed class WardGateTests
 
         Assert.False(resolution.Allowed);
 
-        Assert.Equal("Maximum active wards reached — action was not allowed", resolution.Reason);
+        Assert.Equal(CapacityReason, resolution.Reason);
 
         gate.Resolve("ward-cap-1", allow: true, reason: null);
+
+    }
+
+    [Fact]
+    public async Task WardAsync_MissingWardSettings_UsesDefaultCapacityBoundary()
+    {
+
+        int defaultCapacity = new WardSettings().MaxActiveWards;
+
+        WardGate gate = new(new FakeOptionsMonitor(new ArcanumSettings { Ward = null! }));
+
+        Task<WardResolution>[] admitted = Enumerable.Range(0, defaultCapacity)
+            .Select(i => gate.WardAsync(
+                $"ward-default-{i}",
+                "write_file",
+                arguments: null,
+                sessionId: null,
+                timeout: TimeSpan.FromMinutes(2),
+                CancellationToken.None))
+            .ToArray();
+
+        Assert.Equal(defaultCapacity, gate.GetActiveWards().Count);
+
+        WardResolution overflow = await gate.WardAsync(
+            "ward-default-overflow",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromMinutes(2),
+            CancellationToken.None);
+
+        Assert.False(overflow.Allowed);
+
+        Assert.Equal(CapacityReason, overflow.Reason);
+
+        foreach (ActiveWard ward in gate.GetActiveWards())
+        {
+
+            Assert.Equal(ResolveStatus.Success, gate.Resolve(ward.WardId, allow: true, reason: "cleanup"));
+
+        }
+
+        WardResolution[] resolutions = await Task.WhenAll(admitted);
+
+        Assert.All(resolutions, resolution => Assert.True(resolution.Allowed));
 
     }
 
@@ -363,7 +533,10 @@ public sealed class WardGateTests
 
     }
 
-    private static WardGate CreateGate(int timeoutSeconds = 30, int maxActiveWards = 50) =>
+    private static WardGate CreateGate(
+        int timeoutSeconds = 30,
+        int maxActiveWards = 50,
+        TimeProvider? timeProvider = null) =>
         new(new FakeOptionsMonitor(new ArcanumSettings
         {
             Ward = new WardSettings
@@ -371,7 +544,7 @@ public sealed class WardGateTests
                 TimeoutSeconds = timeoutSeconds,
                 MaxActiveWards = maxActiveWards,
             },
-        }));
+        }), timeProvider);
 
     // W3.4 Group B: WardEntry.Arguments holds a JsonDocument that owns pooled native memory.
     // On every terminal path out of _pending (resolve / timeout / caller-cancel) the entry

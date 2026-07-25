@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
@@ -29,7 +30,10 @@ public sealed record IntelligenceEvent(
     DateTimeOffset? Timestamp = null,
     [property: JsonPropertyName("finishReason")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? FinishReason = null)
+    string? FinishReason = null,
+    [property: JsonPropertyName("reasoning")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReasoningContentSegment? Reasoning = null)
 {
 
     public IReadOnlyList<string> Warnings { get; init; } = [];

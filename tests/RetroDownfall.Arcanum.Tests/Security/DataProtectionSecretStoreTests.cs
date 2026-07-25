@@ -1,17 +1,27 @@
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
 public sealed class DataProtectionSecretStoreTests : IDisposable
 {
 
     private readonly string _storeDir = Path.Combine(Path.GetTempPath(), $"arcanum-test-{Guid.NewGuid():N}");
 
+    private readonly Dictionary<string, string?> _originalEnvironment = new();
+
     public DataProtectionSecretStoreTests()
     {
+
+        SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
+
+        SetEnvironment("ARCANUM_TEST_HOME", _storeDir);
 
         Directory.CreateDirectory(_storeDir);
 
@@ -22,10 +32,10 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
     public void Dispose()
     {
 
-        DeleteSecurityDat();
-
         try
         {
+
+            DeleteSecurityDat();
 
             if (Directory.Exists(_storeDir))
             {
@@ -41,16 +51,24 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
             // Best-effort cleanup.
 
         }
+        finally
+        {
+
+            foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
+            {
+
+                global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
+
+            }
+
+        }
 
     }
 
     private static void DeleteSecurityDat()
     {
 
-        string path = Path.Combine(
-            System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "security.dat");
+        string path = ArcanumPaths.ApiKeyStoreFile;
 
         try
         {
@@ -119,10 +137,7 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
 
         using DataProtectionSecretStore store = CreateStore();
 
-        string path = Path.Combine(
-            System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
-            "arcanum",
-            "security.dat");
+        string path = ArcanumPaths.ApiKeyStoreFile;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
@@ -170,6 +185,15 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         await store.SaveApiKeyAsync(Guid.NewGuid().ToString("N"));
 
         Assert.True(true);
+
+    }
+
+    private void SetEnvironment(string name, string value)
+    {
+
+        _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
+
+        global::System.Environment.SetEnvironmentVariable(name, value);
 
     }
 

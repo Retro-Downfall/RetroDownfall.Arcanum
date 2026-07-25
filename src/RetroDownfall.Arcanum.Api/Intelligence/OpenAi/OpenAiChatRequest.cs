@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
@@ -11,6 +12,11 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 /// Field names follow OpenAI's snake_case (set explicitly via <see cref="JsonPropertyNameAttribute"/>
 /// because the surrounding source-generated context uses camelCase defaults).
 /// </summary>
+/// <remarks>
+/// <c>reasoning_output</c> is an Arcanum-local reasoning exposure preference and a
+/// Microsoft.Extensions.AI best-effort hint. It is not guaranteed to become a provider wire field.
+/// When omitted, Arcanum derives full-versus-summary projection from the resolved model capability.
+/// </remarks>
 public sealed record OpenAiChatRequest(
     [property: JsonPropertyName("model")] string? Model,
     [property: JsonPropertyName("messages")] List<OpenAiChatMessage>? Messages,
@@ -31,7 +37,13 @@ public sealed record OpenAiChatRequest(
     [property: JsonPropertyName("tool_choice")] JsonElement? ToolChoice = null,
     [property: JsonPropertyName("parallel_tool_calls")] bool? ParallelToolCalls = null,
     [property: JsonPropertyName("logprobs")] bool? Logprobs = null,
-    [property: JsonPropertyName("top_logprobs")] int? TopLogprobs = null);
+    [property: JsonPropertyName("top_logprobs")] int? TopLogprobs = null,
+    [property: JsonPropertyName("reasoning_effort"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    OpenAiReasoningEffort? ReasoningEffort = null,
+    [property: JsonPropertyName("reasoning_budget"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? ReasoningBudget = null,
+    [property: JsonPropertyName("reasoning_output"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReasoningOutputMode? ReasoningOutput = null);
 
 public sealed record OpenAiStreamOptions(
     [property: JsonPropertyName("include_usage")] bool? IncludeUsage = null);

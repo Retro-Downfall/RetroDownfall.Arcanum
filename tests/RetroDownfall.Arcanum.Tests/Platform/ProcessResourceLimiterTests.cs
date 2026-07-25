@@ -19,7 +19,14 @@ public sealed class ProcessResourceLimiterTests
 
         psi.ArgumentList.Add("hi");
 
-        ResourceLimits limits = new() { MaxCpuSeconds = 0, MaxMemoryMb = 0, MaxFileDescriptors = 0 };
+        ResourceLimits limits = new()
+        {
+            MaxProcessMemoryMb = 0,
+            MaxProcessCount = 0,
+            MaxCpuSeconds = 0,
+            MaxMemoryMb = 0,
+            MaxFileDescriptors = 0,
+        };
 
         ProcessResourceLimiterResult result = _limiter.Apply(psi, limits);
 

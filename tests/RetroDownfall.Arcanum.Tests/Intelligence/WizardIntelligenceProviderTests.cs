@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +10,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -36,6 +38,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
+[Collection("ProcessEnvironment")]
 public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 {
 
@@ -86,6 +89,43 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "llo");
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task StreamingWizardThroughNativeProjection_GivesApprenticeFinalAnswer()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamTokens("real ", "answer");
+        ArcanumSettings settings = DefaultSettings();
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+        TestOptionsMonitor<ArcanumSettings> options = new(settings);
+        using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+        using ApprenticeService apprenticeService = new(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            options,
+            new ChronicleHub(options),
+            NullLogger<ApprenticeService>.Instance);
+        Apprentice apprentice = new()
+        {
+            Id = Guid.NewGuid(),
+            Name = "Projection integration",
+            Goal = "Consume the real streamed answer.",
+            WorkspacePath = _workspace.Root,
+            Status = ApprenticeStatus.Running.ToString(),
+        };
+        System.Reflection.MethodInfo executeStep = typeof(ApprenticeService).GetMethod(
+            "ExecuteStepStreamAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        using CancellationTokenSource linkedCts = new();
+
+        Task task = Assert.IsAssignableFrom<Task>(executeStep.Invoke(
+            apprenticeService,
+            [wizard, apprentice, "Complete this step.", 1, linkedCts, apprentice.Id, false]));
+        await task.WaitAsync(TimeSpan.FromSeconds(15));
+
+        object outcome = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        string? resultText = (string?)outcome.GetType().GetProperty("ResultText")!.GetValue(outcome);
+        Assert.Equal("real answer", resultText);
     }
 
     [Fact]
@@ -140,6 +180,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             {
                 Enabled = true,
                 StrictMode = true,
+                MaxValidationRetries = 0,
             }
         };
 
@@ -167,7 +208,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
 
-        Assert.Contains("StructuredOutput.ValidationFailed", error.Message, StringComparison.Ordinal);
+        Assert.Equal(ErrorCodes.StructuredOutput.ValidationFailed, error.Data);
+
+        Assert.Contains(
+            "failed JSON schema validation",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain(events, e => e.Type == IntelligenceEventType.Token);
 
@@ -1594,6 +1640,45 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TokenTracking_DoesNotAddReasoningSubsetToSessionTotal()
+    {
+        Guid sessionId = Guid.NewGuid();
+        FakeGrimoireRepository grimoire = new();
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "tracked"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 20,
+                TotalTokenCount = 30,
+                ReasoningTokenCount = 15,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableTokenTracking = true },
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, grimoire);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "hello",
+                SessionId = sessionId,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(30, grimoire.LastIncrementedTokens);
+        Assert.Equal(30, result.Value.Usage?.TotalTokens);
+        Assert.Equal(15, result.Value.Usage?.ReasoningTokens);
+    }
+
+    [Fact]
     public async Task Scenario35b_TokenTracking_IncrementsCostUsingModelPricing()
     {
 
@@ -1713,6 +1798,61 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(12, Assert.Single(captured));
 
+    }
+
+    [Fact]
+    public async Task ReasoningUsage_RecordsDedicatedLowCardinalityMetric()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 20,
+                TotalTokenCount = 30,
+                ReasoningTokenCount = 7,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+        string providerMarker = DefaultProvider().Name;
+        System.Collections.Concurrent.ConcurrentQueue<long> captured = new();
+        using System.Diagnostics.Metrics.MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) =>
+                activeListener.EnableMeasurementEvents(instrument),
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (instrument.Name != "arcanum_inference_reasoning_tokens_total")
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+                if (tag.Key == "provider"
+                    && tag.Value is string provider
+                    && provider == providerMarker)
+                {
+                    captured.Enqueue(measurement);
+                }
+            }
+        });
+        listener.Start();
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(7, Assert.Single(captured));
     }
 
     [Fact]
@@ -2524,6 +2664,54 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AuditLog_ReasoningUsage_RecordsCountWithoutReasoningText()
+    {
+        const string sensitiveReasoning = "sensitive provider reasoning";
+        ChatResponse response = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent(sensitiveReasoning),
+                new TextContent("answer"),
+            ]))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 8,
+                TotalTokenCount = 18,
+                ReasoningTokenCount = 7,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        FakeInferenceAuditLogger auditLogger = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            SettingsWithReasoning(),
+            auditLogger: auditLogger);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            },
+            CancellationToken.None,
+            new InferenceAuditContext { RequestType = "reasoning-audit" });
+
+        Assert.True(result.IsSuccess);
+        InferenceAuditRecord record = Assert.Single(auditLogger.Records);
+        Assert.Equal(7, record.ReasoningTokens);
+
+        string persisted = JsonSerializer.Serialize(
+            record,
+            Core.Serialization.AuditJsonContext.Default.InferenceAuditRecord);
+        Assert.DoesNotContain(sensitiveReasoning, persisted, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AuditLog_BufferedTurn_WithoutAuditContext_DoesNotRecord()
     {
 
@@ -2648,6 +2836,714 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         // tool-call response (30) + final text response (30), summed by AccumulateUsage across rounds.
         Assert.Equal(60, grimoire.LastIncrementedTokens);
 
+    }
+
+    [Fact]
+    public async Task UsageMapping_PreservesProviderTotalsAndInconsistentSubsetCounts()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 8,
+                TotalTokenCount = 17,
+                CachedInputTokenCount = 14,
+                ReasoningTokenCount = 11,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "usage",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        ChatCompletionUsage usage = Assert.IsType<ChatCompletionUsage>(result.Value.Usage);
+        Assert.Equal(10, usage.PromptTokens);
+        Assert.Equal(8, usage.CompletionTokens);
+        Assert.Equal(17, usage.TotalTokens);
+        Assert.Equal(14, usage.CachedTokens);
+        Assert.Equal(11, usage.ReasoningTokens);
+    }
+
+    [Fact]
+    public async Task UsageMapping_AccumulatesReasoningAndProviderTotalsAcrossToolRounds()
+    {
+        ChatResponse toolRound = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new FunctionCallContent(
+                    "call-usage",
+                    ArcanumLocalTimeTool.ToolName,
+                    new Dictionary<string, object?>()),
+            ]))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 8,
+                TotalTokenCount = 25,
+                CachedInputTokenCount = 4,
+                ReasoningTokenCount = 3,
+            },
+        };
+        ChatResponse finalRound = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 5,
+                OutputTokenCount = 7,
+                TotalTokenCount = 20,
+                CachedInputTokenCount = 1,
+                ReasoningTokenCount = 4,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(toolRound);
+        chat.EnqueueResponse(finalRound);
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "usage",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        ChatCompletionUsage usage = Assert.IsType<ChatCompletionUsage>(result.Value.Usage);
+        Assert.Equal(15, usage.PromptTokens);
+        Assert.Equal(15, usage.CompletionTokens);
+        Assert.Equal(45, usage.TotalTokens);
+        Assert.Equal(5, usage.CachedTokens);
+        Assert.Equal(7, usage.ReasoningTokens);
+    }
+
+    [Fact]
+    public async Task UsageMapping_MissingUsageIsSafe()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueText("answer");
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "usage",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        ChatCompletionUsage usage = Assert.IsType<ChatCompletionUsage>(result.Value.Usage);
+        Assert.Equal(0, usage.PromptTokens);
+        Assert.Equal(0, usage.CompletionTokens);
+        Assert.Equal(0, usage.TotalTokens);
+        Assert.Equal(0, usage.CachedTokens);
+        Assert.Equal(0, usage.ReasoningTokens);
+    }
+
+    [Fact]
+    public async Task UsageMapping_MissingTotalFallsBackToNormalizedPromptAndCompletion()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = -10,
+                OutputTokenCount = 20,
+                TotalTokenCount = null,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "usage",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, result.Value.Usage?.PromptTokens);
+        Assert.Equal(20, result.Value.Usage?.CompletionTokens);
+        Assert.Equal(20, result.Value.Usage?.TotalTokens);
+    }
+
+    [Fact]
+    public async Task AccountingReservation_UsesTypedRequestOutputAndReasoningBudgets()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueText("answer");
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry
+                {
+                    OutputPer1M = 20m,
+                    ReasoningPer1M = 80m,
+                },
+            },
+        };
+        settings.Providers[0].Models[0].Reasoning!.WireDialect = ReasoningWireDialect.OpenRouter;
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "budget",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                MaxOutputTokens = 1_000,
+                Reasoning = new ReasoningRequestOptions(BudgetTokens: 600),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        BudgetReservationRequest request = Assert.IsType<BudgetReservationRequest>(reservations.LastRequest);
+        Assert.Equal(
+            BudgetReservationService.EstimateWorstCaseTurnUsd(
+                settings.Pricing.DefaultPricing,
+                maxOutputTokens: 1_000,
+                reasoningBudgetTokens: 600),
+            request.ReservedUsd);
+    }
+
+    [Fact]
+    public void EnsureContextBudget_ExactReasoningReservationBoundaryFits()
+    {
+        const int maxOutputTokens = 100;
+        const int reasoningBudgetTokens = 300;
+        ArcanumSettings settings = DefaultSettings();
+        List<MeAiChatMessage> messages = [new(ChatRole.User, "boundary prompt")];
+        int messageTokens = CountContextTokens(settings, messages);
+        ScriptingChatClient chat = new();
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+        using ChatClientLease lease = new(
+            chat,
+            DefaultProvider() with { ContextWindowLimit = messageTokens + reasoningBudgetTokens },
+            ModelName,
+            ownedHttpClient: null);
+
+        Result result = InvokeEnsureContextBudget(
+            wizard,
+            messages,
+            lease,
+            BaseRequest() with
+            {
+                MaxOutputTokens = maxOutputTokens,
+                Reasoning = new ReasoningRequestOptions(BudgetTokens: reasoningBudgetTokens),
+            });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void EnsureContextBudget_RejectsOneTokenPastReasoningReservationBoundary()
+    {
+        const int maxOutputTokens = 100;
+        const int reasoningBudgetTokens = 300;
+        ArcanumSettings settings = DefaultSettings();
+        List<MeAiChatMessage> messages = [new(ChatRole.User, "boundary prompt")];
+        int messageTokens = CountContextTokens(settings, messages);
+        ScriptingChatClient chat = new();
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+        using ChatClientLease lease = new(
+            chat,
+            DefaultProvider() with { ContextWindowLimit = messageTokens + reasoningBudgetTokens - 1 },
+            ModelName,
+            ownedHttpClient: null);
+
+        Result result = InvokeEnsureContextBudget(
+            wizard,
+            messages,
+            lease,
+            BaseRequest() with
+            {
+                MaxOutputTokens = maxOutputTokens,
+                Reasoning = new ReasoningRequestOptions(BudgetTokens: reasoningBudgetTokens),
+            });
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+    }
+
+    [Fact]
+    public async Task AccountingReconciliation_UsesProviderCountsWhenReportedTotalIsZero()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 8,
+                TotalTokenCount = 0,
+                ReasoningTokenCount = 11,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry
+                {
+                    OutputPer1M = 20m,
+                    ReasoningPer1M = 80m,
+                },
+            },
+        };
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "account",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, result.Value.Usage?.TotalTokens);
+        BillableOperationRecord operation =
+            Assert.IsType<BillableOperationRecord>(turnRuns.LastOperation);
+        Assert.Equal(8, operation.OutputTokens);
+        Assert.Equal(11, operation.ReasoningTokens);
+        Assert.Equal(0.00064m, operation.ActualCostUsd);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+    }
+
+    [Fact]
+    public async Task Accounting_OutputGuardrailFailure_RetainsCompletedProviderUsage()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "bad-word"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 5,
+                TotalTokenCount = 15,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+            },
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+            },
+        };
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings),
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "guard", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+        Assert.Equal(10, operation.InputTokens);
+        Assert.Equal(5, operation.OutputTokens);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+        Assert.Equal(1, reservations.ReconcileCount);
+    }
+
+    [Fact]
+    public async Task Accounting_ToolRounds_RecordEachProviderCallWithoutFinalAggregate()
+    {
+        ChatResponse toolRound = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [new FunctionCallContent("clock", ArcanumLocalTimeTool.ToolName, new Dictionary<string, object?>())]))
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 2, TotalTokenCount = 12 },
+        };
+        ChatResponse finalRound = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails { InputTokenCount = 15, OutputTokenCount = 3, TotalTokenCount = 18 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(toolRound);
+        chat.EnqueueResponse(finalRound);
+        RecordingTurnRunWriter turnRuns = new();
+        WizardIntelligenceProvider wizard = CreateWizard(chat, turnRunWriter: turnRuns);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "tools", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Collection(
+            turnRuns.Operations,
+            first => Assert.Equal((10L, 2L), (first.InputTokens, first.OutputTokens)),
+            second => Assert.Equal((15L, 3L), (second.InputTokens, second.OutputTokens)));
+    }
+
+    [Fact]
+    public async Task Accounting_ToolLimitFailure_RetainsEveryCompletedProviderCallAndReconcilesOnce()
+    {
+        ChatResponse firstRound = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [new FunctionCallContent("clock-1", ArcanumLocalTimeTool.ToolName, new Dictionary<string, object?>())]))
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 2, TotalTokenCount = 12 },
+        };
+        ChatResponse limitRound = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [new FunctionCallContent("clock-2", ArcanumLocalTimeTool.ToolName, new Dictionary<string, object?>())]))
+        {
+            Usage = new UsageDetails { InputTokenCount = 15, OutputTokenCount = 3, TotalTokenCount = 18 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(firstRound);
+        chat.EnqueueResponse(limitRound);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { MaxToolInferenceRounds = 1 },
+        };
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "loop", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Hub.ToolLoop, result.Error.Code);
+        Assert.Collection(
+            turnRuns.Operations,
+            first => Assert.Equal((10L, 2L), (first.InputTokens, first.OutputTokens)),
+            second => Assert.Equal((15L, 3L), (second.InputTokens, second.OutputTokens)));
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.Equal(turnRuns.Operations.Sum(static operation => operation.ActualCostUsd), reservations.ReconciledUsd);
+    }
+
+    [Fact]
+    public async Task Accounting_SessionFinalizeFailure_RetainsProviderUsageAndReconcilesOnce()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 5, TotalTokenCount = 15 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        FakeGrimoireRepository grimoire = new() { ThrowOnFinalize = true };
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: grimoire,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "finalize",
+                SessionId = Guid.NewGuid(),
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+        Assert.Equal((10L, 5L), (operation.InputTokens, operation.OutputTokens));
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+    }
+
+    [Fact]
+    public async Task Accounting_StructuredRetryFailure_RetainsEveryCompletedProviderCall()
+    {
+        ChatResponse initial = new(new MeAiChatMessage(ChatRole.Assistant, "not json"))
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 2, TotalTokenCount = 12 },
+        };
+        ChatResponse retry = new(new MeAiChatMessage(ChatRole.Assistant, "still not json"))
+        {
+            Usage = new UsageDetails { InputTokenCount = 15, OutputTokenCount = 3, TotalTokenCount = 18 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(initial);
+        chat.EnqueueResponse(retry);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 1,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "required": ["answer"],
+              "properties": { "answer": { "type": "string" } }
+            }
+            """);
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "structured",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Collection(
+            turnRuns.Operations,
+            first => Assert.Equal(BillableOperationType.Chat, first.OperationType),
+            second => Assert.Equal(BillableOperationType.Retry, second.OperationType));
+        Assert.Equal(1, reservations.ReconcileCount);
+    }
+
+    [Fact]
+    public async Task Accounting_DurableWriteFailure_PropagatesAndKeepsReservation()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 5, TotalTokenCount = 15 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        RecordingTurnRunWriter turnRuns = new() { RecordException = new IOException("ledger unavailable") };
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "account", SkipSpellRouting = true, DisableMcpTools = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(0, reservations.ReconcileCount);
+        Assert.False(reservations.WasReleased);
+    }
+
+    [Fact]
+    public void AuxiliaryAccountingIdentity_WithoutSeparateLease_UsesActiveMainLease()
+    {
+        (string provider, string model) = WizardIntelligenceProvider.ResolveAuxiliaryAccountingIdentity(
+            auxiliaryProvider: null,
+            auxiliaryModel: null,
+            mainProvider: "main-provider",
+            mainModel: "resolved-main-model");
+
+        Assert.Equal("main-provider", provider);
+        Assert.Equal("resolved-main-model", model);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not json")]
+    [InlineData("""{"entities":[]}""")]
+    public async Task Accounting_RouterParseFailure_RetainsCompletedProviderUsage(string routerText)
+    {
+        await CreateSpellAsync("router-spell", "RouterSpell", dependencies: null);
+        ChatResponse routerResponse = new(new MeAiChatMessage(ChatRole.Assistant, routerText))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 10,
+                OutputTokenCount = 4,
+                TotalTokenCount = 14,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(routerResponse);
+        chat.EnqueueText("answer");
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableLexiconSystem = false },
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+            },
+        };
+        RecordingTurnRunWriter turnRuns = new();
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "route this",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = false,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+        Assert.Equal(BillableOperationType.Routing, operation.OperationType);
+        Assert.Equal((10L, 4L), (operation.InputTokens, operation.OutputTokens));
+        Assert.Equal(0.000018m, operation.ActualCostUsd);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+    }
+
+    [Fact]
+    public async Task Accounting_RoutingUsage_IgnoresCancellationAfterProviderCompletion()
+    {
+        await CreateSpellAsync("router-spell", "RouterSpell", dependencies: null);
+        using CancellationTokenSource callerCancellation = new();
+        ChatResponse routerResponse = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            """{"spellName":"NONE","entities":[]}"""))
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 4, TotalTokenCount = 14 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(routerResponse);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableLexiconSystem = false },
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+            },
+        };
+        RecordingTurnRunWriter turnRuns = new() { CancelBeforeRecord = callerCancellation };
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            wizard.ExecutePromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "route this",
+                    WorkingDirectory = _workspace.Root,
+                    SkipSpellRouting = false,
+                    DisableMcpTools = true,
+                },
+                callerCancellation.Token));
+
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+        Assert.True(await WaitUntilAsync(() => reservations.ReconcileCount == 1, TimeSpan.FromSeconds(5)));
+        Assert.Equal(BillableOperationType.Routing, operation.OperationType);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.False(reservations.WasReleased);
+    }
+
+    [Fact]
+    public async Task Accounting_ExtractionUsage_IgnoresCancellationAfterProviderCompletion()
+    {
+        await CreateSpellAsync("selected-spell", "SelectedSpell", dependencies: null);
+        using CancellationTokenSource callerCancellation = new();
+        ChatResponse extractionResponse = new(new MeAiChatMessage(
+            ChatRole.Assistant,
+            """{"entities":[]}"""))
+        {
+            Usage = new UsageDetails { InputTokenCount = 8, OutputTokenCount = 2, TotalTokenCount = 10 },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(extractionResponse);
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with { EnableLexiconSystem = true },
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+            },
+        };
+        RecordingTurnRunWriter turnRuns = new() { CancelBeforeRecord = callerCancellation };
+        RecordingBudgetReservationService reservations = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            turnRunWriter: turnRuns,
+            budgetReservationService: reservations);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            wizard.ExecutePromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "extract entities",
+                    WorkingDirectory = _workspace.Root,
+                    OverrideSpellName = "SelectedSpell",
+                    SkipSpellRouting = false,
+                    DisableMcpTools = true,
+                },
+                callerCancellation.Token));
+
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+        Assert.True(await WaitUntilAsync(() => reservations.ReconcileCount == 1, TimeSpan.FromSeconds(5)));
+        Assert.Equal(BillableOperationType.Extraction, operation.OperationType);
+        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+        Assert.Equal(1, reservations.ReconcileCount);
+        Assert.False(reservations.WasReleased);
     }
 
     [Fact]
@@ -3589,6 +4485,1183 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    [Theory]
+    [InlineData(ReasoningOutputMode.None, ReasoningOutput.None)]
+    [InlineData(ReasoningOutputMode.Summary, ReasoningOutput.Summary)]
+    [InlineData(ReasoningOutputMode.Full, ReasoningOutput.Full)]
+    public async Task ReasoningMapping_BufferedStandardDialect_MapsEffortAndOutput(
+        ReasoningOutputMode requestedOutput,
+        ReasoningOutput expectedOutput)
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            ControlSupport = ReasoningControlSupport.Effort,
+            SupportsSummary = true,
+            SupportsFull = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                },
+            ],
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("normal answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(
+                    Effort: ReasoningEffortLevel.High,
+                    Output: requestedOutput),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("normal answer", result.Value.Text);
+        Assert.Equal(ReasoningEffort.High, chat.LastChatOptions?.Reasoning?.Effort);
+        Assert.Equal(expectedOutput, chat.LastChatOptions?.Reasoning?.Output);
+    }
+
+    [Fact]
+    public async Task ReasoningMapping_StreamingStandardDialect_MapsTypedOptions()
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            ControlSupport = ReasoningControlSupport.Effort,
+            SupportsSummary = true,
+            SupportsStreaming = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                },
+            ],
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("normal ", "answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(
+                    Effort: ReasoningEffortLevel.Medium,
+                    Output: ReasoningOutputMode.Summary),
+            });
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+        Assert.Equal(ReasoningEffort.Medium, chat.LastChatOptions?.Reasoning?.Effort);
+        Assert.Equal(ReasoningOutput.Summary, chat.LastChatOptions?.Reasoning?.Output);
+    }
+
+    [Fact]
+    public async Task ReasoningMapping_DefaultRequest_DoesNotAddProviderOptions()
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("normal answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "plain",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(chat.LastChatOptions?.Reasoning);
+        Assert.Null(chat.LastChatOptions?.RawRepresentationFactory);
+    }
+
+    [Fact]
+    public async Task Reasoning_BufferedProjection_ExposesClientSafeSummarySeparately()
+    {
+        TextReasoningContent reasoning = new("client-safe summary")
+        {
+            ProtectedData = "opaque-provider-state",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                reasoning,
+                new TextContent("answer only"),
+            ])));
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            SettingsWithReasoning(),
+            grimoire: grimoire);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        ReasoningContentSegment projected = Assert.Single(result.Value.Reasoning);
+        Assert.Equal("client-safe summary", projected.Text);
+        Assert.Equal(ReasoningOutputMode.Summary, projected.Output);
+        Assert.Equal("answer only", result.Value.Text);
+        Assert.Equal("answer only", grimoire.LastFinalizedContent);
+        Assert.DoesNotContain("opaque-provider-state", projected.Text, StringComparison.Ordinal);
+        string json = JsonSerializer.Serialize(
+            result.Value,
+            ArcanumJsonContext.Default.PromptTurnResult);
+        Assert.Contains("client-safe summary", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("opaque-provider-state", json, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task Reasoning_UnspecifiedOutput_RequiresActualModelClientOutputCapability(
+        bool allowsClientOutput,
+        bool expectReasoning)
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            SupportsFull = true,
+            AllowsClientOutput = allowsClientOutput,
+        };
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                },
+            ],
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("provider-default reasoning"),
+                new TextContent("answer"),
+            ])));
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(expectReasoning, result.Value.Reasoning.Count > 0);
+        if (expectReasoning)
+        {
+            ReasoningContentSegment projected = Assert.Single(result.Value.Reasoning);
+            Assert.Equal("provider-default reasoning", projected.Text);
+            Assert.Equal(ReasoningOutputMode.Full, projected.Output);
+        }
+        Assert.Equal("answer", result.Value.Text);
+    }
+
+    [Fact]
+    public async Task Reasoning_UnspecifiedOutput_SummaryOnlyModelDefaultsToSummary()
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            SupportsSummary = true,
+            SupportsFull = false,
+            AllowsClientOutput = true,
+        };
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                },
+            ],
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("provider-default summary"),
+                new TextContent("answer"),
+            ])));
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        ReasoningContentSegment projected = Assert.Single(result.Value.Reasoning);
+        Assert.Equal("provider-default summary", projected.Text);
+        Assert.Equal(ReasoningOutputMode.Summary, projected.Output);
+    }
+
+    [Fact]
+    public async Task Reasoning_StreamingModelWithoutStreamingSupport_SuppressesReasoningFrames()
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            SupportsSummary = true,
+            SupportsStreaming = false,
+            AllowsClientOutput = true,
+        };
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                },
+            ],
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("must not stream"),
+                new TextContent("answer"),
+            ]));
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Reasoning);
+        Assert.Equal(
+            "answer",
+            string.Concat(
+                events
+                    .Where(static evt => evt.Type == IntelligenceEventType.Token)
+                    .Select(static evt => evt.Data)));
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task Reasoning_BufferedProviderIgnoringDisabledOutput_DoesNotContaminateAnswerOrGrimoire()
+    {
+        TextReasoningContent reasoning = new("provider reasoning must stay separate")
+        {
+            ProtectedData = "opaque-provider-state",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                reasoning,
+                new TextContent("answer only"),
+            ])));
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.None),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("answer only", result.Value.Text);
+        Assert.Equal(0, result.Value.Usage?.TotalTokens);
+        Assert.Equal("answer only", grimoire.LastFinalizedContent);
+        Assert.Empty(result.Value.Reasoning);
+        Assert.DoesNotContain("provider reasoning", result.Value.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("provider reasoning", grimoire.LastFinalizedContent, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reasoning_StreamingInterleaving_DoesNotContaminateTokensOrGrimoire()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [
+                    new TextReasoningContent("think one"),
+                    new TextContent("answer "),
+                ]),
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [
+                    new TextContent("only"),
+                    new TextReasoningContent("think two"),
+                ]));
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            SettingsWithReasoning(),
+            grimoire: grimoire);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reason",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        string tokenText = string.Concat(
+            events
+                .Where(static evt => evt.Type == IntelligenceEventType.Token)
+                .Select(static evt => evt.Data));
+        Assert.Equal("answer only", tokenText);
+        Assert.Equal("answer only", grimoire.LastFinalizedContent);
+        Assert.DoesNotContain("think", tokenText, StringComparison.Ordinal);
+        Assert.DoesNotContain("think", grimoire.LastFinalizedContent, StringComparison.Ordinal);
+
+        IntelligenceEvent[] projected = events
+            .Where(static evt => evt.Type is IntelligenceEventType.Reasoning or IntelligenceEventType.Token)
+            .ToArray();
+        Assert.Collection(
+            projected,
+            evt =>
+            {
+                Assert.Equal(IntelligenceEventType.Reasoning, evt.Type);
+                Assert.Equal(
+                    new ReasoningContentSegment("think one", ReasoningOutputMode.Summary),
+                    evt.Reasoning);
+                Assert.Null(evt.Data);
+            },
+            evt =>
+            {
+                Assert.Equal(IntelligenceEventType.Token, evt.Type);
+                Assert.Equal("answer ", evt.Data);
+            },
+            evt =>
+            {
+                Assert.Equal(IntelligenceEventType.Token, evt.Type);
+                Assert.Equal("only", evt.Data);
+            },
+            evt =>
+            {
+                Assert.Equal(IntelligenceEventType.Reasoning, evt.Type);
+                Assert.Equal(
+                    new ReasoningContentSegment("think two", ReasoningOutputMode.Summary),
+                    evt.Reasoning);
+                Assert.Null(evt.Data);
+            });
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task Reasoning_GuardrailBufferedStreaming_BlocksUnsafeReasoningBeforeVisibility()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("contains bad-word"),
+                new TextContent("safe answer"),
+            ]));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = GuardrailsStreamingMode.Buffered,
+            },
+        };
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire: grimoire,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reason safely",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        Assert.Contains(
+            events,
+            static evt => evt.Type == IntelligenceEventType.Error
+                && evt.Data == ErrorCodes.Guardrails.Blocked);
+        Assert.DoesNotContain(
+            events,
+            static evt => evt.Type is IntelligenceEventType.Reasoning or IntelligenceEventType.Token);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
+        Assert.NotEqual("safe answer", grimoire.LastFinalizedContent);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredStreaming_ReleasesMixedFramesAfterValidation()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new TextReasoningContent("validated summary")]),
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new TextContent("""{"name":"answer"}""")]));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 0,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        IntelligenceEvent[] outputFrames = events
+            .Where(static evt => evt.Type is IntelligenceEventType.Reasoning or IntelligenceEventType.Token)
+            .ToArray();
+        Assert.Collection(
+            outputFrames,
+            frame =>
+            {
+                Assert.Equal(IntelligenceEventType.Reasoning, frame.Type);
+                Assert.Equal("validated summary", frame.Reasoning?.Text);
+            },
+            frame =>
+            {
+                Assert.Equal(IntelligenceEventType.Token, frame.Type);
+                Assert.Equal("""{"name":"answer"}""", frame.Data);
+            });
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredStreaming_CoalescesAdjacentBufferedOutputRuns()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("reason-1")]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("+reason-2")]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("{\"name\":\"")]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("answer\"")]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("reason-3")]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("+reason-4")]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("}")]));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 0,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        IntelligenceEvent[] outputFrames = events
+            .Where(static evt => evt.Type is IntelligenceEventType.Reasoning or IntelligenceEventType.Token)
+            .ToArray();
+        Assert.Collection(
+            outputFrames,
+            frame => Assert.Equal("reason-1+reason-2", frame.Reasoning?.Text),
+            frame => Assert.Equal("{\"name\":\"answer\"", frame.Data),
+            frame => Assert.Equal("reason-3+reason-4", frame.Reasoning?.Text),
+            frame => Assert.Equal("}", frame.Data));
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredStreamingRetry_RebuildsReleaseFromSafeReplacement()
+    {
+        const string initialReasoning = "stale bad-word reasoning";
+        const string initialAnswer = "stale invalid bad-word answer";
+        const string replacementReasoning = "safe replacement reasoning";
+        const string replacementAnswerStart = "{\"name\":\"";
+        const string replacementAnswerEnd = "safe replacement\"}";
+        const string replacementAnswer = replacementAnswerStart + replacementAnswerEnd;
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent(initialReasoning),
+                new TextContent(initialAnswer),
+            ]));
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextContent(replacementAnswerStart),
+                new TextReasoningContent(replacementReasoning),
+                new TextContent(replacementAnswerEnd),
+            ])));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 1,
+            },
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = GuardrailsStreamingMode.Buffered,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire: grimoire,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        IntelligenceEvent[] released = events
+            .Where(static evt => evt.Type is IntelligenceEventType.Reasoning or IntelligenceEventType.Token)
+            .ToArray();
+        Assert.Collection(
+            released,
+            frame => Assert.Equal(replacementAnswerStart, frame.Data),
+            frame => Assert.Equal(replacementReasoning, frame.Reasoning?.Text),
+            frame => Assert.Equal(replacementAnswerEnd, frame.Data));
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
+        Assert.DoesNotContain(
+            events,
+            frame => frame.Message.Contains(initialReasoning, StringComparison.Ordinal)
+                || frame.Data?.Contains(initialAnswer, StringComparison.Ordinal) == true);
+        Assert.Equal(replacementAnswer, grimoire.LastFinalizedContent);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredStreamingRetry_SafetyInspectsReplacementInReleaseOrder()
+    {
+        const string replacementAnswerStart = "{\"name\":\"";
+        const string replacementReasoning = "ordered marker";
+        const string replacementAnswerEnd = "safe replacement\"}";
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamTokens("invalid answer");
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextContent(replacementAnswerStart),
+                new TextReasoningContent(replacementReasoning),
+                new TextContent(replacementAnswerEnd),
+            ])));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 1,
+            },
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = false,
+                BlockedTopics = ["(?s)name.*ordered marker.*safe replacement"],
+                StreamingMode = GuardrailsStreamingMode.Buffered,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        Assert.Contains(
+            events,
+            static frame => frame.Type == IntelligenceEventType.Error
+                && frame.Data == ErrorCodes.Guardrails.Blocked);
+        Assert.DoesNotContain(
+            events,
+            static frame => frame.Type is IntelligenceEventType.Reasoning
+                or IntelligenceEventType.Token);
+        Assert.DoesNotContain(events, static frame => frame.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredStreaming_DropsReasoningWhenValidationFails()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("""{"name":"reasoning-is-not-answer"}"""),
+                new TextContent("invalid answer"),
+            ]));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 0,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            });
+
+        Assert.Contains(
+            events,
+            static evt => evt.Type == IntelligenceEventType.Error
+                && evt.Data == ErrorCodes.StructuredOutput.ValidationFailed);
+        Assert.DoesNotContain(
+            events,
+            static evt => evt.Type is IntelligenceEventType.Reasoning or IntelligenceEventType.Token);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredRetry_ExposesOnlyReplacementReasoningAndAnswer()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("discarded initial reasoning"),
+                new TextContent("invalid answer"),
+            ])));
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("replacement reasoning"),
+                new TextContent("""{"name":"fixed"}"""),
+            ])));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 1,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("""{"name":"fixed"}""", result.Value.Text);
+        ReasoningContentSegment reasoning = Assert.Single(result.Value.Reasoning);
+        Assert.Equal("replacement reasoning", reasoning.Text);
+        Assert.DoesNotContain("discarded initial", reasoning.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredRetry_GuardrailsInspectReplacementReasoningBeforeVisibility()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [new TextContent("invalid answer")])));
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("replacement contains bad-word"),
+                new TextContent("""{"name":"fixed"}"""),
+            ])));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 1,
+            },
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = GuardrailsStreamingMode.Buffered,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+        Assert.DoesNotContain(
+            "replacement contains bad-word",
+            result.Error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reasoning_ProtectedContent_PersistsOnlyForSameProviderToolContinuation()
+    {
+        TextReasoningContent protectedReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-provider-state",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                protectedReasoning,
+                new FunctionCallContent(
+                    ArcanumLocalTimeTool.ToolName,
+                    ArcanumLocalTimeTool.ToolName,
+                    new Dictionary<string, object?>()),
+            ])));
+        chat.EnqueueText("final answer");
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "what time is it?",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("final answer", result.Value.Text);
+        Assert.Equal(2, chat.AllBufferedCalls.Count);
+        TextReasoningContent continued = Assert.Single(
+            chat.AllBufferedCalls[1]
+                .SelectMany(static message => message.Contents)
+                .OfType<TextReasoningContent>());
+        Assert.Same(protectedReasoning, continued);
+        Assert.Equal("opaque-provider-state", continued.ProtectedData);
+    }
+
+    [Fact]
+    public async Task Reasoning_StreamingProtectedContent_PersistsForSameProviderToolContinuation()
+    {
+        TextReasoningContent protectedReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-stream-provider-state",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamUpdates(new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [
+                protectedReasoning,
+                new FunctionCallContent(
+                    ArcanumLocalTimeTool.ToolName,
+                    ArcanumLocalTimeTool.ToolName,
+                    new Dictionary<string, object?>()),
+            ]));
+        chat.EnqueueStreamTokens("final answer");
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "what time is it?",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            });
+
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+        Assert.Equal(2, chat.AllStreamingCalls.Count);
+        TextReasoningContent continued = Assert.Single(
+            chat.AllStreamingCalls[1]
+                .SelectMany(static message => message.Contents)
+                .OfType<TextReasoningContent>());
+        Assert.Same(protectedReasoning, continued);
+        Assert.Equal("opaque-stream-provider-state", continued.ProtectedData);
+    }
+
+    [Fact]
+    public async Task Reasoning_ProtectedContent_PersistsAcrossMultipleToolContinuationRounds()
+    {
+        TextReasoningContent firstReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-round-one",
+        };
+        TextReasoningContent secondReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-round-two",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                firstReasoning,
+                new FunctionCallContent(
+                    "call-one",
+                    ArcanumLocalTimeTool.ToolName,
+                    new Dictionary<string, object?>()),
+            ])));
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                secondReasoning,
+                new FunctionCallContent(
+                    "call-two",
+                    ArcanumLocalTimeTool.ToolName,
+                    new Dictionary<string, object?>()),
+            ])));
+        chat.EnqueueText("final answer");
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "check the time twice",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("final answer", result.Value.Text);
+        Assert.Equal(3, chat.AllBufferedCalls.Count);
+        Assert.Same(
+            firstReasoning,
+            Assert.Single(
+                chat.AllBufferedCalls[1]
+                    .SelectMany(static message => message.Contents)
+                    .OfType<TextReasoningContent>()));
+        TextReasoningContent[] finalContinuationReasoning = chat.AllBufferedCalls[2]
+            .SelectMany(static message => message.Contents)
+            .OfType<TextReasoningContent>()
+            .ToArray();
+        Assert.Equal([firstReasoning, secondReasoning], finalContinuationReasoning);
+    }
+
+    [Fact]
+    public async Task Reasoning_GuardrailBufferedStreaming_StillCommitsBeforeFailure()
+    {
+        TextReasoningContent protectedReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-buffered-provider-state",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueUpdatesThenStreamFailure(
+            [
+                new ChatResponseUpdate(
+                    ChatRole.Assistant,
+                    [protectedReasoning]),
+                new ChatResponseUpdate(
+                    ChatRole.Assistant,
+                    [new TextContent("withheld answer")]),
+            ],
+            new InvalidOperationException("model does not support tools"));
+        chat.EnqueueStreamTokens("must not restart");
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            Guardrails = new GuardrailsSettings
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockToxicity = true,
+                ToxicityBlocklist = ["bad-word"],
+                StreamingMode = GuardrailsStreamingMode.Buffered,
+            },
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reason before failing",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.None),
+            });
+
+        Assert.Equal(1, chat.StreamingCallCount);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Token);
+        Assert.DoesNotContain(
+            events,
+            static evt => string.Equals(evt.Data, "withheld answer", StringComparison.Ordinal));
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Error);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
+        Assert.DoesNotContain(
+            events,
+            static evt => evt.Type == IntelligenceEventType.Status
+                && evt.Message.Contains("continuing without local tools", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Reasoning_StrictStructuredOutputValidation_NeverConsumesReasoningAsAnswer()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
+            ChatRole.Assistant,
+            [
+                new TextReasoningContent("""{"name":"reasoning-only"}"""),
+                new TextContent("not json"),
+            ])));
+        ArcanumSettings settings = SettingsWithReasoning() with
+        {
+            StructuredOutput = new StructuredOutputSettings
+            {
+                Enabled = true,
+                StrictMode = true,
+                MaxValidationRetries = 0,
+            },
+        };
+        JsonElement schema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": { "name": { "type": "string" } },
+              "required": ["name"],
+              "additionalProperties": false
+            }
+            """);
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "return structured output",
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+                Reasoning = new ReasoningRequestOptions(Output: ReasoningOutputMode.Summary),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.StructuredOutput.ValidationFailed, result.Error.Code);
+        Assert.DoesNotContain("reasoning-only", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reasoning_CommitProhibitsNoToolsCompatibilityRestart()
+    {
+        TextReasoningContent protectedReasoning = new(string.Empty)
+        {
+            ProtectedData = "opaque-provider-state",
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueReasoningThenStreamFailure(
+            protectedReasoning,
+            new InvalidOperationException("model does not support tools"));
+        chat.EnqueueStreamTokens("must not restart");
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "reason before failing",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            });
+
+        Assert.Equal(1, chat.StreamingCallCount);
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Error);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
+        Assert.DoesNotContain(
+            events,
+            static evt => evt.Type == IntelligenceEventType.Status
+                && evt.Message.Contains("continuing without local tools", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public void ResolveCallId_EmptyCallId_GeneratesStableFallbackId()
     {
@@ -3637,6 +5710,36 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    private static int CountContextTokens(
+        ArcanumSettings settings,
+        IReadOnlyList<MeAiChatMessage> messages)
+    {
+        TestOptionsMonitor<ArcanumSettings> options = new(settings);
+        InferenceTokenizerResolver resolver =
+            new(NullLogger<InferenceTokenizerResolver>.Instance);
+
+        return new ManaPreflight(options).CountTokens(
+            messages,
+            resolver.ResolveTokenizer(settings.Intelligence.TokenizerEncoding),
+            ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
+                settings.Intelligence.PerMessageTemplateOverheadTokens),
+            settings.Intelligence.TokenizerEncoding);
+    }
+
+    private static Result InvokeEnsureContextBudget(
+        WizardIntelligenceProvider wizard,
+        List<MeAiChatMessage> messages,
+        ChatClientLease lease,
+        PingRequest request)
+    {
+        System.Reflection.MethodInfo method = typeof(WizardIntelligenceProvider).GetMethod(
+            "EnsureContextBudget",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+        return Assert.IsType<Result>(
+            method.Invoke(wizard, [messages, new ChatOptions(), lease, request]));
+    }
+
     private WizardIntelligenceProvider CreateWizard(
         ScriptingChatClient chatClient,
         ArcanumSettings? settings = null,
@@ -3656,7 +5759,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ArcanumDbContext? db = null,
         IInferenceAuditLogger? auditLogger = null,
         GuardrailsPipeline? guardrailsPipeline = null,
-        BudgetMonitor? budgetMonitor = null)
+        BudgetMonitor? budgetMonitor = null,
+        ITurnRunWriter? turnRunWriter = null,
+        IBudgetReservationService? budgetReservationService = null)
     {
         settings ??= DefaultSettings();
 
@@ -3744,8 +5849,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
             new ManaPreflight(new TestOptionsMonitor<ArcanumSettings>(settings)),
-            null,
-            guardrailsPipeline);
+            healthTracker: null,
+            guardrailsPipeline: guardrailsPipeline,
+            turnRunWriter: turnRunWriter,
+            budgetReservationService: budgetReservationService);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -3834,6 +5941,23 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     private static PingRequest BaseRequest() =>
         new(Prompt: string.Empty, Model: ModelName, WorkingDirectory: string.Empty);
 
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(20).ConfigureAwait(false);
+        }
+
+        return condition();
+    }
+
     private static ArcanumSettings DefaultSettings() =>
         new()
         {
@@ -3854,6 +5978,30 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 EnableLexiconSystem = false,
             },
         };
+
+    private static ArcanumSettings SettingsWithReasoning()
+    {
+        ReasoningCapabilities capabilities = new()
+        {
+            ControlSupport = ReasoningControlSupport.EffortAndBudget,
+            SupportsSummary = true,
+            SupportsFull = true,
+            SupportsStreaming = true,
+            AllowsClientOutput = true,
+            WireDialect = ReasoningWireDialect.Standard,
+        };
+
+        return DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                },
+            ],
+        };
+    }
 
     private static ProviderSettings DefaultProvider() =>
         new()
@@ -4113,7 +6261,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public List<IReadOnlyList<MeAiChatMessage>> AllBufferedCalls { get; } = [];
 
+        public List<IReadOnlyList<MeAiChatMessage>> AllStreamingCalls { get; } = [];
+
         public int BufferedCallCount { get; private set; }
+
+        public int StreamingCallCount { get; private set; }
 
         public IReadOnlyList<MeAiChatMessage> LastBufferedMessages { get; private set; } = [];
 
@@ -4125,6 +6277,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public void EnqueueText(string text) =>
             _buffered.Enqueue(_ => Task.FromResult(ResponseText(text)));
+
+        public void EnqueueResponse(ChatResponse response) =>
+            _buffered.Enqueue(_ => Task.FromResult(response));
 
         public void EnqueueToolCall(string toolName, string? callId = null, Dictionary<string, object?>? arguments = null)
         {
@@ -4140,6 +6295,19 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public void EnqueueStreamTokens(params string[] tokens) =>
             _streaming.Enqueue(_ => StreamTokens(tokens));
+
+        public void EnqueueStreamUpdates(params ChatResponseUpdate[] updates) =>
+            _streaming.Enqueue(_ => StreamUpdates(updates));
+
+        public void EnqueueReasoningThenStreamFailure(
+            TextReasoningContent reasoning,
+            Exception exception) =>
+            _streaming.Enqueue(_ => ReasoningThenFail(reasoning, exception));
+
+        public void EnqueueUpdatesThenStreamFailure(
+            IReadOnlyList<ChatResponseUpdate> updates,
+            Exception exception) =>
+            _streaming.Enqueue(_ => UpdatesThenFail(updates, exception));
 
         public void EnqueueStreamToolCall(string toolName, string? callId = null, Dictionary<string, object?>? arguments = null)
         {
@@ -4209,7 +6377,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            StreamingCallCount++;
+
             LastBufferedMessages = messages.ToList();
+            AllStreamingCalls.Add(LastBufferedMessages);
 
             LastChatOptions = options;
 
@@ -4288,6 +6459,49 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
                 await Task.Yield();
             }
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> StreamUpdates(
+            IEnumerable<ChatResponseUpdate> updates,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (ChatResponseUpdate update in updates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                yield return update;
+
+                await Task.Yield();
+            }
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> ReasoningThenFail(
+            TextReasoningContent reasoning,
+            Exception exception,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [reasoning]);
+
+            await Task.Yield();
+
+            throw exception;
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> UpdatesThenFail(
+            IEnumerable<ChatResponseUpdate> updates,
+            Exception exception,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (ChatResponseUpdate update in updates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return update;
+                await Task.Yield();
+            }
+
+            throw exception;
         }
 
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamToolCall(
@@ -4407,6 +6621,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public int FinalizeCallCount { get; private set; }
 
+        public string LastFinalizedContent { get; private set; } = string.Empty;
+
         public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(Session?.Id == id ? Session : null);
 
@@ -4433,6 +6649,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
 
             FinalizeCallCount++;
+            LastFinalizedContent = fullContent;
 
             if (ThrowOnFinalize)
             {
@@ -4684,6 +6901,109 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
 
+    }
+
+    private sealed class RecordingTurnRunWriter : ITurnRunWriter
+    {
+        private readonly Guid _runId = Guid.NewGuid();
+
+        private readonly ConcurrentQueue<BillableOperationRecord> _operations = new();
+
+        public BillableOperationRecord? LastOperation => _operations.LastOrDefault();
+
+        public IReadOnlyList<BillableOperationRecord> Operations => [.. _operations];
+
+        public Exception? RecordException { get; init; }
+
+        public CancellationTokenSource? CancelBeforeRecord { get; init; }
+
+        public Task<Guid> StartRunAsync(
+            InferenceRunStart start,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(_runId);
+
+        public Task CompleteRunAsync(
+            Guid runId,
+            InferenceRunStatus status,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<Guid> RecordBillableOperationAsync(
+            BillableOperationRecord operation,
+            CancellationToken cancellationToken = default)
+        {
+            if (CancelBeforeRecord is not null)
+            {
+                CancelBeforeRecord.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (RecordException is not null)
+            {
+                return Task.FromException<Guid>(RecordException);
+            }
+
+            _operations.Enqueue(operation);
+            return Task.FromResult(Guid.NewGuid());
+        }
+    }
+
+    private sealed class RecordingBudgetReservationService : IBudgetReservationService
+    {
+        public BudgetReservationRequest? LastRequest { get; private set; }
+
+        public decimal? ReconciledUsd { get; private set; }
+
+        public int ReconcileCount { get; private set; }
+
+        public bool WasReleased { get; private set; }
+
+        public Task<Result<BudgetReservation>> ReserveAsync(
+            BudgetReservationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            LastRequest = request;
+            return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
+                Guid.NewGuid(),
+                request.RunId,
+                request.BudgetPeriod,
+                request.ReservedUsd,
+                0m,
+                BudgetReservationStatus.Reserved,
+                request.ExpiresAt,
+                DateTimeOffset.UtcNow)));
+        }
+
+        public Task ReconcileAsync(
+            Guid reservationId,
+            decimal actualCostUsd,
+            CancellationToken cancellationToken = default)
+        {
+            ReconciledUsd = actualCostUsd;
+            ReconcileCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task ReleaseAsync(
+            Guid reservationId,
+            CancellationToken cancellationToken = default)
+        {
+            WasReleased = true;
+            return Task.CompletedTask;
+        }
+
+        public Task<decimal> GetTodayCommittedSpendAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
+
+        public Task<decimal> GetTodayOutstandingReservationsAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(0m);
+
+        public Task<int> SweepExpiredAsync(
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
     }
 
     private sealed class ConfigurableSanctumGuard : ISanctumGuard

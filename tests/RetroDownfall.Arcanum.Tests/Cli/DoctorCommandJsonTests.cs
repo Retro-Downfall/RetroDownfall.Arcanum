@@ -10,8 +10,26 @@ using RetroDownfall.Arcanum.Core.Security;
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
-public sealed class DoctorCommandJsonTests
+public sealed class DoctorCommandJsonTests : IDisposable
 {
+
+    private readonly string _testHome =
+        Path.Combine(Path.GetTempPath(), "arcanum-tests", $"doctor-{Guid.NewGuid():N}");
+
+    private readonly Dictionary<string, string?> _originalEnvironment = new();
+
+    public DoctorCommandJsonTests()
+    {
+
+        Directory.CreateDirectory(_testHome);
+
+        SetEnvironment("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
+
+        SetEnvironment("ARCANUM_TEST_HOME", _testHome);
+
+    }
 
     [Fact]
     public async Task DoctorJson_EmitsDoctorReportToStdout()
@@ -110,6 +128,34 @@ public sealed class DoctorCommandJsonTests
             throw new HttpRequestException(
                 "Connection refused",
                 new SocketException((int)SocketError.ConnectionRefused));
+
+    }
+
+    public void Dispose()
+    {
+
+        foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
+        {
+
+            global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
+
+        }
+
+        if (Directory.Exists(_testHome))
+        {
+
+            Directory.Delete(_testHome, recursive: true);
+
+        }
+
+    }
+
+    private void SetEnvironment(string name, string value)
+    {
+
+        _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
+
+        global::System.Environment.SetEnvironmentVariable(name, value);
 
     }
 

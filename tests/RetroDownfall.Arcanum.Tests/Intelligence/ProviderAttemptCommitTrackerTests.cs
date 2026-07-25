@@ -28,6 +28,51 @@ public sealed class ProviderAttemptCommitTrackerTests
         Assert.False(ProviderAttemptCommitTracker.CommitsProviderAttempt(delta));
     }
 
+    [Theory]
+    [InlineData("visible reasoning", false)]
+    [InlineData("", true)]
+    [InlineData("", false)]
+    public void CommitsProviderAttempt_OnAnyExplicitReasoningContent(
+        string visibleText,
+        bool hasProtectedData)
+    {
+        ModelCallUpdate reasoning = new ModelCallReasoningUpdate(
+            ModelCallPurpose.MainInference,
+            "call-1",
+            visibleText,
+            RequestedOutput: ReasoningOutputMode.Summary,
+            EffectiveOutput: ReasoningOutputMode.Summary,
+            HasProtectedData: hasProtectedData);
+
+        Assert.True(ProviderAttemptCommitTracker.CommitsProviderAttempt(reasoning));
+    }
+
+    [Fact]
+    public void CommitsProviderAttempt_OnBufferedProtectedReasoningMetadata()
+    {
+        ModelCallReasoningResult reasoning = new(
+            Segments: [],
+            RequestedOutput: null,
+            EffectiveOutput: ReasoningOutputMode.None,
+            HasProviderContent: true,
+            HasProtectedData: true);
+
+        Assert.True(ProviderAttemptCommitTracker.CommitsProviderAttempt(reasoning));
+    }
+
+    [Fact]
+    public void CommitsProviderAttempt_RejectsBufferedMetadataWithoutReasoningContent()
+    {
+        ModelCallReasoningResult reasoning = new(
+            Segments: [],
+            RequestedOutput: null,
+            EffectiveOutput: ReasoningOutputMode.None,
+            HasProviderContent: false,
+            HasProtectedData: false);
+
+        Assert.False(ProviderAttemptCommitTracker.CommitsProviderAttempt(reasoning));
+    }
+
     [Fact]
     public void CommitsOnCompleteToolProposal_RequiresActionableCalls()
     {

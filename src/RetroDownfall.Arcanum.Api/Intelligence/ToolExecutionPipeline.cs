@@ -223,14 +223,26 @@ public sealed class ToolExecutionPipeline(
         List<MeAiChatMessage> chatMessages,
         FunctionCallContent fcc,
         string callId,
-        string resultText)
+        string resultText,
+        IReadOnlyList<TextReasoningContent>? reasoningContents = null)
     {
 
         FunctionCallContent normalizedCall = string.IsNullOrEmpty(fcc.CallId)
             ? new FunctionCallContent(callId, fcc.Name, fcc.Arguments)
             : fcc;
 
-        chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, [normalizedCall]));
+        List<AIContent> assistantContents = new((reasoningContents?.Count ?? 0) + 1);
+
+        if (reasoningContents is not null)
+        {
+            // Preserve the provider's original objects (including opaque ProtectedData) only in
+            // this in-memory, same-provider continuation chain.
+            assistantContents.AddRange(reasoningContents);
+        }
+
+        assistantContents.Add(normalizedCall);
+
+        chatMessages.Add(new MeAiChatMessage(ChatRole.Assistant, assistantContents));
 
         chatMessages.Add(
             new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText)]));

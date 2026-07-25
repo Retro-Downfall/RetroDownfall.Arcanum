@@ -381,41 +381,37 @@ public static class OutboundUrlGuard
 
         }
 
-        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        // IPAddress instances are IPv4 or IPv6; the IPv4 path returned above.
+        if (address.Equals(IPAddress.IPv6Any))
         {
+            return true;
+        }
 
-            if (address.Equals(IPAddress.IPv6Any))
-            {
-                return true;
-            }
+        if (address.IsIPv6LinkLocal)
+        {
+            return true;
+        }
 
-            if (address.IsIPv6LinkLocal)
-            {
-                return true;
-            }
+        if (allowPrivateAndLoopback)
+        {
+            return false;
+        }
 
-            if (allowPrivateAndLoopback)
-            {
-                return false;
-            }
+        if (IPAddress.IsLoopback(address))
+        {
+            return true;
+        }
 
-            if (IPAddress.IsLoopback(address))
-            {
-                return true;
-            }
+        byte[] ipv6Bytes = address.GetAddressBytes();
 
-            byte[] bytes = address.GetAddressBytes();
+        if ((ipv6Bytes[0] & 0xFE) == 0xFC)
+        {
+            return true;
+        }
 
-            if ((bytes[0] & 0xFE) == 0xFC)
-            {
-                return true;
-            }
-
-            if (address.IsIPv6SiteLocal)
-            {
-                return true;
-            }
-
+        if (address.IsIPv6SiteLocal)
+        {
+            return true;
         }
 
         return false;

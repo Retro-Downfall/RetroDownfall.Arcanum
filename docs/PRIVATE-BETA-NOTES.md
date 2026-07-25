@@ -61,13 +61,25 @@ Run `arcanum doctor` and inspect `GET /api/health` component `ToolChildSandbox`.
 
 Accurate claim: default inference no longer exposes arbitrary host process execution. An API key still authorizes privileged file, network, and MCP operations.
 
-## Inference accounting, idempotency, and context budgets (Grimoire reinstall required)
+## Inference accounting, idempotency, reasoning, and context budgets (Grimoire reinstall required)
 
 New raw-SQL tables: `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments`, `IdempotencyClaims`.
 
-**Restart/reinstall the Grimoire database** after upgrading — there is no user migration path. Use `arcanum reset --backup` (or delete the Grimoire file) then start the host so schema migrations apply cleanly.
+**Stop/delete/reinstall the Grimoire database before running this build** — there is no user migration path, and the existing accounting install script changed in place to add `BillableOperations.ReasoningTokens`. Stop every Arcanum host/daemon and back up anything needed, then delete all three SQLite files before starting the host:
+
+```bash
+rm -f -- "$HOME/.config/arcanum/arcanum.db" "$HOME/.config/arcanum/arcanum.db-wal" "$HOME/.config/arcanum/arcanum.db-shm"
+```
+
+```powershell
+Remove-Item -Force -ErrorAction SilentlyContinue `
+  "$HOME\.config\arcanum\arcanum.db", `
+  "$HOME\.config\arcanum\arcanum.db-wal", `
+  "$HOME\.config\arcanum\arcanum.db-shm"
+```
 
 - Daily budget enforcement uses committed billable ops + outstanding reservations (session totals are projection only). Chat, embeddings, routing, and Lexicon extraction are ledgered; non-billable: `GET /models`, `POST /api/providers/test`, `POST /api/intelligence/mana`.
+- Reasoning usage is a completion-token subset, can use an optional separate price, and is stored as a count only. Reasoning text remains ephemeral and answer-separated.
 - `Idempotency-Key` uses claim-key ≠ fingerprint; fingerprint mismatch → **409**; only terminal completed responses replay.
 - Tool results are token-budget truncated before returning to the model.
 - Before each provider call, messages + tool schemas + reserved output are checked against the model context window; exhaustion → **429** `Hub.ContextBudgetExceeded` (or `Hub.TurnBudgetExceeded` for model-call ceilings). Compaction/delete paths keep ToolCall/ToolResult pairs intact.

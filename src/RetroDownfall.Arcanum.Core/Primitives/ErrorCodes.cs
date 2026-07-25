@@ -21,6 +21,22 @@ public static class ErrorCodes
 
         public const string InvalidProviderType = "Validation.InvalidProviderType";
 
+        public const string InvalidReasoningEffort = "Validation.InvalidReasoningEffort";
+
+        public const string InvalidReasoningOutput = "Validation.InvalidReasoningOutput";
+
+        public const string ReasoningEffortAndBudgetMutuallyExclusive =
+            "Validation.ReasoningEffortAndBudgetMutuallyExclusive";
+
+        public const string InvalidReasoningBudget = "Validation.InvalidReasoningBudget";
+
+        public const string UnsupportedReasoningControl = "Validation.UnsupportedReasoningControl";
+
+        public const string ReasoningBudgetExceedsModelLimit =
+            "Validation.ReasoningBudgetExceedsModelLimit";
+
+        public const string UnsupportedReasoningOutput = "Validation.UnsupportedReasoningOutput";
+
     }
 
     /// <summary>Hub — intelligence provider / inference pipeline failures.</summary>
