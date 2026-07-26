@@ -131,89 +131,60 @@ public sealed class CommandCenterReasoningTests
     }
 
     [Fact]
-    public async Task First_reasoning_updates_the_actual_window_header_and_log_once()
+    public async Task First_reasoning_updates_the_actual_window_header_once_and_refreshes_log()
     {
-        GatedPayloadStream stream = new(
-            Encoding.UTF8.GetBytes(SerializeFrames(Reasoning("first"), Reasoning(" second"))));
-        CommandCenterChatRunner runner = CreateRunner(new StreamingHandler(stream));
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(Reasoning("first"), Reasoning(" second"))));
         CommandCenterState state = new(new SessionLogBuffer());
-        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
-        using CancellationTokenSource cancellation = new();
         CommandCenterWindow window = new();
         window.ApplyAbsoluteLayout(120, 40);
+        ObservingUiWriter updates = new(state, window);
 
-        Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
-        CommandCenterUiUpdate initial = await updates.Reader.ReadAsync(cancellation.Token);
+        await runner.RunTurnAsync("question", state, updates, CancellationToken.None);
+
+        ObservedUiUpdate initial = updates.Updates[0];
         Assert.Equal(CommandCenterUiUpdateKind.RefreshAll, initial.Kind);
-        window.ApplyState(state, kind: initial.Kind);
-        Assert.True(window.ThinkingLabel.Visible);
-
-        stream.ReleasePayload();
-        List<CommandCenterUiUpdateKind> transitionKinds = [];
-        while (!transitionKinds.Contains(CommandCenterUiUpdateKind.RefreshHeader)
-               || !transitionKinds.Contains(CommandCenterUiUpdateKind.RefreshLog))
-        {
-            CommandCenterUiUpdate update = await updates.Reader
-                .ReadAsync(cancellation.Token)
-                .AsTask()
-                .WaitAsync(AsyncTestTimeout);
-            transitionKinds.Add(update.Kind);
-            window.ApplyState(state, kind: update.Kind);
-        }
-
-        Assert.Equal(1, transitionKinds.Count(static kind => kind == CommandCenterUiUpdateKind.RefreshHeader));
-        Assert.Equal(1, transitionKinds.Count(static kind => kind == CommandCenterUiUpdateKind.RefreshLog));
+        Assert.True(initial.ThinkingVisible);
+        Assert.Equal(
+            1,
+            updates.Updates.Count(static update =>
+                update.Kind == CommandCenterUiUpdateKind.RefreshHeader));
+        Assert.Contains(
+            updates.Updates,
+            static update =>
+                update.Kind == CommandCenterUiUpdateKind.RefreshHeader
+                && !update.ThinkingVisible);
+        Assert.Contains(
+            updates.Updates,
+            static update =>
+                update.Kind == CommandCenterUiUpdateKind.RefreshLog
+                && update.ReasoningEntries == 1);
         Assert.False(window.ThinkingLabel.Visible);
         Assert.Single(
             state.Log.Snapshot(),
             static entry => entry.Kind == SessionLogEntryKind.Reasoning);
-
-        cancellation.Cancel();
-        await run.WaitAsync(AsyncTestTimeout);
     }
 
     [Fact]
     public async Task First_token_updates_the_actual_window_header_once_and_hides_spinner()
     {
-        GatedPayloadStream stream = new(
-            Encoding.UTF8.GetBytes(SerializeFrames(
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(
                 new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "first"),
                 new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, " second\n"))));
-        CommandCenterChatRunner runner = CreateRunner(new StreamingHandler(stream));
         CommandCenterState state = new(new SessionLogBuffer());
-        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
-        using CancellationTokenSource cancellation = new();
         CommandCenterWindow window = new();
         window.ApplyAbsoluteLayout(120, 40);
+        ObservingUiWriter updates = new(state, window);
 
-        Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
-        CommandCenterUiUpdate initial = await updates.Reader.ReadAsync(cancellation.Token);
-        window.ApplyState(state, kind: initial.Kind);
-        Assert.True(window.ThinkingLabel.Visible);
+        await runner.RunTurnAsync("question", state, updates, CancellationToken.None);
 
-        stream.ReleasePayload();
-        List<CommandCenterUiUpdateKind> transitionKinds = [];
-        while (!transitionKinds.Contains(CommandCenterUiUpdateKind.RefreshLog))
-        {
-            CommandCenterUiUpdate update = await updates.Reader
-                .ReadAsync(cancellation.Token)
-                .AsTask()
-                .WaitAsync(AsyncTestTimeout);
-            transitionKinds.Add(update.Kind);
-            window.ApplyState(state, kind: update.Kind);
-        }
-
-        while (updates.Reader.TryRead(out CommandCenterUiUpdate? update))
-        {
-            transitionKinds.Add(update.Kind);
-            window.ApplyState(state, kind: update.Kind);
-        }
-
-        Assert.Equal(1, transitionKinds.Count(static kind => kind == CommandCenterUiUpdateKind.RefreshHeader));
+        Assert.True(updates.Updates[0].ThinkingVisible);
+        Assert.Equal(
+            1,
+            updates.Updates.Count(static update =>
+                update.Kind == CommandCenterUiUpdateKind.RefreshHeader));
         Assert.False(window.ThinkingLabel.Visible);
-
-        cancellation.Cancel();
-        await run.WaitAsync(AsyncTestTimeout);
     }
 
     [Fact]
@@ -439,6 +410,36 @@ public sealed class CommandCenterReasoningTests
             });
     }
 
+    private sealed record ObservedUiUpdate(
+        CommandCenterUiUpdateKind Kind,
+        bool ThinkingVisible,
+        int ReasoningEntries);
+
+    private sealed class ObservingUiWriter(
+        CommandCenterState state,
+        CommandCenterWindow window) : ChannelWriter<CommandCenterUiUpdate>
+    {
+        public List<ObservedUiUpdate> Updates { get; } = [];
+
+        public override bool TryComplete(Exception? error = null) => true;
+
+        public override bool TryWrite(CommandCenterUiUpdate item)
+        {
+            window.ApplyState(state, kind: item.Kind);
+            Updates.Add(new ObservedUiUpdate(
+                item.Kind,
+                window.ThinkingLabel.Visible,
+                state.Log.Snapshot().Count(static entry =>
+                    entry.Kind == SessionLogEntryKind.Reasoning)));
+
+            return true;
+        }
+
+        public override ValueTask<bool> WaitToWriteAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(true);
+    }
+
     private sealed class StreamingHandler(Stream stream) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
@@ -509,55 +510,4 @@ public sealed class CommandCenterReasoningTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    private sealed class GatedPayloadStream(byte[] payload) : Stream
-    {
-        private readonly TaskCompletionSource _release =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int _position;
-
-        public void ReleasePayload() => _release.TrySetResult();
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => false;
-
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => _position;
-            set => throw new NotSupportedException();
-        }
-
-        public override void Flush()
-        {
-        }
-
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-        public override async ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            await _release.Task.WaitAsync(cancellationToken);
-            if (_position < payload.Length)
-            {
-                int count = Math.Min(buffer.Length, payload.Length - _position);
-                payload.AsSpan(_position, count).CopyTo(buffer.Span);
-                _position += count;
-                return count;
-            }
-
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            return 0;
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    }
 }
