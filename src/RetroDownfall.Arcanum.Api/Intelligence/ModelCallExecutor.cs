@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Telemetry;
@@ -14,11 +17,22 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public sealed class ModelCallExecutor : IModelCallExecutor
 {
     private readonly IModelTokenEstimator? _tokenEstimator;
+
+    private readonly IOptionsMonitor<ArcanumSettings>? _settings;
+
     private readonly bool _allowUnaccountedCompatibilityCalls;
 
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator)
+        : this(tokenEstimator, settings: null)
+    {
+    }
+
+    public ModelCallExecutor(
+        IModelTokenEstimator tokenEstimator,
+        IOptionsMonitor<ArcanumSettings>? settings)
     {
         _tokenEstimator = tokenEstimator ?? throw new ArgumentNullException(nameof(tokenEstimator));
+        _settings = settings;
     }
 
     internal ModelCallExecutor()
@@ -56,6 +70,15 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                 Cause: null));
         }
 
+        if (ValidatePromptCachePlan(messages, context) is { } cachePlanError)
+        {
+            return ModelCallOutcome.Failed(new ModelCallFailure(
+                purpose,
+                string.Empty,
+                cachePlanError,
+                Cause: null));
+        }
+
         ContextTokenBreakdown? breakdown = EstimateAndRecord(messages, options, context);
         Result admission = CheckAdmission(breakdown, context);
         if (admission.IsFailure)
@@ -73,11 +96,18 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
+        ProviderCallPayload providerPayload = CreateProviderCallPayload(
+            messages,
+            options,
+            context);
 
         try
         {
             ChatResponse response = await chatClient
-                .GetResponseAsync(messages, options, cancellationToken)
+                .GetResponseAsync(
+                    providerPayload.Messages,
+                    providerPayload.Options,
+                    cancellationToken)
                 .ConfigureAwait(false);
             (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
                 ResolveReasoningOutput(options, purpose);
@@ -86,6 +116,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                 requestedOutput,
                 effectiveOutput);
             breakdown = ReconcileAndRecord(breakdown, response.Usage, context);
+            RecordPromptCacheMetrics(context, purpose, response.Usage);
 
             return ModelCallOutcome.Success(
                 new ModelCallResult(
@@ -142,6 +173,15 @@ public sealed class ModelCallExecutor : IModelCallExecutor
             yield break;
         }
 
+        if (ValidatePromptCachePlan(messages, context) is { } cachePlanError)
+        {
+            yield return new ModelCallFailureUpdate(
+                purpose,
+                string.Empty,
+                cachePlanError);
+            yield break;
+        }
+
         ContextTokenBreakdown? breakdown = EstimateAndRecord(messages, options, context);
         Result admission = CheckAdmission(breakdown, context);
         if (admission.IsFailure)
@@ -163,8 +203,12 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
+        ProviderCallPayload providerPayload = CreateProviderCallPayload(
+            messages,
+            options,
+            context);
         (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
-            ResolveReasoningOutput(options, purpose);
+            ResolveReasoningOutput(providerPayload.Options, purpose);
 
         if (breakdown is not null)
         {
@@ -173,7 +217,10 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
         UsageDetails? finalUsage = null;
         await foreach (ChatResponseUpdate update in chatClient
-            .GetStreamingResponseAsync(messages, options, cancellationToken)
+            .GetStreamingResponseAsync(
+                providerPayload.Messages,
+                providerPayload.Options,
+                cancellationToken)
             .WithCancellation(cancellationToken)
             .ConfigureAwait(false))
         {
@@ -200,7 +247,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                             break;
 
                         case UsageContent usageContent:
-                            if (usageContent.Details?.InputTokenCount is not null)
+                            if (usageContent.Details is not null)
                             {
                                 finalUsage = usageContent.Details;
                             }
@@ -229,6 +276,165 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
 
         RecordReconciliationMetrics(breakdown, finalUsage, context);
+        RecordPromptCacheMetrics(context, purpose, finalUsage);
+    }
+
+    private void RecordPromptCacheMetrics(
+        ModelCallContext? context,
+        ModelCallPurpose purpose,
+        UsageDetails? usage)
+    {
+        if (context is null)
+        {
+            return;
+        }
+
+        PromptCachingProfile? profile = ProviderResolver.ResolvePromptCachingProfile(
+            context.Provider,
+            context.Model);
+        PromptCachePlan? plan = context.PromptCachePlan;
+        PromptCacheEligibility eligibility = plan?.Eligibility
+            ?? profile?.ControlMode switch
+            {
+                PromptCachingControlMode.None => PromptCacheEligibility.NonCacheable,
+                PromptCachingControlMode.Explicit => PromptCacheEligibility.NonCacheable,
+                _ => PromptCacheEligibility.ProviderManaged,
+            };
+        PromptCacheNonEligibilityReason reason = plan?.NonEligibilityReason
+            ?? profile?.ControlMode switch
+            {
+                PromptCachingControlMode.None => PromptCacheNonEligibilityReason.DisabledByProfile,
+                PromptCachingControlMode.Explicit => PromptCacheNonEligibilityReason.InvalidPlan,
+                PromptCachingControlMode.ProviderManaged => PromptCacheNonEligibilityReason.ProviderManaged,
+                _ => PromptCacheNonEligibilityReason.ProfileAbsent,
+            };
+        TagList tags = new()
+        {
+            { "provider", context.Provider.Name },
+            { "model", context.Model },
+            { "purpose", purpose.ToString() },
+            { "control_mode", profile?.ControlMode.ToString() ?? "Legacy" },
+            { "eligibility", eligibility.ToString() },
+            { "reason", reason.ToString() },
+        };
+
+        ArcanumMetrics.PromptCacheCallsTotal.Add(1, tags);
+
+        ModelPricingEntry? pricing = _settings?.CurrentValue.Pricing.ResolveForModel(context.Model);
+
+        if (pricing is not null
+            && plan is { Eligibility: PromptCacheEligibility.Eligible }
+            && CostCalculator.CalculatePromptCacheSavings(
+                plan.EligiblePrefixTokenEstimate,
+                pricing) is > 0m and var potentialSavings)
+        {
+            ArcanumMetrics.PromptCachePotentialSavingsUsdTotal.Add(
+                (double)potentialSavings,
+                tags);
+        }
+
+        bool reportsCachedInput = profile?.ReportsCachedInputUsage
+            ?? context.Provider.SupportsPromptCaching
+            ?? context.Provider.Type == AiProviderKind.OpenAICompatible;
+        long cachedTokens = Math.Max(0L, usage?.CachedInputTokenCount ?? 0L);
+
+        if (!reportsCachedInput || cachedTokens <= 0)
+        {
+            return;
+        }
+
+        ArcanumMetrics.PromptCacheTokensTotal.Add(cachedTokens, tags);
+        ArcanumMetrics.PromptCacheHitsTotal.Add(1, tags);
+
+        if (pricing is not null
+            && CostCalculator.CalculatePromptCacheSavings(
+                cachedTokens,
+                pricing) is > 0m and var actualSavings)
+        {
+            ArcanumMetrics.PromptCacheActualSavingsUsdTotal.Add(
+                (double)actualSavings,
+                tags);
+        }
+    }
+
+    private static Error? ValidatePromptCachePlan(
+        IList<ChatMessage> messages,
+        ModelCallContext? context)
+    {
+        if (context?.PromptCachePlan is not { } plan
+            || plan.Eligibility != PromptCacheEligibility.Eligible)
+        {
+            return null;
+        }
+
+        PromptCachingProfile? profile = ProviderResolver.ResolvePromptCachingProfile(
+            context.Provider,
+            context.Model);
+        bool validTarget = string.Equals(
+                plan.Provider,
+                context.Provider.Name,
+                StringComparison.Ordinal)
+            && string.Equals(plan.Model, context.Model, StringComparison.Ordinal)
+            && profile is
+            {
+                ControlMode: PromptCachingControlMode.Explicit,
+                WireDialect: PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            }
+            && plan.Retention == profile.Retention
+            && (!profile.EmitCacheKey || !string.IsNullOrEmpty(plan.CacheKey));
+
+        if (validTarget)
+        {
+            foreach (PromptCacheBoundary boundary in plan.Boundaries)
+            {
+                if (boundary.MessageIndex < 0
+                    || boundary.MessageIndex >= messages.Count
+                    || boundary.SegmentIndex < 0
+                    || messages[boundary.MessageIndex].Role != ChatRole.System)
+                {
+                    validTarget = false;
+                    break;
+                }
+            }
+        }
+
+        return validTarget
+            ? null
+            : new Error(
+                ErrorCodes.Hub.ContextBudgetExceeded,
+                "The prompt-cache plan does not match the selected provider payload.");
+    }
+
+    private static ProviderCallPayload CreateProviderCallPayload(
+        IList<ChatMessage> messages,
+        ChatOptions options,
+        ModelCallContext? context)
+    {
+        if (context?.PromptCachePlan is not
+            {
+                Eligibility: PromptCacheEligibility.Eligible,
+            } plan)
+        {
+            return new ProviderCallPayload(messages, options);
+        }
+
+        PromptCachingProfile profile = ProviderResolver.ResolvePromptCachingProfile(
+                context.Provider,
+                context.Model)
+            ?? throw new InvalidOperationException(
+                "An eligible prompt-cache plan requires a resolved provider/model profile.");
+        List<ChatMessage> providerMessages = new(messages.Count);
+
+        foreach (ChatMessage message in messages)
+        {
+            providerMessages.Add(message.Clone());
+        }
+
+        ChatOptions providerOptions = options.Clone();
+
+        PromptCachingChatOptionsAdapter.Apply(providerOptions, profile, plan);
+
+        return new ProviderCallPayload(providerMessages, providerOptions);
     }
 
     private ContextTokenBreakdown? EstimateAndRecord(
@@ -502,4 +708,8 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
         return (requested, effective);
     }
+
+    private readonly record struct ProviderCallPayload(
+        IList<ChatMessage> Messages,
+        ChatOptions Options);
 }

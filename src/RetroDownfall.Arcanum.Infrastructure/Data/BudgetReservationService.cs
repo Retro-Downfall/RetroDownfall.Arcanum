@@ -422,7 +422,7 @@ internal sealed class BudgetReservationService(
         long.CreateSaturating((Int128)left + right);
 
     private static long SaturatingMultiply(long value, int multiplier) =>
-        multiplier <= 0 ? 0L : long.CreateSaturating((Int128)value * multiplier);
+        long.CreateSaturating((Int128)value * multiplier);
 
     /// <summary>
     /// Worst-case USD for an embedding batch sized by approximate input tokens.

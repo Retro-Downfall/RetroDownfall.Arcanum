@@ -38,7 +38,8 @@ internal static class ModelInfoBuilder
                     redactedEndpoint,
                     provider.ContextWindowLimit,
                     model.SupportsVision,
-                    model.Reasoning));
+                    model.Reasoning,
+                    model.PromptCaching ?? provider.PromptCaching));
 
             }
 

@@ -251,4 +251,58 @@ public sealed class ProviderResolverTests
 
     }
 
+    [Fact]
+    public void ResolvePromptCachingProfile_ModelProfileFullyOverridesProviderProfile()
+    {
+        PromptCachingProfile providerProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.ProviderManaged,
+            ReportsCachedInputUsage = true,
+        };
+        PromptCachingProfile modelProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.None,
+            ReportsCachedInputUsage = false,
+        };
+        ProviderSettings provider = new()
+        {
+            PromptCaching = providerProfile,
+            Models =
+            [
+                new ModelEntry("override") { PromptCaching = modelProfile },
+                new ModelEntry("inherits"),
+            ],
+        };
+
+        Assert.Same(
+            modelProfile,
+            ProviderResolver.ResolvePromptCachingProfile(provider, "override"));
+        Assert.Same(
+            providerProfile,
+            ProviderResolver.ResolvePromptCachingProfile(provider, "inherits"));
+    }
+
+    [Fact]
+    public void ResolvePromptCachingProfile_LegacyStringModelInheritsProviderAndMissingProfilesReturnNull()
+    {
+        PromptCachingProfile providerProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+        };
+        ProviderSettings provider = new()
+        {
+            PromptCaching = providerProfile,
+            Models = ["legacy-model"],
+        };
+
+        Assert.Same(
+            providerProfile,
+            ProviderResolver.ResolvePromptCachingProfile(provider, "legacy-model"));
+
+        provider.PromptCaching = null;
+
+        Assert.Null(ProviderResolver.ResolvePromptCachingProfile(provider, "legacy-model"));
+        Assert.Null(ProviderResolver.ResolvePromptCachingProfile(provider, "unknown"));
+    }
+
 }

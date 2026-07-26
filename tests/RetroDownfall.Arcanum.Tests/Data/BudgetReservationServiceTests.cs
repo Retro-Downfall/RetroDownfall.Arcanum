@@ -17,7 +17,9 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class BudgetReservationServiceTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
+
     private string _dbPath = string.Empty;
+
     private ArcanumDbContext? _db;
 
     public BudgetReservationServiceTests(GrimoireFixture fixture)
@@ -237,6 +239,38 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(rejected.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, rejected.Error.Code);
         Assert.Equal(9m, await service.GetTodayOutstandingReservationsAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false, 100)]
+    [InlineData(true, 0)]
+    public async Task AdjustAsync_WhenBudgetDisabledOrLimitNonPositive_ReturnsWithoutPersistence(
+        bool enabled,
+        double dailyLimit)
+    {
+        RequireSqlCipher();
+        BudgetReservationService service = CreateService(new BudgetSettings
+        {
+            Enabled = enabled,
+            DailyLimitUsd = (decimal)dailyLimit,
+        });
+
+        Result result = await service.AdjustAsync(Guid.NewGuid(), reservedUsd: 5m);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0L, await CountReservationsAsync());
+    }
+
+    [SkippableFact]
+    public async Task AdjustAsync_WhenBudgetSettingsMissing_ReturnsWithoutPersistence()
+    {
+        RequireSqlCipher();
+        BudgetReservationService service = CreateService(budget: null);
+
+        Result result = await service.AdjustAsync(Guid.NewGuid(), reservedUsd: 5m);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0L, await CountReservationsAsync());
     }
 
     private static void RequireSqlCipher() =>

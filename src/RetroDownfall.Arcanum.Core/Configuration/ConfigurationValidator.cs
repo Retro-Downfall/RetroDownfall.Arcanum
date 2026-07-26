@@ -91,13 +91,30 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
                     $"{pointer}.type",
                     ObsoleteLlamaCppServerTypeMessage));
             }
+
+            ValidatePromptCachingEnumStrings(
+                provider.GetSection("PromptCaching"),
+                $"{pointer}.promptCaching",
+                errors);
+
+            foreach (IConfigurationSection model in provider.GetSection("Models").GetChildren())
+            {
+                string modelPointer = string.IsNullOrEmpty(model.Key)
+                    ? $"{pointer}.models"
+                    : $"{pointer}.models[{model.Key}]";
+
+                ValidatePromptCachingEnumStrings(
+                    model.GetSection("PromptCaching"),
+                    $"{modelPointer}.promptCaching",
+                    errors);
+            }
         }
 
         if (errors.Count > 0)
         {
             return Result.Failure(new Error(
                 "Configuration.ValidationFailed",
-                $"{errors.Count} obsolete configuration key(s).",
+                $"{errors.Count} configuration issue(s).",
                 errors));
         }
 
@@ -199,6 +216,26 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
         !string.IsNullOrWhiteSpace(typeValue)
         && string.Equals(typeValue.Trim(), "LlamaCppServer", StringComparison.OrdinalIgnoreCase);
 
+    private static void ValidatePromptCachingEnumStrings(
+        IConfigurationSection profile,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        foreach (string property in new[] { "ControlMode", "WireDialect", "Retention" })
+        {
+            string? value = profile[property];
+
+            if (value is not null && int.TryParse(value, out _))
+            {
+                string field = char.ToLowerInvariant(property[0]) + property[1..];
+
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.{field}",
+                    $"Prompt caching {property} must use a named string value, not a number."));
+            }
+        }
+    }
+
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
     {
 
@@ -251,6 +288,11 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
                 provider.Tokenization,
                 $"{providerPointer}.tokenization",
                 errors);
+            ValidatePromptCachingProfile(
+                provider.PromptCaching,
+                $"{providerPointer}.promptCaching",
+                provider.SupportsPromptCaching,
+                errors);
 
             if (models.Count == 0)
             {
@@ -270,6 +312,11 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
                 ValidateTokenizationProfile(
                     models[modelIndex].Tokenization,
                     $"{providerPointer}.models[{modelIndex}].tokenization",
+                    errors);
+                ValidatePromptCachingProfile(
+                    models[modelIndex].PromptCaching,
+                    $"{providerPointer}.models[{modelIndex}].promptCaching",
+                    provider.SupportsPromptCaching,
                     errors);
             }
 
@@ -393,7 +440,6 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
         }
 
         ValidatePathAllowlist((settings.Campaigns ?? new CampaignsSettings()).AllowedRoots, "campaigns.allowedRoots", errors);
-
 
         ValidatePathAllowlist((settings.Spells ?? new SpellSettings()).AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
 
@@ -766,6 +812,118 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.supportsStreaming",
                 "Reasoning SupportsStreaming requires SupportsSummary or SupportsFull."));
+        }
+    }
+
+    private static void ValidatePromptCachingProfile(
+        PromptCachingProfile? profile,
+        string pointer,
+        bool? legacySupportsPromptCaching,
+        List<ConfigurationValidationError> errors)
+    {
+        if (profile is null)
+        {
+            return;
+        }
+
+        bool validControlMode = Enum.IsDefined(profile.ControlMode);
+
+        if (!validControlMode)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.controlMode",
+                $"Prompt caching ControlMode '{profile.ControlMode}' is not defined."));
+        }
+
+        bool validWireDialect = Enum.IsDefined(profile.WireDialect);
+
+        if (!validWireDialect)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.wireDialect",
+                $"Prompt caching WireDialect '{profile.WireDialect}' is not defined."));
+        }
+        else if (profile.WireDialect == PromptCachingWireDialect.OpenAiPromptCacheBreakpoints)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.wireDialect",
+                "Prompt caching WireDialect 'openAiPromptCacheBreakpoints' is reserved and is not supported by the pinned provider adapter."));
+        }
+
+        if (!Enum.IsDefined(profile.Retention))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.retention",
+                $"Prompt caching Retention '{profile.Retention}' is not defined."));
+        }
+
+        if (validControlMode
+            && profile.ControlMode != PromptCachingControlMode.Explicit
+            && (profile.EmitCacheKey
+                || profile.Retention != PromptCacheRetentionPolicy.ProviderDefault
+                || profile.EmitStablePrefixBreakpoint
+                || profile.ToolSchemasParticipate))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.controlMode",
+                "Prompt caching directives require ControlMode 'explicit'."));
+        }
+
+        if (validControlMode
+            && profile.ControlMode == PromptCachingControlMode.Explicit
+            && !profile.EmitCacheKey
+            && profile.Retention == PromptCacheRetentionPolicy.ProviderDefault
+            && !profile.EmitStablePrefixBreakpoint)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.controlMode",
+                "Prompt caching ControlMode 'explicit' requires at least one emitted directive."));
+        }
+
+        if (legacySupportsPromptCaching == false
+            && validControlMode
+            && profile.ControlMode == PromptCachingControlMode.Explicit)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.controlMode",
+                "An explicit prompt-cache profile conflicts with SupportsPromptCaching=false."));
+        }
+
+        if (profile.EmitCacheKey && !profile.CacheKeysSupported)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.emitCacheKey",
+                "EmitCacheKey requires CacheKeysSupported=true."));
+        }
+
+        if (profile.Retention != PromptCacheRetentionPolicy.ProviderDefault
+            && !profile.RetentionSelectionSupported)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.retention",
+                "A non-default prompt-cache retention requires RetentionSelectionSupported=true."));
+        }
+
+        if (profile.Retention == PromptCacheRetentionPolicy.ThirtyMinutes)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.retention",
+                "Thirty-minute retention requires a verified explicit-breakpoint dialect, which is not supported by this build."));
+        }
+
+        if (profile.EmitStablePrefixBreakpoint && !profile.StablePrefixBreakpointsSupported)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.emitStablePrefixBreakpoint",
+                "EmitStablePrefixBreakpoint requires StablePrefixBreakpointsSupported=true."));
+        }
+
+        if (profile.WireDialect == PromptCachingWireDialect.OpenAiPromptCacheRetention
+            && (profile.StablePrefixBreakpointsSupported || profile.EmitStablePrefixBreakpoint))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.emitStablePrefixBreakpoint",
+                "The openAiPromptCacheRetention dialect does not support explicit content breakpoints."));
         }
     }
 

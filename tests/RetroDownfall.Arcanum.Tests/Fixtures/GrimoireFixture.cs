@@ -117,6 +117,7 @@ public sealed class GrimoireFixture : IDisposable
 
         lock (BuildLock)
         {
+            using IDisposable processLock = AcquireCrossProcessTemplateLock();
 
             string currentFingerprint = ComputeSchemaFingerprint();
 
@@ -172,6 +173,29 @@ public sealed class GrimoireFixture : IDisposable
 
     private static readonly object BuildLock = new();
 
+    private static readonly Mutex CrossProcessTemplateLock = new(
+        initiallyOwned: false,
+        name: "RetroDownfall.Arcanum.Tests.GrimoireTemplate.v1");
+
+    private static IDisposable AcquireCrossProcessTemplateLock()
+    {
+        try
+        {
+            if (!CrossProcessTemplateLock.WaitOne(TimeSpan.FromMinutes(2)))
+            {
+                throw new TimeoutException(
+                    "Timed out waiting for the cross-process Grimoire template lock.");
+            }
+        }
+        catch (AbandonedMutexException)
+        {
+            // The prior process exited while owning the mutex. This process now owns it and
+            // validates/remediates the template before returning any copy.
+        }
+
+        return new CrossProcessMutexLease();
+    }
+
     public string CopyDatabase()
     {
 
@@ -185,6 +209,7 @@ public sealed class GrimoireFixture : IDisposable
 
         lock (BuildLock)
         {
+            using IDisposable processLock = AcquireCrossProcessTemplateLock();
 
             try
             {
@@ -385,6 +410,22 @@ public sealed class GrimoireFixture : IDisposable
 
         }
 
+    }
+
+    private sealed class CrossProcessMutexLease : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            CrossProcessTemplateLock.ReleaseMutex();
+        }
     }
 
     private sealed class TestGrimoireDbPassphraseSource : IGrimoireDbPassphraseSource

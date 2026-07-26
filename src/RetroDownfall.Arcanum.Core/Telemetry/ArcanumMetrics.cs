@@ -62,12 +62,33 @@ public static class ArcanumMetrics
         "arcanum_prompt_cache_tokens_total", "{tokens}", "Prompt tokens served from a provider-side prompt cache");
 
     /// <summary>
-    /// Total inference turns that reported a non-zero prompt-cache hit. Labels: <c>provider</c>, <c>model</c>
-    /// (low-cardinality only). Useful to compare against <c>arcanum_inference_turns_total</c>-style
-    /// counts to estimate cache hit rate.
+    /// Completed provider calls that reported a non-zero prompt-cache hit.
     /// </summary>
     public static readonly Counter<long> PromptCacheHitsTotal = Meter.CreateCounter<long>(
-        "arcanum_prompt_cache_hits_total", description: "Inference turns that reported a non-zero prompt-cache hit");
+        "arcanum_prompt_cache_hits_total", description: "Provider calls that reported a non-zero prompt-cache hit");
+
+    /// <summary>
+    /// Completed provider calls classified by prompt-cache mode and eligibility. Labels are bounded
+    /// to provider, model, purpose, control mode, eligibility, and a closed reason.
+    /// </summary>
+    public static readonly Counter<long> PromptCacheCallsTotal = Meter.CreateCounter<long>(
+        "arcanum_prompt_cache_calls_total",
+        "{calls}",
+        "Completed inference provider calls by prompt-cache eligibility");
+
+    /// <summary>Potential savings from the eligible prefix at configured cached-input pricing.</summary>
+    public static readonly Counter<double> PromptCachePotentialSavingsUsdTotal =
+        Meter.CreateCounter<double>(
+            "arcanum_prompt_cache_potential_savings_usd_total",
+            "USD",
+            "Potential prompt-cache savings from eligible input prefixes");
+
+    /// <summary>Realized savings from provider-reported cached input tokens.</summary>
+    public static readonly Counter<double> PromptCacheActualSavingsUsdTotal =
+        Meter.CreateCounter<double>(
+            "arcanum_prompt_cache_actual_savings_usd_total",
+            "USD",
+            "Actual prompt-cache savings from provider-reported cached input tokens");
 
     /// <summary>
     /// Pre-call locally estimated input tokens. Labels: <c>provider</c>, <c>model</c>.

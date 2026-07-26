@@ -48,42 +48,84 @@ public static class SystemPromptBuilder
         int maxLexiconInjectedBytes = 4096,
         IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex = null,
         int maxIndexItems = 40,
-        int maxIndexBytes = 4096)
-    {
-
-        int estimatedCapacity = Math.Max(
-            2048,
-            (codexContent?.Length ?? 0)
-            + (activeSpell?.FullContent.Length ?? 0)
-            + (dependencySpells?.Sum(static d => d.Body.Length) ?? 0)
-            + (attachedFiles?.Sum(static f => f.Content.Length) ?? 0)
-            + (semanticContext?.Sum(static c => c.Content.Length) ?? 0)
-            + (sagaMemories?.Sum(static m => m.Content.Length) ?? 0)
-            + (lexiconEntries?.Sum(static e => e.Name.Length + e.Type.Length + e.Facts.Sum(static f => f.Length)) ?? 0)
-            + (sessionAttachmentsIndex?.Count * 64 ?? 0)
-            + 1024);
-
-        var sb = new StringBuilder(estimatedCapacity);
-
-        AppendPersona(sb);
-
-        AppendDataBlock(
-            sb,
+        int maxIndexBytes = 4096) =>
+        BuildDocument(
             request,
+            codexContent,
+            activeSpell,
             attachedFiles,
+            campaignSummary,
+            dependencySpells,
+            maxResonantBytes,
             semanticContext,
             sagaMemories,
             lexiconEntries,
             maxLexiconInjectedBytes,
             sessionAttachmentsIndex,
             maxIndexItems,
-            maxIndexBytes);
+            maxIndexBytes)
+        .Render();
 
-        AppendContextBlock(sb, request, codexContent, campaignSummary);
+    public static SystemPromptDocument BuildDocument(
+        PingRequest request,
+        string? codexContent,
+        ParsedSpell? activeSpell = null,
+        List<AttachedFileDto>? attachedFiles = null,
+        string? campaignSummary = null,
+        IReadOnlyList<ParsedSpell>? dependencySpells = null,
+        int maxResonantBytes = int.MaxValue,
+        SemanticContextChunk[]? semanticContext = null,
+        SagaMemory[]? sagaMemories = null,
+        IReadOnlyList<LexiconEntryDto>? lexiconEntries = null,
+        int maxLexiconInjectedBytes = 4096,
+        IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex = null,
+        int maxIndexItems = 40,
+        int maxIndexBytes = 4096)
+    {
+        List<PromptSegment> segments = [];
 
-        AppendInstructionsBlock(sb, activeSpell, request, dependencySpells, maxResonantBytes);
+        AddSegment(
+            segments,
+            PromptSegmentKind.Preamble,
+            PromptSegmentStability.Stable,
+            cacheBoundaryEligible: true,
+            AppendPersona);
 
-        return sb.ToString();
+        bool volatileData = HasVolatileData(
+            request,
+            attachedFiles,
+            semanticContext,
+            sagaMemories,
+            lexiconEntries,
+            sessionAttachmentsIndex);
+
+        AddSegment(
+            segments,
+            PromptSegmentKind.Data,
+            volatileData ? PromptSegmentStability.Volatile : PromptSegmentStability.Stable,
+            cacheBoundaryEligible: !volatileData,
+            sb => AppendDataBlock(
+                sb,
+                request,
+                attachedFiles,
+                semanticContext,
+                sagaMemories,
+                lexiconEntries,
+                maxLexiconInjectedBytes,
+                sessionAttachmentsIndex,
+                maxIndexItems,
+                maxIndexBytes));
+
+        AppendContextSegments(segments, request, codexContent, campaignSummary);
+
+        AppendInstructionSegments(
+            segments,
+            activeSpell,
+            request,
+            dependencySpells,
+            maxResonantBytes);
+
+        return new SystemPromptDocument(segments);
 
     }
 
@@ -235,6 +277,44 @@ public static class SystemPromptBuilder
         sb.AppendLine();
 
     }
+
+    private static void AddSegment(
+        List<PromptSegment> segments,
+        PromptSegmentKind kind,
+        PromptSegmentStability stability,
+        bool cacheBoundaryEligible,
+        Action<StringBuilder> append)
+    {
+        StringBuilder builder = new();
+
+        append(builder);
+
+        if (builder.Length == 0)
+        {
+            return;
+        }
+
+        segments.Add(new PromptSegment(
+            kind,
+            stability,
+            builder.ToString(),
+            cacheBoundaryEligible));
+    }
+
+    private static bool HasVolatileData(
+        PingRequest request,
+        List<AttachedFileDto>? attachedFiles,
+        SemanticContextChunk[]? semanticContext,
+        SagaMemory[]? sagaMemories,
+        IReadOnlyList<LexiconEntryDto>? lexiconEntries,
+        IReadOnlyList<SessionAttachmentIndexItem>? sessionAttachmentsIndex) =>
+        lexiconEntries is { Count: > 0 }
+        || HasChronosyncContent(request)
+        || attachedFiles is { Count: > 0 }
+        || sessionAttachmentsIndex is { Count: > 0 }
+        || semanticContext is { Length: > 0 }
+        || sagaMemories is { Length: > 0 }
+        || request.DataStreams is { Count: > 0 };
 
     private static void AppendDataBlock(
         StringBuilder sb,
@@ -446,249 +526,252 @@ public static class SystemPromptBuilder
 
     }
 
-    private static void AppendContextBlock(
-        StringBuilder sb,
+    private static void AppendContextSegments(
+        List<PromptSegment> segments,
         PingRequest request,
         string? codexContent,
         string? campaignSummary)
     {
-
-        sb.AppendLine();
-
-        sb.AppendLine(ContextHeader);
-
-        sb.AppendLine();
+        AddSegment(
+            segments,
+            PromptSegmentKind.ContextHeader,
+            PromptSegmentStability.Stable,
+            cacheBoundaryEligible: false,
+            sb =>
+            {
+                sb.AppendLine();
+                sb.AppendLine(ContextHeader);
+                sb.AppendLine();
+            });
 
         bool hasContext = false;
 
         if (request.ContextSnapshot is { } snapshot)
         {
-
             hasContext = true;
 
-            sb.AppendLine("### Workspace Context");
-
-            sb.AppendLine();
-
-            sb.Append("Domain: ");
-
-            sb.AppendLine(snapshot.Domain.ToString());
-
-            sb.Append("RootPath: ");
-
-            sb.AppendLine(snapshot.RootPath);
-
-            sb.AppendLine();
-
-            sb.AppendLine("### Table of Contents");
-
-            sb.AppendLine();
-
-            foreach (string thread in snapshot.Threads)
-            {
-
-                if (string.IsNullOrWhiteSpace(thread))
+            AddSegment(
+                segments,
+                PromptSegmentKind.WorkspaceContext,
+                PromptSegmentStability.Volatile,
+                cacheBoundaryEligible: false,
+                sb =>
                 {
+                    sb.AppendLine("### Workspace Context");
+                    sb.AppendLine();
+                    sb.Append("Domain: ");
+                    sb.AppendLine(snapshot.Domain.ToString());
+                    sb.Append("RootPath: ");
+                    sb.AppendLine(snapshot.RootPath);
+                    sb.AppendLine();
+                    sb.AppendLine("### Table of Contents");
+                    sb.AppendLine();
 
-                    continue;
+                    foreach (string thread in snapshot.Threads)
+                    {
+                        if (string.IsNullOrWhiteSpace(thread))
+                        {
+                            continue;
+                        }
 
-                }
-
-                sb.Append("- ");
-
-                sb.AppendLine(thread);
-
-            }
-
+                        sb.Append("- ");
+                        sb.AppendLine(thread);
+                    }
+                });
         }
 
         if (!string.IsNullOrWhiteSpace(codexContent))
         {
-
             hasContext = true;
 
-            sb.AppendLine();
-
-            sb.AppendLine("### Master Codex (CODEX.md)");
-
-            sb.AppendLine();
-
-            AppendUntrusted(sb, "CODEX.md", codexContent);
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.Codex,
+                PromptSegmentStability.Stable,
+                cacheBoundaryEligible: true,
+                sb =>
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("### Master Codex (CODEX.md)");
+                    sb.AppendLine();
+                    AppendUntrusted(sb, "CODEX.md", codexContent);
+                });
         }
 
         if (!string.IsNullOrWhiteSpace(campaignSummary))
         {
-
             hasContext = true;
 
-            sb.AppendLine();
-
-            sb.AppendLine("### Campaign Summary (compressed context)");
-
-            sb.AppendLine();
-
-            sb.AppendLine(
-                "The following is a summary of earlier conversation history that has been compressed to fit within the context window. Treat it as reliable prior context:");
-
-            sb.AppendLine();
-
-            AppendUntrusted(sb, "Campaign Summary", campaignSummary.Trim());
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.CampaignSummary,
+                PromptSegmentStability.Volatile,
+                cacheBoundaryEligible: false,
+                sb =>
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("### Campaign Summary (compressed context)");
+                    sb.AppendLine();
+                    sb.AppendLine(
+                        "The following is a summary of earlier conversation history that has been compressed to fit within the context window. Treat it as reliable prior context:");
+                    sb.AppendLine();
+                    AppendUntrusted(sb, "Campaign Summary", campaignSummary.Trim());
+                });
         }
 
         if (!hasContext)
         {
-
-            sb.AppendLine(NonePlaceholder);
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.ContextPlaceholder,
+                PromptSegmentStability.Stable,
+                cacheBoundaryEligible: true,
+                sb => sb.AppendLine(NonePlaceholder));
         }
-
     }
 
-    private static void AppendInstructionsBlock(
-        StringBuilder sb,
+    private static void AppendInstructionSegments(
+        List<PromptSegment> segments,
         ParsedSpell? activeSpell,
         PingRequest request,
         IReadOnlyList<ParsedSpell>? dependencySpells,
         int maxResonantBytes)
     {
-
-        sb.AppendLine();
-
-        sb.AppendLine(InstructionsHeader);
-
-        sb.AppendLine();
+        AddSegment(
+            segments,
+            PromptSegmentKind.InstructionsHeader,
+            PromptSegmentStability.Stable,
+            cacheBoundaryEligible: false,
+            sb =>
+            {
+                sb.AppendLine();
+                sb.AppendLine(InstructionsHeader);
+                sb.AppendLine();
+            });
 
         bool hasInstructions = false;
 
         if (activeSpell is not null)
         {
-
             hasInstructions = true;
 
-            sb.Append("### Active Operational Spell (");
-
-            sb.Append(activeSpell.Name);
-
-            sb.AppendLine(")");
-
-            sb.AppendLine();
-
-            AppendUntrusted(sb, activeSpell.Name, activeSpell.FullContent);
-
-            AppendSpellScriptsSection(sb, activeSpell);
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.PrimarySpell,
+                PromptSegmentStability.Stable,
+                cacheBoundaryEligible: true,
+                sb =>
+                {
+                    sb.Append("### Active Operational Spell (");
+                    sb.Append(activeSpell.Name);
+                    sb.AppendLine(")");
+                    sb.AppendLine();
+                    AppendUntrusted(sb, activeSpell.Name, activeSpell.FullContent);
+                    AppendSpellScriptsSection(sb, activeSpell);
+                });
         }
 
         if (dependencySpells is { Count: > 0 })
         {
-
             hasInstructions = true;
 
-            sb.AppendLine();
-
-            sb.AppendLine();
-
-            sb.AppendLine("### Resonant Spells (Dependencies)");
-
-            sb.AppendLine();
-
-            sb.AppendLine();
-
-            int bytesUsed = 0;
-
-            bool truncated = false;
-
-            foreach (ParsedSpell dep in dependencySpells)
-            {
-
-                if (bytesUsed >= maxResonantBytes)
+            AddSegment(
+                segments,
+                PromptSegmentKind.ResonantSpells,
+                PromptSegmentStability.Stable,
+                cacheBoundaryEligible: true,
+                sb =>
                 {
+                    sb.AppendLine();
+                    sb.AppendLine();
+                    sb.AppendLine("### Resonant Spells (Dependencies)");
+                    sb.AppendLine();
+                    sb.AppendLine();
 
-                    truncated = true;
+                    int bytesUsed = 0;
+                    bool truncated = false;
 
-                    break;
+                    foreach (ParsedSpell dep in dependencySpells)
+                    {
+                        if (bytesUsed >= maxResonantBytes)
+                        {
+                            truncated = true;
+                            break;
+                        }
 
-                }
+                        sb.Append("#### ");
+                        sb.AppendLine(dep.Name);
+                        sb.AppendLine();
 
-                sb.Append("#### ");
+                        string body = dep.Body;
+                        int bodyByteCount = Encoding.UTF8.GetByteCount(body);
 
-                sb.AppendLine(dep.Name);
+                        if (bytesUsed + bodyByteCount > maxResonantBytes)
+                        {
+                            body = TruncateUtf8(body, maxResonantBytes - bytesUsed);
+                            truncated = true;
+                        }
 
-                sb.AppendLine();
+                        bytesUsed += Encoding.UTF8.GetByteCount(body);
+                        AppendUntrusted(sb, dep.Name, body);
+                        AppendSpellScriptsSection(sb, dep);
+                    }
 
-                string body = dep.Body;
-
-                int bodyByteCount = Encoding.UTF8.GetByteCount(body);
-
-                if (bytesUsed + bodyByteCount > maxResonantBytes)
-                {
-
-                    body = TruncateUtf8(body, maxResonantBytes - bytesUsed);
-
-                    truncated = true;
-
-                }
-
-                bytesUsed += Encoding.UTF8.GetByteCount(body);
-
-                AppendUntrusted(sb, dep.Name, body);
-
-                AppendSpellScriptsSection(sb, dep);
-
-            }
-
-            if (truncated)
-            {
-
-                sb.AppendLine();
-
-                sb.AppendLine(
-                    "[Arcane Resonance: additional dependency spell content was omitted because it exceeded the configured byte budget.]");
-
-            }
-
+                    if (truncated)
+                    {
+                        sb.AppendLine();
+                        sb.AppendLine(
+                            "[Arcane Resonance: additional dependency spell content was omitted because it exceeded the configured byte budget.]");
+                    }
+                });
         }
 
         if (request.CliTerminalFormatting)
         {
-
             hasInstructions = true;
 
-            sb.AppendLine();
-
-            sb.AppendLine("### Output Formatting Directive");
-
-            sb.AppendLine();
-
-            sb.Append(
-                "Output Formatting Directive: You are communicating via a raw CLI terminal. You must format your responses for readability in this environment. You are strictly permitted to use ONLY the following Markdown elements: Headings, Bold text, Italic text, and Code Blocks. Strictly avoid tables, blockquotes, inline HTML, or complex nested lists.");
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.TerminalFormatting,
+                PromptSegmentStability.Stable,
+                cacheBoundaryEligible: true,
+                sb =>
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("### Output Formatting Directive");
+                    sb.AppendLine();
+                    sb.Append(
+                        "Output Formatting Directive: You are communicating via a raw CLI terminal. You must format your responses for readability in this environment. You are strictly permitted to use ONLY the following Markdown elements: Headings, Bold text, Italic text, and Code Blocks. Strictly avoid tables, blockquotes, inline HTML, or complex nested lists.");
+                });
         }
 
         if (!string.IsNullOrWhiteSpace(request.AdditionalSystemPrompt))
         {
-
             hasInstructions = true;
 
-            sb.AppendLine();
-
-            sb.AppendLine("### Additional Instructions");
-
-            sb.AppendLine();
-
-            AppendUntrusted(sb, "Additional Instructions", request.AdditionalSystemPrompt.Trim());
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.AdditionalInstructions,
+                PromptSegmentStability.Volatile,
+                cacheBoundaryEligible: false,
+                sb =>
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("### Additional Instructions");
+                    sb.AppendLine();
+                    AppendUntrusted(sb, "Additional Instructions", request.AdditionalSystemPrompt.Trim());
+                });
         }
 
         if (!hasInstructions)
         {
-
-            sb.AppendLine(NonePlaceholder);
-
+            AddSegment(
+                segments,
+                PromptSegmentKind.InstructionsPlaceholder,
+                PromptSegmentStability.Stable,
+                cacheBoundaryEligible: true,
+                sb => sb.AppendLine(NonePlaceholder));
         }
-
     }
 
     private static void AppendSpellScriptsSection(StringBuilder sb, ParsedSpell spell)

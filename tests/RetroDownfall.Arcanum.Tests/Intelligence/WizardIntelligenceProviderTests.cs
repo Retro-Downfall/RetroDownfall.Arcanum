@@ -72,6 +72,47 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Scenario01b_ExplicitPromptCaching_AppliesProviderBoundOptionsForEligiblePrefix()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspace.Root, "CODEX.md"),
+            new string('x', 8_192));
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Providers =
+            [
+                DefaultProvider() with
+                {
+                    Models = [new ModelEntry(ModelName) { PromptCaching = profile }],
+                },
+            ],
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueText("cached answer");
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "hello",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(chat.LastChatOptions?.RawRepresentationFactory);
+        Assert.Equal(2, chat.LastBufferedMessages.Count);
+    }
+
+    [Fact]
     public async Task Scenario02_SingleTurnStreaming_EmitsTokensAndResult()
     {
         ScriptingChatClient chat = new();
@@ -3152,6 +3193,44 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(11, operation.ReasoningTokens);
         Assert.Equal(0.00064m, operation.ActualCostUsd);
         Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
+    }
+
+    [Fact]
+    public async Task AccountingReconciliation_PersistsExplicitAllZeroUsage()
+    {
+        ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 0,
+                OutputTokenCount = 0,
+                TotalTokenCount = 0,
+                CachedInputTokenCount = 0,
+                ReasoningTokenCount = 0,
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(response);
+        RecordingTurnRunWriter turnRuns = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            turnRunWriter: turnRuns);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "zero usage",
+                SkipSpellRouting = true,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+        Assert.Equal(0, operation.InputTokens);
+        Assert.Equal(0, operation.OutputTokens);
+        Assert.Equal(0, operation.CachedTokens);
+        Assert.Equal(0m, operation.ActualCostUsd);
     }
 
     [Fact]
@@ -7124,7 +7203,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>

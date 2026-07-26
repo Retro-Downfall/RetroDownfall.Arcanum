@@ -107,4 +107,27 @@ public sealed class BudgetReservationEstimateTests
         Assert.Equal(expected, missingOutputOverride);
         Assert.Equal(expected, nonPositiveOverrides);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void TurnEstimate_NonPositiveInputEstimate_FallsBackToOutputHeadroom(
+        long estimatedInputTokens)
+    {
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = 10m,
+            OutputPer1M = 20m,
+        };
+
+        decimal estimate = BudgetReservationService.EstimateWorstCaseTurnUsd(
+            pricing,
+            maxOutputTokens: 1_000,
+            reasoningBudgetTokens: 0,
+            estimatedInputTokens);
+
+        decimal expectedPerCall = 1_000m * (10m + 20m) / 1_000_000m;
+
+        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+    }
 }

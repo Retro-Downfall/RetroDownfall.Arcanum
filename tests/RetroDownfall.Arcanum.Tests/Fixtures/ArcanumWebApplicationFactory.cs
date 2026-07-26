@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -136,7 +137,30 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             services.RemoveAll<ArcanumDbContext>();
 
-            services.AddDbContext<ArcanumDbContext>();
+            if (_grimoireFixture is { } grimoireFixture)
+            {
+                string databasePath = Path.Combine(
+                    _tempHome,
+                    ".config",
+                    "arcanum",
+                    "arcanum.db");
+                string connectionString = new SqliteConnectionStringBuilder
+                {
+                    DataSource = databasePath,
+                    Password = grimoireFixture.Passphrase,
+                    Pooling = true,
+                }.ToString();
+
+                services.AddDbContext<ArcanumDbContext>(options =>
+                    options
+                        .UseSqlite(connectionString)
+                        .UseModel(ArcanumDbContextModel.Instance)
+                        .AddInterceptors(SqlitePragmaConnectionInterceptor.Instance));
+            }
+            else
+            {
+                services.AddDbContext<ArcanumDbContext>();
+            }
 
             services.RemoveAll<IOptions<ArcanumSettings>>();
 

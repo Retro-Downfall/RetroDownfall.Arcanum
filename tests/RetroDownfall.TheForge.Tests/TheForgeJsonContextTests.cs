@@ -26,11 +26,54 @@ public class TheForgeJsonContextTests
     [InlineData(typeof(ReasoningCapabilities))]
     [InlineData(typeof(ReasoningControlSupport))]
     [InlineData(typeof(ReasoningWireDialect))]
-    public void ReasoningContracts_HaveSourceGeneratedTypeInfo(Type type)
+    [InlineData(typeof(PromptCachingProfile))]
+    [InlineData(typeof(PromptCachingControlMode))]
+    [InlineData(typeof(PromptCachingWireDialect))]
+    [InlineData(typeof(PromptCacheRetentionPolicy))]
+    public void InferenceCapabilityContracts_HaveSourceGeneratedTypeInfo(Type type)
     {
 
         Assert.NotNull(TheForgeJsonContext.Default.GetTypeInfo(type));
 
+    }
+
+    [Fact]
+    public void ArcanumSettings_WithPromptCachingProfile_RoundTrips()
+    {
+        ArcanumSettings original = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "cache-provider",
+                    Models =
+                    [
+                        new ModelEntry("cache-model")
+                        {
+                            PromptCaching = new PromptCachingProfile
+                            {
+                                ControlMode = PromptCachingControlMode.Explicit,
+                                CacheKeysSupported = true,
+                                EmitCacheKey = true,
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        string json = JsonSerializer.Serialize(
+            original,
+            TheForgeJsonContext.Default.ArcanumSettings);
+        ArcanumSettings? roundTripped = JsonSerializer.Deserialize(
+            json,
+            TheForgeJsonContext.Default.ArcanumSettings);
+
+        Assert.Equal(
+            PromptCachingControlMode.Explicit,
+            roundTripped?.Providers[0].Models[0].PromptCaching?.ControlMode);
+        Assert.True(roundTripped?.Providers[0].Models[0].PromptCaching?.EmitCacheKey);
     }
 
     [Fact]

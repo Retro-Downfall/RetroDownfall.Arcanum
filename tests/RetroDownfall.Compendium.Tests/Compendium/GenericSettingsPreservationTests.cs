@@ -215,6 +215,73 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public async Task Provider_prompt_cache_profiles_survive_polished_model_edits_and_save()
+    {
+        PromptCachingProfile providerProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.ProviderManaged,
+            ReportsCachedInputUsage = true,
+        };
+        PromptCachingProfile modelProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.None,
+        };
+
+        await SeedAsync(new ArcanumSettings
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "cache-provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://cache.example/v1",
+                    PromptCaching = providerProfile,
+                    Models =
+                    [
+                        new ModelEntry(
+                            "cache-model",
+                            SupportsVision: false,
+                            PromptCaching: modelProfile),
+                        "legacy-model",
+                    ],
+                },
+            ],
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+
+        ProvidersSectionViewModel.ProviderViewModel provider = Assert.Single(vm.Providers.Providers);
+        ProvidersSectionViewModel.ModelEntryViewModel cacheModel = provider.Models[0];
+        ProvidersSectionViewModel.ModelEntryViewModel legacyModel = provider.Models[1];
+        cacheModel.Name = "cache-model-renamed";
+        cacheModel.SupportsVision = true;
+
+        ArcanumSettings built = vm.BuildSettings();
+        ProviderSettings builtProvider = Assert.Single(built.Providers);
+
+        Assert.Equal(providerProfile, builtProvider.PromptCaching);
+        Assert.Equal(modelProfile, builtProvider.Models[0].PromptCaching);
+        Assert.Equal("cache-model-renamed", builtProvider.Models[0].Name);
+        Assert.True(builtProvider.Models[0].SupportsVision);
+        Assert.Null(builtProvider.Models[1].PromptCaching);
+        Assert.Null(legacyModel.PromptCaching);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
+
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        ProviderSettings savedProvider = Assert.Single(saved.Providers);
+
+        Assert.Equal(providerProfile, savedProvider.PromptCaching);
+        Assert.Equal(modelProfile, savedProvider.Models[0].PromptCaching);
+        Assert.Null(savedProvider.Models[1].PromptCaching);
+    }
+
+    [Fact]
     public async Task Provider_tokenization_profiles_survive_load_build_and_save_round_trip()
     {
         ModelTokenizationProfile expected = new()

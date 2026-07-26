@@ -84,6 +84,11 @@ public sealed class ModelsProvidersEndpointTests
             Name = "vision-provider",
             Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1",
+            PromptCaching = new PromptCachingProfile
+            {
+                ControlMode = PromptCachingControlMode.ProviderManaged,
+                ReportsCachedInputUsage = true,
+            },
             Models =
             [
                 new ModelEntry("vision-model", SupportsVision: true)
@@ -98,6 +103,10 @@ public sealed class ModelsProvidersEndpointTests
                         AllowsClientOutput = true,
                         WireDialect = ReasoningWireDialect.OpenRouter,
                         MaxBudgetTokens = 65_536,
+                    },
+                    PromptCaching = new PromptCachingProfile
+                    {
+                        ControlMode = PromptCachingControlMode.None,
                     },
                 },
                 new ModelEntry("text-model"),
@@ -173,8 +182,14 @@ public sealed class ModelsProvidersEndpointTests
         Assert.True(reasoner.Reasoning.AllowsClientOutput);
         Assert.Equal(ReasoningWireDialect.OpenRouter, reasoner.Reasoning.WireDialect);
         Assert.Equal(65_536, reasoner.Reasoning.MaxBudgetTokens);
+        Assert.Equal(PromptCachingControlMode.None, reasoner.PromptCaching?.ControlMode);
 
         Assert.Null(body.Data!.Single(m => m.Model == "text-model").Reasoning);
+        Assert.Equal(
+            PromptCachingControlMode.ProviderManaged,
+            body.Data.Single(m => m.Model == "text-model").PromptCaching?.ControlMode);
+        Assert.True(
+            body.Data.Single(m => m.Model == "text-model").PromptCaching?.ReportsCachedInputUsage);
 
     }
 

@@ -57,4 +57,20 @@ public static class CostCalculator
     public static decimal CalculateCost(long inputTokens, long outputTokens, ModelPricingEntry pricing) =>
         CalculateCost(inputTokens, outputTokens, cachedTokens: 0L, reasoningTokens: 0L, pricing);
 
+    /// <summary>
+    /// Calculates potential or realized savings for prompt tokens served at the cached-input rate
+    /// instead of the ordinary input rate.
+    /// </summary>
+    public static decimal CalculatePromptCacheSavings(
+        long cachedOrEligibleTokens,
+        ModelPricingEntry pricing)
+    {
+        long tokens = Math.Max(0L, cachedOrEligibleTokens);
+        decimal inputRate = ArcanumSettingClamps.PricingRatePer1M(pricing.InputPer1M);
+        decimal cachedRate = ArcanumSettingClamps.PricingRatePer1M(pricing.CachedPer1M);
+        decimal rateDelta = Math.Max(0m, inputRate - cachedRate);
+
+        return (tokens * rateDelta) / 1_000_000m;
+    }
+
 }

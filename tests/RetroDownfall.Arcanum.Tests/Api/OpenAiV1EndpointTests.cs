@@ -537,7 +537,7 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
-    public async Task GetModels_CapableModel_ReportsVisionAndReasoningMetadata()
+    public async Task GetModels_CapableModel_ReportsVisionReasoningAndPromptCachingMetadata()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -567,6 +567,14 @@ public sealed class OpenAiV1EndpointTests
                                     AllowsClientOutput = true,
                                     WireDialect = ReasoningWireDialect.AnthropicThinking,
                                     MaxBudgetTokens = 32_768,
+                                },
+                                PromptCaching = new PromptCachingProfile
+                                {
+                                    ControlMode = PromptCachingControlMode.Explicit,
+                                    WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
+                                    CacheKeysSupported = true,
+                                    EmitCacheKey = true,
+                                    ReportsCachedInputUsage = true,
                                 },
                             },
                         ],
@@ -601,7 +609,74 @@ public sealed class OpenAiV1EndpointTests
         Assert.True(model.Reasoning.AllowsClientOutput);
         Assert.Equal(ReasoningWireDialect.AnthropicThinking, model.Reasoning.WireDialect);
         Assert.Equal(32_768, model.Reasoning.MaxBudgetTokens);
+        Assert.Equal(PromptCachingControlMode.Explicit, model.PromptCaching?.ControlMode);
+        Assert.Equal(
+            PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            model.PromptCaching?.WireDialect);
+        Assert.True(model.PromptCaching?.EmitCacheKey);
 
+    }
+
+    [SkippableFact]
+    public async Task GetModels_DuplicateModelWithDifferentProviderProfiles_OmitsPromptCachingMetadata()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "shared-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "provider-a",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://a.example/v1",
+                        Models =
+                        [
+                            new ModelEntry("shared-model")
+                            {
+                                PromptCaching = new PromptCachingProfile
+                                {
+                                    ControlMode = PromptCachingControlMode.Explicit,
+                                    CacheKeysSupported = true,
+                                    EmitCacheKey = true,
+                                },
+                            },
+                        ],
+                    },
+                    new ProviderSettings
+                    {
+                        Name = "provider-b",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://b.example/v1",
+                        Models =
+                        [
+                            new ModelEntry("shared-model")
+                            {
+                                PromptCaching = new PromptCachingProfile
+                                {
+                                    ControlMode = PromptCachingControlMode.None,
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        OpenAiModelListResponse? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.OpenAiModelListResponse);
+        OpenAiModel model = Assert.Single(body!.Data, static entry => entry.Id == "shared-model");
+        Assert.Null(model.PromptCaching);
     }
 
     [SkippableFact]

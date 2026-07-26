@@ -25,7 +25,8 @@ public sealed record ModelEntry
         string Name,
         bool SupportsVision = false,
         ReasoningCapabilities? Reasoning = null,
-        ModelTokenizationProfile? Tokenization = null)
+        ModelTokenizationProfile? Tokenization = null,
+        PromptCachingProfile? PromptCaching = null)
     {
 
         this.Name = Name;
@@ -35,6 +36,8 @@ public sealed record ModelEntry
         this.Reasoning = Reasoning;
 
         this.Tokenization = Tokenization;
+
+        this.PromptCaching = PromptCaching;
 
     }
 
@@ -57,6 +60,13 @@ public sealed record ModelEntry
     public ModelTokenizationProfile? Tokenization { get; set; }
 
     /// <summary>
+    /// Optional model-specific prompt-cache profile. When present, this is a complete override of
+    /// the provider profile.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PromptCachingProfile? PromptCaching { get; set; }
+
+    /// <summary>
     /// Implicit conversion from a bare model name — mirrors the JSON string-or-object back-compat
     /// form so collection-expression literals (<c>Models = ["gpt-4o"]</c>) keep compiling unchanged
     /// wherever vision capability is not being declared inline.
@@ -69,7 +79,7 @@ public sealed record ModelEntry
 /// AOT-safe converter accepting either a bare JSON string (<c>"gpt-4o"</c>, back-compat form —
 /// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c> and
 /// <see cref="ModelEntry.Reasoning"/> to <see langword="null"/>) or an object. Writes are always the
-/// object form and omit reasoning when it was not declared.
+/// object form and omit optional capability objects when they were not declared.
 /// </summary>
 public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 {
@@ -88,6 +98,8 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                 ReasoningCapabilities? reasoning = null;
 
                 ModelTokenizationProfile? tokenization = null;
+
+                PromptCachingProfile? promptCaching = null;
 
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                 {
@@ -125,17 +137,25 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                                 ref reader,
                                 ConfigurationJsonContext.Default.ModelTokenizationProfile);
                     }
+                    else if (string.Equals(propertyName, "promptCaching", StringComparison.OrdinalIgnoreCase))
+                    {
+                        promptCaching = reader.TokenType == JsonTokenType.Null
+                            ? null
+                            : JsonSerializer.Deserialize(
+                                ref reader,
+                                ConfigurationJsonContext.Default.PromptCachingProfile);
+                    }
                     else
                     {
                         reader.Skip();
                     }
                 }
 
-                return new ModelEntry(name, supportsVision, reasoning, tokenization);
+                return new ModelEntry(name, supportsVision, reasoning, tokenization, promptCaching);
 
             default:
                 throw new JsonException(
-                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning'/'tokenization' (got {reader.TokenType}).");
+                    $"Provider 'models' entries must be a string or an object with 'name'/'supportsVision'/'reasoning'/'tokenization'/'promptCaching' (got {reader.TokenType}).");
         }
     }
 
@@ -165,6 +185,16 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                 writer,
                 value.Tokenization,
                 ConfigurationJsonContext.Default.ModelTokenizationProfile);
+        }
+
+        if (value.PromptCaching is not null)
+        {
+            writer.WritePropertyName("promptCaching");
+
+            JsonSerializer.Serialize(
+                writer,
+                value.PromptCaching,
+                ConfigurationJsonContext.Default.PromptCachingProfile);
         }
 
         writer.WriteEndObject();

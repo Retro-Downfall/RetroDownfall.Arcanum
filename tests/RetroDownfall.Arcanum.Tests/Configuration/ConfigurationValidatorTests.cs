@@ -1359,6 +1359,112 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
+    public void Validate_ExplicitOpenAiPromptCacheRetentionProfile_ReturnsSuccess()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+            RetentionSelectionSupported = true,
+            Retention = PromptCacheRetentionPolicy.TwentyFourHours,
+            ToolSchemasParticipate = true,
+            ReportsCachedInputUsage = true,
+        };
+
+        Result result = _validator.Validate(SettingsWithPromptCaching(profile));
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void Validate_ExplicitPromptCacheProfileWithoutDirective_ReturnsFailure()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            ReportsCachedInputUsage = true,
+        };
+
+        Result result = _validator.Validate(SettingsWithPromptCaching(profile));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0].models[0].promptCaching.controlMode");
+    }
+
+    [Fact]
+    public void Validate_ExplicitPromptCacheProfileContradictsLegacyFalse_ReturnsFailure()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+
+        Result result = _validator.Validate(
+            SettingsWithPromptCaching(profile, providerLevel: true, legacySupport: false));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0].promptCaching.controlMode");
+    }
+
+    [Theory]
+    [InlineData("emitCacheKey")]
+    [InlineData("retention")]
+    [InlineData("emitStablePrefixBreakpoint")]
+    [InlineData("controlMode")]
+    [InlineData("wireDialect")]
+    public void Validate_InvalidPromptCacheProfileCombination_ReturnsTargetedFailure(string scenario)
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+
+        switch (scenario)
+        {
+            case "emitCacheKey":
+                profile.CacheKeysSupported = false;
+                break;
+
+            case "retention":
+                profile.RetentionSelectionSupported = false;
+                profile.Retention = PromptCacheRetentionPolicy.InMemory;
+                break;
+
+            case "emitStablePrefixBreakpoint":
+                profile.StablePrefixBreakpointsSupported = false;
+                profile.EmitStablePrefixBreakpoint = true;
+                break;
+
+            case "controlMode":
+                profile.ControlMode = PromptCachingControlMode.ProviderManaged;
+                break;
+
+            case "wireDialect":
+                profile.WireDialect = PromptCachingWireDialect.OpenAiPromptCacheBreakpoints;
+                profile.StablePrefixBreakpointsSupported = true;
+                profile.EmitStablePrefixBreakpoint = true;
+                break;
+        }
+
+        Result result = _validator.Validate(SettingsWithPromptCaching(profile));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            error => error.Pointer == $"providers[0].models[0].promptCaching.{scenario}");
+    }
+
+    [Fact]
     public void Validate_ListenAnyWithoutHttps_ReturnsFailure()
     {
 
@@ -1732,6 +1838,36 @@ public sealed class ConfigurationValidatorTests
 
         Assert.Contains(result.Error.Details!, static e => e.Pointer == "cache");
 
+        Assert.Equal(
+            ConfigurationValidator.ObsoleteCacheMigrationMessage,
+            Assert.Single(result.Error.Details!, static e => e.Pointer == "cache").Detail);
+
+    }
+
+    [Theory]
+    [InlineData("ControlMode")]
+    [InlineData("WireDialect")]
+    [InlineData("Retention")]
+    public void RejectObsoleteKeys_NumericPromptCachingEnums_ReturnValidationError(string field)
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Providers:0:PromptCaching:" + field] = "1",
+                ["Arcanum:Providers:0:Models:0:Name"] = "model",
+                ["Arcanum:Providers:0:Models:0:PromptCaching:" + field] = "1",
+            })
+            .Build();
+
+        Result result = _validator.RejectObsoleteKeys(configuration);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            error => error.Pointer == $"providers[0].promptCaching.{char.ToLowerInvariant(field[0]) + field[1..]}");
+        Assert.Contains(
+            result.Error.Details!,
+            error => error.Pointer == $"providers[0].models[0].promptCaching.{char.ToLowerInvariant(field[0]) + field[1..]}");
     }
 
     [Fact]
@@ -1865,5 +2001,28 @@ public sealed class ConfigurationValidatorTests
                 },
             ],
         };
+
+    private static ArcanumSettings SettingsWithPromptCaching(
+        PromptCachingProfile profile,
+        bool providerLevel = false,
+        bool? legacySupport = null)
+    {
+        ProviderSettings provider = new()
+        {
+            Name = "cache-provider",
+            Type = AiProviderKind.OpenAICompatible,
+            Models =
+            [
+                new ModelEntry("cache-model")
+                {
+                    PromptCaching = providerLevel ? null : profile,
+                },
+            ],
+            PromptCaching = providerLevel ? profile : null,
+            SupportsPromptCaching = legacySupport,
+        };
+
+        return new ArcanumSettings { Providers = [provider] };
+    }
 
 }

@@ -245,6 +245,48 @@ public sealed class TurnAccountingHandleTests
     }
 
     [Fact]
+    public async Task RecordChatUsageAsync_PersistsCachedCountRateAndReconciledCost()
+    {
+        RecordingTurnRunWriter writer = new();
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = 10m,
+            CachedPer1M = 1m,
+        };
+        TurnAccountingHandle handle = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings { DefaultPricing = pricing },
+            "cache-model",
+            sessionId: null,
+            surface: "test",
+            purpose: "chat",
+            requestId: "request-cached-input",
+            cancellationToken: CancellationToken.None)).Value;
+
+        await handle.RecordChatUsageAsync(
+            writer,
+            "provider",
+            "cache-model",
+            promptTokens: 1_000_000,
+            completionTokens: 0,
+            cachedTokens: 400_000,
+            reasoningTokens: 0,
+            pricing,
+            CancellationToken.None);
+
+        BillableOperationRecord operation =
+            Assert.IsType<BillableOperationRecord>(writer.LastOperation);
+        Assert.Equal(400_000, operation.CachedTokens);
+        Assert.Equal(6.4m, operation.ActualCostUsd);
+        Assert.Equal(6.4m, handle.AccumulatedCostUsd);
+        using JsonDocument snapshot = JsonDocument.Parse(operation.PricingSnapshotJson);
+        Assert.Equal(
+            1m,
+            snapshot.RootElement.GetProperty("CachedPer1M").GetDecimal());
+    }
+
+    [Fact]
     public async Task RecordChatUsageAsync_NullReasoningSnapshotFallsBackToOutputRate()
     {
         RecordingTurnRunWriter writer = new();

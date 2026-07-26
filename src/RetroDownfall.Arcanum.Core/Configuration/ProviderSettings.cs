@@ -24,6 +24,12 @@ public sealed record ProviderSettings
     public ModelTokenizationProfile? Tokenization { get; set; }
 
     /// <summary>
+    /// Optional provider-wide prompt-cache profile inherited by models that do not declare a full
+    /// model-specific override.
+    /// </summary>
+    public PromptCachingProfile? PromptCaching { get; set; }
+
+    /// <summary>
     /// When <see langword="true"/>, Arcanum records <c>arcanum_prompt_cache_tokens</c> metrics for
     /// this provider when the response usage reports cached prompt tokens. Defaults to
     /// <see langword="true"/> for OpenAI-compatible providers (which cache automatically).

@@ -120,14 +120,19 @@ public sealed class DaemonRunnerTests
             }))
             .ToArray();
 
-        // Exactly one run should be rejected as AlreadyRunning promptly. If neither
-        // is rejected within the window, both started (the TOCTOU bug) — the timeout
-        // is the failure signal for the unfixed code.
-        await Task.WhenAny(runs[0], runs[1], Task.Delay(TimeSpan.FromSeconds(2)));
-
-        Result<DaemonExecutionSummary>? loser = runs
-            .FirstOrDefault(r => r.IsCompleted && r.Result.IsFailure && r.Result.Error.Code == "Daemon.AlreadyRunning")
-            ?.Result;
+        // Wait for the winner to enter the job before asserting that the other
+        // invocation lost the atomic slot. The timeout is only a deadlock guard;
+        // correctness is driven by the two completion signals.
+        await job.StartedTask.WaitAsync(TimeSpan.FromSeconds(30));
+        Task<Result<DaemonExecutionSummary>> completed = await Task
+            .WhenAny(runs)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        Result<DaemonExecutionSummary> completedResult = await completed;
+        Result<DaemonExecutionSummary>? loser =
+            completedResult.IsFailure
+            && completedResult.Error.Code == "Daemon.AlreadyRunning"
+                ? completedResult
+                : null;
 
         Assert.NotNull(loser);
 

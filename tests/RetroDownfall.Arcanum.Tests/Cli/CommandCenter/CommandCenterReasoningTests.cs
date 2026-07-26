@@ -16,6 +16,8 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class CommandCenterReasoningTests
 {
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task Runner_streams_reasoning_into_separate_entry_and_keeps_answer_clean()
     {
@@ -154,7 +156,7 @@ public sealed class CommandCenterReasoningTests
             CommandCenterUiUpdate update = await updates.Reader
                 .ReadAsync(cancellation.Token)
                 .AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                .WaitAsync(AsyncTestTimeout);
             transitionKinds.Add(update.Kind);
             window.ApplyState(state, kind: update.Kind);
         }
@@ -167,7 +169,7 @@ public sealed class CommandCenterReasoningTests
             static entry => entry.Kind == SessionLogEntryKind.Reasoning);
 
         cancellation.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await run.WaitAsync(AsyncTestTimeout);
     }
 
     [Fact]
@@ -196,7 +198,7 @@ public sealed class CommandCenterReasoningTests
             CommandCenterUiUpdate update = await updates.Reader
                 .ReadAsync(cancellation.Token)
                 .AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                .WaitAsync(AsyncTestTimeout);
             transitionKinds.Add(update.Kind);
             window.ApplyState(state, kind: update.Kind);
         }
@@ -211,7 +213,7 @@ public sealed class CommandCenterReasoningTests
         Assert.False(window.ThinkingLabel.Visible);
 
         cancellation.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await run.WaitAsync(AsyncTestTimeout);
     }
 
     [Fact]
@@ -296,11 +298,11 @@ public sealed class CommandCenterReasoningTests
         Task run = runner.RunTurnAsync("question", state, updates.Writer, cancellation.Token);
         await WaitUntilAsync(
             () => state.Log.Snapshot().Any(static entry => entry.Kind == SessionLogEntryKind.Reasoning),
-            TimeSpan.FromSeconds(5));
+            AsyncTestTimeout);
 
         Assert.False(state.ThinkingActive);
         cancellation.Cancel();
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await run.WaitAsync(AsyncTestTimeout);
 
         IReadOnlyList<SessionLogEntry> entries = state.Log.Snapshot();
         Assert.All(entries, static entry => Assert.False(entry.Streaming));

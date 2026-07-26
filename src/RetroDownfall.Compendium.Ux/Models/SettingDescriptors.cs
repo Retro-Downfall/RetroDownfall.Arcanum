@@ -89,11 +89,15 @@ public static class SettingDescriptors
 
         .. CreateTokenizationDescriptors("providers.tokenization", "Provider tokenization"),
 
+        .. CreatePromptCachingDescriptors("providers.promptCaching", "Provider prompt caching"),
+
         new("providers.models.name", ConfigSection.Providers, "Model name", "Model ID advertised by this provider. Must include the DefaultModel and FastModel if those reference this provider.", SettingKind.String, Placeholder: "gpt-4o"),
 
         new("providers.models.supportsVision", ConfigSection.Providers, "Supports vision", "When true, this model accepts image content (Scrying). The Scrying capability gate rejects images to models where this is false.", SettingKind.Bool),
 
         .. CreateTokenizationDescriptors("providers.models.tokenization", "Model tokenization"),
+
+        .. CreatePromptCachingDescriptors("providers.models.promptCaching", "Model prompt caching"),
 
         new("providers.models.reasoning.controlSupport", ConfigSection.Providers, "Reasoning controls", "Explicit reasoning controls accepted by this model: none, effort, budget, or effort and budget. Callers must still choose either effort or budget per request.", SettingKind.Enum, EnumType: typeof(ReasoningControlSupport)),
 
@@ -665,6 +669,20 @@ public static class SettingDescriptors
         new($"{prefix}.stopTokenOverheadTokens", ConfigSection.Providers, "Stop-token overhead", "Optional once-per-call provider stop/end-marker reserve.", SettingKind.Int, 0, 128, 1, ClampName: nameof(ArcanumSettingClamps.TokenizationStopTokenOverheadTokens), Group: group, AllowUnset: true),
         new($"{prefix}.unknownImageReserveTokens", ConfigSection.Providers, "Unknown image reserve", "Optional conservative per-image reserve when no provider image formula is available.", SettingKind.Int, 1, 128_000, 1, ClampName: nameof(ArcanumSettingClamps.UnknownImageTokenReserve), Group: group, AllowUnset: true),
         new($"{prefix}.confidence", ConfigSection.Providers, "Estimate confidence", "Optional calibrated confidence from 0 through 1. Exact local tokenizers resolve to confidence 1.", SettingKind.Float, 0, 1, 0.05, ClampName: nameof(ArcanumSettingClamps.TokenizationConfidence), Group: group, AllowUnset: true),
+    ];
+
+    private static SettingDescriptor[] CreatePromptCachingDescriptors(string prefix, string group) =>
+    [
+        new($"{prefix}.controlMode", ConfigSection.Providers, "Prompt-cache control mode", "providerManaged sends no Arcanum directives, explicit emits only the configured verified contract, and none emits no directives while classifying calls as non-cacheable.", SettingKind.Enum, EnumType: typeof(PromptCachingControlMode), Group: group),
+        new($"{prefix}.wireDialect", ConfigSection.Providers, "Prompt-cache wire dialect", "Fixed code-owned request contract. Never inferred from provider or model names; enabling one asserts that the target endpoint accepts it.", SettingKind.Enum, EnumType: typeof(PromptCachingWireDialect), Group: group),
+        new($"{prefix}.cacheKeysSupported", ConfigSection.Providers, "Supports cache keys", "Declares that the configured provider/model accepts a provider cache routing key.", SettingKind.Bool, Group: group),
+        new($"{prefix}.emitCacheKey", ConfigSection.Providers, "Emit cache key", "Emits a privacy-safe opaque stable-prefix key when explicit mode and cache-key support are enabled.", SettingKind.Bool, Group: group),
+        new($"{prefix}.retentionSelectionSupported", ConfigSection.Providers, "Supports retention selection", "Declares that the configured provider/model accepts the selected prompt-cache retention policy.", SettingKind.Bool, Group: group),
+        new($"{prefix}.retention", ConfigSection.Providers, "Prompt-cache retention", "Provider default, in-memory, 24-hour, or reserved 30-minute policy. Validation restricts values to the selected verified dialect.", SettingKind.Enum, EnumType: typeof(PromptCacheRetentionPolicy), Group: group),
+        new($"{prefix}.stablePrefixBreakpointsSupported", ConfigSection.Providers, "Supports stable-prefix breakpoints", "Declares support for explicit cumulative-prefix content breakpoints. The pinned adapter currently rejects unverified breakpoint dialects.", SettingKind.Bool, Group: group),
+        new($"{prefix}.emitStablePrefixBreakpoint", ConfigSection.Providers, "Emit stable-prefix breakpoint", "Marks the verified contiguous stable prefix when the selected dialect supports explicit breakpoints.", SettingKind.Bool, Group: group),
+        new($"{prefix}.toolSchemasParticipate", ConfigSection.Providers, "Tool schemas participate", "Includes the finalized deterministic tool definitions in prompt-cache key planning when the provider contract caches tools.", SettingKind.Bool, Group: group),
+        new($"{prefix}.reportsCachedInputUsage", ConfigSection.Providers, "Reports cached input usage", "Declares that provider usage reports cached input tokens. Accounting still records any usage the provider actually returns.", SettingKind.Bool, Group: group),
     ];
 
     public static IReadOnlyDictionary<ConfigSection, IReadOnlyList<SettingDescriptor>> BySection { get; } =

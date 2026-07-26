@@ -1602,7 +1602,7 @@ public sealed class WizardIntelligenceProvider(
         int streamMaxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
             streamAttachmentSettings.MaxIndexBytesInPrompt);
 
-        string streamBuiltSystemPrompt = SystemPromptBuilder.Build(
+        SystemPromptDocument baseSystemPromptDocument = SystemPromptBuilder.BuildDocument(
             request,
             streamCodexContent,
             streamActiveSpell,
@@ -1616,6 +1616,8 @@ public sealed class WizardIntelligenceProvider(
             sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
             maxIndexItems: streamMaxIndexItems,
             maxIndexBytes: streamMaxIndexBytes);
+        SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
+        string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
         InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -1766,6 +1768,8 @@ public sealed class WizardIntelligenceProvider(
 
         bool streamingContextPrepared = false;
 
+        bool streamToolCompatibilityRetry = false;
+
         while (true)
         {
             bool streamOuterRestart = false;
@@ -1789,6 +1793,8 @@ public sealed class WizardIntelligenceProvider(
                 chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
 
                 InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
+
+                streamSystemPromptDocument = baseSystemPromptDocument;
             }
 
             ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
@@ -1829,6 +1835,24 @@ public sealed class WizardIntelligenceProvider(
 
                 if (compressed)
                 {
+                    streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
+                        request,
+                        streamCodexContent,
+                        streamActiveSpell,
+                        request.AttachedFiles,
+                        campaignSummary: thread?.Summary,
+                        dependencySpells: streamResonants,
+                        maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
+                            settings.Value.Spells.MaxResonantBytes),
+                        semanticContext: streamSemanticContext,
+                        sagaMemories: streamSagaMemories,
+                        lexiconEntries: streamLexiconEntries,
+                        maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                            settings.Value.Intelligence.LexiconMaxInjectedBytes),
+                        sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+                        maxIndexItems: streamMaxIndexItems,
+                        maxIndexBytes: streamMaxIndexBytes);
+
                     if (streaming)
                     {
                         yield return new IntelligenceEvent(
@@ -1916,8 +1940,15 @@ public sealed class WizardIntelligenceProvider(
                     }
 
                     ModelCallPurpose streamPurpose = streamToolRoundCount == 0
-                        ? ModelCallPurpose.MainInference
+                        ? streamToolCompatibilityRetry
+                            ? ModelCallPurpose.ToolCompatibilityRetry
+                            : ModelCallPurpose.MainInference
                         : ModelCallPurpose.ToolContinuation;
+                    PromptCachePlan streamPromptCachePlan = BuildPromptCachePlan(
+                        lease,
+                        streamSystemPromptDocument,
+                        streamChatOptions,
+                        PromptCacheSemanticNamespace.Main);
 
                     if (!streaming)
                     {
@@ -1933,7 +1964,11 @@ public sealed class WizardIntelligenceProvider(
                                     streamAccountingLocal.Budget,
                                     streamPurpose,
                                     inferenceToken,
-                                    BuildModelCallContext(lease, request, callBreakdown))
+                                    BuildModelCallContext(
+                                        lease,
+                                        request,
+                                        callBreakdown,
+                                        streamPromptCachePlan))
                                 .ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
@@ -2046,7 +2081,11 @@ public sealed class WizardIntelligenceProvider(
                                 streamAccountingLocal.Budget,
                                 streamPurpose,
                                 inferenceToken,
-                                BuildModelCallContext(lease, request, callBreakdown))
+                                BuildModelCallContext(
+                                    lease,
+                                    request,
+                                    callBreakdown,
+                                    streamPromptCachePlan))
                         .GetAsyncEnumerator(inferenceToken);
 
                 try
@@ -2214,6 +2253,8 @@ public sealed class WizardIntelligenceProvider(
                         }
 
                         streamUsesTools = false;
+
+                        streamToolCompatibilityRetry = true;
 
                         inferenceError = null;
 
@@ -2754,6 +2795,11 @@ public sealed class WizardIntelligenceProvider(
                                 throw new ModelCallAdmissionException(retryReservation.Error);
                             }
 
+                            PromptCachePlan retryPromptCachePlan = BuildPromptCachePlan(
+                                lease,
+                                streamSystemPromptDocument,
+                                retryOptions,
+                                PromptCacheSemanticNamespace.Main);
                             ModelCallOutcome retryCall = await ModelCallExecutor
                                 .ExecuteBufferedAsync(
                                     chatClient,
@@ -2762,7 +2808,11 @@ public sealed class WizardIntelligenceProvider(
                                     streamAccountingLocal.Budget,
                                     ModelCallPurpose.StructuredOutputRetry,
                                     ct,
-                                    BuildModelCallContext(lease, request, retryContextBreakdown))
+                                    BuildModelCallContext(
+                                        lease,
+                                        request,
+                                        retryContextBreakdown,
+                                        retryPromptCachePlan))
                                 .ConfigureAwait(false);
 
                             if (retryCall.IsFailure)
@@ -2985,6 +3035,9 @@ public sealed class WizardIntelligenceProvider(
                 grimoireTurn.SessionId,
                 streamAccumulatedUsage,
                 targetModel,
+                streamAccountingLocal.RunId.HasValue
+                    ? streamAccountingLocal.AccumulatedCostUsd
+                    : null,
                 inferenceToken)
             .ConfigureAwait(false);
 
@@ -3513,7 +3566,13 @@ public sealed class WizardIntelligenceProvider(
                                 routerLease?.Provider ?? mainProvider,
                                 routerLease?.ResolvedModel ?? mainModel,
                                 ReservedAnswerTokens: routerMaxTokens,
-                                ReservedReasoningTokens: 0))
+                                ReservedReasoningTokens: 0,
+                                PromptCachePlan: PromptCachePlan.NonCacheable(
+                                    (routerLease?.Provider ?? mainProvider).Name,
+                                    routerLease?.ResolvedModel ?? mainModel,
+                                    PromptCacheSemanticNamespace.SpellRouting,
+                                    PromptCacheEligibility.NonCacheable,
+                                    PromptCacheNonEligibilityReason.AuxiliaryPurpose)))
                         .ConfigureAwait(false);
 
                     matchedMetadata = routingResult?.Spell;
@@ -3658,7 +3717,13 @@ public sealed class WizardIntelligenceProvider(
                             extractorLease?.Provider ?? mainProvider,
                             extractorLease?.ResolvedModel ?? mainModel,
                             ReservedAnswerTokens: LexiconEntityExtractor.MaxOutputTokens,
-                            ReservedReasoningTokens: 0))
+                            ReservedReasoningTokens: 0,
+                            PromptCachePlan: PromptCachePlan.NonCacheable(
+                                (extractorLease?.Provider ?? mainProvider).Name,
+                                extractorLease?.ResolvedModel ?? mainModel,
+                                PromptCacheSemanticNamespace.Main,
+                                PromptCacheEligibility.NonCacheable,
+                                PromptCacheNonEligibilityReason.AuxiliaryPurpose)))
                     .ConfigureAwait(false);
 
                 entities = extracted;
@@ -3718,6 +3783,7 @@ public sealed class WizardIntelligenceProvider(
         {
             return request.Prompt;
         }
+
         IReadOnlyList<CoreChatMessage> msgs = request.StatelessMessages!;
 
         for (int i = msgs.Count - 1; i >= 0; i--)
@@ -4686,7 +4752,8 @@ public sealed class WizardIntelligenceProvider(
     private ModelCallContext BuildModelCallContext(
         ChatClientLease lease,
         PingRequest request,
-        ContextTokenBreakdown? precomputedBreakdown = null) =>
+        ContextTokenBreakdown? precomputedBreakdown = null,
+        PromptCachePlan? promptCachePlan = null) =>
         new(
             lease.Provider,
             lease.ResolvedModel,
@@ -4696,7 +4763,67 @@ public sealed class WizardIntelligenceProvider(
                 ?? ArcanumSettingClamps.ReservedOutputTokens(
                     settings.Value.Intelligence.ReservedOutputTokens)),
             ReservedReasoningTokens: Math.Max(0, request.Reasoning?.BudgetTokens ?? 0),
-            PrecomputedBreakdown: precomputedBreakdown);
+            PrecomputedBreakdown: precomputedBreakdown,
+            PromptCachePlan: promptCachePlan);
+
+    private PromptCachePlan BuildPromptCachePlan(
+        ChatClientLease lease,
+        SystemPromptDocument document,
+        ChatOptions options,
+        PromptCacheSemanticNamespace semanticNamespace)
+    {
+        PromptCachingProfile? profile = ProviderResolver.ResolvePromptCachingProfile(
+            lease.Provider,
+            lease.ResolvedModel);
+
+        if (profile?.ControlMode != PromptCachingControlMode.Explicit)
+        {
+            return PromptCachePlanner.Create(
+                lease.Provider,
+                lease.ResolvedModel,
+                profile,
+                document,
+                options,
+                semanticNamespace,
+                eligiblePrefixTokenEstimate: 0);
+        }
+
+        StringBuilder prefix = new();
+        int eligibleLength = 0;
+
+        foreach (PromptSegment segment in document.OrderedSegments)
+        {
+            if (segment.Stability == PromptSegmentStability.Volatile)
+            {
+                break;
+            }
+
+            _ = prefix.Append(segment.Text);
+
+            if (segment.CacheBoundaryEligible)
+            {
+                eligibleLength = prefix.Length;
+            }
+        }
+
+        int eligiblePrefixTokens = eligibleLength == 0
+            ? 0
+            : ModelTokenEstimator
+                .EstimateText(
+                    lease.Provider,
+                    lease.ResolvedModel,
+                    prefix.ToString(0, eligibleLength))
+                .TokenCount;
+
+        return PromptCachePlanner.Create(
+            lease.Provider,
+            lease.ResolvedModel,
+            profile,
+            document,
+            options,
+            semanticNamespace,
+            eligiblePrefixTokens);
+    }
 
     private static void ApplyClientToolMode(ChatOptions options, PingRequest request)
     {
@@ -4828,6 +4955,15 @@ public sealed class WizardIntelligenceProvider(
     private static ChatCompletionUsage? MapUsageDetails(UsageDetails? usage)
     {
         if (usage is null)
+        {
+            return null;
+        }
+
+        if (usage.InputTokenCount is null
+            && usage.OutputTokenCount is null
+            && usage.TotalTokenCount is null
+            && usage.CachedInputTokenCount is null
+            && usage.ReasoningTokenCount is null)
         {
             return null;
         }
@@ -4967,26 +5103,6 @@ public sealed class WizardIntelligenceProvider(
                 new KeyValuePair<string, object?>("model", model));
         }
 
-        // Prompt-cache metrics: only record when the provider has not explicitly disabled caching
-        // (SupportsPromptCaching defaults to true for OpenAI-compatible providers). Labels are
-        // strictly low-cardinality provider + model to keep Prometheus cardinality bounded.
-        bool cachingSupported = provider.SupportsPromptCaching ?? provider.Type == AiProviderKind.OpenAICompatible;
-
-        if (cachingSupported && usage.CachedTokens > 0)
-        {
-
-            ArcanumMetrics.PromptCacheTokensTotal.Add(
-                usage.CachedTokens,
-                new KeyValuePair<string, object?>("provider", providerName),
-                new KeyValuePair<string, object?>("model", model));
-
-            ArcanumMetrics.PromptCacheHitsTotal.Add(
-                1,
-                new KeyValuePair<string, object?>("provider", providerName),
-                new KeyValuePair<string, object?>("model", model));
-
-        }
-
     }
 
     /// <summary>
@@ -5075,7 +5191,7 @@ public sealed class WizardIntelligenceProvider(
         ModelCallPurpose callPurpose,
         CancellationToken cancellationToken)
     {
-        if (usage is null || !HasReportedUsage(usage))
+        if (usage is null)
         {
             return;
         }
@@ -5124,7 +5240,7 @@ public sealed class WizardIntelligenceProvider(
 
         ChatCompletionUsage? mapped = MapUsageDetails(usage);
 
-        if (mapped is null || !HasReportedUsage(mapped) || string.IsNullOrWhiteSpace(model))
+        if (mapped is null || string.IsNullOrWhiteSpace(model))
         {
             return;
         }
@@ -5150,21 +5266,32 @@ public sealed class WizardIntelligenceProvider(
         Guid? sessionId,
         ChatCompletionUsage? usage,
         string? model,
+        decimal? ledgeredCostUsd,
         CancellationToken cancellationToken)
     {
-        if (usage is null || !HasReportedUsage(usage))
+        if (usage is null && ledgeredCostUsd is null)
         {
             return;
         }
 
-        ModelPricingEntry pricing = settings.Value.Pricing.ResolveForModel(model);
+        decimal costUsd;
 
-        decimal costUsd = CostCalculator.CalculateCost(
-            usage.PromptTokens,
-            usage.CompletionTokens,
-            usage.CachedTokens,
-            usage.ReasoningTokens,
-            pricing);
+        if (ledgeredCostUsd is { } ledgered)
+        {
+            costUsd = ledgered;
+        }
+        else
+        {
+            ModelPricingEntry pricing = settings.Value.Pricing.ResolveForModel(model);
+            ChatCompletionUsage reportedUsage = usage!;
+
+            costUsd = CostCalculator.CalculateCost(
+                reportedUsage.PromptTokens,
+                reportedUsage.CompletionTokens,
+                reportedUsage.CachedTokens,
+                reportedUsage.ReasoningTokens,
+                pricing);
+        }
 
         if (!settings.Value.Intelligence.EnableTokenTracking || !sessionId.HasValue)
         {
@@ -5174,7 +5301,11 @@ public sealed class WizardIntelligenceProvider(
         try
         {
             await grimoire
-                .IncrementSessionTokensAndCostAsync(sessionId.Value, usage.TotalTokens, costUsd, cancellationToken)
+                .IncrementSessionTokensAndCostAsync(
+                    sessionId.Value,
+                    usage?.TotalTokens ?? 0,
+                    costUsd,
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -5186,13 +5317,6 @@ public sealed class WizardIntelligenceProvider(
             logger.LogWarning(ex, "Grimoire could not increment token totals for session {SessionId}.", sessionId);
         }
     }
-
-    private static bool HasReportedUsage(ChatCompletionUsage usage) =>
-        usage.PromptTokens > 0
-        || usage.CompletionTokens > 0
-        || usage.TotalTokens > 0
-        || usage.CachedTokens > 0
-        || usage.ReasoningTokens > 0;
 
     /// <summary>
     /// RAG Phase 4 — enqueues Saga memory extraction for <paramref name="sessionId"/> after a
@@ -5272,7 +5396,6 @@ public sealed class WizardIntelligenceProvider(
         return finishReason.Value.Value;
 
     }
-
 
     /// <summary>
     /// Scrying — early capability/shape gate, run before any inference token is consumed (right

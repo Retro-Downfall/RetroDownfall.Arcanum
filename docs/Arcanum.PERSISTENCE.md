@@ -162,7 +162,9 @@ The `BudgetAlerts` table follows the same raw-SQL-via-`ArcanumDbContext`-connect
 
 ## 11. Prompt caching
 
-Prompt caching is provider-managed for OpenAI-compatible endpoints. Arcanum reads `UsageDetails.CachedInputTokenCount` and records low-cardinality Prometheus metrics; `ProviderSettings.SupportsPromptCaching` gates recording. The former `Arcanum:Cache` options block is rejected as obsolete. See [Arcanum.DESIGN.md §22.3](Arcanum.DESIGN.md#223-prompt-caching-provider-managed). Structured-output constrained decoding uses `OpenAiRequestAugmentingHandler` (`strict: true`) — see [§22.1](Arcanum.DESIGN.md#221-structured-output-enforcement-arcanumstructuredoutput).
+Prompt caching is provider-managed for OpenAI-compatible endpoints and never becomes an Arcanum response cache. Nullable provider/model profiles may emit only the verified root `prompt_cache_key` / `prompt_cache_retention` contract; absent, `providerManaged`, `none`, and unsupported profiles leave the provider body unchanged. The former `Arcanum:Cache` options block remains rejected with its existing migration message.
+
+Every completed provider call persists reported `CachedTokens` and `PricingSnapshotJson` (including `CachedPer1M`) before in-memory aggregation. Cached tokens are clamped to the prompt subset for cost, priced at `CachedPer1M`, and never added to total tokens. The session projection uses the accounting root's accumulated per-call cost when a durable run exists; budget reservations remain conservative and assume zero cache hits. These columns already exist in `20260721010000_AddInferenceAccountingAndIdempotencyClaims.sql`, so this feature adds no schema change or reinstall requirement. Per-call low-cardinality eligibility/hit/token/savings metrics are detailed in [Arcanum.DESIGN.md §22.3](Arcanum.DESIGN.md#223-prompt-caching-provider-managed-with-capability-driven-controls).
 
 ## 12. EF migration snapshot drift
 

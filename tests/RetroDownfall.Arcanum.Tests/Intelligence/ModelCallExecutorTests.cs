@@ -1,8 +1,13 @@
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -31,6 +36,231 @@ public sealed class ModelCallExecutorTests
         Assert.Equal("pong", result.Value.Response.Text);
 
         Assert.Equal(1, budget.RemainingModelCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecuteAsync_AppliesCacheMetadataOnlyToProviderBoundClones(bool streaming)
+    {
+        ProviderSettings provider = CacheProvider();
+        PromptCachePlan plan = EligiblePlan(provider.Name, "cache-model");
+        ChatMessage originalMessage = new(ChatRole.System, "stable");
+        List<ChatMessage> messages = [originalMessage, new(ChatRole.User, "solve")];
+        ChatOptions options = new();
+        ReasoningChatOptionsAdapter.Apply(
+            options,
+            new ReasoningRequestOptions(BudgetTokens: 256),
+            ReasoningWireDialect.OpenRouter);
+        ScriptingChatClient chat = new("answer");
+        ModelCallExecutor executor = CreateAccountedExecutor(provider);
+        ModelCallContext context = new(
+            provider,
+            "cache-model",
+            ReservedAnswerTokens: 0,
+            ReservedReasoningTokens: 0,
+            PromptCachePlan: plan);
+
+        if (streaming)
+        {
+            await foreach (ModelCallUpdate _ in executor.ExecuteStreamingAsync(
+                chat,
+                messages,
+                options,
+                new TurnBudget(1),
+                ModelCallPurpose.MainInference,
+                CancellationToken.None,
+                context))
+            {
+            }
+        }
+        else
+        {
+            ModelCallOutcome outcome = await executor.ExecuteBufferedAsync(
+                chat,
+                messages,
+                options,
+                new TurnBudget(1),
+                ModelCallPurpose.MainInference,
+                CancellationToken.None,
+                context);
+
+            Assert.True(outcome.IsSuccess);
+        }
+
+        Assert.NotNull(chat.LastOptions?.RawRepresentationFactory);
+        Assert.NotSame(options, chat.LastOptions);
+        Assert.NotNull(chat.LastMessages);
+        Assert.Equal(messages.Count, chat.LastMessages!.Count);
+        Assert.NotSame(originalMessage, chat.LastMessages[0]);
+        Assert.Same(originalMessage, messages[0]);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_RejectsCachePlanForDifferentProviderBeforeIo()
+    {
+        ProviderSettings provider = CacheProvider();
+        PromptCachePlan plan = EligiblePlan("other-provider", "cache-model");
+        ScriptingChatClient chat = new("answer");
+
+        ModelCallOutcome outcome = await CreateAccountedExecutor(provider).ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.System, "stable")],
+            new ChatOptions(),
+            new TurnBudget(1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None,
+            new ModelCallContext(
+                provider,
+                "cache-model",
+                0,
+                0,
+                PromptCachePlan: plan));
+
+        Assert.True(outcome.IsFailure);
+        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, outcome.Error.Code);
+        Assert.Equal(0, chat.CallCount);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_RecordsPerCallCacheHitTokensAndSavingsOnce()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        ProviderSettings provider = CacheProvider() with { Name = marker };
+        provider.Models[0].PromptCaching!.ReportsCachedInputUsage = true;
+        PromptCachePlan plan = EligiblePlan(marker, "cache-model") with
+        {
+            EligiblePrefixTokenEstimate = 25,
+        };
+        ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 100,
+                OutputTokenCount = 10,
+                TotalTokenCount = 110,
+                CachedInputTokenCount = 40,
+            },
+        };
+        ScriptingChatClient chat = new(string.Empty) { BufferedResponse = response };
+        PricingSettings pricing = new()
+        {
+            ModelPricing =
+            {
+                ["cache-model"] = new ModelPricingEntry
+                {
+                    InputPer1M = 10m,
+                    CachedPer1M = 2m,
+                },
+            },
+        };
+        ConcurrentDictionary<string, ConcurrentQueue<double>> captured =
+            new(StringComparer.Ordinal);
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) =>
+                activeListener.EnableMeasurementEvents(instrument),
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (TagsContainMarker(tags, marker))
+            {
+                captured
+                    .GetOrAdd(instrument.Name, static _ => new ConcurrentQueue<double>())
+                    .Enqueue(measurement);
+            }
+        });
+        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
+        {
+            if (TagsContainMarker(tags, marker))
+            {
+                captured
+                    .GetOrAdd(instrument.Name, static _ => new ConcurrentQueue<double>())
+                    .Enqueue(measurement);
+            }
+        });
+        listener.Start();
+
+        ModelCallOutcome outcome = await CreateAccountedExecutor(provider, pricing)
+            .ExecuteBufferedAsync(
+                chat,
+                [new ChatMessage(ChatRole.System, "stable")],
+                new ChatOptions(),
+                new TurnBudget(1),
+                ModelCallPurpose.MainInference,
+                CancellationToken.None,
+                new ModelCallContext(
+                    provider,
+                    "cache-model",
+                    0,
+                    0,
+                    PromptCachePlan: plan));
+
+        Assert.True(outcome.IsSuccess);
+        Assert.Equal(1, Assert.Single(captured["arcanum_prompt_cache_calls_total"]));
+        Assert.Equal(40, Assert.Single(captured["arcanum_prompt_cache_tokens_total"]));
+        Assert.Equal(1, Assert.Single(captured["arcanum_prompt_cache_hits_total"]));
+        Assert.Equal(
+            0.0002,
+            Assert.Single(captured["arcanum_prompt_cache_potential_savings_usd_total"]),
+            8);
+        Assert.Equal(
+            0.00032,
+            Assert.Single(captured["arcanum_prompt_cache_actual_savings_usd_total"]),
+            8);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_ProfileReportingGateOverridesLegacyMetricFlag()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        ProviderSettings provider = CacheProvider() with
+        {
+            Name = marker,
+            SupportsPromptCaching = true,
+        };
+        provider.Models[0].PromptCaching!.ReportsCachedInputUsage = false;
+        ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 100,
+                OutputTokenCount = 10,
+                CachedInputTokenCount = 40,
+            },
+        };
+        ConcurrentQueue<long> captured = new();
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) =>
+                activeListener.EnableMeasurementEvents(instrument),
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (instrument.Name == "arcanum_prompt_cache_tokens_total"
+                && TagsContainMarker(tags, marker))
+            {
+                captured.Enqueue(measurement);
+            }
+        });
+        listener.Start();
+
+        ModelCallOutcome outcome = await CreateAccountedExecutor(provider).ExecuteBufferedAsync(
+            new ScriptingChatClient(string.Empty) { BufferedResponse = response },
+            [new ChatMessage(ChatRole.System, "stable")],
+            new ChatOptions(),
+            new TurnBudget(1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None,
+            new ModelCallContext(
+                provider,
+                "cache-model",
+                0,
+                0,
+                PromptCachePlan: EligiblePlan(marker, "cache-model")));
+
+        Assert.True(outcome.IsSuccess);
+        Assert.Empty(captured);
     }
 
     [Fact]
@@ -541,12 +771,18 @@ public sealed class ModelCallExecutorTests
 
         public IReadOnlyList<ChatResponseUpdate>? StreamingUpdates { get; init; }
 
+        public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
+
+        public ChatOptions? LastOptions { get; private set; }
+
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> chatMessages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
+            LastMessages = chatMessages.ToList();
+            LastOptions = options;
 
             if (BufferedException is not null)
             {
@@ -563,6 +799,8 @@ public sealed class ModelCallExecutorTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             CallCount++;
+            LastMessages = chatMessages.ToList();
+            LastOptions = options;
 
             if (StreamingUpdates is not null)
             {
@@ -590,6 +828,77 @@ public sealed class ModelCallExecutorTests
         {
         }
 
+    }
+
+    private static ProviderSettings CacheProvider()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+
+        return new ProviderSettings
+        {
+            Name = "provider",
+            Type = AiProviderKind.OpenAICompatible,
+            Models = [new ModelEntry("cache-model") { PromptCaching = profile }],
+        };
+    }
+
+    private static PromptCachePlan EligiblePlan(string provider, string model) =>
+        new(
+            "arcanum-pc-v1-test",
+            provider,
+            model,
+            PromptCacheSemanticNamespace.Main,
+            PromptCacheRetentionPolicy.ProviderDefault,
+            [new PromptCacheBoundary(0, 0)],
+            "stable",
+            string.Empty,
+            1,
+            PromptCacheEligibility.Eligible,
+            PromptCacheNonEligibilityReason.None);
+
+    private static ModelCallExecutor CreateAccountedExecutor(
+        ProviderSettings provider,
+        PricingSettings? pricing = null)
+    {
+        ArcanumSettings settings = new()
+        {
+            Providers = [provider],
+            Pricing = pricing ?? new PricingSettings(),
+            Intelligence = new IntelligenceSettings
+            {
+                TokenizerEncoding = "o200k_base",
+            },
+        };
+        InferenceTokenizerResolver tokenizer = new(
+            NullLogger<InferenceTokenizerResolver>.Instance);
+        ModelTokenEstimator estimator = new(
+            tokenizer,
+            new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        TestOptionsMonitor<ArcanumSettings> monitor = new(settings);
+
+        return new ModelCallExecutor(estimator, monitor);
+    }
+
+    private static bool TagsContainMarker(
+        ReadOnlySpan<KeyValuePair<string, object?>> tags,
+        string marker)
+    {
+        foreach (KeyValuePair<string, object?> tag in tags)
+        {
+            if (tag.Value is string value && string.Equals(value, marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 }

@@ -8,6 +8,7 @@ namespace RetroDownfall.Arcanum.Tests.Performance;
 /// Manual baseline harness; excluded from default CI via category filter.
 /// </summary>
 [Trait("Category", "Perf")]
+[Collection("ApiHost")]
 public sealed class ArcanumPerfBaselineTests
 {
 

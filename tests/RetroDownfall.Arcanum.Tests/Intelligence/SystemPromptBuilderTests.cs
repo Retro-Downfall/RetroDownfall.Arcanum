@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -28,6 +30,17 @@ public sealed class SystemPromptBuilderTests
 
         Assert.Contains("[None]", prompt, StringComparison.Ordinal);
 
+    }
+
+    [Fact]
+    public void Build_MinimalRequest_PreservesGoldenDciBytes()
+    {
+        string prompt = SystemPromptBuilder.Build(new PingRequest("hello"), codexContent: null);
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt)));
+
+        Assert.Equal(
+            "ED21AA2B32342F90AC81FBC28529442211FDD09BB688D0916E9130C5FBD030AF",
+            digest);
     }
 
     [Fact]
@@ -486,6 +499,62 @@ public sealed class SystemPromptBuilderTests
 
         Assert.DoesNotContain("Saga", prompt, StringComparison.Ordinal);
 
+    }
+
+    [Fact]
+    public void BuildDocument_RenderMatchesExistingDciTextAndClassifiesOrderedSegments()
+    {
+        ParsedSpell spell = new(
+            "Cache Spell",
+            "cache",
+            "/spells/cache/SPELL.md",
+            "spell instructions",
+            "/spells/cache",
+            ["run.sh"]);
+        PingRequest request = new("hello")
+        {
+            AttachedFiles = [new AttachedFileDto("notes.txt", "volatile attachment")],
+            AdditionalSystemPrompt = "per-turn instruction",
+            CliTerminalFormatting = true,
+        };
+
+        string existing = SystemPromptBuilder.Build(
+            request,
+            codexContent: "stable codex",
+            activeSpell: spell,
+            attachedFiles: request.AttachedFiles);
+        SystemPromptDocument document = SystemPromptBuilder.BuildDocument(
+            request,
+            codexContent: "stable codex",
+            activeSpell: spell,
+            attachedFiles: request.AttachedFiles);
+
+        Assert.Equal(existing, document.Render());
+        Assert.NotEmpty(document.OrderedSegments);
+        Assert.Equal(PromptSegmentKind.Preamble, document.OrderedSegments[0].Kind);
+        Assert.Equal(PromptSegmentStability.Stable, document.OrderedSegments[0].Stability);
+        Assert.Contains(
+            document.OrderedSegments,
+            static segment =>
+                segment.Kind == PromptSegmentKind.Data
+                && segment.Stability == PromptSegmentStability.Volatile
+                && segment.Text.Contains("volatile attachment", StringComparison.Ordinal));
+        Assert.Contains(
+            document.OrderedSegments,
+            static segment =>
+                segment.Kind == PromptSegmentKind.Codex
+                && segment.Stability == PromptSegmentStability.Stable
+                && segment.CacheBoundaryEligible);
+        Assert.Contains(
+            document.OrderedSegments,
+            static segment =>
+                segment.Kind == PromptSegmentKind.PrimarySpell
+                && segment.Stability == PromptSegmentStability.Stable);
+        Assert.Contains(
+            document.OrderedSegments,
+            static segment =>
+                segment.Kind == PromptSegmentKind.AdditionalInstructions
+                && segment.Stability == PromptSegmentStability.Volatile);
     }
 
 }

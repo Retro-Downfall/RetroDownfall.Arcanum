@@ -171,6 +171,50 @@ public sealed class ArcanumMetricsTests
     }
 
     [Fact]
+    public void PromptCacheCallsAndSavings_RecordNewLowCardinalityInstrumentFamilies()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        ConcurrentDictionary<string, double> captured = new(StringComparer.Ordinal);
+        using MeterListener listener = new()
+        {
+            InstrumentPublished = static (instrument, activeListener) =>
+                activeListener.EnableMeasurementEvents(instrument),
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (TagsContainMarker(tags, marker))
+            {
+                captured[instrument.Name] = measurement;
+            }
+        });
+        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
+        {
+            if (TagsContainMarker(tags, marker))
+            {
+                captured[instrument.Name] = measurement;
+            }
+        });
+        listener.Start();
+        KeyValuePair<string, object?> provider = new("provider", marker);
+        KeyValuePair<string, object?> model = new("model", "cache-model");
+
+        ArcanumMetrics.PromptCacheCallsTotal.Add(
+            1,
+            provider,
+            model,
+            new KeyValuePair<string, object?>("purpose", "MainInference"),
+            new KeyValuePair<string, object?>("control_mode", "Explicit"),
+            new KeyValuePair<string, object?>("eligibility", "Eligible"),
+            new KeyValuePair<string, object?>("reason", "None"));
+        ArcanumMetrics.PromptCachePotentialSavingsUsdTotal.Add(0.25, provider, model);
+        ArcanumMetrics.PromptCacheActualSavingsUsdTotal.Add(0.10, provider, model);
+
+        Assert.Equal(1, captured["arcanum_prompt_cache_calls_total"]);
+        Assert.Equal(0.25, captured["arcanum_prompt_cache_potential_savings_usd_total"]);
+        Assert.Equal(0.10, captured["arcanum_prompt_cache_actual_savings_usd_total"]);
+    }
+
+    [Fact]
     public void ReasoningTokensTotal_increments_with_low_cardinality_labels()
     {
         string marker = Guid.NewGuid().ToString("N");

@@ -27,6 +27,10 @@ public sealed class ArcanumSettingsBindingTests
                     "type": "OpenAICompatible",
                     "endpoint": "https://api.fireworks.ai/inference/v1",
                     "apiKey": "test-key",
+                    "promptCaching": {
+                      "controlMode": "providerManaged",
+                      "reportsCachedInputUsage": true
+                    },
                     "models": [
                       {
                         "name": "accounts/fireworks/models/qwen3p7-plus",
@@ -40,6 +44,10 @@ public sealed class ArcanumSettingsBindingTests
                           "allowsClientOutput": true,
                           "wireDialect": "OpenRouter",
                           "maxBudgetTokens": 32768
+                        },
+                        "promptCaching": {
+                          "controlMode": "none",
+                          "reportsCachedInputUsage": false
                         }
                       }
                     ],
@@ -95,6 +103,16 @@ public sealed class ArcanumSettingsBindingTests
         Assert.True(reasoning.AllowsClientOutput);
         Assert.Equal(ReasoningWireDialect.OpenRouter, reasoning.WireDialect);
         Assert.Equal(32_768, reasoning.MaxBudgetTokens);
+
+        PromptCachingProfile providerCaching = Assert.IsType<PromptCachingProfile>(
+            settings.Providers[0].PromptCaching);
+        Assert.Equal(PromptCachingControlMode.ProviderManaged, providerCaching.ControlMode);
+        Assert.True(providerCaching.ReportsCachedInputUsage);
+
+        PromptCachingProfile modelCaching = Assert.IsType<PromptCachingProfile>(
+            settings.Providers[0].Models[0].PromptCaching);
+        Assert.Equal(PromptCachingControlMode.None, modelCaching.ControlMode);
+        Assert.False(modelCaching.ReportsCachedInputUsage);
 
     }
 

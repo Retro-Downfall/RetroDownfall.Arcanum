@@ -209,7 +209,8 @@ public sealed record ModelCallContext(
     string Model,
     int ReservedAnswerTokens,
     int ReservedReasoningTokens,
-    ContextTokenBreakdown? PrecomputedBreakdown = null);
+    ContextTokenBreakdown? PrecomputedBreakdown = null,
+    PromptCachePlan? PromptCachePlan = null);
 
 /// <summary>Resolves profiles and estimates provider-facing context without performing model I/O.</summary>
 public interface IModelTokenEstimator

@@ -1,7 +1,12 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Reflection;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Tests.Performance;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -23,6 +28,17 @@ public sealed class ArcanumWebApplicationFactoryTests
 
     }
 
+    [Fact]
+    public void Every_factory_test_that_mutates_process_environment_is_serialized()
+    {
+        CustomAttributeData collection = Assert.Single(
+            typeof(ArcanumPerfBaselineTests).GetCustomAttributesData(),
+            static attribute =>
+                attribute.AttributeType == typeof(CollectionAttribute));
+
+        Assert.Equal("ApiHost", collection.ConstructorArguments[0].Value);
+    }
+
     [SkippableFact]
     public async Task Started_test_host_does_not_create_pid_file()
     {
@@ -37,6 +53,48 @@ public sealed class ArcanumWebApplicationFactoryTests
 
         Assert.False(File.Exists(pidPath));
 
+    }
+
+    [SkippableFact]
+    public async Task Started_host_keeps_factory_database_when_process_test_home_changes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+        using HttpClient client = factory.CreateAuthenticatedClient();
+        string? originalHome =
+            global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+        string otherHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            $"other-api-host-{Guid.NewGuid():N}");
+
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(otherHome, ".config", "arcanum"));
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", otherHome);
+
+            using IServiceScope scope = factory.Services.CreateScope();
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+            string dataSource = new SqliteConnectionStringBuilder(
+                db.Database.GetDbConnection().ConnectionString).DataSource;
+
+            Assert.Equal(
+                Path.Combine(factory.TempHome, ".config", "arcanum", "arcanum.db"),
+                dataSource);
+            Assert.True(await db.Database.CanConnectAsync());
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(
+                "ARCANUM_TEST_HOME",
+                originalHome);
+
+            if (Directory.Exists(otherHome))
+            {
+                Directory.Delete(otherHome, recursive: true);
+            }
+        }
     }
 
     [SkippableFact]

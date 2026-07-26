@@ -88,9 +88,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         [ObservableProperty] private int _contextWindowLimit;
 
         /// <summary>
-        /// Editable per-model name and Scrying rows. Each row also retains its optional reasoning
-        /// capability object as opaque metadata so ordinary provider edits round-trip it unchanged;
-        /// the polished provider page is not a full reasoning-capability editor.
+        /// Editable per-model name and Scrying rows. Each row also retains optional nested capability
+        /// objects as opaque metadata so ordinary provider edits round-trip them unchanged.
         /// </summary>
         public ObservableCollection<ModelEntryViewModel> Models { get; } = [];
 
@@ -173,7 +172,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     /// <summary>
     /// A single <c>Arcanum:Providers[].models</c> entry. Name and Scrying support are edited by the
-    /// polished provider UI; optional reasoning metadata is preserved unchanged for configuration
+    /// polished provider UI; optional capability metadata is preserved unchanged for configuration
     /// or generic-descriptor editing. See <see cref="ModelEntry"/>.
     /// </summary>
     public sealed partial class ModelEntryViewModel : ObservableObject
@@ -186,6 +185,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         [ObservableProperty] private ReasoningCapabilities? _reasoning;
 
         [ObservableProperty] private ModelTokenizationProfile? _tokenization;
+
+        [ObservableProperty] private PromptCachingProfile? _promptCaching;
 
         public ModelEntryViewModel()
         {
@@ -202,9 +203,11 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             Tokenization = entry.Tokenization;
 
+            PromptCaching = entry.PromptCaching;
+
         }
 
-        public ModelEntry Build() => new(Name, SupportsVision, Reasoning, Tokenization);
+        public ModelEntry Build() => new(Name, SupportsVision, Reasoning, Tokenization, PromptCaching);
 
     }
 

@@ -71,6 +71,19 @@ internal static partial class OpenAiV1Endpoints
     {
         // Non-billable (ADR 0002 / NonBillableSurfaces.GetModels): config-only, no provider call.
         List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(settings.Value);
+        Dictionary<string, PromptCachingProfile?> sharedPromptCaching = models
+            .GroupBy(static model => model.Model, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group =>
+                {
+                    PromptCachingProfile? first = group.First().PromptCaching;
+
+                    return group.All(model => Equals(model.PromptCaching, first))
+                        ? first
+                        : null;
+                },
+                StringComparer.OrdinalIgnoreCase);
 
         List<OpenAiModel> data = [];
 
@@ -96,7 +109,8 @@ internal static partial class OpenAiV1Endpoints
                 ModelInfoBuilder.ToSnakeCaseProviderType(model.ProviderType),
                 AllModelsSupportTools,
                 AllModelsSupportStreaming,
-                model.Reasoning));
+                model.Reasoning,
+                sharedPromptCaching.GetValueOrDefault(model.Model)));
         }
 
         OpenAiModelListResponse response = new(data);

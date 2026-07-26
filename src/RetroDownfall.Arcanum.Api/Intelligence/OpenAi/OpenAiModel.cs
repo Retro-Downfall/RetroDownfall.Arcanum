@@ -24,4 +24,6 @@ public sealed record OpenAiModel(
     [property: JsonPropertyName("supports_tools")] bool SupportsTools = true,
     [property: JsonPropertyName("supports_streaming")] bool SupportsStreaming = true,
     [property: JsonPropertyName("reasoning"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ReasoningCapabilities? Reasoning = null);
+    ReasoningCapabilities? Reasoning = null,
+    [property: JsonPropertyName("prompt_caching"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    PromptCachingProfile? PromptCaching = null);

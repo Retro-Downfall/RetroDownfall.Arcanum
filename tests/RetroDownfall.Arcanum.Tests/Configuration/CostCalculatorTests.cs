@@ -76,6 +76,28 @@ public sealed class CostCalculatorTests
         Assert.Equal(6.40m, cost);
     }
 
+    [Theory]
+    [InlineData(400_000, 10, 1, 3.6)]
+    [InlineData(400_000, 10, 10, 0)]
+    [InlineData(400_000, 10, 12, 0)]
+    [InlineData(-1, 10, 1, 0)]
+    public void CalculatePromptCacheSavings_UsesNonNegativeRateDelta(
+        long tokens,
+        double inputPer1M,
+        double cachedPer1M,
+        double expected)
+    {
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = (decimal)inputPer1M,
+            CachedPer1M = (decimal)cachedPer1M,
+        };
+
+        decimal savings = CostCalculator.CalculatePromptCacheSavings(tokens, pricing);
+
+        Assert.Equal((decimal)expected, savings);
+    }
+
     [Fact]
     public void ModelPricingEntry_ExposesNullableReasoningRate()
     {

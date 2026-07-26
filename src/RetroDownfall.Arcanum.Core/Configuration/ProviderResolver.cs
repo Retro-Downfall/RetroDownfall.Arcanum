@@ -83,6 +83,23 @@ public static class ProviderResolver
     }
 
     /// <summary>
+    /// Resolves the full prompt-cache profile for a provider/model pair. A declared model profile
+    /// replaces the provider profile; profiles are never partially merged.
+    /// </summary>
+    public static PromptCachingProfile? ResolvePromptCachingProfile(
+        ProviderSettings provider,
+        string? modelName)
+    {
+        if (TryResolveModelEntry(provider, modelName, out ModelEntry? entry)
+            && entry?.PromptCaching is { } modelProfile)
+        {
+            return modelProfile;
+        }
+
+        return provider.PromptCaching;
+    }
+
+    /// <summary>
     /// Finds the exact configured model entry on a resolved provider. This is the capability lookup
     /// seam used after candidate resolution; it performs no provider-name or model-name inference.
     /// </summary>

@@ -10,4 +10,6 @@ public sealed record ModelInfoDto(
     int ContextWindowLimit,
     bool SupportsVision = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ReasoningCapabilities? Reasoning = null);
+    ReasoningCapabilities? Reasoning = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    PromptCachingProfile? PromptCaching = null);
