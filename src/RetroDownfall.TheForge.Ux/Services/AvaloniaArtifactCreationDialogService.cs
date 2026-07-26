@@ -38,13 +38,13 @@ public sealed class AvaloniaArtifactCreationDialogService : IArtifactCreationDia
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            TextBox nameBox = new() { Watermark = "Spell name (required)" };
+            TextBox nameBox = new() { PlaceholderText = "Spell name (required)" };
 
-            TextBox descBox = new() { Watermark = "Description (optional)" };
+            TextBox descBox = new() { PlaceholderText = "Description (optional)" };
 
             TextBox bodyBox = new()
             {
-                Watermark = "Body / SPELL.md (optional)",
+                PlaceholderText = "Body / SPELL.md (optional)",
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.Wrap,
                 MinHeight = 80,
@@ -176,15 +176,15 @@ public sealed class AvaloniaArtifactCreationDialogService : IArtifactCreationDia
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            TextBox nameBox = new() { Watermark = "Prompt name (required)" };
+            TextBox nameBox = new() { PlaceholderText = "Prompt name (required)" };
 
-            TextBox versionBox = new() { Watermark = "Version (required)" };
+            TextBox versionBox = new() { PlaceholderText = "Version (required)" };
 
-            TextBox descBox = new() { Watermark = "Description (optional)" };
+            TextBox descBox = new() { PlaceholderText = "Description (optional)" };
 
             TextBox templateBox = new()
             {
-                Watermark = "Template (defaults to a stub if blank)",
+                PlaceholderText = "Template (defaults to a stub if blank)",
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.Wrap,
                 MinHeight = 80,
@@ -285,7 +285,7 @@ public sealed class AvaloniaArtifactCreationDialogService : IArtifactCreationDia
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            TextBox titleBox = new() { Watermark = "Title (optional)" };
+            TextBox titleBox = new() { PlaceholderText = "Title (optional)" };
 
             Button ok = new() { Content = "Create", IsDefault = true };
 

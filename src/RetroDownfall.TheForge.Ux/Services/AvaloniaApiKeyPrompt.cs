@@ -32,7 +32,7 @@ public sealed class AvaloniaApiKeyPrompt : IApiKeyPrompt
 
             TextBox input = new()
             {
-                Watermark = "Paste X-Arcanum-Key / master API key",
+                PlaceholderText = "Paste X-Arcanum-Key / master API key",
                 PasswordChar = '•',
                 MinWidth = 360,
             };

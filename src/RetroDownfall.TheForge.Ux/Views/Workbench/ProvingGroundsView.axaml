@@ -36,7 +36,7 @@
                        TextWrapping="Wrap"
                        FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
             <StackPanel Orientation="Horizontal" Spacing="6">
-              <TextBox Text="{Binding NewSuiteName}" MinWidth="140" Watermark="Suite name" />
+              <TextBox Text="{Binding NewSuiteName}" MinWidth="140" PlaceholderText="Suite name" />
               <Button Content="Create suite" Command="{Binding CreateSuiteCommand}" />
             </StackPanel>
             <ListBox ItemsSource="{Binding Suites}"
@@ -103,7 +103,7 @@
             <ComboBox ItemsSource="{Binding SpellNames}"
                       SelectedItem="{Binding SelectedSpellName}"
                       MinWidth="240" />
-            <TextBox Watermark="Spell name"
+            <TextBox PlaceholderText="Spell name"
                      Text="{Binding Target}" />
           </StackPanel>
 
@@ -118,13 +118,13 @@
                 </DataTemplate>
               </ComboBox.ItemTemplate>
             </ComboBox>
-            <TextBox Watermark="Prompt GUID"
+            <TextBox PlaceholderText="Prompt GUID"
                      Text="{Binding Target}" />
           </StackPanel>
 
           <StackPanel Spacing="4" IsVisible="{Binding TargetKind, Converter={x:Static ObjectConverters.Equal}, ConverterParameter={x:Static pg:TrialTargetKind.ApprenticeGoal}}">
             <TextBlock Text="Apprentice goal" Opacity="0.72" />
-            <TextBox Watermark="Goal text"
+            <TextBox PlaceholderText="Goal text"
                      Text="{Binding Target}"
                      AcceptsReturn="True"
                      TextWrapping="Wrap"
@@ -161,8 +161,8 @@
               <ListBox.ItemTemplate>
                 <DataTemplate x:DataType="vm:TrialVariableRowViewModel">
                   <Grid ColumnDefinitions="*,*" Margin="0,2">
-                    <TextBox Grid.Column="0" Watermark="Key" Text="{Binding Key}" Margin="0,0,4,0" />
-                    <TextBox Grid.Column="1" Watermark="Value" Text="{Binding Value}" />
+                    <TextBox Grid.Column="0" PlaceholderText="Key" Text="{Binding Key}" Margin="0,0,4,0" />
+                    <TextBox Grid.Column="1" PlaceholderText="Value" Text="{Binding Value}" />
                   </Grid>
                 </DataTemplate>
               </ListBox.ItemTemplate>

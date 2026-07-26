@@ -21,8 +21,8 @@
           <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,8">
             <TextBlock Text="OpenAI-compatible /v1/files — upload, list, download, delete. Large content is streamed; JSONL preview is bounded." Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
             <WrapPanel>
-              <TextBox Text="{Binding FilePurposeFilter}" Watermark="purpose filter…" MinWidth="120" Margin="0,0,6,6" />
-              <TextBox Text="{Binding UploadPurpose}" Watermark="upload purpose…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding FilePurposeFilter}" PlaceholderText="purpose filter…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding UploadPurpose}" PlaceholderText="upload purpose…" MinWidth="120" Margin="0,0,6,6" />
               <Button Content="Refresh" Command="{Binding RefreshFilesCommand}" Margin="0,0,6,6" />
               <Button Content="Upload…" Command="{Binding UploadFileCommand}" Margin="0,0,6,6" />
               <Button Content="Download…" Command="{Binding DownloadSelectedFileCommand}" Margin="0,0,6,6" />
@@ -69,8 +69,8 @@
             <TextBlock Text="OpenAI-compatible /v1/batches — create, list, detail, cancel, reset. Polls while this tool is visible and Arcanum is connected." Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
             <TextBlock Text="{Binding SuiteFromBatchDeferredNote}" Opacity="0.65" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
             <WrapPanel>
-              <TextBox Text="{Binding BatchStatusFilter}" Watermark="status filter…" MinWidth="120" Margin="0,0,6,6" />
-              <TextBox Text="{Binding CreateBatchInputFileId}" Watermark="input_file_id…" MinWidth="220" Margin="0,0,6,6" />
+              <TextBox Text="{Binding BatchStatusFilter}" PlaceholderText="status filter…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding CreateBatchInputFileId}" PlaceholderText="input_file_id…" MinWidth="220" Margin="0,0,6,6" />
               <Button Content="Refresh" Command="{Binding RefreshBatchesCommand}" Margin="0,0,6,6" />
               <Button Content="Create batch" Command="{Binding CreateBatchCommand}" Margin="0,0,6,6" />
               <Button Content="Detail" Command="{Binding RefreshSelectedBatchCommand}" Margin="0,0,6,6" />

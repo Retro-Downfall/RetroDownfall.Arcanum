@@ -22,10 +22,10 @@
             <TextBlock Text="{Binding InferenceAuditPathsMessage}" Opacity="0.7" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
             <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="InferenceAudit" HorizontalAlignment="Left" />
             <WrapPanel>
-              <TextBox Text="{Binding InferenceFromText}" Watermark="from (ISO)…" MinWidth="140" Margin="0,0,6,6" />
-              <TextBox Text="{Binding InferenceToText}" Watermark="to (ISO)…" MinWidth="140" Margin="0,0,6,6" />
-              <TextBox Text="{Binding InferenceModel}" Watermark="model…" MinWidth="120" Margin="0,0,6,6" />
-              <TextBox Text="{Binding InferenceSessionId}" Watermark="sessionId…" MinWidth="180" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceFromText}" PlaceholderText="from (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceToText}" PlaceholderText="to (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceModel}" PlaceholderText="model…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding InferenceSessionId}" PlaceholderText="sessionId…" MinWidth="180" Margin="0,0,6,6" />
               <Button Content="Refresh" Command="{Binding RefreshInferenceCommand}" Margin="0,0,6,6" />
               <Button Content="Export JSON" Command="{Binding ExportInferenceJsonCommand}" Margin="0,0,6,6" />
               <Button Content="Export CSV" Command="{Binding ExportInferenceCsvCommand}" Margin="0,0,6,6" />
@@ -71,11 +71,11 @@
             <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="GuardrailsAudit" HorizontalAlignment="Left" />
             <TextBlock Text="{Binding GuardrailsRedactionNote}" Opacity="0.65" TextWrapping="Wrap" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
             <WrapPanel>
-              <TextBox Text="{Binding GuardrailsFromText}" Watermark="from (ISO)…" MinWidth="140" Margin="0,0,6,6" />
-              <TextBox Text="{Binding GuardrailsToText}" Watermark="to (ISO)…" MinWidth="140" Margin="0,0,6,6" />
-              <TextBox Text="{Binding GuardrailsStage}" Watermark="stage…" MinWidth="100" Margin="0,0,6,6" />
-              <TextBox Text="{Binding GuardrailsViolationType}" Watermark="violationType…" MinWidth="120" Margin="0,0,6,6" />
-              <TextBox Text="{Binding GuardrailsSessionId}" Watermark="sessionId…" MinWidth="180" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsFromText}" PlaceholderText="from (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsToText}" PlaceholderText="to (ISO)…" MinWidth="140" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsStage}" PlaceholderText="stage…" MinWidth="100" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsViolationType}" PlaceholderText="violationType…" MinWidth="120" Margin="0,0,6,6" />
+              <TextBox Text="{Binding GuardrailsSessionId}" PlaceholderText="sessionId…" MinWidth="180" Margin="0,0,6,6" />
               <Button Content="Refresh" Command="{Binding RefreshGuardrailsCommand}" Margin="0,0,6,6" />
               <Button Content="Export JSON" Command="{Binding ExportGuardrailsJsonCommand}" Margin="0,0,6,6" />
               <Button Content="Export CSV" Command="{Binding ExportGuardrailsCsvCommand}" Margin="0,0,6,6" />

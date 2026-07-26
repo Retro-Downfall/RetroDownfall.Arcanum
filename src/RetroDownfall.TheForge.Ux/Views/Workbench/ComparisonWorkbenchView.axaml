@@ -46,14 +46,14 @@
             <ComboBox ItemsSource="{Binding SourceKinds}"
                       SelectedItem="{Binding SelectedVariant.SourceKind}"
                       Width="200" />
-            <TextBox Text="{Binding SelectedVariant.PromptIdText}" Watermark="Prompt id (GUID)" />
-            <TextBox Text="{Binding SelectedVariant.SpellName}" Watermark="Spell name" />
-            <TextBox Text="{Binding SelectedVariant.Model}" Watermark="Model" />
-            <TextBox Text="{Binding SelectedVariant.Provider}" Watermark="Provider (display)" />
-            <TextBox Text="{Binding SelectedVariant.Workspace}" Watermark="Workspace" />
-            <TextBox Text="{Binding SelectedVariant.TemperatureText}" Watermark="Temperature" />
-            <TextBox Text="{Binding SelectedVariant.TopPText}" Watermark="TopP" />
-            <TextBox Text="{Binding SelectedVariant.MaxOutputTokensText}" Watermark="MaxOutputTokens" />
+            <TextBox Text="{Binding SelectedVariant.PromptIdText}" PlaceholderText="Prompt id (GUID)" />
+            <TextBox Text="{Binding SelectedVariant.SpellName}" PlaceholderText="Spell name" />
+            <TextBox Text="{Binding SelectedVariant.Model}" PlaceholderText="Model" />
+            <TextBox Text="{Binding SelectedVariant.Provider}" PlaceholderText="Provider (display)" />
+            <TextBox Text="{Binding SelectedVariant.Workspace}" PlaceholderText="Workspace" />
+            <TextBox Text="{Binding SelectedVariant.TemperatureText}" PlaceholderText="Temperature" />
+            <TextBox Text="{Binding SelectedVariant.TopPText}" PlaceholderText="TopP" />
+            <TextBox Text="{Binding SelectedVariant.MaxOutputTokensText}" PlaceholderText="MaxOutputTokens" />
           </StackPanel>
           <TextBlock Text="History" FontWeight="SemiBold" Margin="0,8,0,0" />
           <ListBox ItemsSource="{Binding History}" SelectedItem="{Binding SelectedHistoryRun}" MaxHeight="160">

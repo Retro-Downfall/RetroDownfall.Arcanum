@@ -89,7 +89,7 @@
                FontFamily="{DynamicResource ForgeCodeFontFamily}"
                FontSize="{DynamicResource ForgeCodeFontSize}"
                IsEnabled="{Binding !IsRunning}"
-               Watermark="Enter a command…"
+               PlaceholderText="Enter a command…"
                AcceptsReturn="False" />
     </DockPanel>
   </Grid>

@@ -22,7 +22,7 @@
       <TextBlock Text="{Binding FeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding IsFeatureDisabled}" />
       <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" HorizontalAlignment="Left" IsVisible="{Binding IsFeatureDisabled}" />
       <DockPanel LastChildFill="False">
-        <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" Watermark="Divination query…" MinWidth="180" />
+        <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" PlaceholderText="Divination query…" MinWidth="180" />
         <Button DockPanel.Dock="Left" Content="Search" Command="{Binding DivineCommand}" Margin="6,0,0,0" IsEnabled="{Binding !IsFeatureDisabled}" />
         <Button DockPanel.Dock="Left" Content="Clear" Command="{Binding ClearSearchCommand}" Margin="6,0,0,0" IsVisible="{Binding IsSearchActive}" />
         <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearching}" />

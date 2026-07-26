@@ -22,7 +22,7 @@
 
             <TextBox x:Name="NewItemEntry"
                      Grid.Column="0"
-                     Watermark="Add value..."
+                     PlaceholderText="Add value..."
                      KeyDown="OnNewItemKeyDown" />
 
             <Button Grid.Column="1"

@@ -87,7 +87,7 @@
 
                                                 <TextBox Grid.Column="0"
                                                          Text="{Binding Name, Mode=TwoWay}"
-                                                         Watermark="gpt-4o" />
+                                                         PlaceholderText="gpt-4o" />
 
                                                 <StackPanel Grid.Column="1"
                                                             Orientation="Horizontal"

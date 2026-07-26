@@ -55,7 +55,7 @@
           </StackPanel>
 
           <DockPanel Grid.Row="1" LastChildFill="False" Margin="0,0,0,6">
-            <TextBox DockPanel.Dock="Left" Text="{Binding ChunkFilterRelativePath}" Watermark="Filter by relative path (optional)…" MinWidth="220" />
+            <TextBox DockPanel.Dock="Left" Text="{Binding ChunkFilterRelativePath}" PlaceholderText="Filter by relative path (optional)…" MinWidth="220" />
             <Button DockPanel.Dock="Left" Content="Load chunks" Command="{Binding LoadChunksCommand}" Margin="6,0,0,0" />
             <Button DockPanel.Dock="Right" Content="Next" Command="{Binding NextChunkPageCommand}" IsEnabled="{Binding CanGoNextChunkPage}" />
             <Button DockPanel.Dock="Right" Content="Prev" Command="{Binding PreviousChunkPageCommand}" IsEnabled="{Binding CanGoPreviousChunkPage}" Margin="0,0,6,0" />
@@ -123,7 +123,7 @@
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
-              <TextBox DockPanel.Dock="Left" Text="{Binding WorkspaceQuery}" Watermark="Query…" MinWidth="150" Margin="6,0,0,0" />
+              <TextBox DockPanel.Dock="Left" Text="{Binding WorkspaceQuery}" PlaceholderText="Query…" MinWidth="150" Margin="6,0,0,0" />
               <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchWorkspaceCommand}" Margin="6,0,0,0" IsEnabled="{Binding !WorkspaceFeatureDisabled}" />
               <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearchingWorkspace}" />
             </DockPanel>
@@ -153,7 +153,7 @@
             <TextBlock Text="{Binding SagaFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SagaFeatureDisabled}" />
             <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="SagaDivination" HorizontalAlignment="Left" IsVisible="{Binding SagaFeatureDisabled}" />
             <DockPanel LastChildFill="False">
-              <TextBox DockPanel.Dock="Left" Text="{Binding SagaQuery}" Watermark="Saga Divination query…" MinWidth="200" />
+              <TextBox DockPanel.Dock="Left" Text="{Binding SagaQuery}" PlaceholderText="Saga Divination query…" MinWidth="200" />
               <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchSagaCommand}" Margin="6,0,0,0" IsEnabled="{Binding !SagaFeatureDisabled}" />
               <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearchingSaga}" />
             </DockPanel>
@@ -184,7 +184,7 @@
             <TextBlock Text="{Binding SessionsFeatureDisabledMessage}" Foreground="{DynamicResource ForgeErrorBrush}" TextWrapping="Wrap" IsVisible="{Binding SessionsFeatureDisabled}" />
             <Button Content="Copy setting paths" Command="{Binding CopyDisabledPathsCommand}" CommandParameter="SessionDivination" HorizontalAlignment="Left" IsVisible="{Binding SessionsFeatureDisabled}" />
             <DockPanel LastChildFill="False">
-              <TextBox DockPanel.Dock="Left" Text="{Binding SessionQuery}" Watermark="Session Divination query…" MinWidth="200" />
+              <TextBox DockPanel.Dock="Left" Text="{Binding SessionQuery}" PlaceholderText="Session Divination query…" MinWidth="200" />
               <Button DockPanel.Dock="Left" Content="Search" Command="{Binding SearchSessionsCommand}" Margin="6,0,0,0" IsEnabled="{Binding !SessionsFeatureDisabled}" />
               <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearchingSessions}" />
             </DockPanel>

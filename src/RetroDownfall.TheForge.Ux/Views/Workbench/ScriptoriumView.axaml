@@ -189,43 +189,43 @@
               <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6">
                 <StackPanel Grid.Row="0" Grid.Column="0" Spacing="2">
                   <TextBlock Text="Model" Opacity="0.72" />
-                  <TextBox Text="{Binding RunModel}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunModel}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
                   <TextBlock Text="Seed" Opacity="0.72" />
-                  <TextBox Text="{Binding RunSeedText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunSeedText}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="1" Grid.Column="0" Spacing="2">
                   <TextBlock Text="Temperature" Opacity="0.72" />
-                  <TextBox Text="{Binding RunTemperatureText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunTemperatureText}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
                   <TextBlock Text="TopP" Opacity="0.72" />
-                  <TextBox Text="{Binding RunTopPText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunTopPText}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="0" Spacing="2">
                   <TextBlock Text="MaxOutputTokens" Opacity="0.72" />
-                  <TextBox Text="{Binding RunMaxOutputTokensText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunMaxOutputTokensText}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="1" Spacing="2">
                   <TextBlock Text="ResponseFormat" Opacity="0.72" />
-                  <TextBox Text="{Binding RunResponseFormat}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunResponseFormat}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Spacing="2">
                   <TextBlock Text="Stop (comma-separated)" Opacity="0.72" />
-                  <TextBox Text="{Binding RunStopText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunStopText}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="4" Grid.Column="0" Spacing="2">
                   <TextBlock Text="PresencePenalty" Opacity="0.72" />
-                  <TextBox Text="{Binding RunPresencePenaltyText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunPresencePenaltyText}" PlaceholderText="Optional" />
                 </StackPanel>
                 <StackPanel Grid.Row="4" Grid.Column="1" Spacing="2">
                   <TextBlock Text="FrequencyPenalty" Opacity="0.72" />
-                  <TextBox Text="{Binding RunFrequencyPenaltyText}" Watermark="Optional" />
+                  <TextBox Text="{Binding RunFrequencyPenaltyText}" PlaceholderText="Optional" />
                 </StackPanel>
               </Grid>
               <TextBlock Text="Blank run overrides preserve the server value." Opacity="0.6" FontSize="11" />
-              <TextBox Text="{Binding RunUserMessage}" Watermark="User message (required to run)" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" />
+              <TextBox Text="{Binding RunUserMessage}" PlaceholderText="User message (required to run)" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" />
               <Border BorderThickness="1" BorderBrush="{DynamicResource ForgeBorderBrush}" Padding="4" MinHeight="120">
                 <ScrollViewer>
                   <TextBlock Text="{Binding RunResultText}" TextWrapping="Wrap" FontFamily="{DynamicResource ForgeCodeFontFamily}" />

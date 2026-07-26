@@ -62,7 +62,7 @@
           </ListBox>
         </Grid>
         <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Margin="0,8,0,0" IsVisible="{Binding WritesEnabled}">
-          <TextBox Text="{Binding NewDirectoryName}" Watermark="New folder name…" MinWidth="120" />
+          <TextBox Text="{Binding NewDirectoryName}" PlaceholderText="New folder name…" MinWidth="120" />
           <Button Content="Create dir" Command="{Binding CreateDirectoryCommand}" />
           <Button Content="Delete" Command="{Binding DeleteFileCommand}" />
         </StackPanel>
@@ -87,7 +87,7 @@
                  TextWrapping="Wrap"
                  FontFamily="{DynamicResource ForgeCodeFontFamily}"
                  IsReadOnly="{Binding !WritesEnabled}"
-                 Watermark="Select a file to view contents…" />
+                 PlaceholderText="Select a file to view contents…" />
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6" Margin="0,8,0,0" IsVisible="{Binding WritesEnabled}">
           <Button Content="Save" Command="{Binding SaveFileCommand}" IsEnabled="{Binding IsFileSelected}" />
@@ -97,7 +97,7 @@
 
     <StackPanel Grid.Row="4" Spacing="6" Margin="0,8,0,4">
       <DockPanel LastChildFill="False">
-        <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" Watermark="Workspace Divination…" MinWidth="180" />
+        <TextBox DockPanel.Dock="Left" Text="{Binding DivinationQuery}" PlaceholderText="Workspace Divination…" MinWidth="180" />
         <Button DockPanel.Dock="Left" Content="Divine" Command="{Binding DivineWorkspaceFilesCommand}" Margin="6,0,0,0" IsEnabled="{Binding !IndexFeatureDisabled}" />
         <TextBlock DockPanel.Dock="Left" Text="Searching…" Opacity="0.65" Margin="8,0,0,0" VerticalAlignment="Center" IsVisible="{Binding IsSearching}" />
       </DockPanel>

@@ -44,9 +44,9 @@ public sealed class AvaloniaSetupWizardDialogService : ISetupWizardDialogService
 
             TextBlock stepDescription = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.85, Text = viewModel.StepDescription };
 
-            TextBox baseUrl = new() { Watermark = "http://localhost:5001", Text = viewModel.BaseUrl };
+            TextBox baseUrl = new() { PlaceholderText = "http://localhost:5001", Text = viewModel.BaseUrl };
 
-            TextBox apiKey = new() { Watermark = "Paste API key", PasswordChar = '•' };
+            TextBox apiKey = new() { PlaceholderText = "Paste API key", PasswordChar = '•' };
 
             TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
 

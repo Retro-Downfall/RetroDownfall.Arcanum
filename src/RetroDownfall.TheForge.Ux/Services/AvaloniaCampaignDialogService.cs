@@ -48,19 +48,19 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
 
             TextBox nameBox = new()
             {
-                Watermark = "Name (required)",
+                PlaceholderText = "Name (required)",
                 Text = opts.PrefillName ?? string.Empty,
             };
 
             TextBox pathBox = new()
             {
-                Watermark = opts.PathFieldLabel ?? "Absolute path (required)",
+                PlaceholderText = opts.PathFieldLabel ?? "Absolute path (required)",
                 Text = opts.PrefillPath ?? string.Empty,
             };
 
             TextBox descBox = new()
             {
-                Watermark = "Description (optional)",
+                PlaceholderText = "Description (optional)",
                 Text = opts.PrefillDescription ?? string.Empty,
             };
 
@@ -254,7 +254,7 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
 
             TextBox pathBox = new()
             {
-                Watermark = "Absolute path on the Arcanum host",
+                PlaceholderText = "Absolute path on the Arcanum host",
                 MinWidth = 360,
             };
 
@@ -346,9 +346,9 @@ public sealed class AvaloniaCampaignDialogService : ICampaignDialogService
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            TextBox nameBox = new() { Text = existing.Name, Watermark = "Name (required)" };
+            TextBox nameBox = new() { Text = existing.Name, PlaceholderText = "Name (required)" };
 
-            TextBox descBox = new() { Text = existing.Description ?? string.Empty, Watermark = "Description (optional)" };
+            TextBox descBox = new() { Text = existing.Description ?? string.Empty, PlaceholderText = "Description (optional)" };
 
             ComboBox typeBox = new()
             {

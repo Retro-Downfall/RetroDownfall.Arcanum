@@ -36,7 +36,7 @@
       </DockPanel>
       <DockPanel LastChildFill="True">
         <Button DockPanel.Dock="Right" Content="Use path" Command="{Binding UseManualPathCommand}" Margin="6,0,0,0" MinWidth="80" />
-        <TextBox Text="{Binding ManualRepositoryPath}" Watermark="Or paste a repository path…" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
+        <TextBox Text="{Binding ManualRepositoryPath}" PlaceholderText="Or paste a repository path…" FontFamily="{DynamicResource ForgeCodeFontFamily}" />
       </DockPanel>
       <DockPanel LastChildFill="False">
         <TextBlock DockPanel.Dock="Left" Text="{Binding BranchName, StringFormat=Branch: {0}}" Opacity="0.85" VerticalAlignment="Center"
@@ -102,7 +102,7 @@
 
     <DockPanel Grid.Row="5" Margin="0,8,0,0" LastChildFill="True" IsVisible="{Binding HasRepositoryPath}">
       <Button DockPanel.Dock="Right" Content="Commit…" Command="{Binding CommitCommand}" Margin="8,0,0,0" MinWidth="80" />
-      <TextBox Text="{Binding CommitMessage}" Watermark="Commit message…" AcceptsReturn="False" />
+      <TextBox Text="{Binding CommitMessage}" PlaceholderText="Commit message…" AcceptsReturn="False" />
     </DockPanel>
   </Grid>
 </UserControl>

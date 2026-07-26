@@ -116,7 +116,7 @@
         <TextBlock Text="{Binding LastWhisper}" Opacity="0.7" TextWrapping="Wrap" />
       </StackPanel>
       <TextBox Text="{Binding ManualEntryText}"
-               Watermark="Manual entry (system note)…"
+               PlaceholderText="Manual entry (system note)…"
                MinHeight="36" />
     </StackPanel>
 
@@ -125,7 +125,7 @@
              AcceptsReturn="True"
              TextWrapping="Wrap"
              MinHeight="72"
-             Watermark="Write in The Tome… Enter sends; Shift+Enter for a new line"
+             PlaceholderText="Write in The Tome… Enter sends; Shift+Enter for a new line"
              KeyDown="OnInputKeyDown" />
   </Grid>
 </UserControl>

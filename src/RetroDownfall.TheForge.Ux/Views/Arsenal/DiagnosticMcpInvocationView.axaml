@@ -24,7 +24,7 @@
       <ScrollViewer Grid.Column="0" Margin="0,0,4,0">
         <StackPanel Spacing="8">
           <TextBlock Text="Workspace (optional)" Opacity="0.72" />
-          <TextBox Text="{Binding WorkingDirectory}" Watermark="Workspace path to scope MCP surface" />
+          <TextBox Text="{Binding WorkingDirectory}" PlaceholderText="Workspace path to scope MCP surface" />
           <TextBlock Text="External MCP servers (running)" FontWeight="SemiBold" Margin="0,4,0,0" />
           <ListBox ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}" MinHeight="100" MaxHeight="200">
             <ListBox.ItemTemplate>

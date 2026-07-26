@@ -45,7 +45,7 @@
                AcceptsReturn="True"
                TextWrapping="Wrap"
                FontFamily="{DynamicResource ForgeCodeFontFamily}"
-               Watermark="CODEX.md…"
+               PlaceholderText="CODEX.md…"
                IsVisible="{Binding IsSourceVisible}" />
 
       <GridSplitter Grid.Column="1"

@@ -50,9 +50,9 @@
                 BorderBrush="{DynamicResource ForgeBorderBrush}">
           <StackPanel Spacing="6">
             <TextBlock Text="Create Apprentice" FontWeight="SemiBold" />
-            <TextBox Text="{Binding NewName}" Watermark="Name" />
+            <TextBox Text="{Binding NewName}" PlaceholderText="Name" />
             <TextBox Text="{Binding NewGoal}"
-                     Watermark="Goal (supports @file mentions)"
+                     PlaceholderText="Goal (supports @file mentions)"
                      AcceptsReturn="True"
                      MinHeight="56"
                      TextWrapping="Wrap" />
@@ -100,7 +100,7 @@
                 <Button Content="Reweave" Command="{Binding ReweaveCommand}" Margin="0,0,6,4" />
               </WrapPanel>
               <TextBox Text="{Binding InterveneGuidance}"
-                       Watermark="Intervene guidance…"
+                       PlaceholderText="Intervene guidance…"
                        MinHeight="40" />
               <Button Content="Intervene" Command="{Binding InterveneCommand}" HorizontalAlignment="Left" />
               <TextBlock Text="Plan" FontWeight="SemiBold" Margin="0,8,0,0" />

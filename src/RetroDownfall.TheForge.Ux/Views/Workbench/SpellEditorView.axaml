@@ -107,7 +107,7 @@
                       <Button Content="Add" Command="{Binding AddDependencyCommand}" IsEnabled="{Binding CanEditMetadata}" />
                       <Button Content="Remove" Command="{Binding RemoveDependencyCommand}" IsEnabled="{Binding CanEditMetadata}" />
                     </StackPanel>
-                    <TextBox Text="{Binding NewDependencyText}" Watermark="Spell name" IsEnabled="{Binding CanEditMetadata}" />
+                    <TextBox Text="{Binding NewDependencyText}" PlaceholderText="Spell name" IsEnabled="{Binding CanEditMetadata}" />
                   </DockPanel>
                   <TextBlock Text="{Binding DependencyWarnings}"
                              Foreground="{DynamicResource ForgeWarningBrush}"
@@ -123,7 +123,7 @@
                       <Button Content="Add" Command="{Binding AddDeclaredToolCommand}" IsEnabled="{Binding CanEditMetadata}" />
                       <Button Content="Remove" Command="{Binding RemoveDeclaredToolCommand}" IsEnabled="{Binding CanEditMetadata}" />
                     </StackPanel>
-                    <TextBox Text="{Binding NewDeclaredToolText}" Watermark="Tool name" IsEnabled="{Binding CanEditMetadata}" />
+                    <TextBox Text="{Binding NewDeclaredToolText}" PlaceholderText="Tool name" IsEnabled="{Binding CanEditMetadata}" />
                   </DockPanel>
                   <TextBlock Text="{Binding ToolWarnings}"
                              Foreground="{DynamicResource ForgeWarningBrush}"

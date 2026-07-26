@@ -64,7 +64,7 @@
                            IsVisible="{Binding SessionId, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
                 <TextBox Text="{Binding DenyReason}"
-                         Watermark="Deny reason (optional)…"
+                         PlaceholderText="Deny reason (optional)…"
                          MinHeight="32" />
 
                 <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
