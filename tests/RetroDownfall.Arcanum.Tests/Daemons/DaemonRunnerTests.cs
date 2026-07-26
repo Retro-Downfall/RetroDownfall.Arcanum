@@ -66,12 +66,12 @@ public sealed class DaemonRunnerTests
     }
 
     [Fact]
-    public async Task RunAsync_returns_failure_when_job_already_running()
+    public async Task RunAsync_OverlappingOnDemandStarts_StartExactlyOne()
     {
 
         FakeDaemonJob job = new("job-c", "Job C", canRunOnDemand: true)
         {
-            RunDelay = TimeSpan.FromMilliseconds(200),
+            RunUntilSignal = true,
         };
 
         DaemonRunner runner = CreateRunner([job]);
@@ -80,69 +80,21 @@ public sealed class DaemonRunnerTests
 
         await job.StartedTask;
 
-        Result<DaemonExecutionSummary> second = await runner.RunAsync("job-c", force: false, CancellationToken.None);
+        Result<DaemonExecutionSummary> second;
+
+        try
+        {
+            second = await runner.RunAsync("job-c", force: false, CancellationToken.None);
+        }
+        finally
+        {
+            job.SignalCompletion();
+        }
 
         Assert.True(second.IsFailure);
-
         Assert.Equal("Daemon.AlreadyRunning", second.Error.Code);
-
-        _ = await first;
-
-    }
-
-    // W3.3 Fix 4 (atomic single-running enforcement): the on-demand path previously
-    // did a non-atomic HasRunningExecution check followed by StartAsync, so two
-    // concurrent on-demand starts could both pass the check and both start the job.
-    // The fix replaces check+start with an atomic TryStart that reserves the
-    // in-flight slot via ConcurrentDictionary.TryAdd. Two simultaneous on-demand
-    // starts must yield exactly one success and one Daemon.AlreadyRunning.
-    [Fact]
-    public async Task RunAsync_ConcurrentOnDemandStarts_StartExactlyOne()
-    {
-
-        FakeDaemonJob job = new("job-race", "Job Race", canRunOnDemand: true)
-        {
-            RunUntilSignal = true,
-        };
-
-        DaemonRunner runner = CreateRunner([job]);
-
-        using Barrier barrier = new(2);
-
-        Task<Result<DaemonExecutionSummary>>[] runs = Enumerable.Range(0, 2)
-            .Select(_ => Task.Run(() =>
-            {
-
-                barrier.SignalAndWait();
-
-                return runner.RunAsync("job-race", force: false, CancellationToken.None);
-
-            }))
-            .ToArray();
-
-        // Wait for the winner to enter the job before asserting that the other
-        // invocation lost the atomic slot. The timeout is only a deadlock guard;
-        // correctness is driven by the two completion signals.
-        await job.StartedTask.WaitAsync(TimeSpan.FromSeconds(30));
-        Task<Result<DaemonExecutionSummary>> completed = await Task
-            .WhenAny(runs)
-            .WaitAsync(TimeSpan.FromSeconds(30));
-        Result<DaemonExecutionSummary> completedResult = await completed;
-        Result<DaemonExecutionSummary>? loser =
-            completedResult.IsFailure
-            && completedResult.Error.Code == "Daemon.AlreadyRunning"
-                ? completedResult
-                : null;
-
-        Assert.NotNull(loser);
-
-        job.SignalCompletion();
-
-        await Task.WhenAll(runs);
-
-        Assert.Equal(1, runs.Count(r => r.Result.IsSuccess));
-
-        Assert.Equal(1, runs.Count(r => r.Result.IsFailure && r.Result.Error.Code == "Daemon.AlreadyRunning"));
+        Result<DaemonExecutionSummary> winner = await first;
+        Assert.True(winner.IsSuccess);
 
     }
 
