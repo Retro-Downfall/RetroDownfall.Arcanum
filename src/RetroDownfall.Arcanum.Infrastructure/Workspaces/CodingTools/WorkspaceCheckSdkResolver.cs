@@ -15,7 +15,8 @@ internal sealed record WorkspaceCheckSdkSnapshot(
     FileHandleIdentity SdkIdentity,
     FileHandleIdentity RuntimeIdentity,
     string SdkEntryPointPath,
-    FileHandleIdentity SdkEntryPointIdentity);
+    FileHandleIdentity SdkEntryPointIdentity,
+    string SdkEntryPointSha256);
 
 internal sealed record WorkspaceCheckSdkResolution(
     bool Success,
@@ -283,9 +284,10 @@ internal static class WorkspaceCheckSdkResolver
             || !FileHandleIdentityInterop.TryGetPathMetadata(
                 runtimePath,
                 out FileHandleMetadata runtimeMetadata)
-            || !FileHandleIdentityInterop.TryGetPathMetadata(
+            || !TryCaptureEntryPoint(
                 sdkEntryPoint,
-                out FileHandleMetadata entryPointMetadata))
+                out FileHandleMetadata entryPointMetadata,
+                out string entryPointSha256))
         {
 
             return Failure(
@@ -306,7 +308,8 @@ internal static class WorkspaceCheckSdkResolver
                 sdkMetadata.Identity,
                 runtimeMetadata.Identity,
                 sdkEntryPoint,
-                entryPointMetadata.Identity));
+                entryPointMetadata.Identity,
+                entryPointSha256));
     }
 
     internal static WorkspaceCheckSdkRevalidation Revalidate(
@@ -340,9 +343,10 @@ internal static class WorkspaceCheckSdkResolver
             || !FileHandleIdentityInterop.TryGetPathMetadata(
                 runtimePath,
                 out FileHandleMetadata runtimeMetadata)
-            || !FileHandleIdentityInterop.TryGetPathMetadata(
+            || !TryCaptureEntryPoint(
                 sdkEntryPoint,
-                out FileHandleMetadata entryPointMetadata)
+                out FileHandleMetadata entryPointMetadata,
+                out string entryPointSha256)
             || !FileHandleIdentity.IdentitiesMatch(
                 snapshot.SdkIdentity,
                 sdkMetadata.Identity)
@@ -351,7 +355,11 @@ internal static class WorkspaceCheckSdkResolver
                 runtimeMetadata.Identity)
             || !FileHandleIdentity.IdentitiesMatch(
                 snapshot.SdkEntryPointIdentity,
-                entryPointMetadata.Identity))
+                entryPointMetadata.Identity)
+            || !string.Equals(
+                snapshot.SdkEntryPointSha256,
+                entryPointSha256,
+                StringComparison.Ordinal))
         {
 
             return new WorkspaceCheckSdkRevalidation(
@@ -361,6 +369,58 @@ internal static class WorkspaceCheckSdkResolver
         }
 
         return new WorkspaceCheckSdkRevalidation(true, null, null);
+    }
+
+    private static bool TryCaptureEntryPoint(
+        string path,
+        out FileHandleMetadata metadata,
+        out string sha256)
+    {
+        metadata = default;
+        sha256 = string.Empty;
+
+        try
+        {
+            using FileStream stream = new(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+
+            if (!FileHandleIdentityInterop.TryGetHandleMetadata(
+                    stream.SafeFileHandle,
+                    out FileHandleMetadata before)
+                || before.Kind != FileSystemObjectKind.RegularFile
+                || before.HardLinkCount != 1)
+            {
+                return false;
+            }
+
+            byte[] hash = SHA256.HashData(stream);
+            if (!FileHandleIdentityInterop.TryGetHandleMetadata(
+                    stream.SafeFileHandle,
+                    out FileHandleMetadata after)
+                || after.Kind != FileSystemObjectKind.RegularFile
+                || after.HardLinkCount != 1
+                || !FileHandleIdentity.IdentitiesMatch(
+                    before.Identity,
+                    after.Identity))
+            {
+                return false;
+            }
+
+            metadata = after;
+            sha256 = Convert.ToHexString(hash);
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static bool WriteSanitizedGlobalJson(

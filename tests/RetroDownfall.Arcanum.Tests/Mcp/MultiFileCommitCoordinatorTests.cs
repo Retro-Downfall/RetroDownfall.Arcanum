@@ -1238,6 +1238,27 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task Terminal_abandon_releases_directory_leases_without_deleting_committed_files()
+    {
+        WorkspaceCommitResult commit = await new MultiFileCommitCoordinator(_workspace.Root)
+            .CommitAsync(
+                [await WriteOperationAsync("new/deep/created.txt", "created")],
+                CancellationToken.None);
+
+        Assert.Equal(WorkspaceCommitStatus.Committed, commit.Status);
+        Assert.True(commit.Transaction!.HasOpenDirectoryLeasesForTests);
+
+        await commit.Transaction.AbandonAsync();
+
+        Assert.False(commit.Transaction.HasOpenDirectoryLeasesForTests);
+        Assert.Equal("created", await ReadAsync("new/deep/created.txt"));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => commit.Transaction.RollbackAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => commit.Transaction.MarkIrreversibleAsync(CancellationToken.None));
+    }
+
     private async Task<WorkspaceFileCommitOperation> WriteOperationAsync(
         string relativePath,
         string content)

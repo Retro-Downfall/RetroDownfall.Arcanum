@@ -702,6 +702,12 @@ public sealed class GrimoireTurnWriterTests
             pendingEvent.IsCompleted,
             "A failed or ambiguous mandatory receipt published a session event.");
 
+        if (outcome == MandatoryToolInteractionAppendOutcome.Ambiguous)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => transaction.RollbackAsync(CancellationToken.None));
+        }
+
         cancellation.Cancel();
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () => _ = await pendingEvent);

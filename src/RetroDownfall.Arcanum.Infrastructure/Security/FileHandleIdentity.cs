@@ -341,6 +341,73 @@ internal static partial class FileHandleIdentityInterop
 
     }
 
+    internal static bool TryOpenDirectoryMetadata(
+        string path,
+        out SafeFileHandle handle,
+        out FileHandleMetadata metadata)
+    {
+        handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+        metadata = default;
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                handle = CreateFile(
+                    path,
+                    FileReadAttributes,
+                    FileShare.Read | FileShare.Write | FileShare.Delete,
+                    IntPtr.Zero,
+                    OpenExisting,
+                    FileFlagBackupSemantics | FileFlagOpenReparsePoint,
+                    IntPtr.Zero);
+            }
+            else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            {
+                int flags = OperatingSystem.IsMacOS()
+                    ? MacOsOpenDirectory | MacOsOpenNoFollow | MacOsOpenCloseOnExec
+                    : LinuxOpenDirectory | LinuxOpenNoFollow | LinuxOpenCloseOnExec;
+                int fileDescriptor = open(path, flags);
+                if (fileDescriptor < 0)
+                {
+                    return false;
+                }
+
+                handle.Dispose();
+                handle = new SafeFileHandle(
+                    new IntPtr(fileDescriptor),
+                    ownsHandle: true);
+            }
+            else
+            {
+                return false;
+            }
+
+            if (handle.IsInvalid
+                || !TryGetHandleMetadata(handle, out metadata)
+                || metadata.Kind != FileSystemObjectKind.Directory)
+            {
+                handle.Dispose();
+                handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+                metadata = default;
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or NotSupportedException)
+        {
+            handle.Dispose();
+            handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+            metadata = default;
+            return false;
+        }
+    }
+
     private static bool TryGetWindowsPathMetadata(
         string path,
         out FileHandleMetadata metadata)
@@ -654,6 +721,18 @@ internal static partial class FileHandleIdentityInterop
 
     private const uint FileFlagOpenReparsePoint = 0x00200000;
 
+    private const int LinuxOpenDirectory = 0x00010000;
+
+    private const int LinuxOpenNoFollow = 0x00020000;
+
+    private const int LinuxOpenCloseOnExec = 0x00080000;
+
+    private const int MacOsOpenDirectory = 0x00100000;
+
+    private const int MacOsOpenNoFollow = 0x00000100;
+
+    private const int MacOsOpenCloseOnExec = 0x01000000;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeFileTime
     {
@@ -718,5 +797,8 @@ internal static partial class FileHandleIdentityInterop
 
     [LibraryImport("libc", SetLastError = true)]
     private static unsafe partial int fstat(int fd, byte* buf);
+
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int open(string path, int flags);
 
 }

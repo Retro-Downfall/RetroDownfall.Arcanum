@@ -147,7 +147,9 @@ public sealed class CappedChildProcessRunnerTests
             using global::System.Diagnostics.Process descendant =
                 global::System.Diagnostics.Process.GetProcessById(descendantPid);
             Assert.True(
-                descendant.HasExited,
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(2)),
                 $"Detached descendant {descendantPid} survived normal parent exit.");
 
         }
@@ -219,7 +221,9 @@ public sealed class CappedChildProcessRunnerTests
                 global::System.Diagnostics.Process.GetProcessById(
                     descendantPid);
             Assert.True(
-                descendant.HasExited,
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(2)),
                 $"Detached descendant {descendantPid} survived timeout cleanup.");
         }
         catch (ArgumentException)
@@ -290,7 +294,9 @@ public sealed class CappedChildProcessRunnerTests
                 global::System.Diagnostics.Process.GetProcessById(
                     descendantPid);
             Assert.True(
-                descendant.HasExited,
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(2)),
                 $"Escaped descendant {descendantPid} survived parent success.");
         }
         catch (ArgumentException)
@@ -681,6 +687,66 @@ public sealed class CappedChildProcessRunnerTests
 
         };
 
+    }
+
+    private static async Task<bool> WaitForProcessExitOrZombieAsync(
+        int processId,
+        TimeSpan timeout)
+    {
+        long deadline = global::System.Environment.TickCount64
+            + (long)Math.Max(1, timeout.TotalMilliseconds);
+
+        do
+        {
+            if (IsExitedOrZombie(processId))
+            {
+                return true;
+            }
+
+            await Task.Delay(25);
+        }
+        while (global::System.Environment.TickCount64 < deadline);
+
+        return IsExitedOrZombie(processId);
+    }
+
+    private static bool IsExitedOrZombie(int processId)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            string statPath = $"/proc/{processId}/stat";
+            if (File.Exists(statPath))
+            {
+                try
+                {
+                    string stat = File.ReadAllText(statPath);
+                    int commandEnd = stat.LastIndexOf(')');
+                    if (commandEnd >= 0
+                        && commandEnd + 2 < stat.Length
+                        && stat[commandEnd + 2] is 'Z' or 'X')
+                    {
+                        return true;
+                    }
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+
+        try
+        {
+            using global::System.Diagnostics.Process process =
+                global::System.Diagnostics.Process.GetProcessById(processId);
+            return process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
     }
 
     private static ProcessStartInfo CreateSleepProcessStartInfo(int seconds)

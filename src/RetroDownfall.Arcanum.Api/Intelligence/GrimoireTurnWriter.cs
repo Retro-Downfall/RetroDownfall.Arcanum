@@ -582,6 +582,8 @@ public sealed class GrimoireTurnWriter(
                     pending.Receipt.Id,
                     FormatRecoveryPaths(rollback.Recovery?.AffectedPaths),
                     FormatRecoveryPaths(rollback.Recovery?.ArtifactPaths));
+
+                await pending.AbandonAsync().ConfigureAwait(false);
             }
 
             return new ApplyPatchPendingReceiptHandoffResult(
@@ -589,6 +591,8 @@ public sealed class GrimoireTurnWriter(
                 Cleanup: null,
                 rollback);
         }
+
+        await pending.AbandonAsync().ConfigureAwait(false);
 
         logger.LogError(
             "Ambiguous apply_patch receipt {ReceiptId} retained applied workspace changes; operator recovery artifacts: {RecoveryArtifactPaths}.",
