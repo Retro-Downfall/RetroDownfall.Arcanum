@@ -4,12 +4,12 @@ using System.Runtime.InteropServices;
 namespace RetroDownfall.Arcanum.Core.Primitives;
 
 /// <summary>
-/// RAG Phase 1 — shared little-endian <c>float32[]</c> &lt;-&gt; <c>BLOB</c> conversion for The Weave's
+/// Shared little-endian <c>float32[]</c> &lt;-&gt; <c>BLOB</c> conversion for The Weave's
 /// durable storage tables (for example <c>entry_embeddings.Embedding</c>), for binding a query
 /// vector to a sqlite-vec <c>MATCH</c> parameter, and for OpenAI-compatible <c>base64</c>
 /// <c>encoding_format</c> on <c>POST /v1/embeddings</c> (§8.24). All realistic Arcanum deployment
 /// targets (x64, Arm64) are little-endian, so no explicit byte-swapping is performed — see
-/// DESIGN.md §21.
+/// <c>docs/Arcanum.DESIGN.md</c> §21.
 /// </summary>
 /// <remarks>
 /// Lives in Core (rather than Infrastructure, where it originated) because it is a pure,
@@ -51,7 +51,8 @@ public static class EmbeddingBlobCodec
     /// SIMD-vectorized via <see cref="Vector{T}"/> (hardware width chosen by the JIT at startup —
     /// SSE/AVX on x64, NEON on Arm64 — with no platform-specific code and no extra NuGet dependency,
     /// keeping this Native AOT friendly). This is the hot path for the managed brute-force fallback in
-    /// <c>DivinationService.SearchManagedAsync</c> when sqlite-vec is unavailable — see DESIGN.md §16.
+    /// <c>DivinationService.SearchManagedAsync</c> when sqlite-vec is unavailable — see
+    /// <c>docs/Arcanum.DESIGN.md</c> §16.
     /// Each lane's dot/norm products are summed horizontally in <c>float</c> via <see cref="Vector.Dot"/>,
     /// then accumulated across lanes in <c>double</c> to bound precision loss on long vectors; the scalar
     /// remainder (when <c>a.Length</c> isn't a multiple of <see cref="Vector{T}.Count"/>) is folded in the

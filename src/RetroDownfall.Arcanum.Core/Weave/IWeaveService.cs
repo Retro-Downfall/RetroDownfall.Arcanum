@@ -21,10 +21,11 @@ public interface IWeaveService
 {
 
     /// <summary>
-    /// <c>true</c> only when <c>Arcanum:Embeddings:Enabled</c> is <c>true</c> and both
-    /// <c>Arcanum:Embeddings:Provider</c> and <c>Arcanum:Embeddings:Model</c> are configured. Computed
-    /// fresh on every access from the current settings snapshot (hot-reload friendly) — callers should
-    /// check this before attempting embedding work rather than relying on a previous check's result.
+    /// <c>true</c> only when an embedding-backed <c>Arcanum:Features</c> opt-in is enabled and both
+    /// <c>Arcanum:Integrations:Embeddings:Provider</c> and
+    /// <c>Arcanum:Integrations:Embeddings:Model</c> are configured. Computed fresh on every access
+    /// from the current settings snapshot (hot-reload friendly) — callers should check this before
+    /// attempting embedding work rather than relying on a previous check's result.
     /// </summary>
     bool IsAvailable { get; }
 
@@ -37,19 +38,17 @@ public interface IWeaveService
     Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Imprints many texts, internally batched by <c>Arcanum:Embeddings:BatchSize</c> and sent
-    /// sequentially (not in parallel, to avoid overwhelming local providers). Same error semantics as
-    /// <see cref="EmbedAsync"/>: never throws, and a failure on any batch fails the whole call rather
-    /// than returning partial results.
+    /// Imprints many texts in code-owned sequential batches (not in parallel, to avoid overwhelming
+    /// local providers). Same error semantics as <see cref="EmbedAsync"/>: never throws, and a
+    /// failure on any batch fails the whole call rather than returning partial results.
     /// </summary>
     Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Splits long text into overlapping chunks (<c>Arcanum:Embeddings:ChunkSizeChars</c> /
-    /// <c>ChunkOverlapChars</c>) ahead of imprinting. Pure CPU work — unlike <see cref="EmbedAsync"/> /
-    /// <see cref="EmbedBatchAsync"/>, this does not need the embedding provider and always runs
-    /// regardless of <see cref="IsAvailable"/>. Phase 1 uses a naive sliding-window split with no
-    /// sentence-boundary detection (documented limitation).
+    /// Splits long text into overlapping chunks using code-owned sizes ahead of imprinting. Pure CPU
+    /// work — unlike <see cref="EmbedAsync"/> / <see cref="EmbedBatchAsync"/>, this does not need the
+    /// embedding provider and always runs regardless of <see cref="IsAvailable"/>. Phase 1 uses a
+    /// naive sliding-window split with no sentence-boundary detection (documented limitation).
     /// </summary>
     Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken);
 

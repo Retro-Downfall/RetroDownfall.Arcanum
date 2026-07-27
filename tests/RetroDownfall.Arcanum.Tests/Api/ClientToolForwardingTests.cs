@@ -24,11 +24,7 @@ public sealed class ClientToolForwardingTests
         {
             SettingsOverride = settings => settings with
             {
-                ClientToolForwarding = new ClientToolForwardingSettings
-                {
-                    Enabled = true,
-                    MaxClientTools = 5,
-                },
+                Features = settings.Features with { ClientTools = true },
             },
         };
 
@@ -150,29 +146,30 @@ public sealed class ClientToolForwardingTests
         {
             SettingsOverride = settings => settings with
             {
-                ClientToolForwarding = new ClientToolForwardingSettings
-                {
-                    Enabled = true,
-                    MaxClientTools = 2,
-                },
+                Features = settings.Features with { ClientTools = true },
             },
         };
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
-        string payload = """
-            {
-              "model": "mistral:latest",
-              "messages": [
-                { "role": "user", "content": "What is the weather?" }
-              ],
-              "tools": [
-                { "type": "function", "function": { "name": "a", "parameters": { "type": "object" } } },
-                { "type": "function", "function": { "name": "b", "parameters": { "type": "object" } } },
-                { "type": "function", "function": { "name": "c", "parameters": { "type": "object" } } }
-              ]
-            }
-            """;
+        int maxClientTools = ArcanumSettingClamps.ClientToolForwardingMaxClientTools(
+            ArcanumRuntimeDefaults.ClientTools.MaxClientTools);
+        string payload = JsonSerializer.Serialize(new
+        {
+            model = "mistral:latest",
+            messages = new[] { new { role = "user", content = "What is the weather?" } },
+            tools = Enumerable.Range(0, maxClientTools + 1)
+                .Select(i => new
+                {
+                    type = "function",
+                    function = new
+                    {
+                        name = $"tool_{i}",
+                        parameters = new { type = "object" },
+                    },
+                })
+                .ToArray(),
+        });
 
         HttpResponseMessage response = await client.PostAsync(
             "/v1/chat/completions",
@@ -200,11 +197,7 @@ public sealed class ClientToolForwardingTests
         {
             SettingsOverride = settings => settings with
             {
-                ClientToolForwarding = new ClientToolForwardingSettings
-                {
-                    Enabled = true,
-                    MaxClientTools = 5,
-                },
+                Features = settings.Features with { ClientTools = true },
             },
         };
 
@@ -254,11 +247,7 @@ public sealed class ClientToolForwardingTests
         {
             SettingsOverride = settings => settings with
             {
-                ClientToolForwarding = new ClientToolForwardingSettings
-                {
-                    Enabled = true,
-                    MaxClientTools = 5,
-                },
+                Features = settings.Features with { ClientTools = true },
             },
         };
 
@@ -309,11 +298,7 @@ public sealed class ClientToolForwardingTests
         {
             SettingsOverride = settings => settings with
             {
-                ClientToolForwarding = new ClientToolForwardingSettings
-                {
-                    Enabled = true,
-                    MaxClientTools = 5,
-                },
+                Features = settings.Features with { ClientTools = true },
             },
         };
 

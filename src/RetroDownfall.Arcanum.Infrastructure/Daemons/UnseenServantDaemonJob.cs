@@ -65,7 +65,8 @@ public sealed class UnseenServantDaemonJob : IDaemonJob
 
         int clampedInterval = ArcanumSettingClamps.UnseenServantIntervalMinutes(_pacer.GetEffectiveInterval(_job));
 
-        bool lexiconEnabled = _optionsMonitor.CurrentValue.Intelligence.EnableLexiconSystem;
+        bool lexiconEnabled =
+            _optionsMonitor.CurrentValue.ResolveIntelligence().EnableLexiconSystem;
 
         LexiconEntryDto? priorState = null;
 

@@ -1,19 +1,18 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// OpenAI-compatible <c>/v1/files</c> upload storage. Bound from <c>Arcanum:Files</c>. Distinct from
-/// <see cref="WorkspaceSettings.MaxFileReadSizeBytes"/>/<c>MaxFileWriteSizeBytes</c> — those bound
-/// filesystem access inside a registered workspace; this bounds standalone file uploads stored under
-/// <see cref="Storage.ArcanumPaths.FilesDirectory"/> for later use by <c>/v1/batches</c> and similar.
+/// Detached runtime defaults for OpenAI-compatible <c>/v1/files</c> upload storage. Upload size is
+/// code-owned; the retained MIME policy is projected from
+/// <c>Arcanum:Security:AllowedUploadMimeTypes</c>.
 /// </summary>
 public sealed record FilesSettings
 {
 
-    /// <summary>Maximum upload size in bytes. Default 512 MiB; clamped 1 MiB – 10 GiB at runtime.</summary>
+    /// <summary>Internal maximum upload size in bytes.</summary>
     public long MaxUploadSizeBytes { get; set; } = 512L * 1024L * 1024L;
 
     /// <summary>
-    /// Allowed MIME types for uploads. Empty (default) means no operator-configured restriction —
+    /// Effective MIME types for uploads. Empty means no operator-configured restriction —
     /// the built-in extension/declared-MIME-type cross-check (<c>UploadedFileMimeValidator</c>) still
     /// applies independently as a baseline defense.
     /// </summary>

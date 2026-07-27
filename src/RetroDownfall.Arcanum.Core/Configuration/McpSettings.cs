@@ -1,7 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// MCP host client and transport security limits.
+/// MCP runtime projection. The plaintext-host allowlist comes from
+/// <c>Arcanum:Integrations:Mcp</c>; transport, pagination, frame, and schema limits are code-owned.
 /// </summary>
 public sealed record McpSettings
 {

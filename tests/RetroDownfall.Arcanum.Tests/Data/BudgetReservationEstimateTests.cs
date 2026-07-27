@@ -1,5 +1,4 @@
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -24,7 +23,7 @@ public sealed class BudgetReservationEstimateTests
             (400m * 20m / 1_000_000m)
             + (600m * 80m / 1_000_000m);
 
-        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+        Assert.Equal(expectedPerCall, estimate);
     }
 
     [Fact]
@@ -43,7 +42,7 @@ public sealed class BudgetReservationEstimateTests
 
         decimal expectedPerCall = 2_000m * 80m / 1_000_000m;
 
-        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+        Assert.Equal(expectedPerCall, estimate);
     }
 
     [Fact]
@@ -62,7 +61,7 @@ public sealed class BudgetReservationEstimateTests
 
         decimal expectedPerCall = 1_000m * 80m / 1_000_000m;
 
-        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+        Assert.Equal(expectedPerCall, estimate);
     }
 
     [Fact]
@@ -102,10 +101,9 @@ public sealed class BudgetReservationEstimateTests
             reasoningBudgetTokens: 0);
 
         decimal expectedPerCall = 4096m * (10m + 20m) / 1_000_000m;
-        decimal expected = expectedPerCall * TurnLimitsDefaults.MaxModelCalls;
 
-        Assert.Equal(expected, missingOutputOverride);
-        Assert.Equal(expected, nonPositiveOverrides);
+        Assert.Equal(expectedPerCall, missingOutputOverride);
+        Assert.Equal(expectedPerCall, nonPositiveOverrides);
     }
 
     [Theory]
@@ -128,6 +126,6 @@ public sealed class BudgetReservationEstimateTests
 
         decimal expectedPerCall = 1_000m * (10m + 20m) / 1_000_000m;
 
-        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+        Assert.Equal(expectedPerCall, estimate);
     }
 }

@@ -881,18 +881,13 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             Path.Combine(spellDir, "scripts", "small.sh"),
             new byte[64]);
 
-        // EffectiveSpellMaxFileSizeBytes clamps to a 1 KiB floor; exceed that so the file is skipped.
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
+            new ArcanumSettings());
         await File.WriteAllBytesAsync(
             Path.Combine(spellDir, "scripts", "big.sh"),
-            new byte[2048]);
+            new byte[checked((int)perFileCap + 1)]);
 
-        ArcanumSettings settings = new()
-        {
-            Spells = new SpellSettings { MaxFileSizeBytes = 1 },
-            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1 },
-        };
-
-        SpellRepository repository = CreateRepository(settings: settings);
+        SpellRepository repository = CreateRepository();
 
         SpellExportDto? exported = await repository.ExportAsync("big-script", _workspaceRoot, CancellationToken.None);
 
@@ -926,26 +921,26 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             body
             """);
 
-        // Each script is 600 bytes (under the 1 KiB per-file cap), but two of them together
-        // exceed the 1 KiB aggregate cap, so reading stops after the first.
-        foreach ((string name, int size) in new[] { ("a.sh", 600), ("b.sh", 600), ("c.sh", 600) })
+        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
+            new ArcanumSettings());
+        long aggregateCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
+            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
+        int scriptsWithinAggregateCap = checked((int)(aggregateCap / perFileCap));
+
+        foreach (int index in Enumerable.Range(0, scriptsWithinAggregateCap + 1))
         {
-            await File.WriteAllBytesAsync(Path.Combine(spellDir, "scripts", name), new byte[size]);
+            await File.WriteAllBytesAsync(
+                Path.Combine(spellDir, "scripts", $"{index:D2}.sh"),
+                new byte[checked((int)perFileCap)]);
         }
 
-        ArcanumSettings settings = new()
-        {
-            Spells = new SpellSettings { MaxFileSizeBytes = 1 },
-            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1 },
-        };
-
-        SpellRepository repository = CreateRepository(settings: settings);
+        SpellRepository repository = CreateRepository();
 
         SpellExportDto? exported = await repository.ExportAsync("agg-cap", _workspaceRoot, CancellationToken.None);
 
         Assert.NotNull(exported);
 
-        Assert.Single(exported!.Scripts);
+        Assert.Equal(scriptsWithinAggregateCap, exported!.Scripts.Count);
 
     }
 

@@ -19,7 +19,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Api.Security;
 
 /// <summary>
-/// <c>Idempotency-Key</c> request-replay support (DESIGN.md §11.17) for side-effecting inference
+/// <c>Idempotency-Key</c> request-replay support (<c>docs/Arcanum.DESIGN.md</c> §11.17) for side-effecting inference
 /// endpoints (<c>/api/intelligence/ping</c>, <c>/api/intelligence/ping-stream</c>,
 /// <c>/v1/chat/completions</c>, <c>/v1/embeddings</c>). Opt-in: requests without the header pass
 /// through untouched at effectively zero cost.
@@ -332,7 +332,8 @@ public static class IdempotencyEndpointFilters
         TaskCompletionSource? flightSignal)
     {
 
-        int maxCacheBytes = ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes(security.IdempotencyMaxResponseBytes);
+        int maxCacheBytes = ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes(
+            ArcanumRuntimeDefaults.SecurityIdempotencyMaxResponseBytes);
 
         HttpContext httpContext = context.HttpContext;
 

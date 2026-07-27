@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
@@ -14,25 +15,11 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     [ObservableProperty] private string _corsAllowedOrigins = string.Empty;
 
-    [ObservableProperty] private bool _enableScalarUi;
+    [ObservableProperty] private bool _auditLogEnabled;
 
-    [ObservableProperty] private long _maxRequestBodyBytes;
+    [ObservableProperty] private int _auditLogRetentionDays;
 
-    [ObservableProperty] private string _workspace = string.Empty;
-
-    [ObservableProperty] private string _systemFingerprint = string.Empty;
-
-    [ObservableProperty] private int _retainedLogFileCount;
-
-    [ObservableProperty] private bool _enableEnterpriseTelemetry;
-
-    [ObservableProperty] private bool _rateLimitEnabled;
-
-    [ObservableProperty] private int _rateLimitPermitLimit;
-
-    [ObservableProperty] private int _rateLimitWindowSeconds;
-
-    [ObservableProperty] private int _rateLimitQueueLimit;
+    [ObservableProperty] private bool _auditLogRedactToolArguments;
 
     [ObservableProperty] private bool _httpsEnabled;
 
@@ -42,7 +29,10 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     [ObservableProperty] private string _httpsPrivateKeyPath = string.Empty;
 
-    [ObservableProperty] private string _httpsCertificatePassword = string.Empty;
+    [ObservableProperty]
+    private string _httpsCertificatePasswordEnvironmentVariable = string.Empty;
+
+    [ObservableProperty] private LogLevel _minLogLevelInBuffer;
 
     private HostSettings _snapshot = new();
 
@@ -59,12 +49,9 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     }
 
-    /// <summary>
-    /// Supplies the collaborators the parameterless-constructed section needs for the local
-    /// certificate action. Called once by <see cref="ConfigurationViewModel"/> after construction so
-    /// the section stays newable (and unit-testable) without a DI container.
-    /// </summary>
-    public void AttachServices(LocalCertificateGenerator certificateGenerator, IDialogService dialogService)
+    public void AttachServices(
+        LocalCertificateGenerator certificateGenerator,
+        IDialogService dialogService)
     {
 
         _certificateGenerator = certificateGenerator;
@@ -84,25 +71,11 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         CorsAllowedOrigins = settings.CorsAllowedOrigins.JoinCsv();
 
-        EnableScalarUi = settings.EnableScalarUi;
+        AuditLogEnabled = settings.AuditLog.Enabled;
 
-        MaxRequestBodyBytes = settings.MaxRequestBodyBytes;
+        AuditLogRetentionDays = settings.AuditLog.RetentionDays;
 
-        Workspace = settings.Workspace ?? string.Empty;
-
-        SystemFingerprint = settings.SystemFingerprint ?? string.Empty;
-
-        RetainedLogFileCount = settings.RetainedLogFileCount;
-
-        EnableEnterpriseTelemetry = settings.EnableEnterpriseTelemetry;
-
-        RateLimitEnabled = settings.RateLimit.Enabled;
-
-        RateLimitPermitLimit = settings.RateLimit.PermitLimit;
-
-        RateLimitWindowSeconds = settings.RateLimit.WindowSeconds;
-
-        RateLimitQueueLimit = settings.RateLimit.QueueLimit;
+        AuditLogRedactToolArguments = settings.AuditLog.RedactToolArguments;
 
         HttpsEnabled = settings.Https.Enabled;
 
@@ -112,65 +85,35 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         HttpsPrivateKeyPath = settings.Https.PrivateKeyPath ?? string.Empty;
 
-        HttpsCertificatePassword = settings.Https.CertificatePassword ?? string.Empty;
+        HttpsCertificatePasswordEnvironmentVariable =
+            settings.Https.CertificatePasswordEnvironmentVariable ?? string.Empty;
+
+        MinLogLevelInBuffer = settings.MinLogLevelInBuffer;
 
     }
 
-    public HostSettings Build()
+    public HostSettings Build() => _snapshot with
     {
-
-        return _snapshot with
+        Port = Port,
+        ListenAny = ListenAny,
+        CorsAllowedOrigins = CorsAllowedOrigins.SplitCsv(),
+        AuditLog = _snapshot.AuditLog with
         {
-
-            Port = Port,
-
-            ListenAny = ListenAny,
-
-            CorsAllowedOrigins = CorsAllowedOrigins.SplitCsv(),
-
-            EnableScalarUi = EnableScalarUi,
-
-            MaxRequestBodyBytes = MaxRequestBodyBytes,
-
-            Workspace = string.IsNullOrWhiteSpace(Workspace) ? null : Workspace,
-
-            SystemFingerprint = string.IsNullOrWhiteSpace(SystemFingerprint) ? null : SystemFingerprint,
-
-            RetainedLogFileCount = RetainedLogFileCount,
-
-            EnableEnterpriseTelemetry = EnableEnterpriseTelemetry,
-
-            RateLimit = new HostRateLimitSettings
-            {
-
-                Enabled = RateLimitEnabled,
-
-                PermitLimit = RateLimitPermitLimit,
-
-                WindowSeconds = RateLimitWindowSeconds,
-
-                QueueLimit = RateLimitQueueLimit,
-
-            },
-
-            Https = new HttpsSettings
-            {
-
-                Enabled = HttpsEnabled,
-
-                Port = HttpsPort,
-
-                CertificatePath = string.IsNullOrWhiteSpace(HttpsCertificatePath) ? null : HttpsCertificatePath,
-
-                PrivateKeyPath = string.IsNullOrWhiteSpace(HttpsPrivateKeyPath) ? null : HttpsPrivateKeyPath,
-
-                CertificatePassword = string.IsNullOrWhiteSpace(HttpsCertificatePassword) ? null : HttpsCertificatePassword,
-
-            },
-
-        };
-
-    }
+            Enabled = AuditLogEnabled,
+            RetentionDays = AuditLogRetentionDays,
+            RedactToolArguments = AuditLogRedactToolArguments,
+        },
+        Https = _snapshot.Https with
+        {
+            Enabled = HttpsEnabled,
+            Port = HttpsPort,
+            CertificatePath = NullIfWhiteSpace(HttpsCertificatePath),
+            PrivateKeyPath = NullIfWhiteSpace(HttpsPrivateKeyPath),
+            CertificatePasswordEnvironmentVariable =
+                NullIfWhiteSpace(HttpsCertificatePasswordEnvironmentVariable),
+        },
+        MinLogLevelInBuffer = MinLogLevelInBuffer,
+    };
 
     private async Task GenerateLocalCertificateAsync()
     {
@@ -182,12 +125,12 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         }
 
-        LocalCertificateResult result = await Task.Run(() => _certificateGenerator.Generate()).ConfigureAwait(true);
+        LocalCertificateResult result = await Task
+            .Run(() => _certificateGenerator.Generate())
+            .ConfigureAwait(true);
 
         HttpsEnabled = true;
 
-        // Preserve a valid, operator-chosen HTTPS port; only fall back to the 5443 default when the
-        // current value is unset or out of range (a fresh section or a bad manual edit).
         if (HttpsPort != ArcanumSettingClamps.HostHttpsPort(HttpsPort))
         {
 
@@ -197,24 +140,33 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         HttpsCertificatePath = result.CertificatePath;
 
-        HttpsCertificatePassword = result.Password;
+        HttpsPrivateKeyPath = result.PrivateKeyPath;
 
-        // A generated PFX bundle carries its own key, so any lingering PEM key path must be cleared.
-        HttpsPrivateKeyPath = string.Empty;
+        HttpsCertificatePasswordEnvironmentVariable = string.Empty;
 
-        if (_dialogService is not null)
+        if (_dialogService is null)
         {
 
-            string message = "A self-signed localhost certificate was generated and HTTPS was enabled.\n\n"
-                + string.Join("\n\n", result.Warnings)
-                + $"\n\nCertificate: {result.CertificatePath}"
-                + $"\nExpires: {result.ExpiresAt:yyyy-MM-dd}"
-                + $"\nThumbprint: {result.Thumbprint}";
-
-            await _dialogService.ShowAlertAsync("Local certificate generated", message).ConfigureAwait(true);
+            return;
 
         }
 
+        string message = "A self-signed localhost certificate was generated and HTTPS was enabled."
+            + "\n\n"
+            + string.Join("\n\n", result.Warnings)
+            + $"\n\nCertificate: {result.CertificatePath}"
+            + $"\nExpires: {result.ExpiresAt:yyyy-MM-dd}"
+            + $"\nThumbprint: {result.Thumbprint}";
+
+        await _dialogService
+            .ShowAlertAsync("Local certificate generated", message)
+            .ConfigureAwait(true);
+
     }
+
+    private static string? NullIfWhiteSpace(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? null
+            : value;
 
 }

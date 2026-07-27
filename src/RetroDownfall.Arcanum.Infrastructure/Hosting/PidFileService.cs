@@ -16,7 +16,7 @@ public sealed class PidFileService : IHostedService
 
     public PidFileService(IOptionsMonitor<ArcanumSettings> settings, ILogger<PidFileService> logger)
     {
-        _path = settings.CurrentValue.Server?.PidFilePath;
+        _path = ArcanumRuntimeDefaults.Server.PidFilePath;
 
         _logger = logger;
     }

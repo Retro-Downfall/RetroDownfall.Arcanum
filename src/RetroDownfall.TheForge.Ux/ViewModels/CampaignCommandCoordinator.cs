@@ -635,7 +635,7 @@ public sealed class CampaignCommandCoordinator : ICampaignCommandCoordinator
             _foundryFloor.AppendLine($"Campaign create failed: {detail}");
 
             string whisper = IsPathNotAllowed(result.ErrorCode)
-                ? $"{detail} Add the folder’s parent to Arcanum:Campaigns:AllowedRoots (Compendium → The Forge → Campaigns allowed roots), then retry."
+                ? $"{detail} Add the folder’s parent to Arcanum:Security:CampaignRoots (Compendium → Security → Campaign roots), then retry."
                 : $"Campaign create failed. {detail}";
 
             _whispers.Show(WhisperSeverity.Error, whisper);

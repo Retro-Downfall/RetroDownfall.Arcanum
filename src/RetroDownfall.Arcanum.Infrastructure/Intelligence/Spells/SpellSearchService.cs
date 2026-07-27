@@ -55,7 +55,7 @@ public sealed class SpellSearchService
 
         long maxFileSizeBytes = GetMaxSpellFileSizeBytes();
 
-        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
+        SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
 
         int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
 

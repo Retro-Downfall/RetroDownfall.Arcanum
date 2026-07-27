@@ -91,7 +91,7 @@ public sealed class SpellWorkspaceResolverTests : IAsyncLifetime
     {
         ArcanumSettings settings = new()
         {
-            Spells = new SpellSettings { AllowedWorkspaceRoots = allowedRoots },
+            Security = new SecuritySettings { SpellWorkspaceRoots = allowedRoots },
         };
 
         IHostWorkspaceContext host = new FakeHostWorkspaceContext(hostPath);

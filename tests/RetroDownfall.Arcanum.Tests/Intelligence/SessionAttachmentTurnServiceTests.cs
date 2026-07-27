@@ -16,7 +16,10 @@ public sealed class SessionAttachmentTurnServiceTests
     {
 
         FakeSessionAttachmentStore store = new();
-        ArcanumSettings settings = new() { Attachments = new AttachmentsSettings { Enabled = false } };
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { Attachments = false },
+        };
         PingRequest request = new(
             "hi",
             AttachedFiles: [new AttachedFileDto("notes.txt", "hello")]);
@@ -235,7 +238,7 @@ public sealed class SessionAttachmentTurnServiceTests
 
         ArcanumSettings settings = new()
         {
-            Scrying = new ScryingSettings { Enabled = true, MaxImageBytes = 1024 * 1024 },
+            Features = new FeatureSettings { Scrying = true },
             Providers =
             [
                 new ProviderSettings

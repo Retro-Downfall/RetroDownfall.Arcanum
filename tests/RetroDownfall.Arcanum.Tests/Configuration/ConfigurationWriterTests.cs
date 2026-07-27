@@ -1,10 +1,9 @@
-using Microsoft.AspNetCore.DataProtection;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
-using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
@@ -78,7 +77,7 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WriteAsync_persists_protected_settings_to_grimoire()
+    public async Task WriteAsync_persists_credential_references_without_secret_fields()
     {
 
         ConfigurationWriter writer = CreateWriter();
@@ -87,8 +86,19 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings { Name = "openai", ApiKey = "sk-test" },
+                new ProviderSettings
+                {
+                    Name = "openai",
+                    CredentialEnvironmentVariable = "OPENAI_API_KEY",
+                },
             ],
+            Integrations = new IntegrationSettings
+            {
+                CommLink = new CommLinkIntegrationSettings
+                {
+                    WebhookUrlEnvironmentVariable = "ARCANUM_COMMLINK_WEBHOOK_URL",
+                },
+            },
         };
 
         Result result = await writer.WriteAsync(settings, CancellationToken.None);
@@ -103,9 +113,11 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         Assert.Contains("openai", json, StringComparison.Ordinal);
 
-        Assert.Contains("dp:v1:", json, StringComparison.Ordinal);
+        Assert.Contains("OPENAI_API_KEY", json, StringComparison.Ordinal);
+        Assert.Contains("ARCANUM_COMMLINK_WEBHOOK_URL", json, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("sk-test", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"apiKey\"", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"webhookUrl\"", json, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -119,7 +131,11 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings { Name = "openai", ApiKey = "sk-test" },
+                new ProviderSettings
+                {
+                    Name = "openai",
+                    CredentialEnvironmentVariable = "OPENAI_API_KEY",
+                },
             ],
         };
 
@@ -133,13 +149,40 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         Assert.Contains('\n', json);
 
-        Assert.Contains("\"host\":", json, StringComparison.Ordinal);
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement arcanum = document.RootElement.GetProperty("Arcanum");
 
-        Assert.Contains("\"port\": 5001", json, StringComparison.Ordinal);
+        foreach (string retained in new[]
+                 {
+                     "edition",
+                     "host",
+                     "providers",
+                     "defaultModel",
+                     "fastModel",
+                     "security",
+                     "workspaces",
+                     "features",
+                     "integrations",
+                     "execution",
+                     "cost",
+                     "daemon",
+                     "cli",
+                 })
+        {
+            Assert.True(arcanum.TryGetProperty(retained, out _), $"Missing retained root '{retained}'.");
+        }
 
-        Assert.Contains("\"server\":", json, StringComparison.Ordinal);
-
-        Assert.Contains("\"pidFilePath\":", json, StringComparison.Ordinal);
+        foreach (string removed in new[]
+                 {
+                     "server",
+                     "intelligence",
+                     "codingTools",
+                     "resilience",
+                     "structuredOutput",
+                 })
+        {
+            Assert.False(arcanum.TryGetProperty(removed, out _), $"Removed root '{removed}' was serialized.");
+        }
 
     }
 
@@ -153,7 +196,11 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings { Name = "original", ApiKey = "sk-original" },
+                new ProviderSettings
+                {
+                    Name = "original",
+                    CredentialEnvironmentVariable = "ORIGINAL_API_KEY",
+                },
             ],
         };
 
@@ -171,7 +218,11 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings { Name = "replacement", ApiKey = "sk-replacement" },
+                new ProviderSettings
+                {
+                    Name = "replacement",
+                    CredentialEnvironmentVariable = "REPLACEMENT_API_KEY",
+                },
             ],
         };
 
@@ -187,12 +238,7 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     private static ConfigurationWriter CreateWriter()
     {
-
-        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.ConfigurationWriterTests");
-
-        ConfigurationSecretProtector secretProtector = new(provider);
-
-        return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance, secretProtector);
+        return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance);
 
     }
 

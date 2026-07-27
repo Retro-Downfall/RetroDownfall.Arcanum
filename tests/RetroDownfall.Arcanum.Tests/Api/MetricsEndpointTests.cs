@@ -114,7 +114,7 @@ public sealed class MetricsEndpointTests
         {
             SettingsOverride = static settings => settings with
             {
-                Metrics = settings.Metrics with { Enabled = false },
+                Features = settings.Features with { Metrics = false },
             },
         };
 

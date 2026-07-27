@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
-/// <summary>Response body for <c>POST /v1/moderations</c>. See DESIGN.md §11.18.</summary>
+/// <summary>Response body for <c>POST /v1/moderations</c>. See <c>docs/Arcanum.DESIGN.md</c> §11.18.</summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 public sealed record OpenAiModerationResponse(
     [property: JsonPropertyName("id")] string Id,
@@ -11,8 +11,8 @@ public sealed record OpenAiModerationResponse(
     [property: JsonPropertyName("results")] List<OpenAiModerationResult> Results);
 
 /// <summary>
-/// One verdict per <c>input</c> item. Phase 1 is a pass-through stub — Arcanum runs no local or
-/// remote moderation model yet, so every field is always <c>false</c>/<c>0.0</c>.
+/// One verdict per <c>input</c> item. Arcanum runs no local or remote moderation model, so every
+/// field is always <c>false</c>/<c>0.0</c>.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 public sealed record OpenAiModerationResult(

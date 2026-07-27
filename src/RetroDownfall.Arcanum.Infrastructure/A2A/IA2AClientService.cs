@@ -22,8 +22,8 @@ public interface IA2AClientService
 
     /// <summary>
     /// Discovers <paramref name="agentUrl"/>'s Agent Card, sends <paramref name="goal"/> as a new A2A message,
-    /// and blocks until the remote agent responds or the task reaches a terminal state (subject to
-    /// <c>Arcanum:Conclave:A2A:ExternalTaskTimeoutMinutes</c>).
+    /// and blocks until the remote agent responds, the task reaches a terminal state, or the caller/host
+    /// cancels the operation.
     /// </summary>
     Task<Result<A2ADispatchResult>> DispatchSendingAsync(
         string goal,

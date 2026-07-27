@@ -262,13 +262,18 @@ public sealed class WorkspaceDivinationEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Embeddings = settings.Embeddings with
+                Features = settings.Features with
                 {
-                    Enabled = true,
-                    CodebaseRetrievalEnabled = true,
-                    Provider = "test",
-                    Model = "test-embed",
-                    SimilarityThreshold = 0f,
+                    Embeddings = true,
+                    CodebaseRetrieval = true,
+                },
+                Integrations = settings.Integrations with
+                {
+                    Embeddings = settings.Integrations.Embeddings with
+                    {
+                        Provider = "test",
+                        Model = "test-embed",
+                    },
                 },
             },
             ServiceOverrides = services =>

@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Api.Hosting;
@@ -9,10 +8,13 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
 public sealed class HttpsCertificateLoaderTests : IDisposable
 {
+    private const string PasswordVariable = "ARCANUM_TEST_HTTPS_PFX_PASSWORD";
 
     private readonly string _tempRoot;
+    private readonly string? _originalPassword;
 
     public HttpsCertificateLoaderTests()
     {
@@ -21,17 +23,26 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
         _ = Directory.CreateDirectory(_tempRoot);
 
+        _originalPassword = System.Environment.GetEnvironmentVariable(PasswordVariable);
+
+        System.Environment.SetEnvironmentVariable(PasswordVariable, null);
+
     }
 
     [Fact]
-    public void Load_PfxWithPlaintextPassword_Succeeds()
+    public void Load_PfxWithExplicitEnvironmentPassword_Succeeds()
     {
 
         (string path, string password) = CreatePfx(password: "test-password");
 
+        System.Environment.SetEnvironmentVariable(PasswordVariable, password);
+
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
-            new HttpsSettings { CertificatePath = path, CertificatePassword = password },
-            secretProtector: null);
+            new HttpsSettings
+            {
+                CertificatePath = path,
+                CertificatePasswordEnvironmentVariable = PasswordVariable,
+            });
 
         Assert.True(result.IsSuccess);
 
@@ -48,30 +59,11 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         (string path, _) = CreatePfx(password: null);
 
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
-            new HttpsSettings { CertificatePath = path, CertificatePassword = null },
-            secretProtector: null);
-
-        Assert.True(result.IsSuccess);
-
-        Assert.NotNull(result.Certificate);
-
-    }
-
-    [Fact]
-    public void Load_PfxWithDataProtectedPassword_Succeeds()
-    {
-
-        (string path, string password) = CreatePfx(password: "protected-secret");
-
-        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.Tests");
-
-        ConfigurationSecretProtector protector = new(provider);
-
-        string? protectedPassword = protector.Protect(password);
-
-        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
-            new HttpsSettings { CertificatePath = path, CertificatePassword = protectedPassword },
-            protector);
+            new HttpsSettings
+            {
+                CertificatePath = path,
+                CertificatePasswordEnvironmentVariable = PasswordVariable,
+            });
 
         Assert.True(result.IsSuccess);
 
@@ -85,9 +77,14 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
         (string path, _) = CreatePfx(password: "correct");
 
+        System.Environment.SetEnvironmentVariable(PasswordVariable, "wrong");
+
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
-            new HttpsSettings { CertificatePath = path, CertificatePassword = "wrong" },
-            secretProtector: null);
+            new HttpsSettings
+            {
+                CertificatePath = path,
+                CertificatePasswordEnvironmentVariable = PasswordVariable,
+            });
 
         Assert.False(result.IsSuccess);
 
@@ -108,8 +105,7 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         string missing = Path.Combine(_tempRoot, "missing.pfx");
 
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
-            new HttpsSettings { CertificatePath = missing },
-            secretProtector: null);
+            new HttpsSettings { CertificatePath = missing });
 
         Assert.False(result.IsSuccess);
 
@@ -120,19 +116,22 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     }
 
     [Fact]
-    public void Load_PemPair_Succeeds_AndIgnoresCertificatePassword()
+    public void Load_PemPair_Succeeds_AndIgnoresCertificatePasswordEnvironment()
     {
 
         (string certPath, string keyPath) = CreatePemPair();
+
+        System.Environment.SetEnvironmentVariable(
+            PasswordVariable,
+            "should-be-ignored");
 
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
             new HttpsSettings
             {
                 CertificatePath = certPath,
                 PrivateKeyPath = keyPath,
-                CertificatePassword = "should-be-ignored",
-            },
-            secretProtector: null);
+                CertificatePasswordEnvironmentVariable = PasswordVariable,
+            });
 
         Assert.True(result.IsSuccess);
 
@@ -151,9 +150,14 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
             notBefore: DateTimeOffset.UtcNow.AddDays(-30),
             notAfter: DateTimeOffset.UtcNow.AddDays(-1));
 
+        System.Environment.SetEnvironmentVariable(PasswordVariable, password);
+
         HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
-            new HttpsSettings { CertificatePath = path, CertificatePassword = password },
-            secretProtector: null);
+            new HttpsSettings
+            {
+                CertificatePath = path,
+                CertificatePasswordEnvironmentVariable = PasswordVariable,
+            });
 
         Assert.False(result.IsSuccess);
 
@@ -176,7 +180,10 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
         ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false);
 
-        Assert.Equal(new HostSettings().MaxRequestBodyBytes, options.Limits.MaxRequestBodySize);
+        Assert.Equal(
+            ArcanumSettingClamps.MaxRequestBodyBytes(
+                ArcanumRuntimeDefaults.HostMaxRequestBodyBytes),
+            options.Limits.MaxRequestBodySize);
 
     }
 
@@ -234,6 +241,8 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
     public void Dispose()
     {
+
+        System.Environment.SetEnvironmentVariable(PasswordVariable, _originalPassword);
 
         try
         {

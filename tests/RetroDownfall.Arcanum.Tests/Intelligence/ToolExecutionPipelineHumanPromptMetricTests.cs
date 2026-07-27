@@ -154,13 +154,13 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance);
 
-        FunctionCallContent fcc = new("call_1", "use_commlink", new Dictionary<string, object?>());
+        FunctionCallContent fcc = new("call_1", "send_commlink_alert", new Dictionary<string, object?>());
 
         ChatOptions chatOptions = new()
         {
             Tools =
             [
-                AIFunctionFactory.Create(() => "sent", "use_commlink"),
+                AIFunctionFactory.Create(() => "sent", "send_commlink_alert"),
             ],
         };
 
@@ -177,7 +177,7 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
         Assert.False(processed.Failed);
 
-        Assert.Equal("use_commlink", processed.ToolName);
+        Assert.Equal("send_commlink_alert", processed.ToolName);
 
         string recorded = Assert.Single(toolNames);
 

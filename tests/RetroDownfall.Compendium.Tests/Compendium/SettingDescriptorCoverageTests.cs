@@ -1,6 +1,7 @@
-using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Compendium.Ux.Models;
 using Xunit;
 
@@ -11,115 +12,210 @@ public sealed class SettingDescriptorCoverageTests
 
     private const string ConfigurationNamespace = "RetroDownfall.Arcanum.Core.Configuration";
 
-    [Fact]
+    private static readonly string[] RemovedProviderProfilePrefixes =
+    [
+        "providers.tokenization",
+        "providers.promptCaching",
+        "providers.supportsPromptCaching",
+        "providers.models.tokenization",
+        "providers.models.promptCaching",
+    ];
 
-    public void Every_ArcanumSettings_leaf_property_has_a_descriptor()
+    [Fact]
+    public void Every_retained_public_choice_has_an_editable_descriptor()
     {
 
         HashSet<string> expectedKeys = [];
 
-        CollectExpectedKeys(typeof(ArcanumSettings), prefix: string.Empty, expectedKeys);
+        CollectEditableKeys(typeof(ArcanumSettings), prefix: string.Empty, expectedKeys);
 
-        HashSet<string> actualKeys = SettingDescriptors.All.Select(d => d.Key).ToHashSet();
+        HashSet<string> actualKeys = SettingDescriptors.All
+            .Select(static descriptor => descriptor.Key)
+            .ToHashSet(StringComparer.Ordinal);
 
-        List<string> missing = expectedKeys.Where(k => !actualKeys.Contains(k)).OrderBy(k => k).ToList();
+        List<string> missing = expectedKeys
+            .Where(key => !actualKeys.Contains(key))
+            .OrderBy(static key => key, StringComparer.Ordinal)
+            .ToList();
 
-        if (missing.Count > 0)
+        Assert.True(
+            missing.Count == 0,
+            $"{missing.Count} retained public choice(s) lack an editable SettingDescriptor:"
+            + $"\n  {string.Join("\n  ", missing)}");
 
+    }
+
+    [Fact]
+    public void Every_descriptor_key_matches_a_retained_public_choice()
+    {
+
+        HashSet<string> expectedKeys = [];
+
+        CollectEditableKeys(typeof(ArcanumSettings), prefix: string.Empty, expectedKeys);
+
+        List<string> orphaned = SettingDescriptors.All
+            .Where(descriptor => !expectedKeys.Contains(descriptor.Key))
+            .Select(static descriptor => descriptor.Key)
+            .OrderBy(static key => key, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(
+            orphaned.Count == 0,
+            $"SettingDescriptor keys with no retained public choice: {string.Join(", ", orphaned)}");
+
+    }
+
+    [Fact]
+    public void Descriptor_keys_are_unique()
+    {
+
+        List<string> duplicates = SettingDescriptors.All
+            .GroupBy(static descriptor => descriptor.Key, StringComparer.Ordinal)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToList();
+
+        Assert.True(
+            duplicates.Count == 0,
+            $"Duplicate SettingDescriptor keys: {string.Join(", ", duplicates)}");
+
+    }
+
+    [Fact]
+    public void Descriptor_sections_are_exactly_the_minimal_navigation()
+    {
+
+        ConfigSection[] expected =
+        [
+            ConfigSection.Edition,
+            ConfigSection.Host,
+            ConfigSection.Providers,
+            ConfigSection.Security,
+            ConfigSection.Workspaces,
+            ConfigSection.Features,
+            ConfigSection.Integrations,
+            ConfigSection.Execution,
+            ConfigSection.Cost,
+            ConfigSection.Daemon,
+            ConfigSection.Cli,
+        ];
+
+        Assert.Equal(expected, Enum.GetValues<ConfigSection>());
+        Assert.Equal(expected, SectionDescriptors.All.Select(static descriptor => descriptor.Section));
+        Assert.All(
+            SettingDescriptors.All,
+            descriptor => Assert.Contains(descriptor.Section, expected));
+
+    }
+
+    [Fact]
+    public void Opaque_authored_maps_have_one_dictionary_editor_each()
+    {
+
+        string[] dictionaryPaths =
+        [
+            "integrations.workspaceChecks.customProfiles",
+            "cost.pricing.modelPricing",
+        ];
+
+        foreach (string path in dictionaryPaths)
         {
 
-            Assert.Fail($"{missing.Count} ArcanumSettings field(s) lack a SettingDescriptor:\n  {string.Join("\n  ", missing)}");
+            SettingDescriptor descriptor = Assert.Single(
+                SettingDescriptors.All,
+                candidate => candidate.Key == path);
+
+            Assert.Equal(SettingKind.Dictionary, descriptor.Kind);
+            Assert.DoesNotContain(
+                SettingDescriptors.All,
+                candidate => candidate.Key.StartsWith(
+                    path + ".",
+                    StringComparison.Ordinal));
 
         }
 
     }
 
     [Fact]
-
-    public void Descriptor_keys_are_unique()
+    public void Removed_implementation_profiles_have_no_descriptors()
     {
 
-        List<string> duplicates = SettingDescriptors.All
-
-            .GroupBy(d => d.Key)
-
-            .Where(g => g.Count() > 1)
-
-            .Select(g => g.Key)
-
-            .ToList();
-
-        Assert.True(duplicates.Count == 0, $"Duplicate SettingDescriptor keys: {string.Join(", ", duplicates)}");
-
-    }
-
-    [Fact]
-    public void Workspace_check_custom_profiles_have_one_opaque_dictionary_descriptor()
-    {
-        SettingDescriptor descriptor = Assert.Single(
-            SettingDescriptors.All,
-            static d => d.Key == "codingTools.workspaceCheck.customProfiles");
-
-        Assert.Equal(SettingKind.Dictionary, descriptor.Kind);
         Assert.DoesNotContain(
             SettingDescriptors.All,
-            static d => d.Key.StartsWith(
-                "codingTools.workspaceCheck.customProfiles.",
-                StringComparison.Ordinal));
+            descriptor => RemovedProviderProfilePrefixes.Any(prefix =>
+                descriptor.Key.Equals(prefix, StringComparison.Ordinal)
+                || descriptor.Key.StartsWith(prefix + ".", StringComparison.Ordinal)));
+
+        Assert.DoesNotContain(
+            SectionDescriptors.All,
+            descriptor => descriptor.Title.Contains("Advanced", StringComparison.OrdinalIgnoreCase)
+                || descriptor.Title.Contains("Basic", StringComparison.OrdinalIgnoreCase));
+
     }
 
     [Fact]
-
-    public void Every_descriptor_key_matches_a_real_ArcanumSettings_property()
+    public void Retained_configuration_contract_is_source_generated_and_mutable()
     {
 
-        HashSet<string> expectedKeys = [];
+        HashSet<Type> configurationTypes = [];
 
-        CollectExpectedKeys(typeof(ArcanumSettings), prefix: string.Empty, expectedKeys);
+        CollectConfigurationTypes(typeof(ArcanumSettings), configurationTypes);
 
-        List<string> orphaned = SettingDescriptors.All
+        foreach (Type type in configurationTypes.OrderBy(static type => type.FullName, StringComparer.Ordinal))
+        {
 
-            .Where(d => !expectedKeys.Contains(d.Key))
+            Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
 
-            .Select(d => d.Key)
+            foreach (PropertyInfo property in GetBindableProperties(type))
+            {
 
-            .OrderBy(k => k)
+                MethodInfo setter = property.SetMethod!;
 
-            .ToList();
+                Assert.DoesNotContain(
+                    typeof(IsExternalInit),
+                    setter.ReturnParameter.GetRequiredCustomModifiers());
 
-        Assert.True(orphaned.Count == 0, $"SettingDescriptor keys with no matching ArcanumSettings field: {string.Join(", ", orphaned)}");
+            }
+
+        }
 
     }
 
-    private static void CollectExpectedKeys(Type type, string prefix, HashSet<string> keys)
+    private static void CollectEditableKeys(
+        Type type,
+        string prefix,
+        HashSet<string> keys)
     {
 
-        foreach (PropertyInfo property in GetInitProperties(type))
-
+        foreach (PropertyInfo property in GetBindableProperties(type))
         {
 
             string name = ToCamelCase(property.Name);
-
-            string key = string.IsNullOrEmpty(prefix) ? name : $"{prefix}.{name}";
+            string key = string.IsNullOrEmpty(prefix)
+                ? name
+                : $"{prefix}.{name}";
 
             Type propertyType = UnwrapNullable(property.PropertyType);
 
-            if (IsSubRecord(propertyType))
-
+            if (IsDictionary(propertyType))
             {
 
-                CollectExpectedKeys(propertyType, key, keys);
+                keys.Add(key);
 
             }
-            else if (IsRecordCollection(propertyType, out Type? elementType))
-
+            else if (TryGetRecordCollectionElement(propertyType, out Type? elementType))
             {
 
-                CollectExpectedKeys(elementType!, key, keys);
+                CollectEditableKeys(elementType!, key, keys);
+
+            }
+            else if (IsConfigurationRecord(propertyType))
+            {
+
+                CollectEditableKeys(propertyType, key, keys);
 
             }
             else
-
             {
 
                 keys.Add(key);
@@ -130,84 +226,93 @@ public sealed class SettingDescriptorCoverageTests
 
     }
 
-    private static IEnumerable<PropertyInfo> GetInitProperties(Type type)
+    private static void CollectConfigurationTypes(Type type, HashSet<Type> types)
     {
 
-        return type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        type = UnwrapNullable(type);
 
-            .Where(p => p.GetSetMethod(true) is not null);
+        if (!IsConfigurationRecord(type) || !types.Add(type))
+        {
+
+            return;
+
+        }
+
+        foreach (PropertyInfo property in GetBindableProperties(type))
+        {
+
+            Type propertyType = UnwrapNullable(property.PropertyType);
+
+            if (TryGetRecordCollectionElement(propertyType, out Type? elementType))
+            {
+
+                CollectConfigurationTypes(elementType!, types);
+
+            }
+            else if (TryGetDictionaryValue(propertyType, out Type? valueType))
+            {
+
+                CollectConfigurationTypes(valueType!, types);
+
+            }
+            else
+            {
+
+                CollectConfigurationTypes(propertyType, types);
+
+            }
+
+        }
 
     }
 
-    private static Type UnwrapNullable(Type type)
+    private static IEnumerable<PropertyInfo> GetBindableProperties(Type type) =>
+        type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(static property =>
+                property.GetMethod?.IsPublic == true
+                && property.SetMethod?.IsPublic == true);
+
+    private static Type UnwrapNullable(Type type) =>
+        Nullable.GetUnderlyingType(type) ?? type;
+
+    private static bool IsConfigurationRecord(Type type) =>
+        type.IsClass
+        && type != typeof(string)
+        && type.Namespace == ConfigurationNamespace;
+
+    private static bool IsDictionary(Type type) =>
+        type.IsGenericType
+        && type.GetGenericTypeDefinition() == typeof(Dictionary<,>);
+
+    private static bool TryGetDictionaryValue(Type type, out Type? valueType)
     {
 
-        Type? underlying = Nullable.GetUnderlyingType(type);
+        valueType = null;
 
-        if (underlying is not null)
-
+        if (!IsDictionary(type))
         {
 
-            return underlying;
+            return false;
 
         }
 
-        return type;
+        valueType = type.GetGenericArguments()[1];
+
+        return true;
 
     }
 
-    private static bool IsSubRecord(Type type)
-    {
-
-        if (type == typeof(string))
-
-        {
-
-            return false;
-
-        }
-
-        if (type.IsEnum)
-
-        {
-
-            return false;
-
-        }
-
-        if (type.IsArray)
-
-        {
-
-            return false;
-
-        }
-
-        if (type.IsGenericType)
-
-        {
-
-            return false;
-
-        }
-
-        return type.IsClass && type.Namespace == ConfigurationNamespace;
-
-    }
-
-    private static bool IsRecordCollection(Type type, out Type? elementType)
+    private static bool TryGetRecordCollectionElement(Type type, out Type? elementType)
     {
 
         elementType = null;
 
         if (type.IsArray)
-
         {
 
             Type element = type.GetElementType()!;
 
-            if (IsSubRecord(element))
-
+            if (IsConfigurationRecord(element))
             {
 
                 elementType = element;
@@ -220,65 +325,41 @@ public sealed class SettingDescriptorCoverageTests
 
         }
 
-        if (type.IsGenericType)
-
+        if (!type.IsGenericType)
         {
 
-            Type genericDef = type.GetGenericTypeDefinition();
-
-            if (genericDef == typeof(IReadOnlyList<>) || genericDef == typeof(List<>))
-
-            {
-
-                Type element = type.GetGenericArguments()[0];
-
-                if (IsSubRecord(element))
-
-                {
-
-                    elementType = element;
-
-                    return true;
-
-                }
-
-            }
+            return false;
 
         }
 
-        return false;
+        Type genericDefinition = type.GetGenericTypeDefinition();
+
+        if (genericDefinition != typeof(IReadOnlyList<>)
+            && genericDefinition != typeof(List<>))
+        {
+
+            return false;
+
+        }
+
+        Type candidate = type.GetGenericArguments()[0];
+
+        if (!IsConfigurationRecord(candidate))
+        {
+
+            return false;
+
+        }
+
+        elementType = candidate;
+
+        return true;
 
     }
 
-    private static string ToCamelCase(string name)
-    {
-
-        if (string.IsNullOrEmpty(name))
-
-        {
-
-            return name;
-
-        }
-
-        if (char.IsLower(name[0]))
-
-        {
-
-            return name;
-
-        }
-
-        if (name.Length == 1)
-
-        {
-
-            return name.ToLowerInvariant();
-
-        }
-
-        return char.ToLowerInvariant(name[0]) + name[1..];
-
-    }
+    private static string ToCamelCase(string name) =>
+        string.IsNullOrEmpty(name) || char.IsLower(name[0])
+            ? name
+            : char.ToLowerInvariant(name[0]) + name[1..];
 
 }

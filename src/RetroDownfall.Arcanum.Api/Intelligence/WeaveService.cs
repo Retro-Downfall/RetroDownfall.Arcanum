@@ -39,7 +39,7 @@ public sealed class WeaveService(
         get
         {
 
-            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
             return embeddings.Enabled
                 && !string.IsNullOrWhiteSpace(embeddings.Provider)
@@ -75,7 +75,7 @@ public sealed class WeaveService(
 
             return Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.FeatureDisabled,
-                "Embeddings are disabled (Arcanum:Embeddings:Enabled is false, or Provider/Model is not configured)."));
+                "Embeddings are disabled or incomplete (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model)."));
 
         }
 
@@ -85,7 +85,7 @@ public sealed class WeaveService(
 
         }
 
-        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
         int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(embeddings.BatchSize);
 
@@ -112,7 +112,7 @@ public sealed class WeaveService(
         }
 
         long totalApproxTokens = EstimateApproximateTokens(sanitizedBatches.SelectMany(static batch => batch));
-        PricingSettings pricingSettings = optionsMonitor.CurrentValue.Pricing ?? new PricingSettings();
+        PricingSettings pricingSettings = optionsMonitor.CurrentValue.ResolvePricing();
         ModelPricingEntry pricing = pricingSettings.ResolveForModel(embeddings.Model);
 
         string provider = embeddings.Provider ?? "unknown";
@@ -194,7 +194,7 @@ public sealed class WeaveService(
             // The linked timeout CTS fired, not the caller's own token — this is an internal provider
             // timeout, translated into a sanitized failure rather than propagated as a cancellation.
             logger.LogWarning(
-                "Embedding request timed out after {TimeoutSeconds}s (Arcanum:Embeddings:RequestTimeoutSeconds).",
+                "Embedding request timed out after the code-owned {TimeoutSeconds}s limit.",
                 requestTimeoutSeconds);
 
             return Result<Embedding<float>[]>.Failure(new Error(
@@ -209,8 +209,7 @@ public sealed class WeaveService(
             // servers) surface HTTP error responses as ClientResultException, not HttpRequestException.
             logger.LogWarning(
                 ex,
-                "Embedding provider rejected the batch as too large (HTTP {StatusCode}). Consider lowering "
-                    + "Arcanum:Embeddings:ChunkSizeChars or BatchSize.",
+                "Embedding provider rejected a batch already bounded by code-owned chunk/batch limits (HTTP {StatusCode}).",
                 ex.Status);
 
             return Result<Embedding<float>[]>.Failure(new Error(
@@ -225,8 +224,7 @@ public sealed class WeaveService(
             // populated StatusCode instead of the SDK's ClientResultException.
             logger.LogWarning(
                 ex,
-                "Embedding provider rejected the batch as too large (HTTP {StatusCode}). Consider lowering "
-                    + "Arcanum:Embeddings:ChunkSizeChars or BatchSize.",
+                "Embedding provider rejected a batch already bounded by code-owned chunk/batch limits (HTTP {StatusCode}).",
                 ex.StatusCode);
 
             return Result<Embedding<float>[]>.Failure(new Error(
@@ -333,15 +331,15 @@ public sealed class WeaveService(
 
         }
 
-        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
         int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
 
         int chunkOverlapChars = ArcanumSettingClamps.EmbeddingsChunkOverlapChars(embeddings.ChunkOverlapChars);
 
-        // Phase 1 documented limitation: a naive sliding window with no sentence/word-boundary
-        // detection. A chunk boundary can fall mid-word; acceptable for Phase 1's retrieval quality
-        // bar and revisited only if a later phase needs it (see DESIGN.md §21).
+        // Chunking intentionally uses a code-owned naive sliding window with no sentence or word
+        // boundary detection, so a chunk boundary can fall mid-word. See
+        // docs/Arcanum.DESIGN.md §21.
         int step = Math.Max(1, chunkSizeChars - chunkOverlapChars);
 
         List<(string Chunk, int Offset)> chunks = [];

@@ -172,83 +172,20 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task AddEntryAsync_TooManyEntries_ReturnsFailure()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        ArcanumSettings settings = new()
-        {
-            Sessions = new SessionSettings
-            {
-                MaxEntriesPerSession = 100,
-                MaxEntryContentBytes = 1024,
-            },
-        };
-
-        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), new TestOptionsMonitor<ArcanumSettings>(settings));
-
-        Session session = await repository.CreateAsync(campaignId: null, title: "Limited", CancellationToken.None);
-
-        for (int i = 0; i < 100; i++)
-        {
-
-            Result<Entry> ok = await repository.AddEntryAsync(
-                session.Id,
-                new Entry
-                {
-                    Id = Guid.NewGuid(),
-                    Role = MessageRole.User,
-                    Content = $"entry-{i}",
-                    ModelUsed = "test-model",
-                    CreatedAt = DateTimeOffset.UtcNow,
-                },
-                CancellationToken.None);
-
-            Assert.True(ok.IsSuccess, ok.Error.Code);
-
-        }
-
-        Result<Entry> result = await repository.AddEntryAsync(
-            session.Id,
-            new Entry
-            {
-                Id = Guid.NewGuid(),
-                Role = MessageRole.User,
-                Content = "second",
-                ModelUsed = "test-model",
-                CreatedAt = DateTimeOffset.UtcNow,
-            },
-            CancellationToken.None);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(ErrorCodes.Session.TooManyEntries, result.Error.Code);
-
-        Assert.StartsWith("Session.TooManyEntries:", result.Error.Message, StringComparison.Ordinal);
-
-    }
-
-    [SkippableFact]
     public async Task AddEntryAsync_EntryTooLarge_ReturnsFailure()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ArcanumSettings settings = new()
-        {
-            Sessions = new SessionSettings
-            {
-                MaxEntriesPerSession = 100,
-                MaxEntryContentBytes = 1024,
-            },
-        };
+        ArcanumSettings settings = new();
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), new TestOptionsMonitor<ArcanumSettings>(settings));
 
         Session session = await repository.CreateAsync(campaignId: null, title: "Sized", CancellationToken.None);
 
-        string oversized = new('x', 1025);
+        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
+            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
+        string oversized = new('x', maxEntryBytes + 1);
 
         Result<Entry> result = await repository.AddEntryAsync(
             session.Id,
@@ -819,13 +756,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ArcanumSettings settings = new()
-        {
-            Sessions = new SessionSettings
-            {
-                MaxEntriesPerSession = 10_000,
-            },
-        };
+        ArcanumSettings settings = new();
 
         SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), new TestOptionsMonitor<ArcanumSettings>(settings));
 

@@ -4,8 +4,9 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Core.Weave;
 
 /// <summary>
-/// RAG Phase 1 — Divination: semantic search (cosine similarity) over The Weave. Every RAG feature has
-/// its own vec0 acceleration table + BLOB source-of-truth table (see DESIGN.md §21); this service is
+/// Divination: semantic search (cosine similarity) over The Weave. Every RAG feature has
+/// its own vec0 acceleration table + BLOB source-of-truth table (see
+/// <c>docs/Arcanum.DESIGN.md</c> §21); this service is
 /// the single, generic KNN entry point every feature's retrieval code calls into.
 ///
 /// Table resolution (see the Infrastructure implementation): <paramref name="tableName"/> on

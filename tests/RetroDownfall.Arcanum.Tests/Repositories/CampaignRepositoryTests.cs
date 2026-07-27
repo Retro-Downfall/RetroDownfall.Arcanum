@@ -243,16 +243,10 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
     private CampaignRepository CreateRepository()
     {
-
-        ArcanumSettings settings = new()
-        {
-            Campaigns = new CampaignsSettings { MaxCampaigns = 500 },
-        };
-
         return new CampaignRepository(
             _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
     }
 

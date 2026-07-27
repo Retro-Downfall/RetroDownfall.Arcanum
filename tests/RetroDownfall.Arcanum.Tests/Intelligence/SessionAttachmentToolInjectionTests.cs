@@ -47,8 +47,7 @@ public sealed class SessionAttachmentToolInjectionTests
 
         ArcanumSettings settings = new()
         {
-            Attachments = new AttachmentsSettings { Enabled = true, EnableModelAttachTool = true },
-            Cli = new CliSettings { MaxAttachFileSizeBytes = 1024 * 1024 },
+            Features = new FeatureSettings { Attachments = true },
         };
 
         ToolExecutionPipeline pipeline = CreatePipeline(settings, store);
@@ -150,9 +149,7 @@ public sealed class SessionAttachmentToolInjectionTests
 
         ArcanumSettings settings = new()
         {
-            Attachments = new AttachmentsSettings { Enabled = true, EnableModelAttachTool = true },
-            Cli = new CliSettings { MaxAttachFileSizeBytes = 4096 * 4096 },
-            Scrying = new ScryingSettings { Enabled = true, MaxImageBytes = 4096 * 4096 },
+            Features = new FeatureSettings { Attachments = true, Scrying = true },
             Providers =
             [
                 new ProviderSettings
@@ -285,13 +282,15 @@ public sealed class SessionAttachmentToolInjectionTests
 
         ArcanumSettings settings = new()
         {
-            Attachments = new AttachmentsSettings { Enabled = true, EnableModelAttachTool = true },
-            Cli = new CliSettings { MaxAttachFileSizeBytes = 1024 * 1024 },
-            Ward = new WardSettings
+            Features = new FeatureSettings { Attachments = true },
+            Security = new SecuritySettings
             {
-                Enabled = true,
-                ForbiddenArts = ["attach_session_file"],
-                AutoDenyInUnattendedMode = true,
+                Ward = new WardPolicySettings
+                {
+                    Enabled = true,
+                    ForbiddenArts = ["attach_session_file"],
+                    AutoDenyInUnattendedMode = true,
+                },
             },
         };
 
@@ -388,9 +387,7 @@ public sealed class SessionAttachmentToolInjectionTests
 
         ArcanumSettings settings = new()
         {
-            Attachments = new AttachmentsSettings { Enabled = true, MaxReferencesPerTurn = 1 },
-            Cli = new CliSettings { MaxAttachFileSizeBytes = 1024 * 1024 },
-            Scrying = new ScryingSettings { Enabled = false },
+            Features = new FeatureSettings { Attachments = true, Scrying = false },
         };
 
         SessionAttachmentTurnBudget.BeginTurn(maxReferences: 1, initialConsumed: 0);
@@ -465,8 +462,7 @@ public sealed class SessionAttachmentToolInjectionTests
 
         ArcanumSettings settings = new()
         {
-            Attachments = new AttachmentsSettings { Enabled = true, EnableModelAttachTool = true },
-            Cli = new CliSettings { MaxAttachFileSizeBytes = 1024 * 1024 },
+            Features = new FeatureSettings { Attachments = true },
         };
 
         ToolExecutionPipeline pipeline = CreatePipeline(settings, store);
@@ -542,8 +538,7 @@ public sealed class SessionAttachmentToolInjectionTests
         ToolExecutionPipeline pipeline = CreatePipeline(
             new ArcanumSettings
             {
-                Attachments = new AttachmentsSettings { Enabled = true, EnableModelAttachTool = true },
-                Cli = new CliSettings { MaxAttachFileSizeBytes = 1024 * 1024 },
+                Features = new FeatureSettings { Attachments = true },
             },
             store);
 

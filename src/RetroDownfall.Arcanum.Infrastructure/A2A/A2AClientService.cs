@@ -14,14 +14,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <summary>
 /// Default <see cref="IA2AClientService"/> (the Archmage Client). Discovers remote Agent Cards, validates
 /// outbound URLs against <see cref="OutboundUrlGuard"/> and the optional <c>AllowedRemoteAgents</c> allowlist,
-/// and performs a blocking A2A message exchange bounded by <c>ExternalTaskTimeoutMinutes</c>.
+/// and performs a blocking A2A message exchange until completion or caller/host cancellation.
 /// </summary>
 /// <remarks>
-/// Concurrency is governed by an in-memory <see cref="SemaphoreSlim"/> sized from
-/// <c>Arcanum:Conclave:A2A:MaxExternalTasks</c> at first use — mirroring <c>ChronicleHub</c>'s per-apprentice
-/// hub capacity, a running instance picks up a new limit only after a restart. There is no persisted or
-/// repository-backed counter: external A2A tasks are never written to the Grimoire (see persistence.md), so
-/// unlike <c>ConclaveLineage</c>'s breadth check this cannot be enforced via a repository query.
+/// Concurrency is governed by an in-memory <see cref="SemaphoreSlim"/> sized from the retained
+/// host-capacity policy at first use. External A2A tasks are intentionally process-local and never
+/// written to the Grimoire, so unlike <c>ConclaveLineage</c>'s breadth check this cannot be enforced
+/// via a repository query.
 /// </remarks>
 public sealed class A2AClientService : IA2AClientService
 {
@@ -55,8 +54,8 @@ public sealed class A2AClientService : IA2AClientService
 
         _gate = new Lazy<SemaphoreSlim>(() =>
         {
-            int max = ArcanumSettingClamps.MaxExternalTasks(
-                (_options.CurrentValue.Conclave.A2A ?? new ConclaveA2ASettings()).MaxExternalTasks);
+            int max = ArcanumSettingClamps.MaxConcurrentA2ATasks(
+                _options.CurrentValue.Execution.MaxConcurrentA2ATasks);
 
             return new SemaphoreSlim(max, max);
         });
@@ -72,9 +71,9 @@ public sealed class A2AClientService : IA2AClientService
 
         ArcanumSettings settings = _options.CurrentValue;
 
-        ConclaveA2ASettings a2a = settings.Conclave.A2A ?? new ConclaveA2ASettings();
+        ConclaveA2ASettings a2a = settings.ResolveA2A();
 
-        if (!settings.Conclave.Enabled || !a2a.Enabled || !a2a.ClientEnabled)
+        if (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ClientEnabled)
         {
 
             return Result<A2ADispatchResult>.Failure(
@@ -126,24 +125,25 @@ public sealed class A2AClientService : IA2AClientService
 
         if (!await gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
+            int maxConcurrentTasks = ArcanumSettingClamps.MaxConcurrentA2ATasks(
+                settings.Execution.MaxConcurrentA2ATasks);
 
             return Result<A2ADispatchResult>.Failure(
-                new Error(ErrorCodes.Sending.MaxTasksReached, $"The maximum number of concurrent external delegations ({a2a.MaxExternalTasks}) has been reached."));
+                new Error(ErrorCodes.Sending.MaxTasksReached, $"The maximum number of concurrent external delegations ({maxConcurrentTasks}) has been reached."));
 
         }
 
         try
         {
 
-            return await DispatchInternalAsync(goal.Trim(), name, trimmedUrl, allowlist, a2a, cancellationToken)
+            return await DispatchInternalAsync(goal.Trim(), trimmedUrl, allowlist, cancellationToken)
                 .ConfigureAwait(false);
 
         }
         finally
         {
 
-            // Released here regardless of success, remote failure, or timeout, so a slow or hung remote
-            // agent can never leak a concurrency slot past this call's own lifetime.
+            // Released here regardless of success, remote failure, or caller/host cancellation.
             gate.Release();
 
         }
@@ -152,32 +152,17 @@ public sealed class A2AClientService : IA2AClientService
 
     private async Task<Result<A2ADispatchResult>> DispatchInternalAsync(
         string goal,
-        string? name,
         string discoveryUrl,
         string[] allowlist,
-        ConclaveA2ASettings a2a,
         CancellationToken cancellationToken)
     {
-
-        int timeoutMinutes = ArcanumSettingClamps.ExternalTaskTimeoutMinutes(a2a.ExternalTaskTimeoutMinutes);
-
-        using CancellationTokenSource timeoutCts = new(TimeSpan.FromMinutes(timeoutMinutes));
-
-        using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         AgentCard card;
 
         try
         {
 
-            card = await ResolveCardAsync(discoveryUrl, linkedCts.Token).ConfigureAwait(false);
-
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-
-            return Result<A2ADispatchResult>.Failure(
-                new Error(ErrorCodes.Sending.TaskTimeout, $"Discovering the remote agent's Agent Card did not complete within {timeoutMinutes} minute(s)."));
+            card = await ResolveCardAsync(discoveryUrl, cancellationToken).ConfigureAwait(false);
 
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException)
@@ -211,7 +196,7 @@ public sealed class A2AClientService : IA2AClientService
         }
 
         Result interfaceUrlCheck = await OutboundUrlGuard
-            .ValidateUntrustedUrlAsync(interfaceUrl, linkedCts.Token)
+            .ValidateUntrustedUrlAsync(interfaceUrl, cancellationToken)
             .ConfigureAwait(false);
 
         if (interfaceUrlCheck.IsFailure)
@@ -244,14 +229,7 @@ public sealed class A2AClientService : IA2AClientService
         try
         {
 
-            response = await client.SendMessageAsync(sendRequest, linkedCts.Token).ConfigureAwait(false);
-
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-
-            return Result<A2ADispatchResult>.Failure(
-                new Error(ErrorCodes.Sending.TaskTimeout, $"The remote agent did not respond to '{name ?? "Sending"}' within {timeoutMinutes} minute(s)."));
+            response = await client.SendMessageAsync(sendRequest, cancellationToken).ConfigureAwait(false);
 
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException)
@@ -278,22 +256,11 @@ public sealed class A2AClientService : IA2AClientService
         // in case the remote agent's binding does not honor the configuration hint.
         while (!TaskStateExtensions.IsTerminal(task.Status.State))
         {
+            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
 
-            try
-            {
-
-                await Task.Delay(PollInterval, linkedCts.Token).ConfigureAwait(false);
-
-                task = await client.GetTaskAsync(new GetTaskRequest { Id = task.Id }, linkedCts.Token).ConfigureAwait(false);
-
-            }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-
-                return Result<A2ADispatchResult>.Failure(
-                    new Error(ErrorCodes.Sending.TaskTimeout, $"The remote agent did not complete Sending '{task.Id}' within {timeoutMinutes} minute(s)."));
-
-            }
+            task = await client
+                .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
+                .ConfigureAwait(false);
 
         }
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -16,13 +17,24 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 {
 
     private const string PublicWebhookUrl = "https://example.com/hooks/arcanum";
+    private const string WebhookEnvironmentVariable = "ARCANUM_TEST_COMMLINK_WEBHOOK_URL";
 
     private readonly IDnsResolver _originalResolver;
+    private readonly string? _originalDefaultWebhookUrl;
+    private readonly string? _originalWebhookUrl;
 
     public WebhookCommLinkDispatcherTests()
     {
 
         _originalResolver = OutboundUrlGuard.DnsResolver;
+        _originalDefaultWebhookUrl = System.Environment.GetEnvironmentVariable(
+            EnvironmentCredentialResolver.DefaultCommLinkWebhookUrlEnvironmentVariable);
+        _originalWebhookUrl = System.Environment.GetEnvironmentVariable(
+            WebhookEnvironmentVariable);
+        System.Environment.SetEnvironmentVariable(
+            EnvironmentCredentialResolver.DefaultCommLinkWebhookUrlEnvironmentVariable,
+            null);
+        System.Environment.SetEnvironmentVariable(WebhookEnvironmentVariable, null);
 
         FakeDnsResolver fake = new();
 
@@ -38,6 +50,12 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
     {
 
         OutboundUrlGuard.DnsResolver = _originalResolver;
+        System.Environment.SetEnvironmentVariable(
+            EnvironmentCredentialResolver.DefaultCommLinkWebhookUrlEnvironmentVariable,
+            _originalDefaultWebhookUrl);
+        System.Environment.SetEnvironmentVariable(
+            WebhookEnvironmentVariable,
+            _originalWebhookUrl);
 
     }
 
@@ -67,10 +85,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings { WebhookUrl = "not-a-valid-uri" },
-        };
+        ArcanumSettings settings = SettingsWithWebhook("not-a-valid-uri");
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -91,14 +106,9 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings
-            {
-                WebhookUrl = "ftp://example.com/hook",
-                AllowedSchemes = ["https"],
-            },
-        };
+        ArcanumSettings settings = SettingsWithWebhook(
+            "ftp://example.com/hook",
+            allowedSchemes: ["https"]);
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -119,10 +129,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings { WebhookUrl = "https://127.0.0.1/hook" },
-        };
+        ArcanumSettings settings = SettingsWithWebhook("https://127.0.0.1/hook");
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -143,14 +150,9 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings
-            {
-                WebhookUrl = "http://example.com/hook",
-                AllowedSchemes = ["https", "http"],
-            },
-        };
+        ArcanumSettings settings = SettingsWithWebhook(
+            "http://example.com/hook",
+            allowedSchemes: ["https", "http"]);
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -171,14 +173,9 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings
-            {
-                WebhookUrl = PublicWebhookUrl,
-                AllowedHosts = ["hooks.example.com"],
-            },
-        };
+        ArcanumSettings settings = SettingsWithWebhook(
+            PublicWebhookUrl,
+            allowedHosts: ["hooks.example.com"]);
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -208,10 +205,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         });
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings { WebhookUrl = PublicWebhookUrl },
-        };
+        ArcanumSettings settings = SettingsWithWebhook(PublicWebhookUrl);
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -251,13 +245,10 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway)
         {
-            ReasonPhrase = "Bad Gateway",
+            ReasonPhrase = PublicWebhookUrl,
         }));
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings { WebhookUrl = PublicWebhookUrl },
-        };
+        ArcanumSettings settings = SettingsWithWebhook(PublicWebhookUrl);
 
         WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
 
@@ -269,6 +260,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
         Assert.Equal("CommLink.WebhookHttpError", result.Error.Code);
 
         Assert.Contains("502", result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(PublicWebhookUrl, result.Error.Message, StringComparison.Ordinal);
 
     }
 
@@ -276,14 +268,14 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
     public async Task DispatchAsync_handler_exception_returns_failure()
     {
 
-        RecordingHttpHandler handler = new(_ => Task.FromException<HttpResponseMessage>(new HttpRequestException("network down")));
+        RecordingHttpHandler handler = new(_ =>
+            Task.FromException<HttpResponseMessage>(
+                new HttpRequestException($"network down at {PublicWebhookUrl}")));
+        RecordingLogger logger = new();
 
-        ArcanumSettings settings = new()
-        {
-            CommLink = new CommLinkSettings { WebhookUrl = PublicWebhookUrl },
-        };
+        ArcanumSettings settings = SettingsWithWebhook(PublicWebhookUrl);
 
-        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings);
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(handler, settings, logger);
 
         Result<CommLinkDeliveryResult> result =
             await dispatcher.DispatchAsync(new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
@@ -291,10 +283,40 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
         Assert.True(result.IsFailure);
 
         Assert.Equal("CommLink.WebhookException", result.Error.Code);
+        Assert.DoesNotContain(PublicWebhookUrl, result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            logger.Messages,
+            message => message.Contains(PublicWebhookUrl, StringComparison.Ordinal));
 
     }
 
-    private static WebhookCommLinkDispatcher CreateDispatcher(RecordingHttpHandler handler, ArcanumSettings settings)
+    private static ArcanumSettings SettingsWithWebhook(
+        string webhookUrl,
+        string[]? allowedSchemes = null,
+        string[]? allowedHosts = null)
+    {
+        System.Environment.SetEnvironmentVariable(
+            WebhookEnvironmentVariable,
+            webhookUrl);
+
+        return new ArcanumSettings
+        {
+            Integrations = new IntegrationSettings
+            {
+                CommLink = new CommLinkIntegrationSettings
+                {
+                    WebhookUrlEnvironmentVariable = WebhookEnvironmentVariable,
+                    AllowedSchemes = allowedSchemes ?? ["https"],
+                    AllowedHosts = allowedHosts ?? [],
+                },
+            },
+        };
+    }
+
+    private static WebhookCommLinkDispatcher CreateDispatcher(
+        RecordingHttpHandler handler,
+        ArcanumSettings settings,
+        ILogger<WebhookCommLinkDispatcher>? logger = null)
     {
 
         FakeHttpClientFactory factory = new(handler);
@@ -304,7 +326,7 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
         return new WebhookCommLinkDispatcher(
             factory,
             monitor,
-            NullLogger<WebhookCommLinkDispatcher>.Instance);
+            logger ?? NullLogger<WebhookCommLinkDispatcher>.Instance);
 
     }
 
@@ -331,6 +353,25 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
 
         }
 
+    }
+
+    private sealed class RecordingLogger : ILogger<WebhookCommLinkDispatcher>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
     }
 
 }

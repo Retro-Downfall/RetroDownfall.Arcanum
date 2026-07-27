@@ -11,10 +11,7 @@ public sealed class InMemoryEventBusTests
     [Fact]
     public async Task Publish_delivers_events_to_active_subscriber()
     {
-
-        ArcanumSettings settings = new() { EventBus = new EventBusSettings { ChannelCapacity = 8 } };
-
-        InMemoryEventBus bus = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+        InMemoryEventBus bus = new();
 
         using CancellationTokenSource cts = new();
 

@@ -99,13 +99,13 @@ public sealed class SagaExtractionService(
                 try
                 {
 
-                    EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
+                    EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                     if (!embeddings.Enabled || !embeddings.SagaEnabled || !embeddings.Saga.ExtractionEnabled)
                     {
 
                         logger.LogDebug(
-                            "Saga extraction skipped for session {SessionId}: feature disabled (Enabled={Enabled}, SagaEnabled={SagaEnabled}, Saga.ExtractionEnabled={ExtractionEnabled}).",
+                            "Saga extraction skipped for session {SessionId}: retained feature policy is disabled or incomplete (embedding substrate={EmbeddingsEnabled}, Arcanum:Features:Saga={SagaEnabled}, Arcanum:Features:SagaExtraction={ExtractionEnabled}).",
                             sessionId,
                             embeddings.Enabled,
                             embeddings.SagaEnabled,

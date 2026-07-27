@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Resilience;
 
@@ -12,7 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 /// assumed healthy. State resets on host restart — no Grimoire persistence.
 /// </summary>
 internal sealed class ProviderHealthTracker(
-    IOptionsMonitor<ArcanumSettings> options,
     ILogger<ProviderHealthTracker> logger) : IProviderHealthTracker
 {
 
@@ -27,7 +25,7 @@ internal sealed class ProviderHealthTracker(
     {
 
         int threshold = ArcanumSettingClamps.HealthFailureThreshold(
-            options.CurrentValue.Resilience?.HealthFailureThreshold ?? new ResilienceSettings().HealthFailureThreshold);
+            ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
 
         bool transitioned = false;
 

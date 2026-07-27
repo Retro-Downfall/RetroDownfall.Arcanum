@@ -9,8 +9,6 @@ internal static class OpenAiStreamErrorMapper
     private static readonly HashSet<string> AllowedMessages =
     [
         GenericFailureMessage,
-        "Tool invocation limit reached.",
-        "Inference timed out.",
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
         "Prompt is required.",
         "Attached file validation failed.",
@@ -57,7 +55,7 @@ internal static class OpenAiStreamErrorMapper
                 SanitizeMessage(error?.Message),
                 "api_error",
                 Param: null,
-                Code: ResolveGenericCode(internalCode)),
+                Code: "inference_failed"),
         };
     }
 
@@ -68,11 +66,6 @@ internal static class OpenAiStreamErrorMapper
         !string.IsNullOrWhiteSpace(message) && AllowedMessages.Contains(message)
             ? message
             : GenericFailureMessage;
-
-    private static string ResolveGenericCode(string? internalCode) =>
-        internalCode is ErrorCodes.Hub.ToolLoop or ErrorCodes.Hub.Timeout
-            ? "server_error"
-            : "inference_failed";
 
     private static string? MapReasoningValidationCode(string? internalCode) =>
         internalCode switch

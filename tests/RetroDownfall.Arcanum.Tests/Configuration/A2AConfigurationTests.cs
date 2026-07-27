@@ -9,7 +9,7 @@ public sealed class A2AConfigurationTests
     public void ConclaveA2ASettings_defaults_are_disabled_and_conservative()
     {
 
-        ConclaveA2ASettings a2a = new();
+        ConclaveA2ASettings a2a = ArcanumRuntimeDefaults.Conclave.A2A;
 
         Assert.False(a2a.Enabled);
 
@@ -19,9 +19,7 @@ public sealed class A2AConfigurationTests
 
         Assert.Equal("/api/conclave/a2a", a2a.ServerPath);
 
-        Assert.Equal(50, a2a.MaxExternalTasks);
-
-        Assert.Equal(60, a2a.ExternalTaskTimeoutMinutes);
+        Assert.Equal(50, new ArcanumSettings().Execution.MaxConcurrentA2ATasks);
 
         Assert.Empty(a2a.AllowedRemoteAgents);
 
@@ -37,7 +35,7 @@ public sealed class A2AConfigurationTests
     public void ConclaveSettings_A2A_defaults_to_a_new_disabled_block()
     {
 
-        ConclaveSettings conclave = new();
+        ConclaveSettings conclave = ArcanumRuntimeDefaults.Conclave;
 
         Assert.False(conclave.Enabled);
 
@@ -53,55 +51,62 @@ public sealed class A2AConfigurationTests
     [InlineData(500, 500)]
     [InlineData(501, 500)]
     [InlineData(-5, 1)]
-    public void MaxExternalTasks_clamps_to_1_500(int input, int expected)
+    public void MaxConcurrentA2ATasks_clamps_to_1_500(int input, int expected)
     {
 
-        Assert.Equal(expected, ArcanumSettingClamps.MaxExternalTasks(input));
+        Assert.Equal(expected, ArcanumSettingClamps.MaxConcurrentA2ATasks(input));
 
     }
 
     [Theory]
-    [InlineData(0, 5)]
-    [InlineData(5, 5)]
-    [InlineData(60, 60)]
-    [InlineData(1_440, 1_440)]
-    [InlineData(1_441, 1_440)]
-    public void ExternalTaskTimeoutMinutes_clamps_to_5_1440(int input, int expected)
+    [InlineData(nameof(FeatureSettings.A2AServer))]
+    [InlineData(nameof(FeatureSettings.A2AClient))]
+    public void A2A_feature_implies_Conclave_availability(string featureName)
     {
 
-        Assert.Equal(expected, ArcanumSettingClamps.ExternalTaskTimeoutMinutes(input));
+        FeatureSettings features = featureName switch
+        {
+            nameof(FeatureSettings.A2AServer) => new FeatureSettings { A2AServer = true },
+            nameof(FeatureSettings.A2AClient) => new FeatureSettings { A2AClient = true },
+            _ => throw new ArgumentOutOfRangeException(nameof(featureName)),
+        };
+
+        ArcanumSettings settings = new()
+        {
+            Features = features,
+        };
+
+        ConclaveSettings conclave = settings.ResolveConclave();
+
+        Assert.True(conclave.Enabled);
+
+        Assert.True(conclave.A2A.Enabled);
+
+        Assert.Equal(features.A2AServer, conclave.A2A.ServerEnabled);
+
+        Assert.Equal(features.A2AClient, conclave.A2A.ClientEnabled);
 
     }
 
     [Fact]
-    public void Both_Conclave_and_A2A_Enabled_are_required_for_the_surface_to_activate()
+    public void Conclave_feature_can_enable_Conclave_without_A2A()
     {
 
-        // Zero behavior change until an operator explicitly opts both flags in (constraint: disabled by default).
-        ArcanumSettings conclaveOffOnly = new()
+        ArcanumSettings settings = new()
         {
-            Conclave = new ConclaveSettings { Enabled = false, A2A = new ConclaveA2ASettings { Enabled = true, ServerEnabled = true, ClientEnabled = true } },
+            Features = new FeatureSettings { Conclave = true },
         };
 
-        ArcanumSettings a2aOffOnly = new()
-        {
-            Conclave = new ConclaveSettings { Enabled = true, A2A = new ConclaveA2ASettings { Enabled = false, ServerEnabled = true, ClientEnabled = true } },
-        };
+        ConclaveSettings conclave = settings.ResolveConclave();
 
-        ArcanumSettings bothOn = new()
-        {
-            Conclave = new ConclaveSettings { Enabled = true, A2A = new ConclaveA2ASettings { Enabled = true, ServerEnabled = true, ClientEnabled = true } },
-        };
+        Assert.True(conclave.Enabled);
 
-        Assert.False(IsA2AServerActive(conclaveOffOnly));
+        Assert.False(conclave.A2A.Enabled);
 
-        Assert.False(IsA2AServerActive(a2aOffOnly));
+        Assert.False(conclave.A2A.ServerEnabled);
 
-        Assert.True(IsA2AServerActive(bothOn));
+        Assert.False(conclave.A2A.ClientEnabled);
 
     }
-
-    private static bool IsA2AServerActive(ArcanumSettings settings) =>
-        settings.Conclave.Enabled && settings.Conclave.A2A.Enabled && settings.Conclave.A2A.ServerEnabled;
 
 }

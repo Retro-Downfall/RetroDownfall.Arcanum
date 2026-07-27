@@ -36,13 +36,14 @@ internal sealed class SagaMemoryStore(
         CancellationToken cancellationToken)
     {
 
-        int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(options.CurrentValue.Embeddings.Dimensions);
+        int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
+            options.CurrentValue.Integrations.Embeddings.Dimensions);
 
         if (embedding.Length != expectedDimensions)
         {
 
             throw new InvalidOperationException(
-                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured (Arcanum:Embeddings:Dimensions). Rejecting insert to avoid corrupting the vec0 index.""");
+                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting insert to avoid corrupting the vec0 index.""");
 
         }
 

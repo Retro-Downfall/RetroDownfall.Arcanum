@@ -115,8 +115,7 @@ public static class Utf8Truncation
     /// <summary>
     /// Returns the largest character count from the start of <paramref name="text"/>, up to
     /// <paramref name="maxChars"/>, that does not split a surrogate pair at the boundary. Used to
-    /// hard-cap outbound text by character count (for example against
-    /// <c>Arcanum:Embeddings:ChunkSizeChars</c>) rather than by UTF-8 byte budget.
+    /// hard-cap outbound text by a code-owned character limit rather than by UTF-8 byte budget.
     /// </summary>
     public static int SafeCharSliceLength(ReadOnlySpan<char> text, int maxChars)
     {

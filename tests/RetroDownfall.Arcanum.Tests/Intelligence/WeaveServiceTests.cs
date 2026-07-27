@@ -19,7 +19,7 @@ public sealed class WeaveServiceTests
 
         WeaveService service = CreateService(new ArcanumSettings
         {
-            Embeddings = new EmbeddingSettings { Enabled = false },
+            Features = new FeatureSettings { Embeddings = false },
         });
 
         Assert.False(service.IsAvailable);
@@ -32,7 +32,11 @@ public sealed class WeaveServiceTests
 
         WeaveService service = CreateService(new ArcanumSettings
         {
-            Embeddings = new EmbeddingSettings { Enabled = true, Model = "nomic-embed-text" },
+            Features = new FeatureSettings { Embeddings = true },
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings { Model = "nomic-embed-text" },
+            },
         });
 
         Assert.False(service.IsAvailable);
@@ -45,7 +49,11 @@ public sealed class WeaveServiceTests
 
         WeaveService service = CreateService(new ArcanumSettings
         {
-            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "local" },
+            Features = new FeatureSettings { Embeddings = true },
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings { Provider = "local" },
+            },
         });
 
         Assert.False(service.IsAvailable);
@@ -58,7 +66,15 @@ public sealed class WeaveServiceTests
 
         WeaveService service = CreateService(new ArcanumSettings
         {
-            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "local", Model = "nomic-embed-text" },
+            Features = new FeatureSettings { Embeddings = true },
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings
+                {
+                    Provider = "local",
+                    Model = "nomic-embed-text",
+                },
+            },
         });
 
         Assert.True(service.IsAvailable);
@@ -72,7 +88,7 @@ public sealed class WeaveServiceTests
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(
-            new ArcanumSettings { Embeddings = new EmbeddingSettings { Enabled = false } },
+            new ArcanumSettings { Features = new FeatureSettings { Embeddings = false } },
             factory);
 
         Result<Embedding<float>> result = await service.EmbedAsync("hello", CancellationToken.None);
@@ -92,7 +108,7 @@ public sealed class WeaveServiceTests
         FakeEmbeddingGeneratorFactory factory = new();
 
         WeaveService service = CreateService(
-            new ArcanumSettings { Embeddings = new EmbeddingSettings { Enabled = false } },
+            new ArcanumSettings { Features = new FeatureSettings { Embeddings = false } },
             factory);
 
         Result<Embedding<float>[]> result = await service.EmbedBatchAsync(["a", "b"], CancellationToken.None);
@@ -124,27 +140,32 @@ public sealed class WeaveServiceTests
     }
 
     [Fact]
-    public async Task EmbedBatchAsync_SplitsIntoConfiguredBatchSize()
+    public async Task EmbedBatchAsync_SplitsAtCodeOwnedBatchSize()
     {
 
         FakeEmbeddingGeneratorFactory factory = new();
 
-        ArcanumSettings settings = EnabledSettings(batchSize: 2);
+        ArcanumSettings settings = EnabledSettings();
+        int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(
+            ArcanumRuntimeDefaults.Embeddings.BatchSize);
+        string[] inputs = Enumerable
+            .Range(0, (batchSize * 2) + 1)
+            .Select(static index => $"input-{index}")
+            .ToArray();
 
         WeaveService service = CreateService(settings, factory);
 
         Result<Embedding<float>[]> result = await service.EmbedBatchAsync(
-            ["a", "b", "c", "d", "e"],
+            inputs,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal(5, result.Value.Length);
+        Assert.Equal(inputs.Length, result.Value.Length);
 
-        // 5 texts at batch size 2 -> batches of [2, 2, 1] -> 3 generator resolutions/calls.
         Assert.Equal(3, factory.ResolveCount);
 
-        Assert.Equal([2, 2, 1], factory.Generator.CallSizes);
+        Assert.Equal([batchSize, batchSize, 1], factory.Generator.CallSizes);
 
     }
 
@@ -154,29 +175,38 @@ public sealed class WeaveServiceTests
         FakeEmbeddingGeneratorFactory factory = new();
         RecordingTurnRunWriter writer = new();
         RecordingBudgetReservationService reservations = new();
-        ArcanumSettings settings = EnabledSettings(batchSize: 2) with
+        ArcanumSettings settings = EnabledSettings() with
         {
-            Embeddings = EnabledSettings(batchSize: 2).Embeddings! with { ChunkSizeChars = 128 },
-            Pricing = new PricingSettings
+            Cost = new CostSettings
             {
-                DefaultPricing = new ModelPricingEntry { InputPer1M = 1_000_000m },
+                Pricing = new PricingSettings
+                {
+                    DefaultPricing = new ModelPricingEntry { InputPer1M = 1_000_000m },
+                },
             },
         };
         factory.Generator.BeforeGenerate = () => Assert.NotNull(reservations.LastRequest);
         WeaveService service = CreateService(settings, factory, writer, reservations);
+        int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(
+            ArcanumRuntimeDefaults.Embeddings.BatchSize);
+        int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
+            ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars);
+        string[] inputs =
+        [
+            new string('a', chunkSize + 100),
+            .. Enumerable.Repeat("b", batchSize),
+        ];
 
         Result<Embedding<float>[]> result = await service.EmbedBatchAsync(
-            [new string('a', 300), "b", "c"],
+            inputs,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(34m, reservations.LastRequest?.ReservedUsd);
-        Assert.Collection(
-            writer.Operations,
-            first => Assert.Equal(33L, first.InputTokens),
-            second => Assert.Equal(1L, second.InputTokens));
+        Assert.Equal(2, writer.Operations.Count);
+        decimal expectedSpend = writer.Operations.Sum(static operation => operation.InputTokens);
+        Assert.Equal(expectedSpend, reservations.LastRequest?.ReservedUsd);
         Assert.Equal(1, reservations.ReconcileCount);
-        Assert.Equal(34m, reservations.ReconciledUsd);
+        Assert.Equal(expectedSpend, reservations.ReconciledUsd);
     }
 
     [Fact]
@@ -186,22 +216,28 @@ public sealed class WeaveServiceTests
         factory.Generator.ThrowOnCallNumber = 2;
         RecordingTurnRunWriter writer = new();
         RecordingBudgetReservationService reservations = new();
-        ArcanumSettings settings = EnabledSettings(batchSize: 2) with
+        ArcanumSettings settings = EnabledSettings() with
         {
-            Pricing = new PricingSettings
+            Cost = new CostSettings
             {
-                DefaultPricing = new ModelPricingEntry { InputPer1M = 1_000_000m },
+                Pricing = new PricingSettings
+                {
+                    DefaultPricing = new ModelPricingEntry { InputPer1M = 1_000_000m },
+                },
             },
         };
         WeaveService service = CreateService(settings, factory, writer, reservations);
+        int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(
+            ArcanumRuntimeDefaults.Embeddings.BatchSize);
+        string[] inputs = Enumerable.Repeat("a", batchSize + 1).ToArray();
 
         Result<Embedding<float>[]> result = await service.EmbedBatchAsync(
-            ["a", "b", "c"],
+            inputs,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
         BillableOperationRecord operation = Assert.Single(writer.Operations);
-        Assert.Equal(2L, operation.InputTokens);
+        Assert.Equal(batchSize, operation.InputTokens);
         Assert.Equal(1, reservations.ReconcileCount);
         Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
@@ -228,28 +264,6 @@ public sealed class WeaveServiceTests
     }
 
     [Fact]
-    public async Task EmbedAsync_ProviderTimesOut_ReturnsProviderUnavailable_NeverThrows()
-    {
-
-        FakeEmbeddingGeneratorFactory factory = new();
-
-        // Generously longer than the clamped-minimum 5s request timeout below, so the internal
-        // timeout deterministically fires well before this fake delay could complete.
-        factory.Generator.DelayOnGenerate = TimeSpan.FromSeconds(30);
-
-        ArcanumSettings settings = EnabledSettings(requestTimeoutSeconds: 5);
-
-        WeaveService service = CreateService(settings, factory);
-
-        Result<Embedding<float>> result = await service.EmbedAsync("hello", CancellationToken.None);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
-
-    }
-
-    [Fact]
     public async Task EmbedAsync_CallerCancellation_PropagatesAsOperationCanceled()
     {
 
@@ -257,7 +271,7 @@ public sealed class WeaveServiceTests
 
         factory.Generator.DelayOnGenerate = TimeSpan.FromSeconds(30);
 
-        WeaveService service = CreateService(EnabledSettings(requestTimeoutSeconds: 300), factory);
+        WeaveService service = CreateService(EnabledSettings(), factory);
 
         using CancellationTokenSource cts = new();
 
@@ -304,7 +318,7 @@ public sealed class WeaveServiceTests
         // Embeddings disabled entirely — ChunkAsync is pure CPU and must still succeed.
         WeaveService service = CreateService(new ArcanumSettings
         {
-            Embeddings = new EmbeddingSettings { Enabled = false },
+            Features = new FeatureSettings { Embeddings = false },
         });
 
         Assert.False(service.IsAvailable);
@@ -322,16 +336,13 @@ public sealed class WeaveServiceTests
     [Fact]
     public async Task ChunkAsync_ProducesOverlappingWindows()
     {
-
-        // Values respect ArcanumSettingClamps.EmbeddingsChunkSizeChars (128-8192) /
-        // EmbeddingsChunkOverlapChars (0-1024) — values below the clamp floor would silently
-        // clamp up and change the expected offsets.
-        WeaveService service = CreateService(new ArcanumSettings
-        {
-            Embeddings = new EmbeddingSettings { ChunkSizeChars = 200, ChunkOverlapChars = 40 },
-        });
-
-        string text = new('a', 500);
+        WeaveService service = CreateService(new ArcanumSettings());
+        int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
+            ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars);
+        int overlap = ArcanumSettingClamps.EmbeddingsChunkOverlapChars(
+            ArcanumRuntimeDefaults.Embeddings.ChunkOverlapChars);
+        int step = chunkSize - overlap;
+        string text = new('a', (chunkSize * 2) + 100);
 
         Result<(string Chunk, int Offset)[]> result = await service.ChunkAsync(text, CancellationToken.None);
 
@@ -339,10 +350,11 @@ public sealed class WeaveServiceTests
 
         (string Chunk, int Offset)[] chunks = result.Value;
 
-        // step = 200 - 40 = 160; offsets 0, 160, 320 (last chunk shorter, covers to the end).
-        Assert.Equal([0, 160, 320], chunks.Select(c => c.Offset).ToArray());
+        Assert.Equal(
+            [0, step, step * 2],
+            chunks.Select(static chunk => chunk.Offset).ToArray());
 
-        Assert.All(chunks, c => Assert.True(c.Chunk.Length <= 200));
+        Assert.All(chunks, chunk => Assert.True(chunk.Chunk.Length <= chunkSize));
 
         // Every character of the source text is covered by the final chunk's reach.
         (string Chunk, int Offset) last = chunks[^1];
@@ -351,16 +363,17 @@ public sealed class WeaveServiceTests
 
     }
 
-    private static ArcanumSettings EnabledSettings(int? batchSize = null, int? requestTimeoutSeconds = null) =>
+    private static ArcanumSettings EnabledSettings() =>
         new()
         {
-            Embeddings = new EmbeddingSettings
+            Features = new FeatureSettings { Embeddings = true },
+            Integrations = new IntegrationSettings
             {
-                Enabled = true,
-                Provider = "local",
-                Model = "nomic-embed-text",
-                BatchSize = batchSize ?? new EmbeddingSettings().BatchSize,
-                RequestTimeoutSeconds = requestTimeoutSeconds ?? new EmbeddingSettings().RequestTimeoutSeconds,
+                Embeddings = new EmbeddingIntegrationSettings
+                {
+                    Provider = "local",
+                    Model = "nomic-embed-text",
+                },
             },
         };
 

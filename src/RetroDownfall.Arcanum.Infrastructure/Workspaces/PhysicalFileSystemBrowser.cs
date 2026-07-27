@@ -7,8 +7,13 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
-public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> optionsMonitor) : IFileSystemBrowser
+public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 {
+
+    public PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> optionsMonitor)
+    {
+        ArgumentNullException.ThrowIfNull(optionsMonitor);
+    }
 
     public Task<Result<FileListResult>> ListAsync(
         WorkspaceInfo workspace,
@@ -281,30 +286,21 @@ public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> o
 
     private int GetListDirectoryMaxPaths()
     {
-
-        ArcanumSettings settings = optionsMonitor.CurrentValue;
-
-        int configured = settings.Intelligence?.ListDirectoryMaxPaths ?? new IntelligenceSettings().ListDirectoryMaxPaths;
+        int configured = ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths;
 
         return ArcanumSettingClamps.ListDirectoryMaxPaths(configured);
     }
 
     private int GetListDirectoryMaxDepth()
     {
-
-        ArcanumSettings settings = optionsMonitor.CurrentValue;
-
-        int configured = settings.Workspaces?.ListDirectoryMaxDepth ?? new WorkspaceSettings().ListDirectoryMaxDepth;
+        int configured = ArcanumRuntimeDefaults.WorkspaceListDirectoryMaxDepth;
 
         return ArcanumSettingClamps.ListDirectoryMaxDepth(configured);
     }
 
     private long GetMaxFileReadSizeBytes()
     {
-
-        ArcanumSettings settings = optionsMonitor.CurrentValue;
-
-        long configured = settings.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes;
+        long configured = ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes;
 
         return ArcanumSettingClamps.MaxFileReadSizeBytes(configured);
     }

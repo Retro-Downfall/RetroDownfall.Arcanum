@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Events;
 
@@ -10,13 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// AOT-safe in-memory <see cref="IEventBus"/> with bounded per-subscriber channels and DropOldest back-pressure.
 /// </summary>
-/// <remarks>
-/// Per-event-type hub capacity is read from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> each
-/// time a hub is first created. Existing hubs retain their original capacity; a config reload affects only
-/// event types that have not been seen yet. To pick up a new <c>EventBus.ChannelCapacity</c> for an existing
-/// hub, a restart is required.
-/// </remarks>
-internal sealed class InMemoryEventBus(IOptionsMonitor<ArcanumSettings> optionsMonitor) : IEventBus
+internal sealed class InMemoryEventBus : IEventBus
 {
 
     private readonly ConcurrentDictionary<Type, object> _hubs = new();
@@ -58,7 +51,7 @@ internal sealed class InMemoryEventBus(IOptionsMonitor<ArcanumSettings> optionsM
     {
 
         int capacity = ArcanumSettingClamps.EventBusChannelCapacity(
-            optionsMonitor.CurrentValue.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity);
+            ArcanumRuntimeDefaults.EventBus.ChannelCapacity);
 
         return (ScryingPool<T>)_hubs.GetOrAdd(typeof(T), _ => new ScryingPool<T>(capacity));
     }

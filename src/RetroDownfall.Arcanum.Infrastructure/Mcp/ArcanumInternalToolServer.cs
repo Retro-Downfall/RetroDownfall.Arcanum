@@ -83,7 +83,7 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _adjustInitiativeSchema;
 
-    private readonly JsonElement _useCommlinkSchema;
+    private readonly JsonElement _sendCommLinkAlertSchema;
 
     private readonly JsonElement _petitionDungeonMasterSchema;
 
@@ -367,7 +367,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
-        _useCommlinkSchema = BuildUseCommlinkSchema();
+        _sendCommLinkAlertSchema = BuildSendCommLinkAlertSchema();
 
         _petitionDungeonMasterSchema = BuildPetitionDungeonMasterSchema();
 
@@ -829,7 +829,7 @@ internal sealed partial class ArcanumInternalToolServer
                 Name = "send_commlink_alert",
                 Description =
                     "Send a one-way external notification through the configured Comm Link. This does not wait for or receive a reply.",
-                InputSchema = _useCommlinkSchema,
+                InputSchema = _sendCommLinkAlertSchema,
             });
 
         tools.Add(

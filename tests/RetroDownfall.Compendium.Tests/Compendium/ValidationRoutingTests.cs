@@ -40,17 +40,13 @@ public sealed class ValidationRoutingTests : IDisposable
     public async Task WriteAsync_returns_validation_error_pointers_that_match_descriptor_keys()
     {
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        using ArcanumConfigurationStore store = new(protector);
+        using ArcanumConfigurationStore store = new();
 
         ArcanumSettings settings = new()
 
         {
 
-            Intelligence = new IntelligenceSettings { ExecuteCommandTimeoutSeconds = 600 },
-
-            Mcp = new McpSettings { RequestTimeoutSeconds = 1 },
+            DefaultModel = "missing-model",
 
         };
 
@@ -60,9 +56,9 @@ public sealed class ValidationRoutingTests : IDisposable
 
         Assert.NotEmpty(result.ValidationErrors);
 
-        Assert.Contains(result.ValidationErrors, e => e.Pointer == "mcp.requestTimeoutSeconds");
+        Assert.Contains(result.ValidationErrors, e => e.Pointer == "defaultModel");
 
-        Assert.NotNull(SettingDescriptors.Find("mcp.requestTimeoutSeconds"));
+        Assert.NotNull(SettingDescriptors.Find("defaultModel"));
 
     }
 
@@ -75,21 +71,27 @@ public sealed class ValidationRoutingTests : IDisposable
 
         [
 
-            "mcp.requestTimeoutSeconds",
-
-            "mcp.maxJsonRpcLineBytes",
-
             "defaultModel",
 
             "fastModel",
 
-            "campaigns.allowedRoots",
+            "security.campaignRoots",
 
-            "spells.allowedWorkspaceRoots",
+            "security.spellWorkspaceRoots",
 
-            "perception.allowedWorkspaceRoots",
+            "security.perceptionWorkspaceRoots",
 
-            "host.workspace",
+            "workspaces.defaultRoot",
+
+            "host.https.enabled",
+
+            "host.https.port",
+
+            "host.https.certificatePath",
+
+            "cost.pricing.defaultPricing.inputPer1M",
+
+            "cost.pricing.defaultPricing.outputPer1M",
 
         ];
 
@@ -110,17 +112,13 @@ public sealed class ValidationRoutingTests : IDisposable
     public async Task WriteAsync_validation_error_detail_is_non_empty()
     {
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        using ArcanumConfigurationStore store = new(protector);
+        using ArcanumConfigurationStore store = new();
 
         ArcanumSettings settings = new()
 
         {
 
-            Intelligence = new IntelligenceSettings { ExecuteCommandTimeoutSeconds = 600 },
-
-            Mcp = new McpSettings { RequestTimeoutSeconds = 1 },
+            FastModel = "missing-model",
 
         };
 
@@ -128,7 +126,7 @@ public sealed class ValidationRoutingTests : IDisposable
 
         ConfigurationValidationError? error = result.ValidationErrors
 
-            .FirstOrDefault(e => e.Pointer == "mcp.requestTimeoutSeconds");
+            .FirstOrDefault(e => e.Pointer == "fastModel");
 
         Assert.NotNull(error);
 

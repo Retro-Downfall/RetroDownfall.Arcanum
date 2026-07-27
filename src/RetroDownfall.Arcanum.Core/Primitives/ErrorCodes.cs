@@ -42,14 +42,7 @@ public static class ErrorCodes
     /// <summary>Hub — intelligence provider / inference pipeline failures.</summary>
     public static class Hub
     {
-
-        public const string ToolLoop = "Hub.ToolLoop";
-
-        public const string TurnBudgetExceeded = "Hub.TurnBudgetExceeded";
-
         public const string ContextBudgetExceeded = "Hub.ContextBudgetExceeded";
-
-        public const string Timeout = "Hub.Timeout";
 
         public const string Model = "Hub.Model";
 
@@ -87,16 +80,16 @@ public static class ErrorCodes
 
         public const string EmptyContent = "Session.EmptyContent";
 
-        /// <summary>The source session's fork lineage already reached <c>Arcanum:Sessions:MaxForkDepth</c>.</summary>
+        /// <summary>The source session's fork lineage reached the code-owned depth limit.</summary>
         public const string ForkDepthExceeded = "Session.ForkDepthExceeded";
 
         /// <summary>The optional <c>upToEntryId</c> fork cutoff does not identify an entry belonging to the source session.</summary>
         public const string EntryNotFound = "Session.EntryNotFound";
 
-        /// <summary>Memory-management endpoints are disabled because <c>Arcanum:Sessions:AllowMemoryManagement</c> is false.</summary>
+        /// <summary>Memory-management endpoints are disabled by <c>Arcanum:Features:MemoryManagement</c>.</summary>
         public const string MemoryManagementDisabled = "Session.MemoryManagementDisabled";
 
-        /// <summary>Pinning an entry would exceed <c>Arcanum:Sessions:MaxPinnedEntries</c>.</summary>
+        /// <summary>Pinning an entry would exceed the code-owned per-session limit.</summary>
         public const string TooManyPinned = "Session.TooManyPinned";
 
         /// <summary>Explicit <c>POST /api/sessions/{id}/rest</c> could not enqueue Campaign Log consolidation.</summary>
@@ -143,10 +136,6 @@ public static class ErrorCodes
         public const string InvalidWorkspace = "Apprentice.InvalidWorkspace";
 
         public const string ConclaveDisabled = "Apprentice.ConclaveDisabled";
-
-        public const string ConclaveDepthExceeded = "Apprentice.ConclaveDepthExceeded";
-
-        public const string ConclaveBreadthExceeded = "Apprentice.ConclaveBreadthExceeded";
 
     }
 
@@ -389,8 +378,6 @@ public static class ErrorCodes
 
         public const string InvalidTrial = "ProvingGrounds.InvalidTrial";
 
-        public const string TooManyInquisitors = "ProvingGrounds.TooManyInquisitors";
-
         public const string WorkspaceNotAllowed = "ProvingGrounds.WorkspaceNotAllowed";
 
         public const string SpellNotFound = "ProvingGrounds.SpellNotFound";
@@ -452,8 +439,6 @@ public static class ErrorCodes
         public const string AgentUnreachable = "Sending.AgentUnreachable";
 
         public const string AgentCardInvalid = "Sending.AgentCardInvalid";
-
-        public const string TaskTimeout = "Sending.TaskTimeout";
 
         public const string TaskRejected = "Sending.TaskRejected";
 

@@ -3,9 +3,9 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Content guardrails settings (Tier 3 Phase 4). When <see cref="Enabled"/> is <see langword="false"/>
-/// (the default) the <c>GuardrailsPipeline</c> is a complete pass-through — no input/output scanning,
-/// no audit logging — so enabling Arcanum never changes inference behavior until an operator opts in.
+/// Runtime projection for content guardrails (Tier 3 Phase 4). Activation comes from
+/// <c>Arcanum:Features:Guardrails</c>, authored policy from <c>Arcanum:Security:Guardrails</c>, and
+/// streaming mode/file mechanics remain code-owned.
 /// </summary>
 public sealed record GuardrailsSettings
 {
@@ -67,9 +67,9 @@ public sealed record GuardrailsSettings
 }
 
 /// <summary>
-/// Configuration for the persisted guardrails audit log — a durable, append-only JSONL trail of
-/// guardrail violations (input PII, blocked toxicity/topics), one file per UTC day. Bound from
-/// <c>Arcanum:Guardrails:AuditLog</c>. See DESIGN.md §8.x (guardrails).
+/// Runtime projection for the persisted guardrails audit log — a durable, append-only JSONL trail
+/// of guardrail violations (input PII, blocked toxicity/topics), one file per UTC day. Enablement
+/// and retention come from <c>Arcanum:Security:Guardrails:AuditLog</c>.
 /// </summary>
 public sealed record GuardrailsAuditLogSettings
 {
@@ -77,7 +77,7 @@ public sealed record GuardrailsAuditLogSettings
     /// <summary>
     /// Master toggle. When <see langword="false"/> (default), <c>GuardrailAuditLogger</c> is a
     /// complete no-op and <c>GET /api/guardrails/audit</c> returns an empty list. Ineffective when
-    /// <c>Guardrails:Enabled</c> is <see langword="false"/>.
+    /// <c>Arcanum:Features:Guardrails</c> is <see langword="false"/>.
     /// </summary>
     public bool Enabled { get; set; }
 

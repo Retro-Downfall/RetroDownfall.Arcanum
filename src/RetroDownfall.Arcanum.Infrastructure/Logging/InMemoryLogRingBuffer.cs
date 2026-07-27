@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
 
@@ -9,13 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// <summary>
 /// Bounded in-memory ring buffer for <see cref="LogEntry"/> with fan-out channels for streaming.
 /// </summary>
-/// <remarks>
-/// The ring-buffer capacity and the fan-out channel capacity are read once at construction
-/// (from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/>). Recreating the ring
-/// buffer or its channels on a config reload would drop in-flight entries and is intentionally
-/// avoided; changes to <c>Logs.RingBufferCapacity</c> and <c>EventBus.ChannelCapacity</c>
-/// require a restart to take effect here.
-/// </remarks>
 internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
 {
 
@@ -36,19 +28,16 @@ internal sealed class InMemoryLogRingBuffer : ILogRingBuffer
 
     private int _head;
 
-    public InMemoryLogRingBuffer(IOptionsMonitor<ArcanumSettings> optionsMonitor)
+    public InMemoryLogRingBuffer()
     {
-
-        ArcanumSettings settings = optionsMonitor.CurrentValue;
-
         _capacity = ArcanumSettingClamps.LogRingBufferCapacity(
-            settings.Logs?.RingBufferCapacity ?? new LogSettings().RingBufferCapacity);
+            ArcanumRuntimeDefaults.Logs.RingBufferCapacity);
 
         _entries = new LogEntry[_capacity];
 
         _channelOptions = new BoundedChannelOptions(
             ArcanumSettingClamps.EventBusChannelCapacity(
-                settings.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity))
+                ArcanumRuntimeDefaults.EventBus.ChannelCapacity))
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,

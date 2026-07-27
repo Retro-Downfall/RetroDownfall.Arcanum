@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
 /// Grimoire-backed metadata for <c>/v1/batches</c> asynchronous bulk chat-completion jobs
-/// (DESIGN.md §11.21). <see cref="BatchStatuses"/> enumerates the lifecycle values stored in
+/// (<c>docs/Arcanum.DESIGN.md</c> §11.21). <see cref="BatchStatuses"/> enumerates the lifecycle values stored in
 /// <see cref="BatchRecord.Status"/>.
 /// </summary>
 public interface IBatchRepository

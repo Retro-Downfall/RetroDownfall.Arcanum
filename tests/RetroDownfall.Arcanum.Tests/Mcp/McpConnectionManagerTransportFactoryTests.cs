@@ -77,7 +77,10 @@ public sealed class McpConnectionManagerTransportFactoryTests
 
         ArcanumSettings settings = new()
         {
-            Mcp = new McpSettings { AllowedHttpHosts = ["127.0.0.1"] },
+            Integrations = new IntegrationSettings
+            {
+                Mcp = new McpIntegrationSettings { AllowedHttpHosts = ["127.0.0.1"] },
+            },
         };
 
         await using McpConnectionManager manager = CreateManager(settings);

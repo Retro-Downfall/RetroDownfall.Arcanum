@@ -9,9 +9,9 @@ public interface IProviderHealthTracker
 {
 
     /// <summary>
-    /// Returns <c>true</c> when the named provider is healthy or degraded (below the configured failure
-    /// threshold), or when the provider has not yet been observed. Returns <c>false</c> once
-    /// consecutive failures reach <c>Arcanum:Resilience:HealthFailureThreshold</c>.
+    /// Returns <c>true</c> when the named provider is healthy or degraded (below the code-owned
+    /// failure threshold), or when the provider has not yet been observed. Returns <c>false</c> once
+    /// consecutive failures reach that threshold.
     /// </summary>
     bool IsHealthy(string providerName);
 

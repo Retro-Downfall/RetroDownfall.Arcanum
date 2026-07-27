@@ -147,23 +147,15 @@ public sealed class ArcanumBrowseWebToolTests
     [Fact]
     public async Task InvokeAsync_ContentTooLarge_Truncates()
     {
-        string longText = new string('x', 2000);
-
-        ArcanumSettings settings = new()
-        {
-            WebBrowsing = new WebBrowsingSettings
-            {
-                Enabled = true,
-                MaxContentBytes = 1000,
-            },
-        };
+        int maxContentBytes = ArcanumSettingClamps.WebBrowsingMaxContentBytes(
+            ArcanumRuntimeDefaults.WebBrowsing.MaxContentBytes);
+        string longText = new string('x', maxContentBytes + 1_000);
 
         ArcanumBrowseWebTool tool = CreateTool(
             (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent($"<html><body><p>{longText}</p></body></html>"),
-            }),
-            settings);
+            }));
 
         AIFunctionArguments args = new(new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -209,13 +201,7 @@ public sealed class ArcanumBrowseWebToolTests
         FakeHttpClientFactory factory = new(stub);
         IOptionsSnapshot<ArcanumSettings> options = new TestOptionsSnapshot<ArcanumSettings>(settings ?? new ArcanumSettings
         {
-            WebBrowsing = new WebBrowsingSettings
-            {
-                Enabled = true,
-                MaxContentBytes = 50_000,
-                RequestTimeoutSeconds = 10,
-                MaxLinks = 10,
-            },
+            Features = new FeatureSettings { WebBrowsing = true },
         });
 
         return new ArcanumBrowseWebTool(factory, options, NullLogger.Instance);

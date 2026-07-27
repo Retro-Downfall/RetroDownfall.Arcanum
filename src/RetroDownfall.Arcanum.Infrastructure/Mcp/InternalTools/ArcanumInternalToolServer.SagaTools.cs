@@ -15,9 +15,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// RAG Phase 4 — <c>read_saga</c>: semantic search over Saga (long-term associative memory). Read-only
 /// by design — there is no <c>scribe_saga</c> or <c>delete_saga</c> counterpart, so the model cannot
-/// poison its own memory. Gated by <c>Embeddings:Enabled &amp;&amp; Embeddings:SagaEnabled</c> (see
-/// <see cref="ArcanumInternalToolServer._sagaEnabled"/>, checked both at <c>tools/list</c> advertising
-/// and <c>tools/call</c> dispatch).
+/// poison its own memory. Gated by <c>Arcanum:Features:Saga</c> plus valid
+/// <c>Arcanum:Integrations:Embeddings</c> provider/model facts (see
+/// <see cref="ArcanumInternalToolServer._sagaEnabled"/>, checked both at <c>tools/list</c>
+/// advertising and <c>tools/call</c> dispatch).
 /// </summary>
 internal sealed partial class ArcanumInternalToolServer
 {
@@ -76,7 +77,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             IOptionsMonitor<ArcanumSettings> options = scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
-            EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
+            EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
             int limit = ArcanumSettingClamps.EmbeddingsMaxResults(args.Limit ?? embeddings.MaxResults);
 

@@ -318,11 +318,10 @@ public sealed class WorkspaceCheckCapabilityReporter
     {
         ArcanumSettings current = _settings.CurrentValue;
         WorkspaceCheckSettings check =
-            current.CodingTools?.WorkspaceCheck
-            ?? new WorkspaceCheckSettings();
+            current.ResolveWorkspaceChecks();
         string containmentRoot = ResolveContainmentRoot(
             workspaceRoot,
-            current.Host?.Workspace);
+            current.ResolveDefaultWorkspace());
         WorkspaceCheckExecutableCapture executable =
             WorkspaceCheckExecutableRuntimePolicy
                 .ForCurrentPlatform()
@@ -350,8 +349,7 @@ public sealed class WorkspaceCheckCapabilityReporter
     {
         ArcanumSettings current = _settings.CurrentValue;
         WorkspaceCheckSettings check =
-            current.CodingTools?.WorkspaceCheck
-            ?? new WorkspaceCheckSettings();
+            current.ResolveWorkspaceChecks();
         string platform = WorkspaceCheckExecutionPolicy.DetectPlatform();
         bool jailAvailable =
             WorkspaceCheckExecutionPolicy
@@ -371,7 +369,7 @@ public sealed class WorkspaceCheckCapabilityReporter
 
         string containmentRoot = ResolveContainmentRoot(
             workspaceRoot,
-            current.Host?.Workspace);
+            current.ResolveDefaultWorkspace());
         WorkspaceCheckExecutableRuntimePolicy executablePolicy =
             WorkspaceCheckExecutableRuntimePolicy.ForCurrentPlatform();
         WorkspaceCheckExecutableCapture executable =

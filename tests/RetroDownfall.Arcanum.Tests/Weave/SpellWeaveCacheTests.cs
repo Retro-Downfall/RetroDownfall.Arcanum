@@ -120,14 +120,23 @@ public sealed class SpellWeaveCacheTests
     public async Task GetOrCreateAsync_EmbeddingModelChangedViaHotReload_ReEmbeds()
     {
 
-        // Same spell catalog, but the operator hot-reloads Arcanum:Embeddings:Model — a cache key
+        // Same spell catalog, but the operator hot-reloads Arcanum:Integrations:Embeddings:Model — a cache key
         // built only from spell name/description pairs would keep serving stale vectors (embedded
         // against the OLD model) forever, since the catalog content itself never changed.
         FakeWeaveService weave = new();
 
         MutableTestOptionsMonitor<ArcanumSettings> monitor = new(new ArcanumSettings
         {
-            Embeddings = new EmbeddingSettings { Provider = "p1", Model = "model-a", Dimensions = 768 },
+            Features = new FeatureSettings { Embeddings = true },
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings
+                {
+                    Provider = "p1",
+                    Model = "model-a",
+                    Dimensions = 768,
+                },
+            },
         });
 
         SpellWeaveCache cache = new(weave, monitor, NullLogger<SpellWeaveCache>.Instance);
@@ -138,7 +147,13 @@ public sealed class SpellWeaveCacheTests
 
         monitor.CurrentValue = monitor.CurrentValue with
         {
-            Embeddings = monitor.CurrentValue.Embeddings! with { Model = "model-b" },
+            Integrations = monitor.CurrentValue.Integrations with
+            {
+                Embeddings = monitor.CurrentValue.Integrations.Embeddings with
+                {
+                    Model = "model-b",
+                },
+            },
         };
 
         _ = await cache.GetOrCreateAsync(spells, CancellationToken.None);

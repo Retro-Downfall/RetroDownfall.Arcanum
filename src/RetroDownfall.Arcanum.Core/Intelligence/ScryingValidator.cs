@@ -77,7 +77,7 @@ public static class ScryingValidator
         {
             return Result.Failure(new Error(
                 ErrorCodes.Scrying.FeatureDisabled,
-                "Scrying is disabled. Enable Arcanum:Scrying:Enabled to send images."));
+                "Scrying is disabled. Enable Arcanum:Features:Scrying to send images."));
         }
 
         int maxImages = ArcanumSettingClamps.ScryingMaxImagesPerRequest(scrying.MaxImagesPerRequest);

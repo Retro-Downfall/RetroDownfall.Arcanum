@@ -19,7 +19,7 @@ public sealed class HttpsSettingsTests
 
         Assert.Null(https.PrivateKeyPath);
 
-        Assert.Null(https.CertificatePassword);
+        Assert.Null(https.CertificatePasswordEnvironmentVariable);
 
     }
 

@@ -83,7 +83,7 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 ArcanumJsonContext.Default.BrowseWebResult);
         }
 
-        WebBrowsingSettings settings = _options.Value.WebBrowsing;
+        WebBrowsingSettings settings = _options.Value.ResolveWebBrowsing();
 
         int maxLinks = GetMaxLinks(arguments, settings);
 

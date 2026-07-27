@@ -14,25 +14,9 @@ public sealed class RequestAugmentingHandlerTests
     [Fact]
     public async Task OpenAiHandler_JsonSchemaRequest_AddsStrictTrue()
     {
-
-        ArcanumSettings settings = new()
-        {
-
-            StructuredOutput = new StructuredOutputSettings
-            {
-
-                Enabled = true,
-
-                UseProviderConstrainedDecoding = true
-
-            }
-
-        };
-
         CapturingHandler capturing = new();
 
         OpenAiRequestAugmentingHandler handler = new(
-            new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<OpenAiRequestAugmentingHandler>.Instance)
         {
 
@@ -59,25 +43,9 @@ public sealed class RequestAugmentingHandlerTests
     [Fact]
     public async Task OpenAiHandler_NonJsonRequest_PassesThroughUnchanged()
     {
-
-        ArcanumSettings settings = new()
-        {
-
-            StructuredOutput = new StructuredOutputSettings
-            {
-
-                Enabled = true,
-
-                UseProviderConstrainedDecoding = true
-
-            }
-
-        };
-
         CapturingHandler capturing = new();
 
         OpenAiRequestAugmentingHandler handler = new(
-            new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<OpenAiRequestAugmentingHandler>.Instance)
         {
 
@@ -98,20 +66,9 @@ public sealed class RequestAugmentingHandlerTests
     [Fact]
     public async Task OpenAiHandler_StrictRetry_PreservesContentTypeHeader()
     {
-
-        ArcanumSettings settings = new()
-        {
-            StructuredOutput = new StructuredOutputSettings
-            {
-                Enabled = true,
-                UseProviderConstrainedDecoding = true,
-            },
-        };
-
         StrictRejectingHandler rejecting = new();
 
         OpenAiRequestAugmentingHandler handler = new(
-            new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<OpenAiRequestAugmentingHandler>.Instance)
         {
             InnerHandler = rejecting,

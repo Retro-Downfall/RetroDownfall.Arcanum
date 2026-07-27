@@ -654,25 +654,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     private GrimoireRepository CreateRepository()
     {
-
-        ArcanumSettings settings = new()
-        {
-            Grimoire = new GrimoireSettings
-            {
-                MaxMessagesPerConversationLoad = 50,
-                WorkspaceContextRetentionCount = 5,
-            },
-            Intelligence = new IntelligenceSettings
-            {
-                ArchiveSearchMaxQueryLength = 256,
-            },
-        };
-
         return new GrimoireRepository(
             _db!,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
     }
 

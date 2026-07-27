@@ -406,7 +406,7 @@ public class CampaignManagementFlowTests
 
         Assert.Contains(
             whispers.Messages,
-            static m => m.Contains("AllowedRoots", StringComparison.Ordinal));
+            static m => m.Contains("CampaignRoots", StringComparison.Ordinal));
 
     }
 

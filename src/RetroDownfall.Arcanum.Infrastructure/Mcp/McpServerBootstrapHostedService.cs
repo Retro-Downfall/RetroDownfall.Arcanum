@@ -21,7 +21,7 @@ public sealed class McpServerBootstrapHostedService(
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        bool blocksStartup = options.CurrentValue.Mcp?.BootstrapBlocksStartup ?? true;
+        bool blocksStartup = options.CurrentValue.ResolveMcp().BootstrapBlocksStartup;
 
         if (!blocksStartup)
         {

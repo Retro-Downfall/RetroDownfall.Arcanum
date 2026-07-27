@@ -46,7 +46,16 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             _db,
             new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings { Embeddings = new EmbeddingSettings { Dimensions = TestDimensions } }));
+                new ArcanumSettings
+                {
+                    Integrations = new IntegrationSettings
+                    {
+                        Embeddings = new EmbeddingIntegrationSettings
+                        {
+                            Dimensions = TestDimensions,
+                        },
+                    },
+                }));
 
         return Task.CompletedTask;
 

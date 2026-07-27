@@ -1,93 +1,138 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Configuration;
 
-public sealed class ConfigurationRedactorTests
+[Collection("ProcessEnvironment")]
+public sealed class ConfigurationRedactorTests : IDisposable
 {
+    private const string CredentialVariable = "ARCANUM_TEST_REDACTOR_PROVIDER_KEY";
+    private const string CertificateVariable = "ARCANUM_TEST_REDACTOR_CERT_PASSWORD";
+    private const string WebhookVariable = "ARCANUM_TEST_REDACTOR_COMMLINK_URL";
+    private readonly string? _originalCredential =
+        System.Environment.GetEnvironmentVariable(CredentialVariable);
+    private readonly string? _originalCertificate =
+        System.Environment.GetEnvironmentVariable(CertificateVariable);
+    private readonly string? _originalWebhook =
+        System.Environment.GetEnvironmentVariable(WebhookVariable);
 
     [Fact]
-    public void Redact_MasksSecretsAndEndpoints()
+    public void RedactMasksEndpointsAndPreservesSecretReferences()
     {
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "openai",
-                    Endpoint = "https://api.openai.com/v1",
-                    ApiKey = "sk-live",
-                },
-            ],
-            CommLink = new CommLinkSettings { WebhookUrl = "https://hooks.test/secret" },
-        };
+        ArcanumSettings settings = Settings();
 
         ArcanumSettings redacted = ConfigurationRedactor.Redact(settings);
-
-        Assert.Equal("***", redacted.Providers![0].ApiKey);
 
         Assert.Equal("***", redacted.Providers[0].Endpoint);
-
-        Assert.Equal("***", redacted.CommLink.WebhookUrl);
+        Assert.Equal(
+            CredentialVariable,
+            redacted.Providers[0].CredentialEnvironmentVariable);
+        Assert.Equal(
+            WebhookVariable,
+            redacted.Integrations.CommLink.WebhookUrlEnvironmentVariable);
+        Assert.Equal(
+            CertificateVariable,
+            redacted.Host.Https.CertificatePasswordEnvironmentVariable);
     }
 
     [Fact]
-    public void Redact_EmptySecrets_RemainEmpty()
+    public void RedactNeverReadsOrSerializesReferencedEnvironmentValues()
     {
-        ArcanumSettings settings = new()
-        {
-            Providers = [new ProviderSettings { Name = "local", Endpoint = string.Empty, ApiKey = null }],
-        };
+        System.Environment.SetEnvironmentVariable(
+            CredentialVariable,
+            "provider-secret-material");
+        System.Environment.SetEnvironmentVariable(
+            CertificateVariable,
+            "certificate-secret-material");
+        System.Environment.SetEnvironmentVariable(
+            WebhookVariable,
+            "https://hooks.test/secret-material");
 
-        ArcanumSettings redacted = ConfigurationRedactor.Redact(settings);
+        ArcanumSettings redacted = ConfigurationRedactor.Redact(Settings());
+        string json = JsonSerializer.Serialize(
+            new ArcanumConfigurationFile { Arcanum = redacted },
+            ConfigurationJsonContext.Default.ArcanumConfigurationFile);
 
-        Assert.Null(redacted.Providers![0].ApiKey);
-
-        Assert.Equal(string.Empty, redacted.Providers[0].Endpoint);
+        Assert.DoesNotContain("provider-secret-material", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("certificate-secret-material", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("https://hooks.test/secret-material", json, StringComparison.Ordinal);
+        Assert.Contains(CredentialVariable, json, StringComparison.Ordinal);
+        Assert.Contains(CertificateVariable, json, StringComparison.Ordinal);
+        Assert.Contains(WebhookVariable, json, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MergeRedactedSecrets_PreservesCurrentKeyWhenRequestSendsMask()
+    public void MergeRedactedSecretsRestoresEndpointAndPreservesReferences()
     {
-        ArcanumSettings current = new()
-        {
-            Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-real" }],
-        };
+        ArcanumSettings current = Settings();
+        ArcanumSettings redacted = ConfigurationRedactor.Redact(current);
 
-        ArcanumSettings request = new()
-        {
-            Providers = [new ProviderSettings { Name = "openai", ApiKey = "***" }],
-        };
+        ArcanumSettings merged =
+            ConfigurationRedactor.MergeRedactedSecrets(redacted, current);
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
-
-        Assert.Equal("sk-real", merged.Providers![0].ApiKey);
+        Assert.Equal(
+            "https://api.openai.com/v1",
+            merged.Providers[0].Endpoint);
+        Assert.Equal(
+            WebhookVariable,
+            merged.Integrations.CommLink.WebhookUrlEnvironmentVariable);
+        Assert.Equal(
+            CredentialVariable,
+            merged.Providers[0].CredentialEnvironmentVariable);
     }
 
     [Fact]
-    public void MergeRedactedSecrets_ReplacesKeyWhenRequestSendsNewValue()
+    public void ValidateNoResidualMaskRejectsNewProviderEndpointMask()
     {
-        ArcanumSettings current = new()
+        ArcanumSettings merged = new()
         {
-            Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-old" }],
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "brand-new",
+                    Endpoint = "***",
+                    Models = ["model"],
+                },
+            ],
         };
 
-        ArcanumSettings request = new()
-        {
-            Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-new" }],
-        };
+        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
 
-        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
-
-        Assert.Equal("sk-new", merged.Providers![0].ApiKey);
+        Assert.True(result.IsFailure);
+        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
     }
 
     [Fact]
-    public void MergeRedactedSecrets_RoundTripRestoresAllMaskedFields()
+    public void ValidateNoResidualMaskAcceptsCredentialReference()
     {
-        ArcanumSettings current = new()
+        ArcanumSettings settings = Settings();
+        ArcanumSettings merged =
+            ConfigurationRedactor.MergeRedactedSecrets(
+                ConfigurationRedactor.Redact(settings),
+                settings);
+
+        Assert.True(ConfigurationRedactor.ValidateNoResidualMask(merged).IsSuccess);
+    }
+
+    public void Dispose()
+    {
+        System.Environment.SetEnvironmentVariable(
+            CredentialVariable,
+            _originalCredential);
+        System.Environment.SetEnvironmentVariable(
+            CertificateVariable,
+            _originalCertificate);
+        System.Environment.SetEnvironmentVariable(
+            WebhookVariable,
+            _originalWebhook);
+    }
+
+    private static ArcanumSettings Settings() =>
+        new()
         {
             Providers =
             [
@@ -95,133 +140,24 @@ public sealed class ConfigurationRedactorTests
                 {
                     Name = "openai",
                     Endpoint = "https://api.openai.com/v1",
-                    ApiKey = "sk-live",
+                    CredentialEnvironmentVariable = CredentialVariable,
+                    Models = ["gpt-5"],
                 },
             ],
-            CommLink = new CommLinkSettings { WebhookUrl = "https://hooks.test/secret" },
-        };
-
-        ArcanumSettings redacted = ConfigurationRedactor.Redact(current);
-
-        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(redacted, current);
-
-        Assert.Equal("sk-live", merged.Providers![0].ApiKey);
-
-        Assert.Equal("https://api.openai.com/v1", merged.Providers[0].Endpoint);
-
-        Assert.Equal("https://hooks.test/secret", merged.CommLink.WebhookUrl);
-    }
-
-    [Fact]
-    public void MergeRedactedSecrets_PreservesEndpointWhenRequestSendsMask()
-    {
-        ArcanumSettings current = new()
-        {
-            Providers = [new ProviderSettings { Name = "local", Endpoint = "http://127.0.0.1:11434" }],
-        };
-
-        ArcanumSettings request = new()
-        {
-            Providers = [new ProviderSettings { Name = "local", Endpoint = "***" }],
-        };
-
-        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
-
-        Assert.Equal("http://127.0.0.1:11434", merged.Providers![0].Endpoint);
-    }
-
-    [Fact]
-    public void Redact_MasksHttpsCertificatePassword()
-    {
-        ArcanumSettings settings = new()
-        {
             Host = new HostSettings
             {
                 Https = new HttpsSettings
                 {
-                    Enabled = true,
-                    CertificatePath = "/certs/localhost.pfx",
-                    CertificatePassword = "super-secret",
+                    CertificatePasswordEnvironmentVariable =
+                        CertificateVariable,
+                },
+            },
+            Integrations = new IntegrationSettings
+            {
+                CommLink = new CommLinkIntegrationSettings
+                {
+                    WebhookUrlEnvironmentVariable = WebhookVariable,
                 },
             },
         };
-
-        ArcanumSettings redacted = ConfigurationRedactor.Redact(settings);
-
-        Assert.Equal("***", redacted.Host.Https.CertificatePassword);
-    }
-
-    [Fact]
-    public void MergeRedactedSecrets_PreservesHttpsPasswordWhenRequestSendsMask()
-    {
-        ArcanumSettings current = new()
-        {
-            Host = new HostSettings
-            {
-                Https = new HttpsSettings { CertificatePassword = "real-password" },
-            },
-        };
-
-        ArcanumSettings request = new()
-        {
-            Host = new HostSettings
-            {
-                Https = new HttpsSettings { CertificatePassword = "***" },
-            },
-        };
-
-        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, current);
-
-        Assert.Equal("real-password", merged.Host.Https.CertificatePassword);
-    }
-
-    [Fact]
-    public void ValidateNoResidualMask_MaskedHttpsPassword_Fails()
-    {
-        ArcanumSettings merged = new()
-        {
-            Host = new HostSettings
-            {
-                Https = new HttpsSettings { CertificatePassword = "***" },
-            },
-        };
-
-        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
-    }
-
-    [Fact]
-    public void ValidateNoResidualMask_NewProviderWithMaskedApiKey_Fails()
-    {
-        // A redacted GET round-tripped with a NEW provider would otherwise persist "***" as the key.
-        ArcanumSettings merged = new()
-        {
-            Providers = [new ProviderSettings { Name = "brand-new", ApiKey = "***", Endpoint = "https://api.example.com" }],
-        };
-
-        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal("Config.UnresolvedMask", result.Error.Code);
-    }
-
-    [Fact]
-    public void ValidateNoResidualMask_ExistingProviderRoundTrip_Succeeds()
-    {
-        ArcanumSettings current = new()
-        {
-            Providers = [new ProviderSettings { Name = "openai", ApiKey = "sk-live", Endpoint = "https://api.openai.com/v1" }],
-        };
-
-        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(ConfigurationRedactor.Redact(current), current);
-
-        Result result = ConfigurationRedactor.ValidateNoResidualMask(merged);
-
-        Assert.True(result.IsSuccess);
-    }
-
 }

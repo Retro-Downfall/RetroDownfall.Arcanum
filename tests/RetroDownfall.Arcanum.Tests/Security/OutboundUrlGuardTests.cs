@@ -266,24 +266,23 @@ public sealed class OutboundUrlGuardTests : IDisposable
     }
 
     [Fact]
-    public async Task ValidateArcanumSettingsAsync_BlockedWebhook_FailsWithPrefixedMessage()
+    public async Task ValidateArcanumSettingsAsync_CommLinkReferenceIsNotResolvedBeforeDispatch()
     {
 
         ArcanumSettings settings = new()
         {
-            CommLink = new CommLinkSettings
+            Integrations = new IntegrationSettings
             {
-                WebhookUrl = "http://127.0.0.1/hook",
+                CommLink = new CommLinkIntegrationSettings
+                {
+                    WebhookUrlEnvironmentVariable = "ARCANUM_TEST_BLOCKED_COMMLINK_URL",
+                },
             },
         };
 
         Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
 
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
-
-        Assert.Contains("CommLink.WebhookUrl", result.Error.Message, StringComparison.Ordinal);
+        Assert.True(result.IsSuccess);
 
     }
 
@@ -364,7 +363,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
 
         ArcanumSettings settings = new()
         {
-            CommLink = new(),
             Providers = [],
         };
 
@@ -418,10 +416,6 @@ public sealed class OutboundUrlGuardTests : IDisposable
 
         ArcanumSettings settings = new()
         {
-            CommLink = new CommLinkSettings
-            {
-                WebhookUrl = "https://93.184.216.34/webhook",
-            },
             Providers =
             [
                 new ProviderSettings

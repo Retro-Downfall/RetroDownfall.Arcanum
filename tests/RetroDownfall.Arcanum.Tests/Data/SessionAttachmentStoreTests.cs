@@ -393,27 +393,24 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ArcanumSettings capped = new()
-        {
-            Attachments = new AttachmentsSettings
-            {
-                MaxVersionsPerLogicalKey = 1,
-            },
-        };
-
-        SessionAttachmentStore store = CreateStore(capped);
+        SessionAttachmentStore store = CreateStore(new ArcanumSettings());
 
         Guid sessionId = Guid.NewGuid();
 
-        _ = await store.PersistNewAsync(
-            sessionId,
-            null,
-            null,
-            "cap.txt",
-            "cap.txt",
-            Encoding.UTF8.GetBytes("one"),
-            "text/plain",
-            SessionAttachmentKind.Text);
+        int maxVersions = ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey(
+            ArcanumRuntimeDefaults.Attachments.MaxVersionsPerLogicalKey);
+        for (int version = 0; version < maxVersions; version++)
+        {
+            _ = await store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "cap.txt",
+                "cap.txt",
+                Encoding.UTF8.GetBytes($"version-{version}"),
+                "text/plain",
+                SessionAttachmentKind.Text);
+        }
 
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             store.PersistNewAsync(

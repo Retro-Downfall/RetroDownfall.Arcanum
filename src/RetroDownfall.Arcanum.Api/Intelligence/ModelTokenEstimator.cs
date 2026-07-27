@@ -49,35 +49,12 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
     {
         ArgumentNullException.ThrowIfNull(provider);
 
-        if (ProviderResolver.TryResolveModelEntry(provider, canonicalModel, out ModelEntry? entry)
-            && entry?.Tokenization is { } modelProfile)
+        if (ModelCapabilityCatalog.Resolve(provider, canonicalModel) is { } capabilities)
         {
-            return ResolveConfiguredProfile(modelProfile, $"model:{canonicalModel}");
+            return capabilities.Tokenization;
         }
 
-        if (provider.Tokenization is { } providerProfile)
-        {
-            return ResolveConfiguredProfile(providerProfile, $"provider:{provider.Name}");
-        }
-
-        if (IsVerifiedOpenAiProvider(provider) && IsKnownO200kModel(canonicalModel))
-        {
-            return new ResolvedModelTokenizationProfile
-            {
-                ProfileId = $"builtin:{canonicalModel}:o200k_base",
-                Type = ModelTokenizationProfileType.ExactLocalTokenizer,
-                TokenizerId = InferenceTokenizerResolver.DefaultEncodingName,
-                SafetyMarginPercent = 0,
-                PerMessageOverheadTokens = 3,
-                PerToolOverheadTokens = DefaultPerToolOverheadTokens,
-                ProviderFramingTokens = DefaultProviderFramingTokens,
-                StopTokenOverheadTokens = DefaultStopTokenOverheadTokens,
-                UnknownImageReserveTokens = ResolveUnknownImageReserve(null),
-                Confidence = 1d,
-            };
-        }
-
-        IntelligenceSettings intelligence = _getSettings().Intelligence ?? new IntelligenceSettings();
+        IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
         string fallbackTokenizer = string.IsNullOrWhiteSpace(intelligence.TokenizerEncoding)
             ? InferenceTokenizerResolver.DefaultEncodingName
             : intelligence.TokenizerEncoding.Trim();
@@ -94,7 +71,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             PerToolOverheadTokens = DefaultPerToolOverheadTokens,
             ProviderFramingTokens = DefaultProviderFramingTokens,
             StopTokenOverheadTokens = DefaultStopTokenOverheadTokens,
-            UnknownImageReserveTokens = ResolveUnknownImageReserve(null),
+            UnknownImageReserveTokens = ResolveUnknownImageReserve(),
             Confidence = 0.5d,
         };
     }
@@ -349,61 +326,6 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         };
     }
 
-    private ResolvedModelTokenizationProfile ResolveConfiguredProfile(
-        ModelTokenizationProfile configured,
-        string profileId)
-    {
-        IntelligenceSettings intelligence = _getSettings().Intelligence ?? new IntelligenceSettings();
-        string tokenizer = string.IsNullOrWhiteSpace(configured.TokenizerId)
-            ? string.IsNullOrWhiteSpace(intelligence.TokenizerEncoding)
-                ? InferenceTokenizerResolver.DefaultEncodingName
-                : intelligence.TokenizerEncoding.Trim()
-            : configured.TokenizerId.Trim();
-        ModelTokenizationProfileType resolvedType =
-            configured.Type == ModelTokenizationProfileType.ProviderTokenizerApi
-                ? ModelTokenizationProfileType.UnknownFallback
-                : configured.Type;
-        bool exact = resolvedType == ModelTokenizationProfileType.ExactLocalTokenizer;
-        int safetyMargin = exact
-            ? 0
-            : ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent(
-                configured.SafetyMarginPercent
-                ?? intelligence.EstimatedTokenSafetyMarginPercent);
-        double defaultConfidence = resolvedType switch
-        {
-            ModelTokenizationProfileType.ExactLocalTokenizer => 1d,
-            ModelTokenizationProfileType.CalibratedApproximation => 0.8d,
-            ModelTokenizationProfileType.ProviderTokenizerApi => 0.9d,
-            _ => 0.5d,
-        };
-
-        return new ResolvedModelTokenizationProfile
-        {
-            ProfileId = configured.Type == ModelTokenizationProfileType.ProviderTokenizerApi
-                ? $"{profileId}:provider-api-unavailable"
-                : profileId,
-            Type = resolvedType,
-            TokenizerId = tokenizer,
-            SafetyMarginPercent = safetyMargin,
-            PerMessageOverheadTokens = ArcanumSettingClamps.PerMessageTemplateOverheadTokens(
-                configured.PerMessageOverheadTokens
-                ?? intelligence.PerMessageTemplateOverheadTokens),
-            PerToolOverheadTokens = ArcanumSettingClamps.TokenizationPerToolOverheadTokens(
-                configured.PerToolOverheadTokens
-                ?? DefaultPerToolOverheadTokens),
-            ProviderFramingTokens = ArcanumSettingClamps.TokenizationProviderFramingTokens(
-                configured.ProviderFramingTokens
-                ?? DefaultProviderFramingTokens),
-            StopTokenOverheadTokens = ArcanumSettingClamps.TokenizationStopTokenOverheadTokens(
-                configured.StopTokenOverheadTokens
-                ?? DefaultStopTokenOverheadTokens),
-            UnknownImageReserveTokens = ResolveUnknownImageReserve(
-                configured.UnknownImageReserveTokens),
-            Confidence = ArcanumSettingClamps.TokenizationConfidence(
-                configured.Confidence ?? defaultConfidence),
-        };
-    }
-
     private ResolvedModelTokenizationProfile ResolveUsableProfile(
         ResolvedModelTokenizationProfile profile,
         out Tokenizer tokenizer)
@@ -416,7 +338,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             return profile;
         }
 
-        IntelligenceSettings intelligence = _getSettings().Intelligence ?? new IntelligenceSettings();
+        IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
         return profile with
         {
             ProfileId = $"{profile.ProfileId}:fallback:{resolved.ActualEncoding}",
@@ -1068,41 +990,12 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         }
     }
 
-    private int ResolveUnknownImageReserve(int? configured)
+    private int ResolveUnknownImageReserve()
     {
-        IntelligenceSettings intelligence = _getSettings().Intelligence ?? new IntelligenceSettings();
+        IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
         return ArcanumSettingClamps.UnknownImageTokenReserve(
-            configured ?? intelligence.UnknownImageTokenReserve);
+            intelligence.UnknownImageTokenReserve);
     }
-
-    private static bool IsKnownO200kModel(string model)
-    {
-        string value = model.Trim();
-        return IsModelFamily(value, "gpt-4o")
-            || IsModelFamily(value, "chatgpt-4o")
-            || IsModelFamily(value, "gpt-4.1")
-            || IsModelFamily(value, "gpt-5")
-            || IsModelFamily(value, "o1")
-            || IsModelFamily(value, "o3")
-            || IsModelFamily(value, "o4");
-    }
-
-    private static bool IsVerifiedOpenAiProvider(ProviderSettings provider)
-    {
-        if (provider.Type != AiProviderKind.OpenAICompatible
-            || !Uri.TryCreate(provider.Endpoint, UriKind.Absolute, out Uri? endpoint))
-        {
-            return false;
-        }
-
-        return string.Equals(endpoint.Host, "api.openai.com", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsModelFamily(string model, string family) =>
-        model.Equals(family, StringComparison.OrdinalIgnoreCase)
-        || model.StartsWith(family, StringComparison.OrdinalIgnoreCase)
-        && model.Length > family.Length
-        && model[family.Length] is '-' or '.' or ':';
 
     private static bool IsImage(string? mediaType) =>
         !string.IsNullOrWhiteSpace(mediaType)

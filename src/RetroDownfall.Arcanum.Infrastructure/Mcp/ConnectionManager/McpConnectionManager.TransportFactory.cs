@@ -105,10 +105,13 @@ public sealed partial class McpConnectionManager
 
     private int GetClampedExecuteCommandTimeoutSeconds()
     {
-        int executeSeconds = Math.Clamp(settings.CurrentValue.Intelligence.ExecuteCommandTimeoutSeconds, 1, 600);
+        int executeSeconds = Math.Clamp(
+            ArcanumRuntimeDefaults.Intelligence.ExecuteCommandTimeoutSeconds,
+            1,
+            600);
 
         int requestSeconds = ArcanumSettingClamps.McpRequestTimeoutSeconds(
-            settings.CurrentValue.Mcp.RequestTimeoutSeconds);
+            ArcanumRuntimeDefaults.Mcp.RequestTimeoutSeconds);
 
         return Math.Min(executeSeconds, requestSeconds);
     }
@@ -116,46 +119,53 @@ public sealed partial class McpConnectionManager
     private TimeSpan GetClampedMcpRequestTimeout()
     {
         return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpRequestTimeoutSeconds(settings.CurrentValue.Mcp.RequestTimeoutSeconds));
+            ArcanumSettingClamps.McpRequestTimeoutSeconds(
+                ArcanumRuntimeDefaults.Mcp.RequestTimeoutSeconds));
     }
 
     private int GetClampedMcpMaxPaginationPages()
     {
-        return ArcanumSettingClamps.McpMaxPaginationPages(settings.CurrentValue.Mcp.MaxPaginationPages);
+        return ArcanumSettingClamps.McpMaxPaginationPages(
+            ArcanumRuntimeDefaults.Mcp.MaxPaginationPages);
     }
 
     private int GetClampedMcpMaxServers()
     {
 
-        return ArcanumSettingClamps.McpMaxServers(settings.CurrentValue.Mcp.MaxServers);
+        return ArcanumSettingClamps.McpMaxServers(
+            ArcanumRuntimeDefaults.Mcp.MaxServers);
 
     }
 
     private int GetClampedMcpMaxToolsPerServer()
     {
 
-        return ArcanumSettingClamps.McpMaxToolsPerServer(settings.CurrentValue.Mcp.MaxToolsPerServer);
+        return ArcanumSettingClamps.McpMaxToolsPerServer(
+            ArcanumRuntimeDefaults.Mcp.MaxToolsPerServer);
 
     }
 
     private int GetClampedMcpMaxToolsPerListPage()
     {
 
-        return ArcanumSettingClamps.McpMaxToolsPerListPage(settings.CurrentValue.Mcp.MaxToolsPerListPage);
+        return ArcanumSettingClamps.McpMaxToolsPerListPage(
+            ArcanumRuntimeDefaults.Mcp.MaxToolsPerListPage);
 
     }
 
     private int GetClampedMcpMaxToolsTotalBytes()
     {
 
-        return ArcanumSettingClamps.McpMaxToolsTotalBytes(settings.CurrentValue.Mcp.MaxToolsTotalBytes);
+        return ArcanumSettingClamps.McpMaxToolsTotalBytes(
+            ArcanumRuntimeDefaults.Mcp.MaxToolsTotalBytes);
 
     }
 
     private int GetClampedMcpMaxJsonRpcLineBytes()
     {
 
-        return ArcanumSettingClamps.McpMaxJsonRpcLineBytes(settings.CurrentValue.Mcp.MaxJsonRpcLineBytes);
+        return ArcanumSettingClamps.McpMaxJsonRpcLineBytes(
+            ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes);
 
     }
 
@@ -401,7 +411,8 @@ public sealed partial class McpConnectionManager
     {
 
         return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(settings.CurrentValue.Mcp.HttpRequestTimeoutSeconds));
+            ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(
+                ArcanumRuntimeDefaults.Mcp.HttpRequestTimeoutSeconds));
 
     }
 
@@ -426,7 +437,7 @@ public sealed partial class McpConnectionManager
 
     // W-MCP-HTTP: validates a Streamable HTTP endpoint before connecting. The URL must be an
     // absolute http/https URI; plaintext http is refused unless the host is in
-    // Arcanum:Mcp:AllowedHttpHosts; and the SSRF policy (loopback / private / link-local blocking
+    // Arcanum:Integrations:Mcp:AllowedHttpHosts; and the SSRF policy (loopback / private / link-local blocking
     // with DNS-rebind pinning) is enforced up front via OutboundUrlGuard and again at connect time
     // by the named client's egress handler.
     private async Task<Result<Uri>> ResolveValidatedHttpEndpointAsync(McpServerConfig cfg, CancellationToken cancellationToken)
@@ -453,7 +464,7 @@ public sealed partial class McpConnectionManager
 
             return Result<Uri>.Failure(new Error(
                 "Mcp.InsecureUrl",
-                $"Plaintext http MCP server '{endpoint.Host}' requires the host in Arcanum:Mcp:AllowedHttpHosts; otherwise use https."));
+                $"Plaintext http MCP server '{endpoint.Host}' requires the host in Arcanum:Integrations:Mcp:AllowedHttpHosts; otherwise use https."));
 
         }
 
@@ -473,7 +484,8 @@ public sealed partial class McpConnectionManager
     private bool IsHttpHostAllowed(string host)
     {
 
-        string[] allowed = settings.CurrentValue.Mcp.AllowedHttpHosts ?? [];
+        string[] allowed =
+            settings.CurrentValue.Integrations?.Mcp?.AllowedHttpHosts ?? [];
 
         foreach (string candidate in allowed)
         {

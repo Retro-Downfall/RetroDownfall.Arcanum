@@ -725,9 +725,7 @@ public sealed class GrimoireTurnWriterTests
             logger);
 
     private static SessionEventHub CreateHub() =>
-        new(
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-            NullLogger<SessionEventHub>.Instance);
+        new(NullLogger<SessionEventHub>.Instance);
 
     private static async Task<Entry?> ReadOneAsync(
         SessionEventHub hub,

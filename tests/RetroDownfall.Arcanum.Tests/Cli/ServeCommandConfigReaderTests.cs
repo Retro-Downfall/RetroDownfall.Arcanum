@@ -84,12 +84,15 @@ public sealed class ServeCommandConfigReaderTests
 
         ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false);
 
-        Assert.Equal(new HostSettings().MaxRequestBodyBytes, options.Limits.MaxRequestBodySize);
+        Assert.Equal(
+            ArcanumSettingClamps.MaxRequestBodyBytes(
+                ArcanumRuntimeDefaults.HostMaxRequestBodyBytes),
+            options.Limits.MaxRequestBodySize);
 
     }
 
     [Fact]
-    public void Configure_applies_configured_max_request_body()
+    public void Configure_ignores_removed_max_request_body_key()
     {
 
         IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
@@ -101,7 +104,10 @@ public sealed class ServeCommandConfigReaderTests
 
         ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false);
 
-        Assert.Equal(2_097_152L, options.Limits.MaxRequestBodySize);
+        Assert.Equal(
+            ArcanumSettingClamps.MaxRequestBodyBytes(
+                ArcanumRuntimeDefaults.HostMaxRequestBodyBytes),
+            options.Limits.MaxRequestBodySize);
 
     }
 

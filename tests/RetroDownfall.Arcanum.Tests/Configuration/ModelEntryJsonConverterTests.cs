@@ -34,10 +34,6 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.Null(entry.Reasoning);
 
-        Assert.Null(entry.Tokenization);
-
-        Assert.Null(entry.PromptCaching);
-
     }
 
     [Fact]
@@ -260,103 +256,6 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Fact]
-    public void ReadAndWrite_ObjectForm_PreservesTypedTokenizationProfile()
-    {
-        const string json =
-            """
-            {
-              "name": "custom-model",
-              "tokenization": {
-                "type": "calibratedApproximation",
-                "tokenizerId": "o200k_base",
-                "safetyMarginPercent": 25,
-                "unknownImageReserveTokens": 4096,
-                "confidence": 0.8
-              }
-            }
-            """;
-
-        ModelEntry? entry = JsonSerializer.Deserialize(
-            json,
-            ConfigurationJsonContext.Default.ModelEntry);
-
-        ModelTokenizationProfile profile = Assert.IsType<ModelTokenizationProfile>(entry?.Tokenization);
-        Assert.Equal(ModelTokenizationProfileType.CalibratedApproximation, profile.Type);
-        Assert.Equal("o200k_base", profile.TokenizerId);
-        Assert.Equal(25, profile.SafetyMarginPercent);
-        Assert.Equal(4096, profile.UnknownImageReserveTokens);
-
-        string roundTripped = JsonSerializer.Serialize(
-            entry,
-            ConfigurationJsonContext.Default.ModelEntry);
-        ModelEntry? reparsed = JsonSerializer.Deserialize(
-            roundTripped,
-            ConfigurationJsonContext.Default.ModelEntry);
-
-        Assert.Equal(profile, reparsed?.Tokenization);
-    }
-
-    [Fact]
-    public void ReadAndWrite_ObjectForm_PreservesTypedPromptCachingProfile()
-    {
-        const string json =
-            """
-            {
-              "name": "cache-aware-model",
-              "promptCaching": {
-                "controlMode": "explicit",
-                "wireDialect": "openAiPromptCacheRetention",
-                "cacheKeysSupported": true,
-                "emitCacheKey": true,
-                "retentionSelectionSupported": true,
-                "retention": "twentyFourHours",
-                "stablePrefixBreakpointsSupported": false,
-                "emitStablePrefixBreakpoint": false,
-                "toolSchemasParticipate": true,
-                "reportsCachedInputUsage": true
-              }
-            }
-            """;
-
-        ModelEntry? entry = JsonSerializer.Deserialize(
-            json,
-            ConfigurationJsonContext.Default.ModelEntry);
-
-        PromptCachingProfile profile = Assert.IsType<PromptCachingProfile>(entry?.PromptCaching);
-        Assert.Equal(PromptCachingControlMode.Explicit, profile.ControlMode);
-        Assert.Equal(PromptCachingWireDialect.OpenAiPromptCacheRetention, profile.WireDialect);
-        Assert.True(profile.CacheKeysSupported);
-        Assert.True(profile.EmitCacheKey);
-        Assert.True(profile.RetentionSelectionSupported);
-        Assert.Equal(PromptCacheRetentionPolicy.TwentyFourHours, profile.Retention);
-        Assert.False(profile.StablePrefixBreakpointsSupported);
-        Assert.False(profile.EmitStablePrefixBreakpoint);
-        Assert.True(profile.ToolSchemasParticipate);
-        Assert.True(profile.ReportsCachedInputUsage);
-
-        string roundTripped = JsonSerializer.Serialize(
-            entry,
-            ConfigurationJsonContext.Default.ModelEntry);
-        ModelEntry? reparsed = JsonSerializer.Deserialize(
-            roundTripped,
-            ConfigurationJsonContext.Default.ModelEntry);
-
-        Assert.Equal(profile, reparsed?.PromptCaching);
-    }
-
-    [Theory]
-    [InlineData("""{"name":"cache-aware","promptCaching":{"controlMode":1}}""")]
-    [InlineData("""{"name":"cache-aware","promptCaching":{"wireDialect":1}}""")]
-    [InlineData("""{"name":"cache-aware","promptCaching":{"retention":1}}""")]
-    public void Read_ObjectForm_RejectsNumericPromptCachingEnums(string json)
-    {
-        Assert.Throws<JsonException>(() =>
-            JsonSerializer.Deserialize(
-                json,
-                ConfigurationJsonContext.Default.ModelEntry));
-    }
-
-    [Fact]
     public void ImplicitConversion_FromString_DefaultsSupportsVisionFalse()
     {
 
@@ -367,8 +266,6 @@ public sealed class ModelEntryJsonConverterTests
         Assert.False(entry.SupportsVision);
 
         Assert.Null(entry.Reasoning);
-
-        Assert.Null(entry.PromptCaching);
 
     }
 
@@ -436,19 +333,12 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Theory]
-    [InlineData(typeof(ReasoningRequestOptions))]
     [InlineData(typeof(ReasoningEffortLevel))]
     [InlineData(typeof(ReasoningOutputMode))]
     [InlineData(typeof(ReasoningContentSegment))]
     [InlineData(typeof(ReasoningCapabilities))]
     [InlineData(typeof(ReasoningControlSupport))]
     [InlineData(typeof(ReasoningWireDialect))]
-    [InlineData(typeof(ModelTokenizationProfile))]
-    [InlineData(typeof(ModelTokenizationProfileType))]
-    [InlineData(typeof(PromptCachingProfile))]
-    [InlineData(typeof(PromptCachingControlMode))]
-    [InlineData(typeof(PromptCachingWireDialect))]
-    [InlineData(typeof(PromptCacheRetentionPolicy))]
     public void ConfigurationJsonContext_RegistersReasoningCapabilityTypes(Type type)
     {
 

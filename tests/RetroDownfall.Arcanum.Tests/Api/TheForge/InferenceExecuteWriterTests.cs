@@ -79,12 +79,11 @@ public sealed class InferenceExecuteWriterTests
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
         Assert.DoesNotContain("error", output, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamTimeoutMessage, output, StringComparison.Ordinal);
         Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task WriteStreamAsync_InferenceTimeoutOce_WritesTimeoutFrame()
+    public async Task WriteStreamAsync_UnexpectedCancellation_WritesSanitizedFailure()
     {
         ServiceCollection services = new();
 
@@ -106,8 +105,8 @@ public sealed class InferenceExecuteWriterTests
 
         FakeIntelligenceProvider intelligence = new();
 
-        // Neither RequestAborted nor the caller token is cancelled — mirrors wall-clock
-        // expiry inside the hub (!callerToken.IsCancellationRequested).
+        // Neither RequestAborted nor the caller token is cancelled. There is no host-owned
+        // inference deadline, so an unexpected provider cancellation is a generic failure.
         intelligence.NextStreamException = new OperationCanceledException();
 
         PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
@@ -116,12 +115,11 @@ public sealed class InferenceExecuteWriterTests
 
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
-        Assert.Contains(InferenceExecuteWriter.PublicStreamTimeoutMessage, output, StringComparison.Ordinal);
-        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+        Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task WriteStreamAsync_HostCallerCancellation_WritesSanitizedFailureNotTimeout()
+    public async Task WriteStreamAsync_HostCallerCancellation_WritesSanitizedFailure()
     {
         ServiceCollection services = new();
 
@@ -156,7 +154,6 @@ public sealed class InferenceExecuteWriterTests
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
         Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
-        Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamTimeoutMessage, output, StringComparison.Ordinal);
     }
 
     [Fact]

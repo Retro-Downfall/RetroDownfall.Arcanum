@@ -35,7 +35,7 @@ internal sealed class TurnEngine(ITurnPipelineRunner pipelineRunner) : ITurnEven
     }
 
     /// <summary>
-    /// Runs a turn with an explicit audit context (Wizard facade / tests).
+    /// Runs a turn with an explicit audit context (Master facade / tests).
     /// </summary>
     public async IAsyncEnumerable<TurnEvent> RunTurnAsync(
         TurnExecutionRequest request,

@@ -439,7 +439,7 @@ public sealed class OpenAiV1EndpointTests
                         Models = [new ModelEntry("vision-model", SupportsVision: true)],
                     },
                 ],
-                Scrying = settings.Scrying with { Enabled = false },
+                Features = settings.Features with { Scrying = false },
             },
         };
 
@@ -497,6 +497,90 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
+    public async Task GetModels_NativeAndOpenAiSurfacesShareConfiguredProviderModelInventory()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "alpha-model",
+                FastModel = "alpha-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "provider-a",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://a.example/v1",
+                        Models =
+                        [
+                            new ModelEntry("alpha-model"),
+                            new ModelEntry("Shared-Model", SupportsVision: true),
+                        ],
+                    },
+                    new ProviderSettings
+                    {
+                        Name = "provider-b",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://b.example/v1",
+                        Models =
+                        [
+                            new ModelEntry("beta-model"),
+                            new ModelEntry("shared-model"),
+                        ],
+                    },
+                ],
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage nativeResponse = await client.GetAsync("/api/models");
+        HttpResponseMessage openAiResponse = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, nativeResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, openAiResponse.StatusCode);
+
+        ApiResponse<ModelInfoDto[]>? native = JsonSerializer.Deserialize(
+            await nativeResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseModelInfoDtoArray);
+        OpenAiModelListResponse? openAi = JsonSerializer.Deserialize(
+            await openAiResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiModelListResponse);
+
+        Assert.NotNull(native?.Data);
+        Assert.NotNull(openAi?.Data);
+        Assert.Equal(4, native!.Data!.Length);
+        Assert.Contains(
+            native.Data,
+            static model => model.Model == "Shared-Model" && model.ProviderName == "provider-a");
+        Assert.Contains(
+            native.Data,
+            static model => model.Model == "shared-model" && model.ProviderName == "provider-b");
+
+        HashSet<string> configuredIds = native.Data
+            .Select(static model => model.Model)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(configuredIds.Count, openAi!.Data.Count);
+        Assert.All(
+            configuredIds,
+            id => Assert.Contains(
+                openAi.Data,
+                model => string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase)));
+
+        OpenAiModel shared = Assert.Single(
+            openAi.Data,
+            static model => string.Equals(model.Id, "shared-model", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("provider-a", shared.ProviderName);
+        Assert.True(shared.SupportsVision);
+
+    }
+
+    [SkippableFact]
     public async Task GetModels_WithValidApiKey_IncludesCapabilityEnrichment()
     {
 
@@ -537,7 +621,7 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
-    public async Task GetModels_CapableModel_ReportsVisionReasoningAndPromptCachingMetadata()
+    public async Task GetModels_KnownCatalogModel_ReportsVisionReasoningAndPromptCachingMetadata()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -546,17 +630,17 @@ public sealed class OpenAiV1EndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                DefaultModel = "vision-model",
+                DefaultModel = "gpt-5",
                 Providers =
                 [
                     new ProviderSettings
                     {
                         Name = "vision-provider",
                         Type = AiProviderKind.OpenAICompatible,
-                        Endpoint = "https://example.test/v1",
+                        Endpoint = "https://api.openai.com/v1",
                         Models =
                         [
-                            new ModelEntry("vision-model", SupportsVision: true)
+                            new ModelEntry("gpt-5", SupportsVision: true)
                             {
                                 Reasoning = new ReasoningCapabilities
                                 {
@@ -567,14 +651,6 @@ public sealed class OpenAiV1EndpointTests
                                     AllowsClientOutput = true,
                                     WireDialect = ReasoningWireDialect.AnthropicThinking,
                                     MaxBudgetTokens = 32_768,
-                                },
-                                PromptCaching = new PromptCachingProfile
-                                {
-                                    ControlMode = PromptCachingControlMode.Explicit,
-                                    WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
-                                    CacheKeysSupported = true,
-                                    EmitCacheKey = true,
-                                    ReportsCachedInputUsage = true,
                                 },
                             },
                         ],
@@ -595,7 +671,7 @@ public sealed class OpenAiV1EndpointTests
 
         Assert.NotNull(body?.Data);
 
-        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "vision-model");
+        OpenAiModel model = Assert.Single(body!.Data, m => m.Id == "gpt-5");
 
         Assert.True(model.SupportsVision);
 
@@ -618,7 +694,7 @@ public sealed class OpenAiV1EndpointTests
     }
 
     [SkippableFact]
-    public async Task GetModels_DuplicateModelWithDifferentProviderProfiles_OmitsPromptCachingMetadata()
+    public async Task GetModels_DuplicateModelWithMatchingProviderProfiles_RetainsPromptCachingMetadata()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -626,42 +702,22 @@ public sealed class OpenAiV1EndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                DefaultModel = "shared-model",
+                DefaultModel = "gpt-5",
                 Providers =
                 [
                     new ProviderSettings
                     {
                         Name = "provider-a",
                         Type = AiProviderKind.OpenAICompatible,
-                        Endpoint = "https://a.example/v1",
-                        Models =
-                        [
-                            new ModelEntry("shared-model")
-                            {
-                                PromptCaching = new PromptCachingProfile
-                                {
-                                    ControlMode = PromptCachingControlMode.Explicit,
-                                    CacheKeysSupported = true,
-                                    EmitCacheKey = true,
-                                },
-                            },
-                        ],
+                        Endpoint = "https://api.openai.com/v1",
+                        Models = [new ModelEntry("gpt-5")],
                     },
                     new ProviderSettings
                     {
                         Name = "provider-b",
                         Type = AiProviderKind.OpenAICompatible,
-                        Endpoint = "https://b.example/v1",
-                        Models =
-                        [
-                            new ModelEntry("shared-model")
-                            {
-                                PromptCaching = new PromptCachingProfile
-                                {
-                                    ControlMode = PromptCachingControlMode.None,
-                                },
-                            },
-                        ],
+                        Endpoint = "https://api.openai.com/v1",
+                        Models = [new ModelEntry("GPT-5")],
                     },
                 ],
             },
@@ -675,7 +731,57 @@ public sealed class OpenAiV1EndpointTests
         OpenAiModelListResponse? body = JsonSerializer.Deserialize(
             json,
             ArcanumJsonContext.Default.OpenAiModelListResponse);
-        OpenAiModel model = Assert.Single(body!.Data, static entry => entry.Id == "shared-model");
+        OpenAiModel model = Assert.Single(
+            body!.Data,
+            static entry => string.Equals(entry.Id, "gpt-5", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(PromptCachingControlMode.Explicit, model.PromptCaching?.ControlMode);
+        Assert.Equal(
+            PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            model.PromptCaching?.WireDialect);
+        Assert.True(model.PromptCaching?.CacheKeysSupported);
+        Assert.True(model.PromptCaching?.EmitCacheKey);
+        Assert.True(model.PromptCaching?.ReportsCachedInputUsage);
+    }
+
+    [SkippableFact]
+    public async Task GetModels_DuplicateModelWithDifferentProviderProfiles_OmitsPromptCachingMetadata()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                DefaultModel = "gpt-5",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "provider-a",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://api.openai.com/v1",
+                        Models = [new ModelEntry("gpt-5")],
+                    },
+                    new ProviderSettings
+                    {
+                        Name = "provider-b",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://b.example/v1",
+                        Models = [new ModelEntry("gpt-5")],
+                    },
+                ],
+            },
+        };
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/v1/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        OpenAiModelListResponse? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.OpenAiModelListResponse);
+        OpenAiModel model = Assert.Single(body!.Data, static entry => entry.Id == "gpt-5");
         Assert.Null(model.PromptCaching);
     }
 

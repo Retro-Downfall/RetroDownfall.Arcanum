@@ -23,10 +23,10 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 namespace RetroDownfall.Arcanum.Api.Workspaces;
 
 /// <summary>
-/// RAG Phase 3 — <c>POST /api/workspaces/{id}/files/divine</c> (semantic search over a workspace's
+/// Semantic codebase retrieval: <c>POST /api/workspaces/{id}/files/divine</c> (semantic search over a workspace's
 /// indexed files) and <c>POST /api/workspaces/{id}/files/index</c> (manual immediate re-index). Every
 /// step degrades gracefully when semantic codebase retrieval is disabled or unavailable — see the
-/// graceful-degradation matrix in DESIGN.md §21.4.
+/// graceful-degradation matrix in <c>docs/Arcanum.DESIGN.md</c> §21.4.
 /// </summary>
 internal static class WorkspaceDivinationEndpoints
 {
@@ -57,7 +57,7 @@ internal static class WorkspaceDivinationEndpoints
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
+                EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
                 {
@@ -66,7 +66,7 @@ internal static class WorkspaceDivinationEndpoints
                         traceId,
                         new Error(
                             ErrorCodes.Embeddings.FeatureDisabled,
-                            "Semantic codebase retrieval is disabled (Arcanum:Embeddings:Enabled and Arcanum:Embeddings:CodebaseRetrievalEnabled must both be true)."));
+                            "Semantic codebase retrieval is disabled (Arcanum:Features:Embeddings and Arcanum:Features:CodebaseRetrieval must both be true)."));
 
                 }
 
@@ -178,7 +178,7 @@ internal static class WorkspaceDivinationEndpoints
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
+                EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
                 {
@@ -187,7 +187,7 @@ internal static class WorkspaceDivinationEndpoints
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(new Error(
                                 ErrorCodes.Embeddings.FeatureDisabled,
-                                "Semantic codebase retrieval is disabled (Arcanum:Embeddings:Enabled and Arcanum:Embeddings:CodebaseRetrievalEnabled must both be true).")),
+                                "Semantic codebase retrieval is disabled (Arcanum:Features:Embeddings and Arcanum:Features:CodebaseRetrieval must both be true).")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseBoolean,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Embeddings.FeatureDisabled));

@@ -1,7 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
-/// Grimoire-backed metadata for <c>POST /v1/files</c> uploads (DESIGN.md §11.20). The row is
+/// Grimoire-backed metadata for <c>POST /v1/files</c> uploads
+/// (<c>docs/Arcanum.DESIGN.md</c> §11.20). The row is
 /// metadata only — file bytes live on disk under <see cref="ArcanumPaths.FilesDirectory"/>, named by
 /// <see cref="UploadedFileRecord.Id"/> (never the client-supplied filename), resolved via
 /// <see cref="UploadedFileStorage.ResolvePath"/>.

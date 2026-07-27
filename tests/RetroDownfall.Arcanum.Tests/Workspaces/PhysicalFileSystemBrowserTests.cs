@@ -215,14 +215,13 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
     public async Task ReadAsync_oversized_file_returns_too_large()
     {
 
-        _workspace.WriteFile("huge.txt", new string('x', 2048));
+        int oversizedLength = checked(
+            (int)ArcanumSettingClamps.MaxFileReadSizeBytes(
+                ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes)
+            + 1);
+        _workspace.WriteFile("huge.txt", new string('x', oversizedLength));
 
-        ArcanumSettings settings = new()
-        {
-            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1024 },
-        };
-
-        PhysicalFileSystemBrowser browser = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+        PhysicalFileSystemBrowser browser = CreateBrowser();
 
         WorkspaceInfo workspace = MakeWorkspace();
 
@@ -269,21 +268,16 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ListAsync_respects_max_paths_setting()
+    public async Task ListAsync_respects_internal_max_paths_boundary()
     {
-
-        _workspace.WriteFile("one.txt", "1");
-
-        _workspace.WriteFile("two.txt", "2");
-
-        _workspace.WriteFile("three.txt", "3");
-
-        ArcanumSettings settings = new()
+        int maxPaths = ArcanumSettingClamps.ListDirectoryMaxPaths(
+            ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths);
+        for (int i = 0; i <= maxPaths; i++)
         {
-            Intelligence = new IntelligenceSettings { ListDirectoryMaxPaths = 2 },
-        };
+            _workspace.WriteFile($"bounded-{i}.txt", "x");
+        }
 
-        PhysicalFileSystemBrowser browser = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+        PhysicalFileSystemBrowser browser = CreateBrowser();
 
         WorkspaceInfo workspace = MakeWorkspace();
 
@@ -291,7 +285,7 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
-        Assert.True(result.Value!.Entries.Length <= 2);
+        Assert.Equal(maxPaths, result.Value!.Entries.Length);
 
     }
 

@@ -36,9 +36,11 @@ internal sealed class SpellCastPreviewService(
 
         long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
 
-        int maxDependencies = ArcanumSettingClamps.MaxDependencies(settings.Spells.MaxDependencies);
+        int maxDependencies = ArcanumSettingClamps.MaxDependencies(
+            ArcanumRuntimeDefaults.Spells.MaxDependencies);
 
-        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(settings.Spells.MaxDeclaredTools);
+        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(
+            ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
 
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner
             .ScanAsync(resolvedWorkspace, cancellationToken, maxSpellFileSizeBytes, maxDependencies, maxDeclaredTools)
@@ -52,7 +54,8 @@ internal sealed class SpellCastPreviewService(
                 new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name in the resolved workspace."));
         }
 
-        int maxResonantDependencies = ArcanumSettingClamps.MaxResonantDependencies(settings.Spells.MaxResonantDependencies);
+        int maxResonantDependencies = ArcanumSettingClamps.MaxResonantDependencies(
+            ArcanumRuntimeDefaults.Spells.MaxResonantDependencies);
 
         ResolvedSpell resolved = await SpellDependencyResolver
             .ResolveAsync(primary, resolvedWorkspace, maxSpellFileSizeBytes, cancellationToken, logger, spellCatalog: null, maxResonantDependencies)
@@ -66,7 +69,8 @@ internal sealed class SpellCastPreviewService(
             Prompt: string.Empty,
             WorkingDirectory: resolvedWorkspace ?? string.Empty);
 
-        int maxResonantBytes = ArcanumSettingClamps.MaxResonantBytes(settings.Spells.MaxResonantBytes);
+        int maxResonantBytes = ArcanumSettingClamps.MaxResonantBytes(
+            ArcanumRuntimeDefaults.Spells.MaxResonantBytes);
 
         string systemPrompt = SystemPromptBuilder.Build(
             ping,

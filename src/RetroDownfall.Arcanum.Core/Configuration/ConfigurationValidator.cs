@@ -1,14 +1,15 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed class ConfigurationValidator(
-    ILogger<ConfigurationValidator>? logger = null,
-    IWorkspaceCheckAdvertisementEligibility? workspaceCheckEligibility = null)
+    ILogger<ConfigurationValidator>? logger = null)
 {
 
     internal const string ObsoleteLlamaCppMigrationMessage =
@@ -18,7 +19,19 @@ public sealed class ConfigurationValidator(
         "Provider type LlamaCppServer is no longer supported. Configure an OpenAI-compatible HTTP provider (type OpenAICompatible) instead; Ollama may use endpoint http://localhost:11434/v1.";
 
     internal const string ObsoleteCacheMigrationMessage =
-        "Arcanum:Cache is no longer supported. Prompt caching is provider-managed; use ProviderSettings.SupportsPromptCaching to gate cached-token metrics.";
+        "Arcanum:Cache is no longer supported. Prompt caching is selected by the built-in provider/model capability catalog.";
+
+    internal const string ObsoleteProviderApiKeyMessage =
+        "Provider ApiKey values are no longer supported in configuration. Set CredentialEnvironmentVariable to an environment-variable name, or omit it to use ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY.";
+
+    internal const string ObsoleteHttpsCertificatePasswordMessage =
+        "Host.Https.CertificatePassword values are no longer supported in configuration. Set CertificatePasswordEnvironmentVariable to an environment-variable name, or omit it to use ARCANUM_HTTPS_CERTIFICATE_PASSWORD.";
+
+    internal const string ObsoleteCommLinkWebhookUrlMessage =
+        "Integrations.CommLink.WebhookUrl values are no longer supported in configuration. Set WebhookUrlEnvironmentVariable to an environment-variable name, or omit it to use ARCANUM_COMMLINK_WEBHOOK_URL.";
+
+    internal const string ObsoleteProviderCapabilityProfileMessage =
+        "Provider/model tokenization and prompt-caching overrides are no longer supported. Arcanum uses its built-in capability catalog and conservative unknown-model behavior.";
 
     internal const string ObsoleteProviderLlamaCppMessage =
         "Provider-level llamaCpp (including modelMap) is no longer supported. List models explicitly under Providers[].Models.";
@@ -29,11 +42,62 @@ public sealed class ConfigurationValidator(
     internal const string ObsoleteModerationsMigrationMessage =
         "Arcanum:Moderations is no longer supported. POST /v1/moderations always returns 501 not_supported; remove the Moderations block from arcanum.json.";
 
+    private static readonly HashSet<string> ReservedRuntimeEnvironmentVariableNames =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "ARCANUM_EDITION",
+            "ARCANUM_HOST_ANY",
+            "ARCANUM_LISTEN_ANY_ACK",
+            "ARCANUM_ALLOW_HOST_PROCESS_TOOLS",
+            "ARCANUM_SKIP_KEY_BOOTSTRAP",
+            "ARCANUM_NO_COLOR",
+            "ARCANUM_NO_COMMAND_CENTER",
+            "ARCANUM_NO_AUTO_SERVE",
+            "ARCANUM_AUTO_LAUNCHED",
+            "ARCANUM_DEV_LAUNCHER",
+            "ARCANUM_TEST_HOME",
+            "ARCANUM_GRIMOIRE_DEV_KEY",
+        };
+
+    private static readonly (string Key, string Message)[] ObsoleteRootSections =
+    [
+        ("apprentices", "Apprentice enablement moved to Features and host capacity moved to Execution; workflow limits are automatic."),
+        ("attachments", "Attachment enablement moved to Features; attachment storage and prompt limits are internal."),
+        ("batches", "Batch concurrency moved to Execution; batch size and expiry limits are internal."),
+        ("budget", "Daily budget policy moved to Cost.Budget."),
+        ("campaigns", "Campaign path authority moved to Security.CampaignRoots; registry capacity is internal."),
+        ("clientToolForwarding", "Client-tool enablement moved to Features.ClientTools; tool-count limits are internal."),
+        ("codex", "CODEX size is now an internal host invariant."),
+        ("codingTools", "Workspace-check enablement moved to Features and authored profiles moved to Integrations.WorkspaceChecks; search and patch limits are internal."),
+        ("commLink", "CommLink configuration moved to Integrations.CommLink; transport limits are internal."),
+        ("conclave", "Conclave and A2A opt-ins moved to Features, and A2A protocol details moved to Integrations.A2A."),
+        ("embeddings", "Embedding opt-ins moved to Features and provider/model facts moved to Integrations.Embeddings; retrieval tuning is internal."),
+        ("eventBus", "SSE capacity moved to Execution; channel and heartbeat behavior are internal."),
+        ("files", "Upload MIME policy moved to Security.AllowedUploadMimeTypes; upload limits are internal."),
+        ("grimoire", "Grimoire hydration, retention, and paging limits are internal."),
+        ("guardrails", "Guardrail enablement moved to Features and policy content moved to Security.Guardrails."),
+        ("intelligence", "Intelligence routing, context, retry, and turn mechanics are automatic or internal."),
+        ("logs", "The in-memory log level moved to Host.MinLogLevelInBuffer; buffer capacity is internal."),
+        ("mcp", "The plaintext-host allowlist moved to Integrations.Mcp; MCP transport limits are internal."),
+        ("metrics", "Metrics enablement moved to Features.Metrics and authentication policy moved to Security.MetricsRequireApiKey."),
+        ("perception", "Perception path authority moved to Security.PerceptionWorkspaceRoots; traversal limits are internal."),
+        ("pricing", "Provider pricing moved to Cost.Pricing."),
+        ("prompts", "Prompt rendering limits are internal."),
+        ("provingGrounds", "Proving Grounds execution follows caller cancellation and has no configuration block."),
+        ("resilience", "Provider health and fallback behavior are automatic."),
+        ("scrying", "Scrying enablement moved to Features.Scrying and MIME policy moved to Security.AllowedImageMimeTypes; image limits are internal."),
+        ("server", "The PID path is derived from ArcanumPaths."),
+        ("sessions", "Memory-management enablement moved to Features.MemoryManagement; session storage limits are internal."),
+        ("spells", "Spell path authority moved to Security.SpellWorkspaceRoots; file and resonance limits are internal."),
+        ("structuredOutput", "Structured output validation and provider-constrained decoding are automatic."),
+        ("ward", "Ward policy moved to Security.Ward; approval capacity and timeout are internal."),
+        ("webBrowsing", "Web-browsing enablement moved to Features.WebBrowsing; fetch limits are internal."),
+    ];
+
     /// <summary>
-    /// Rejects obsolete configuration keys that binding would otherwise silently ignore after the
-    /// corresponding options properties were removed (managed local-inference options / global Cache).
-    /// Also rejects obsolete provider <c>Type</c> values such as <c>LlamaCppServer</c> before options
-    /// binding can fail with a generic enum-conversion error.
+    /// Walks the complete <c>Arcanum</c> configuration subtree against source-generated JSON
+    /// metadata before options binding. Unknown paths fail closed; selected removed paths retain
+    /// actionable migration messages, and all issues are returned together.
     /// </summary>
     public Result RejectObsoleteKeys(IConfiguration configuration)
     {
@@ -41,6 +105,14 @@ public sealed class ConfigurationValidator(
         List<ConfigurationValidationError> errors = [];
 
         IConfigurationSection arcanum = configuration.GetSection("Arcanum");
+
+        foreach ((string key, string message) in ObsoleteRootSections)
+        {
+            if (arcanum.GetSection(key).Exists())
+            {
+                errors.Add(new ConfigurationValidationError(key, message));
+            }
+        }
 
         if (arcanum.GetSection("LlamaCpp").Exists())
         {
@@ -61,6 +133,20 @@ public sealed class ConfigurationValidator(
             errors.Add(new ConfigurationValidationError(
                 "moderations",
                 ObsoleteModerationsMigrationMessage));
+        }
+
+        if (arcanum.GetSection("Host:Https:CertificatePassword").Exists())
+        {
+            errors.Add(new ConfigurationValidationError(
+                "host.https.certificatePassword",
+                ObsoleteHttpsCertificatePasswordMessage));
+        }
+
+        if (arcanum.GetSection("Integrations:CommLink:WebhookUrl").Exists())
+        {
+            errors.Add(new ConfigurationValidationError(
+                "integrations.commLink.webhookUrl",
+                ObsoleteCommLinkWebhookUrlMessage));
         }
 
         IConfigurationSection providers = arcanum.GetSection("Providers");
@@ -85,6 +171,28 @@ public sealed class ConfigurationValidator(
                     ObsoleteProviderModelMapMessage));
             }
 
+            if (provider.GetSection("ApiKey").Exists())
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.apiKey",
+                    ObsoleteProviderApiKeyMessage));
+            }
+
+            foreach (string removedCapability in new[]
+                     {
+                         "Tokenization",
+                         "PromptCaching",
+                         "SupportsPromptCaching",
+                     })
+            {
+                if (provider.GetSection(removedCapability).Exists())
+                {
+                    errors.Add(new ConfigurationValidationError(
+                        $"{pointer}.{char.ToLowerInvariant(removedCapability[0]) + removedCapability[1..]}",
+                        ObsoleteProviderCapabilityProfileMessage));
+                }
+            }
+
             string? typeValue = provider["Type"] ?? provider["type"];
 
             if (IsObsoleteLlamaCppServerType(typeValue))
@@ -94,41 +202,38 @@ public sealed class ConfigurationValidator(
                     ObsoleteLlamaCppServerTypeMessage));
             }
 
-            ValidatePromptCachingEnumStrings(
-                provider.GetSection("PromptCaching"),
-                $"{pointer}.promptCaching",
-                errors);
-
             foreach (IConfigurationSection model in provider.GetSection("Models").GetChildren())
             {
                 string modelPointer = string.IsNullOrEmpty(model.Key)
                     ? $"{pointer}.models"
                     : $"{pointer}.models[{model.Key}]";
 
-                ValidatePromptCachingEnumStrings(
-                    model.GetSection("PromptCaching"),
-                    $"{modelPointer}.promptCaching",
-                    errors);
+                foreach (string removedCapability in new[] { "Tokenization", "PromptCaching" })
+                {
+                    if (model.GetSection(removedCapability).Exists())
+                    {
+                        errors.Add(new ConfigurationValidationError(
+                            $"{modelPointer}.{char.ToLowerInvariant(removedCapability[0]) + removedCapability[1..]}",
+                            ObsoleteProviderCapabilityProfileMessage));
+                    }
+                }
             }
         }
 
-        if (errors.Count > 0)
-        {
-            return Result.Failure(new Error(
-                "Configuration.ValidationFailed",
-                $"{errors.Count} configuration issue(s).",
-                errors));
-        }
+        ValidateUnknownConfigurationChildren(
+            arcanum,
+            typeof(ArcanumSettings),
+            string.Empty,
+            errors);
 
-        return Result.Success();
+        return BuildRawTreeValidationResult(errors);
 
     }
 
     /// <summary>
-    /// Rejects obsolete keys and obsolete provider types in an ArcanumSettings-shaped JSON object
-    /// (API PUT/validate bodies). Must run on raw <see cref="JsonDocument"/> / <see cref="JsonElement"/>
-    /// before source-generated deserialization so <c>type: LlamaCppServer</c> yields a migration
-    /// error instead of a generic invalid-body enum failure.
+    /// Walks an <see cref="ArcanumSettings"/>-shaped API body against the complete source-generated
+    /// configuration schema before deserialization. Unknown and selected obsolete paths are grouped;
+    /// obsolete provider types retain migration-specific errors.
     /// </summary>
     public Result RejectObsoleteJsonKeys(JsonElement root)
     {
@@ -137,7 +242,19 @@ public sealed class ConfigurationValidator(
 
         if (root.ValueKind != JsonValueKind.Object)
         {
-            return Result.Success();
+            errors.Add(new ConfigurationValidationError(
+                "$",
+                "Configuration root must be a JSON object."));
+
+            return BuildRawTreeValidationResult(errors);
+        }
+
+        foreach ((string key, string message) in ObsoleteRootSections)
+        {
+            if (TryGetPropertyIgnoreCase(root, key, out _))
+            {
+                errors.Add(new ConfigurationValidationError(key, message));
+            }
         }
 
         if (TryGetPropertyIgnoreCase(root, "llamaCpp", out _))
@@ -159,6 +276,28 @@ public sealed class ConfigurationValidator(
             errors.Add(new ConfigurationValidationError(
                 "moderations",
                 ObsoleteModerationsMigrationMessage));
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "host", out JsonElement host)
+            && host.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(host, "https", out JsonElement https)
+            && https.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(https, "certificatePassword", out _))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "host.https.certificatePassword",
+                ObsoleteHttpsCertificatePasswordMessage));
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "integrations", out JsonElement integrations)
+            && integrations.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(integrations, "commLink", out JsonElement commLink)
+            && commLink.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(commLink, "webhookUrl", out _))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "integrations.commLink.webhookUrl",
+                ObsoleteCommLinkWebhookUrlMessage));
         }
 
         if (TryGetPropertyIgnoreCase(root, "providers", out JsonElement providers)
@@ -189,6 +328,28 @@ public sealed class ConfigurationValidator(
                         ObsoleteProviderModelMapMessage));
                 }
 
+                if (TryGetPropertyIgnoreCase(provider, "apiKey", out _))
+                {
+                    errors.Add(new ConfigurationValidationError(
+                        $"providers[{index}].apiKey",
+                        ObsoleteProviderApiKeyMessage));
+                }
+
+                foreach (string removedCapability in new[]
+                         {
+                             "tokenization",
+                             "promptCaching",
+                             "supportsPromptCaching",
+                         })
+                {
+                    if (TryGetPropertyIgnoreCase(provider, removedCapability, out _))
+                    {
+                        errors.Add(new ConfigurationValidationError(
+                            $"providers[{index}].{removedCapability}",
+                            ObsoleteProviderCapabilityProfileMessage));
+                    }
+                }
+
                 if (TryGetPropertyIgnoreCase(provider, "type", out JsonElement typeElement)
                     && typeElement.ValueKind == JsonValueKind.String
                     && IsObsoleteLlamaCppServerType(typeElement.GetString()))
@@ -198,45 +359,462 @@ public sealed class ConfigurationValidator(
                         ObsoleteLlamaCppServerTypeMessage));
                 }
 
+                if (TryGetPropertyIgnoreCase(provider, "models", out JsonElement models)
+                    && models.ValueKind == JsonValueKind.Array)
+                {
+                    int modelIndex = 0;
+
+                    foreach (JsonElement model in models.EnumerateArray())
+                    {
+                        if (model.ValueKind == JsonValueKind.Object)
+                        {
+                            foreach (string removedCapability in new[]
+                                     {
+                                         "tokenization",
+                                         "promptCaching",
+                                     })
+                            {
+                                if (TryGetPropertyIgnoreCase(model, removedCapability, out _))
+                                {
+                                    errors.Add(new ConfigurationValidationError(
+                                        $"providers[{index}].models[{modelIndex}].{removedCapability}",
+                                        ObsoleteProviderCapabilityProfileMessage));
+                                }
+                            }
+                        }
+
+                        modelIndex++;
+                    }
+                }
+
                 index++;
             }
         }
 
-        if (errors.Count > 0)
+        ValidateUnknownJsonProperties(
+            root,
+            typeof(ArcanumSettings),
+            string.Empty,
+            errors);
+
+        return BuildRawTreeValidationResult(errors);
+
+    }
+
+    /// <summary>
+    /// Validates the persisted <c>arcanum.json</c> wrapper before deserialization. The file must
+    /// contain exactly one retained root, <c>Arcanum</c>, whose value is validated with the same
+    /// fail-closed schema used by API configuration bodies.
+    /// </summary>
+    public Result ValidateConfigurationFileJson(JsonElement root)
+    {
+        List<ConfigurationValidationError> errors = [];
+
+        if (root.ValueKind != JsonValueKind.Object)
         {
-            return Result.Failure(new Error(
-                "Configuration.ValidationFailed",
-                $"{errors.Count} obsolete configuration key(s).",
-                errors));
+            errors.Add(new ConfigurationValidationError(
+                "$",
+                "arcanum.json root must be a JSON object containing an Arcanum property."));
+
+            return BuildRawTreeValidationResult(errors);
         }
 
-        return Result.Success();
+        JsonElement arcanum = default;
+        bool foundArcanum = false;
 
+        foreach (JsonProperty property in root.EnumerateObject())
+        {
+            if (string.Equals(property.Name, "Arcanum", StringComparison.Ordinal))
+            {
+                if (!foundArcanum)
+                {
+                    arcanum = property.Value;
+                    foundArcanum = true;
+                }
+
+                continue;
+            }
+
+            AddUnknownPath(property.Name, errors);
+        }
+
+        if (!foundArcanum)
+        {
+            errors.Add(new ConfigurationValidationError(
+                "Arcanum",
+                "arcanum.json must contain the Arcanum root object."));
+        }
+        else
+        {
+            Result nested = RejectObsoleteJsonKeys(arcanum);
+
+            if (nested.IsFailure && nested.Error.Details is { Count: > 0 } details)
+            {
+                foreach (ConfigurationValidationError detail in details)
+                {
+                    AddErrorIfMissing(detail, errors);
+                }
+            }
+        }
+
+        return BuildRawTreeValidationResult(errors);
+    }
+
+    private const string UnknownConfigurationPathMessage =
+        "Unknown or obsolete configuration path. Remove it or use a retained Arcanum configuration property.";
+
+    private static Result BuildRawTreeValidationResult(
+        List<ConfigurationValidationError> errors)
+    {
+        if (errors.Count == 0)
+        {
+            return Result.Success();
+        }
+
+        errors.Sort(static (left, right) =>
+            StringComparer.OrdinalIgnoreCase.Compare(left.Pointer, right.Pointer));
+
+        return Result.Failure(new Error(
+            "Configuration.ValidationFailed",
+            $"{errors.Count} configuration issue(s).",
+            errors));
+    }
+
+    private static void ValidateUnknownConfigurationChildren(
+        IConfigurationSection section,
+        Type expectedType,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        expectedType = Nullable.GetUnderlyingType(expectedType) ?? expectedType;
+
+        if (TryGetDictionaryValueType(expectedType, out Type? valueType))
+        {
+            foreach (IConfigurationSection child in section.GetChildren())
+            {
+                if (IsObjectConfigurationType(valueType))
+                {
+                    ValidateUnknownConfigurationDictionaryEntry(
+                        child,
+                        valueType,
+                        pointer,
+                        child.Key,
+                        errors);
+                }
+                else
+                {
+                    ValidateUnknownConfigurationChildren(
+                        child,
+                        valueType,
+                        AppendDynamicKey(pointer, child.Key),
+                        errors);
+                }
+            }
+
+            return;
+        }
+
+        if (TryGetEnumerableElementType(expectedType, out Type? elementType))
+        {
+            foreach (IConfigurationSection child in section.GetChildren())
+            {
+                if (!int.TryParse(child.Key, out int index) || index < 0)
+                {
+                    AddUnknownPath(AppendProperty(pointer, child.Key), errors);
+                    continue;
+                }
+
+                ValidateUnknownConfigurationChildren(
+                    child,
+                    elementType,
+                    AppendDynamicKey(pointer, child.Key),
+                    errors);
+            }
+
+            return;
+        }
+
+        foreach (IConfigurationSection child in section.GetChildren())
+        {
+            if (!TryResolveConfigurationProperty(
+                    expectedType,
+                    child.Key,
+                    out string propertyName,
+                    out Type propertyType))
+            {
+                AddUnknownPath(AppendProperty(pointer, child.Key), errors);
+                continue;
+            }
+
+            ValidateUnknownConfigurationChildren(
+                child,
+                propertyType,
+                AppendProperty(pointer, propertyName),
+                errors);
+        }
+    }
+
+    private static void ValidateUnknownConfigurationDictionaryEntry(
+        IConfigurationSection section,
+        Type valueType,
+        string dictionaryPointer,
+        string dynamicKey,
+        List<ConfigurationValidationError> errors)
+    {
+        IConfigurationSection[] children = section.GetChildren().ToArray();
+        string entryPointer = AppendDynamicKey(dictionaryPointer, dynamicKey);
+
+        if (children.Length == 0
+            || children.Any(child => TryResolveConfigurationProperty(
+                valueType,
+                child.Key,
+                out _,
+                out _)))
+        {
+            ValidateUnknownConfigurationChildren(
+                section,
+                valueType,
+                entryPointer,
+                errors);
+            return;
+        }
+
+        // IConfiguration flattens ':' inside JSON dictionary keys into path segments. Continue
+        // through object-shaped segments only when they lead to a real value property; scalar
+        // unknown children remain ordinary schema errors.
+        foreach (IConfigurationSection child in children)
+        {
+            if (child.GetChildren().Any())
+            {
+                ValidateUnknownConfigurationDictionaryEntry(
+                    child,
+                    valueType,
+                    dictionaryPointer,
+                    $"{dynamicKey}:{child.Key}",
+                    errors);
+            }
+            else
+            {
+                AddUnknownPath(AppendProperty(entryPointer, child.Key), errors);
+            }
+        }
+    }
+
+    private static bool IsObjectConfigurationType(Type type)
+    {
+        if (type == typeof(ModelEntry))
+        {
+            return true;
+        }
+
+        JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(type);
+
+        return typeInfo?.Kind == JsonTypeInfoKind.Object;
+    }
+
+    private static void ValidateUnknownJsonProperties(
+        JsonElement element,
+        Type expectedType,
+        string pointer,
+        List<ConfigurationValidationError> errors)
+    {
+        if (element.ValueKind == JsonValueKind.Null)
+        {
+            return;
+        }
+
+        expectedType = Nullable.GetUnderlyingType(expectedType) ?? expectedType;
+
+        if (TryGetDictionaryValueType(expectedType, out Type? valueType))
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    ValidateUnknownJsonProperties(
+                        property.Value,
+                        valueType,
+                        AppendDynamicKey(pointer, property.Name),
+                        errors);
+                }
+            }
+
+            return;
+        }
+
+        if (TryGetEnumerableElementType(expectedType, out Type? elementType))
+        {
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                int index = 0;
+
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    ValidateUnknownJsonProperties(
+                        item,
+                        elementType,
+                        AppendDynamicKey(pointer, index.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        errors);
+                    index++;
+                }
+            }
+
+            return;
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            if (!TryResolveConfigurationProperty(
+                    expectedType,
+                    property.Name,
+                    out string propertyName,
+                    out Type propertyType))
+            {
+                AddUnknownPath(AppendProperty(pointer, property.Name), errors);
+                continue;
+            }
+
+            ValidateUnknownJsonProperties(
+                property.Value,
+                propertyType,
+                AppendProperty(pointer, propertyName),
+                errors);
+        }
+    }
+
+    private static bool TryResolveConfigurationProperty(
+        Type expectedType,
+        string suppliedName,
+        out string propertyName,
+        out Type propertyType)
+    {
+        if (expectedType == typeof(ModelEntry))
+        {
+            if (string.Equals(suppliedName, "name", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyName = "name";
+                propertyType = typeof(string);
+                return true;
+            }
+
+            if (string.Equals(suppliedName, "supportsVision", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyName = "supportsVision";
+                propertyType = typeof(bool);
+                return true;
+            }
+
+            if (string.Equals(suppliedName, "reasoning", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyName = "reasoning";
+                propertyType = typeof(ReasoningCapabilities);
+                return true;
+            }
+
+            propertyName = string.Empty;
+            propertyType = typeof(object);
+            return false;
+        }
+
+        JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(expectedType);
+
+        if (typeInfo is null || typeInfo.Kind != JsonTypeInfoKind.Object)
+        {
+            propertyName = string.Empty;
+            propertyType = typeof(object);
+            return false;
+        }
+
+        foreach (JsonPropertyInfo property in typeInfo.Properties)
+        {
+            if (string.Equals(
+                    property.Name,
+                    suppliedName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                propertyName = property.Name;
+                propertyType = property.PropertyType;
+                return true;
+            }
+        }
+
+        propertyName = string.Empty;
+        propertyType = typeof(object);
+        return false;
+    }
+
+    private static bool TryGetDictionaryValueType(
+        Type type,
+        out Type valueType)
+    {
+        JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(type);
+
+        if (typeInfo is { Kind: JsonTypeInfoKind.Dictionary, ElementType: not null })
+        {
+            valueType = typeInfo.ElementType;
+            return true;
+        }
+
+        valueType = typeof(object);
+        return false;
+    }
+
+    private static bool TryGetEnumerableElementType(
+        Type type,
+        out Type elementType)
+    {
+        JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(type);
+
+        if (typeInfo is { Kind: JsonTypeInfoKind.Enumerable, ElementType: not null })
+        {
+            elementType = typeInfo.ElementType;
+            return true;
+        }
+
+        elementType = typeof(object);
+        return false;
+    }
+
+    private static string AppendProperty(string pointer, string propertyName) =>
+        string.IsNullOrEmpty(pointer)
+            ? propertyName
+            : $"{pointer}.{propertyName}";
+
+    private static string AppendDynamicKey(string pointer, string key) =>
+        $"{pointer}[{key}]";
+
+    private static void AddUnknownPath(
+        string pointer,
+        List<ConfigurationValidationError> errors) =>
+        AddErrorIfMissing(
+            new ConfigurationValidationError(
+                string.IsNullOrEmpty(pointer) ? "$" : pointer,
+                UnknownConfigurationPathMessage),
+            errors);
+
+    private static void AddErrorIfMissing(
+        ConfigurationValidationError candidate,
+        List<ConfigurationValidationError> errors)
+    {
+        if (errors.Any(error => string.Equals(
+                error.Pointer,
+                candidate.Pointer,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        errors.Add(candidate);
     }
 
     private static bool IsObsoleteLlamaCppServerType(string? typeValue) =>
         !string.IsNullOrWhiteSpace(typeValue)
         && string.Equals(typeValue.Trim(), "LlamaCppServer", StringComparison.OrdinalIgnoreCase);
-
-    private static void ValidatePromptCachingEnumStrings(
-        IConfigurationSection profile,
-        string pointer,
-        List<ConfigurationValidationError> errors)
-    {
-        foreach (string property in new[] { "ControlMode", "WireDialect", "Retention" })
-        {
-            string? value = profile[property];
-
-            if (value is not null && int.TryParse(value, out _))
-            {
-                string field = char.ToLowerInvariant(property[0]) + property[1..];
-
-                errors.Add(new ConfigurationValidationError(
-                    $"{pointer}.{field}",
-                    $"Prompt caching {property} must use a named string value, not a number."));
-            }
-        }
-    }
 
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
     {
@@ -265,6 +843,7 @@ public sealed class ConfigurationValidator(
         ProviderSettings[] providers = settings.Providers ?? [];
 
         HashSet<string> seenProviderNames = new(StringComparer.OrdinalIgnoreCase);
+        List<EnvironmentVariableReference> environmentReferences = [];
 
         for (int providerIndex = 0; providerIndex < providers.Length; providerIndex++)
         {
@@ -272,6 +851,13 @@ public sealed class ConfigurationValidator(
             ProviderSettings provider = providers[providerIndex];
 
             string providerPointer = $"providers[{providerIndex}]";
+
+            if (string.IsNullOrWhiteSpace(provider.Name))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{providerPointer}.name",
+                    "Provider Name must not be blank."));
+            }
 
             // Missing Type defaults to OpenAICompatible (enum zero). Reject undefined numeric leftovers
             // and any defined non-OpenAICompatible value; do not require Type to be present.
@@ -286,15 +872,14 @@ public sealed class ConfigurationValidator(
 
             IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
-            ValidateTokenizationProfile(
-                provider.Tokenization,
-                $"{providerPointer}.tokenization",
+            ValidateOptionalEnvironmentVariableName(
+                provider.CredentialEnvironmentVariable,
+                $"{providerPointer}.credentialEnvironmentVariable",
                 errors);
-            ValidatePromptCachingProfile(
-                provider.PromptCaching,
-                $"{providerPointer}.promptCaching",
-                provider.SupportsPromptCaching,
-                errors);
+            AddEnvironmentVariableReference(
+                EnvironmentCredentialResolver.GetProviderApiKeyEnvironmentVariableName(provider),
+                $"{providerPointer}.credentialEnvironmentVariable",
+                environmentReferences);
 
             if (models.Count == 0)
             {
@@ -310,15 +895,6 @@ public sealed class ConfigurationValidator(
                 ValidateReasoningCapabilities(
                     models[modelIndex].Reasoning,
                     $"{providerPointer}.models[{modelIndex}].reasoning",
-                    errors);
-                ValidateTokenizationProfile(
-                    models[modelIndex].Tokenization,
-                    $"{providerPointer}.models[{modelIndex}].tokenization",
-                    errors);
-                ValidatePromptCachingProfile(
-                    models[modelIndex].PromptCaching,
-                    $"{providerPointer}.models[{modelIndex}].promptCaching",
-                    provider.SupportsPromptCaching,
                     errors);
             }
 
@@ -338,11 +914,12 @@ public sealed class ConfigurationValidator(
 
                 errors.Add(new ConfigurationValidationError(
                     providerPointer,
-                    $"Provider '{provider.Name}' Endpoint '{provider.Endpoint}' must be an absolute http or https URI."));
+                    $"Provider '{provider.Name}' endpoint must be an absolute http or https URI."));
 
             }
 
-            if (!string.IsNullOrWhiteSpace(provider.Name) && !seenProviderNames.Add(provider.Name))
+            if (!string.IsNullOrWhiteSpace(provider.Name)
+                && !seenProviderNames.Add(provider.Name.Trim()))
             {
 
                 // Provider health is keyed by Name (ProviderHealthTracker), and ProviderResolver's
@@ -350,12 +927,29 @@ public sealed class ConfigurationValidator(
                 // the first match — a duplicate name would otherwise silently share health state and
                 // resolve to the wrong provider for the second entry.
                 errors.Add(new ConfigurationValidationError(
-                    providerPointer,
+                    $"{providerPointer}.name",
                     $"Provider name '{provider.Name}' is configured more than once; provider names must be unique."));
 
             }
 
         }
+
+        HttpsSettings https = settings.Host?.Https ?? new HttpsSettings();
+        CommLinkSettings commLink = settings.ResolveCommLink();
+
+        AddEnvironmentVariableReference(
+            EnvironmentCredentialResolver.GetHttpsCertificatePasswordEnvironmentVariableName(https),
+            "host.https.certificatePasswordEnvironmentVariable",
+            environmentReferences);
+        ValidateOptionalEnvironmentVariableName(
+            commLink.WebhookUrlEnvironmentVariable,
+            "integrations.commLink.webhookUrlEnvironmentVariable",
+            errors);
+        AddEnvironmentVariableReference(
+            EnvironmentCredentialResolver.GetCommLinkWebhookUrlEnvironmentVariableName(commLink),
+            "integrations.commLink.webhookUrlEnvironmentVariable",
+            environmentReferences);
+        ValidateUniqueEnvironmentVariableReferences(environmentReferences, errors);
 
         if (!string.IsNullOrWhiteSpace(settings.DefaultModel))
         {
@@ -385,78 +979,19 @@ public sealed class ConfigurationValidator(
 
         }
 
-        ValidatePricing(settings.Pricing ?? new PricingSettings(), errors);
+        ValidatePricing(settings.ResolvePricing(), errors);
 
-        IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
+        ValidateCodingTools(settings, errors);
 
-        if (intelligence.EstimatedTokenSafetyMarginPercent
-            != ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent(
-                intelligence.EstimatedTokenSafetyMarginPercent))
-        {
-            errors.Add(new ConfigurationValidationError(
-                "intelligence.estimatedTokenSafetyMarginPercent",
-                $"Intelligence.EstimatedTokenSafetyMarginPercent ({intelligence.EstimatedTokenSafetyMarginPercent}) must be within the 1-100 clamp range."));
-        }
+        ValidatePathAllowlist(settings.ResolveCampaignRoots(), "security.campaignRoots", errors);
 
-        if (intelligence.UnknownImageTokenReserve
-            != ArcanumSettingClamps.UnknownImageTokenReserve(
-                intelligence.UnknownImageTokenReserve))
-        {
-            errors.Add(new ConfigurationValidationError(
-                "intelligence.unknownImageTokenReserve",
-                $"Intelligence.UnknownImageTokenReserve ({intelligence.UnknownImageTokenReserve}) must be within the 1-128,000 clamp range."));
-        }
+        ValidatePathAllowlist(settings.ResolveSpellRoots(), "security.spellWorkspaceRoots", errors);
 
-        McpSettings mcp = settings.Mcp ?? new McpSettings();
+        ValidatePathAllowlist(settings.ResolvePerceptionRoots(), "security.perceptionWorkspaceRoots", errors);
 
-        long toolOutputCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(intelligence.ToolOutputCapBytes);
-
-        int maxJsonRpcLineBytes = ArcanumSettingClamps.McpMaxJsonRpcLineBytes(mcp.MaxJsonRpcLineBytes);
-
-        long effectiveToolOutputCapBytes = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
-            intelligence.ToolOutputCapBytes,
-            maxJsonRpcLineBytes);
-
-        if (effectiveToolOutputCapBytes < toolOutputCapBytes)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "mcp.maxJsonRpcLineBytes",
-                $"Mcp.MaxJsonRpcLineBytes ({maxJsonRpcLineBytes}) is too small for Intelligence.ToolOutputCapBytes ({toolOutputCapBytes}) after JSON-RPC envelope and escaping margin."));
-
-        }
-
-        int executeCommandTimeoutSeconds = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(
-            intelligence.ExecuteCommandTimeoutSeconds);
-
-        int mcpRequestTimeoutSeconds = ArcanumSettingClamps.McpRequestTimeoutSeconds(
-            mcp.RequestTimeoutSeconds);
-
-        if (mcpRequestTimeoutSeconds < executeCommandTimeoutSeconds)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "mcp.requestTimeoutSeconds",
-                $"Mcp.RequestTimeoutSeconds ({mcpRequestTimeoutSeconds}) must be at least Intelligence.ExecuteCommandTimeoutSeconds ({executeCommandTimeoutSeconds}) so in-process execute_command calls are not orphaned by the MCP JSON-RPC deadline."));
-
-        }
-
-        ValidateCodingTools(
-            settings,
-            errors,
-            workspaceCheckEligibility?.IsCurrentlyEligible == true);
-
-        ValidatePathAllowlist((settings.Campaigns ?? new CampaignsSettings()).AllowedRoots, "campaigns.allowedRoots", errors);
-
-        ValidatePathAllowlist((settings.Spells ?? new SpellSettings()).AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
-
-        ValidatePathAllowlist((settings.Perception ?? new PerceptionSettings()).AllowedWorkspaceRoots, "perception.allowedWorkspaceRoots", errors);
-
-        ValidateHostWorkspace((settings.Host ?? new HostSettings()).Workspace, "host.workspace", errors);
+        ValidateHostWorkspace(settings.ResolveDefaultWorkspace(), "workspaces.defaultRoot", errors);
 
         ValidateHttps(settings.Host ?? new HostSettings(), errors);
-
-        ValidateResilience(settings, errors);
 
         ValidateEventBus(settings);
 
@@ -480,240 +1015,15 @@ public sealed class ConfigurationValidator(
 
     private static void ValidateCodingTools(
         ArcanumSettings settings,
-        List<ConfigurationValidationError> errors,
-        bool workspaceCheckEligibleForAdvertisement)
+        List<ConfigurationValidationError> errors)
     {
-        CodingToolsSettings codingTools = settings.CodingTools ?? new CodingToolsSettings();
-        WorkspaceSearchSettings search = codingTools.Search ?? new WorkspaceSearchSettings();
-        WorkspacePatchSettings patch = codingTools.Patch ?? new WorkspacePatchSettings();
-        WorkspaceCheckSettings check = codingTools.WorkspaceCheck ?? new WorkspaceCheckSettings();
-
-        ValidateBound(
-            search.MaxPatternChars,
-            ArcanumSettingClamps.WorkspaceSearchMaxPatternChars(search.MaxPatternChars),
-            "codingTools.search.maxPatternChars",
-            "1-16,384",
-            errors);
-        ValidateBound(
-            search.RegexTimeoutMilliseconds,
-            ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds(search.RegexTimeoutMilliseconds),
-            "codingTools.search.regexTimeoutMilliseconds",
-            "10-10,000",
-            errors);
-        ValidateBound(
-            search.MaxElapsedMilliseconds,
-            ArcanumSettingClamps.WorkspaceSearchMaxElapsedMilliseconds(search.MaxElapsedMilliseconds),
-            "codingTools.search.maxElapsedMilliseconds",
-            "100-120,000",
-            errors);
-        ValidateBound(
-            search.MaxFiles,
-            ArcanumSettingClamps.WorkspaceSearchMaxFiles(search.MaxFiles),
-            "codingTools.search.maxFiles",
-            "1-100,000",
-            errors);
-        ValidateBound(
-            search.MaxBytes,
-            ArcanumSettingClamps.WorkspaceSearchMaxBytes(search.MaxBytes),
-            "codingTools.search.maxBytes",
-            "1,024-1,073,741,824",
-            errors);
-        ValidateBound(
-            search.MaxTraversalSteps,
-            ArcanumSettingClamps.WorkspaceSearchMaxTraversalSteps(search.MaxTraversalSteps),
-            "codingTools.search.maxTraversalSteps",
-            "1-10,000,000",
-            errors);
-        ValidateBound(
-            search.MaxMatches,
-            ArcanumSettingClamps.WorkspaceSearchMaxMatches(search.MaxMatches),
-            "codingTools.search.maxMatches",
-            "1-100,000",
-            errors);
-        ValidateBound(
-            search.MaxPreviewChars,
-            ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(search.MaxPreviewChars),
-            "codingTools.search.maxPreviewChars",
-            "16-4,096",
-            errors);
-
-        ValidateBound(
-            patch.MaxPatchBytes,
-            ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(patch.MaxPatchBytes),
-            "codingTools.patch.maxPatchBytes",
-            "1,024-67,108,864",
-            errors);
-        ValidateBound(
-            patch.MaxInputBytesPerFile,
-            ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile(
-                patch.MaxInputBytesPerFile),
-            "codingTools.patch.maxInputBytesPerFile",
-            "1,024-268,435,456",
-            errors);
-        ValidateBound(
-            patch.MaxTotalInputBytes,
-            ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes(
-                patch.MaxTotalInputBytes),
-            "codingTools.patch.maxTotalInputBytes",
-            "1,024-1,073,741,824",
-            errors);
-        ValidateBound(
-            patch.MaxOutputBytesPerFile,
-            ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile(
-                patch.MaxOutputBytesPerFile),
-            "codingTools.patch.maxOutputBytesPerFile",
-            "1,024-268,435,456",
-            errors);
-        ValidateBound(
-            patch.MaxTotalOutputBytes,
-            ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes(
-                patch.MaxTotalOutputBytes),
-            "codingTools.patch.maxTotalOutputBytes",
-            "1,024-1,073,741,824",
-            errors);
-        ValidateBound(
-            patch.MaxStagingBytesPerFile,
-            ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile(
-                patch.MaxStagingBytesPerFile),
-            "codingTools.patch.maxStagingBytesPerFile",
-            "1,024-536,870,912",
-            errors);
-        ValidateBound(
-            patch.MaxTotalStagingBytes,
-            ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes(
-                patch.MaxTotalStagingBytes),
-            "codingTools.patch.maxTotalStagingBytes",
-            "1,024-2,147,483,648",
-            errors);
-        ValidateBound(
-            patch.MaxElapsedMilliseconds,
-            ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds(
-                patch.MaxElapsedMilliseconds),
-            "codingTools.patch.maxElapsedMilliseconds",
-            "100-300,000",
-            errors);
-        ValidateBound(
-            patch.RollbackReserveMilliseconds,
-            ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds(
-                patch.RollbackReserveMilliseconds),
-            "codingTools.patch.rollbackReserveMilliseconds",
-            "50-60,000",
-            errors);
-        if (patch.RollbackReserveMilliseconds >= patch.MaxElapsedMilliseconds)
-        {
-
-            errors.Add(
-                new ConfigurationValidationError(
-                    "codingTools.patch.rollbackReserveMilliseconds",
-                    $"CodingTools.Patch.RollbackReserveMilliseconds ({patch.RollbackReserveMilliseconds}) must be less than MaxElapsedMilliseconds ({patch.MaxElapsedMilliseconds})."));
-
-        }
-        ValidateBound(
-            patch.MaxFiles,
-            ArcanumSettingClamps.WorkspacePatchMaxFiles(patch.MaxFiles),
-            "codingTools.patch.maxFiles",
-            "1-1,000",
-            errors);
-        ValidateBound(
-            patch.MaxHunks,
-            ArcanumSettingClamps.WorkspacePatchMaxHunks(patch.MaxHunks),
-            "codingTools.patch.maxHunks",
-            "1-10,000",
-            errors);
-        ValidateBound(
-            patch.MaxLinesPerHunk,
-            ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk(patch.MaxLinesPerHunk),
-            "codingTools.patch.maxLinesPerHunk",
-            "1-100,000",
-            errors);
-        ValidateBound(
-            patch.FuzzyMatchWindowLines,
-            ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines(patch.FuzzyMatchWindowLines),
-            "codingTools.patch.fuzzyMatchWindowLines",
-            "0-1,000",
-            errors);
-        ValidateBound(
-            patch.MaxResultItems,
-            ArcanumSettingClamps.WorkspacePatchMaxResultItems(patch.MaxResultItems),
-            "codingTools.patch.maxResultItems",
-            "1-10,000",
-            errors);
-
-        ValidateBound(
-            check.TimeoutSeconds,
-            ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(check.TimeoutSeconds),
-            "codingTools.workspaceCheck.timeoutSeconds",
-            "30-1,800",
-            errors);
-        ValidateBound(
-            check.MaxCustomProfiles,
-            ArcanumSettingClamps.WorkspaceCheckMaxCustomProfiles(check.MaxCustomProfiles),
-            "codingTools.workspaceCheck.maxCustomProfiles",
-            "0-256",
-            errors);
-        ValidateBound(
-            check.MaxFixedArgumentsPerProfile,
-            ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile(
-                check.MaxFixedArgumentsPerProfile),
-            "codingTools.workspaceCheck.maxFixedArgumentsPerProfile",
-            "1-128",
-            errors);
-        ValidateBound(
-            check.MaxArgumentTokenChars,
-            ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars(check.MaxArgumentTokenChars),
-            "codingTools.workspaceCheck.maxArgumentTokenChars",
-            "16-4,096",
-            errors);
-        ValidateBound(
-            check.MaxOptionsPerProfile,
-            ArcanumSettingClamps.WorkspaceCheckMaxOptionsPerProfile(check.MaxOptionsPerProfile),
-            "codingTools.workspaceCheck.maxOptionsPerProfile",
-            "0-64",
-            errors);
-        ValidateBound(
-            check.MaxAllowedValuesPerOption,
-            ArcanumSettingClamps.WorkspaceCheckMaxAllowedValuesPerOption(
-                check.MaxAllowedValuesPerOption),
-            "codingTools.workspaceCheck.maxAllowedValuesPerOption",
-            "1-128",
-            errors);
-        ValidateBound(
-            check.MaxDiagnostics,
-            ArcanumSettingClamps.WorkspaceCheckMaxDiagnostics(check.MaxDiagnostics),
-            "codingTools.workspaceCheck.maxDiagnostics",
-            "1-10,000",
-            errors);
-        ValidateBound(
-            check.MaxOutputBytes,
-            ArcanumSettingClamps.WorkspaceCheckMaxOutputBytes(check.MaxOutputBytes),
-            "codingTools.workspaceCheck.maxOutputBytes",
-            "4,096-67,108,864",
-            errors);
+        WorkspaceCheckSettings check = settings.ResolveWorkspaceChecks();
 
         ValidateWorkspaceCheckExecutable(
             check.ExecutableCatalog?.DotNet,
-            settings.Host?.Workspace,
+            settings.ResolveDefaultWorkspace(),
             errors);
         ValidateWorkspaceCheckProfiles(check, errors);
-
-        if (check.Enabled && workspaceCheckEligibleForAdvertisement)
-        {
-            int checkTimeout = ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(
-                check.TimeoutSeconds);
-            int inferenceTimeout = ArcanumSettingClamps.InferenceTimeoutSeconds(
-                (settings.Intelligence ?? new IntelligenceSettings()).InferenceTimeoutSeconds);
-
-            if ((long)checkTimeout + ArcanumSettingClamps.WorkspaceCheckCleanupGraceSeconds
-                > inferenceTimeout)
-            {
-                errors.Add(new ConfigurationValidationError(
-                    "codingTools.workspaceCheck.timeoutSeconds",
-                    $"CodingTools.WorkspaceCheck.TimeoutSeconds ({checkTimeout}) plus "
-                    + $"{ArcanumSettingClamps.WorkspaceCheckCleanupGraceSeconds} seconds of cleanup grace "
-                    + $"must not exceed Intelligence.InferenceTimeoutSeconds ({inferenceTimeout}) "
-                    + "while workspace_check is eligible for advertisement."));
-            }
-        }
     }
 
     private static void ValidateWorkspaceCheckProfiles(
@@ -723,20 +1033,20 @@ public sealed class ConfigurationValidator(
         Dictionary<string, WorkspaceCheckProfileSettings> profiles =
             check.CustomProfiles ?? new Dictionary<string, WorkspaceCheckProfileSettings>();
         int maxProfiles = ArcanumSettingClamps.WorkspaceCheckMaxCustomProfiles(
-            check.MaxCustomProfiles);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxCustomProfiles);
 
         if (profiles.Count > maxProfiles)
         {
             errors.Add(new ConfigurationValidationError(
-                "codingTools.workspaceCheck.customProfiles",
-                $"WorkspaceCheck.CustomProfiles contains {profiles.Count} entries; the configured cap is {maxProfiles}."));
+                "integrations.workspaceChecks.customProfiles",
+                $"WorkspaceCheck.CustomProfiles contains {profiles.Count} entries; the internal limit is {maxProfiles}."));
         }
 
         HashSet<string> seenIds = new(StringComparer.OrdinalIgnoreCase);
 
         foreach ((string profileId, WorkspaceCheckProfileSettings? profile) in profiles)
         {
-            string pointer = $"codingTools.workspaceCheck.customProfiles[{profileId}]";
+            string pointer = $"integrations.workspaceChecks.customProfiles[{profileId}]";
 
             if (!seenIds.Add(profileId))
             {
@@ -802,9 +1112,9 @@ public sealed class ConfigurationValidator(
     {
         string[] fixedArguments = profile.FixedArguments ?? [];
         int maxFixedArguments = ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile(
-            check.MaxFixedArgumentsPerProfile);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxFixedArgumentsPerProfile);
         int maxTokenChars = ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars(
-            check.MaxArgumentTokenChars);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxArgumentTokenChars);
 
         if (fixedArguments.Length == 0)
         {
@@ -816,7 +1126,7 @@ public sealed class ConfigurationValidator(
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.fixedArguments",
-                $"Workspace-check profile '{profileId}' has {fixedArguments.Length} fixed arguments; the configured cap is {maxFixedArguments}."));
+                $"Workspace-check profile '{profileId}' has {fixedArguments.Length} fixed arguments; the internal limit is {maxFixedArguments}."));
         }
 
         for (int i = 0; i < fixedArguments.Length; i++)
@@ -859,13 +1169,13 @@ public sealed class ConfigurationValidator(
         Dictionary<string, WorkspaceCheckProfileOptionSettings> options =
             profile.Options ?? new Dictionary<string, WorkspaceCheckProfileOptionSettings>();
         int maxOptions = ArcanumSettingClamps.WorkspaceCheckMaxOptionsPerProfile(
-            check.MaxOptionsPerProfile);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxOptionsPerProfile);
 
         if (options.Count > maxOptions)
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.options",
-                $"Workspace-check profile '{profileId}' has {options.Count} options; the configured cap is {maxOptions}."));
+                $"Workspace-check profile '{profileId}' has {options.Count} options; the internal limit is {maxOptions}."));
         }
 
         HashSet<string> seenOptions = new(StringComparer.OrdinalIgnoreCase);
@@ -910,11 +1220,11 @@ public sealed class ConfigurationValidator(
     {
         Dictionary<string, string[]> values = allowedValues ?? new Dictionary<string, string[]>();
         int maxValues = ArcanumSettingClamps.WorkspaceCheckMaxAllowedValuesPerOption(
-            check.MaxAllowedValuesPerOption);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxAllowedValuesPerOption);
         int maxTokens = ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile(
-            check.MaxFixedArgumentsPerProfile);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxFixedArgumentsPerProfile);
         int maxTokenChars = ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars(
-            check.MaxArgumentTokenChars);
+            ArcanumRuntimeDefaults.WorkspaceChecks.MaxArgumentTokenChars);
 
         if (values.Count == 0)
         {
@@ -928,7 +1238,7 @@ public sealed class ConfigurationValidator(
         {
             errors.Add(new ConfigurationValidationError(
                 $"{optionPointer}.allowedValues",
-                $"Workspace-check option has {values.Count} allowed values; the configured cap is {maxValues}."));
+                $"Workspace-check option has {values.Count} allowed values; the internal limit is {maxValues}."));
         }
 
         HashSet<string> seenValues = new(StringComparer.OrdinalIgnoreCase);
@@ -1009,7 +1319,7 @@ public sealed class ConfigurationValidator(
         List<ConfigurationValidationError> errors)
     {
         string configuredPath = executable?.Path?.Trim() ?? string.Empty;
-        const string pointer = "codingTools.workspaceCheck.executableCatalog.dotNet.path";
+        const string pointer = "integrations.workspaceChecks.executableCatalog.dotNet.path";
 
         if (configuredPath.Length == 0)
         {
@@ -1127,45 +1437,15 @@ public sealed class ConfigurationValidator(
             or ".py" or ".pyw" or ".js" or ".mjs"
             or ".rb" or ".pl" or ".fsx" or ".csx";
 
-    private static void ValidateBound(
-        int configured,
-        int effective,
-        string pointer,
-        string range,
-        List<ConfigurationValidationError> errors)
-    {
-        if (configured != effective)
-        {
-            errors.Add(new ConfigurationValidationError(
-                pointer,
-                $"Configured value ({configured}) must be within the {range} clamp range."));
-        }
-    }
-
-    private static void ValidateBound(
-        long configured,
-        long effective,
-        string pointer,
-        string range,
-        List<ConfigurationValidationError> errors)
-    {
-        if (configured != effective)
-        {
-            errors.Add(new ConfigurationValidationError(
-                pointer,
-                $"Configured value ({configured}) must be within the {range} clamp range."));
-        }
-    }
-
     private static void ValidatePricing(
         PricingSettings pricing,
         List<ConfigurationValidationError> errors)
     {
-        ValidatePricingEntry(pricing.DefaultPricing, "pricing.defaultPricing", errors);
+        ValidatePricingEntry(pricing.DefaultPricing, "cost.pricing.defaultPricing", errors);
 
         foreach ((string model, ModelPricingEntry entry) in pricing.ModelPricing)
         {
-            ValidatePricingEntry(entry, $"pricing.modelPricing[{model}]", errors);
+            ValidatePricingEntry(entry, $"cost.pricing.modelPricing[{model}]", errors);
         }
     }
 
@@ -1197,77 +1477,10 @@ public sealed class ConfigurationValidator(
         }
     }
 
-    private void ValidateResilience(ArcanumSettings settings, List<ConfigurationValidationError> errors)
-    {
-
-        ResilienceSettings resilience = settings.Resilience ?? new ResilienceSettings();
-
-        if (!resilience.Enabled)
-        {
-            return;
-        }
-
-        if (resilience.HealthProbeIntervalSeconds != ArcanumSettingClamps.HealthProbeIntervalSeconds(resilience.HealthProbeIntervalSeconds))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "resilience.healthProbeIntervalSeconds",
-                $"Resilience.HealthProbeIntervalSeconds ({resilience.HealthProbeIntervalSeconds}) must be within the 5-600 clamp range."));
-
-        }
-
-        if (resilience.HealthRecoveryProbeIntervalSeconds != ArcanumSettingClamps.HealthRecoveryProbeIntervalSeconds(resilience.HealthRecoveryProbeIntervalSeconds))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "resilience.healthRecoveryProbeIntervalSeconds",
-                $"Resilience.HealthRecoveryProbeIntervalSeconds ({resilience.HealthRecoveryProbeIntervalSeconds}) must be within the 5-3,600 clamp range."));
-
-        }
-
-        if (resilience.HealthFailureThreshold != ArcanumSettingClamps.HealthFailureThreshold(resilience.HealthFailureThreshold))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "resilience.healthFailureThreshold",
-                $"Resilience.HealthFailureThreshold ({resilience.HealthFailureThreshold}) must be within the 1-100 clamp range."));
-
-        }
-
-        if (resilience.MaxFallbackAttempts != ArcanumSettingClamps.MaxFallbackAttempts(resilience.MaxFallbackAttempts))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "resilience.maxFallbackAttempts",
-                $"Resilience.MaxFallbackAttempts ({resilience.MaxFallbackAttempts}) must be within the 1-10 clamp range."));
-
-        }
-
-        if (resilience.HealthProbeTimeoutSeconds != ArcanumSettingClamps.HealthProbeTimeoutSeconds(resilience.HealthProbeTimeoutSeconds))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "resilience.healthProbeTimeoutSeconds",
-                $"Resilience.HealthProbeTimeoutSeconds ({resilience.HealthProbeTimeoutSeconds}) must be within the 1-30 clamp range."));
-
-        }
-
-        if ((settings.Providers ?? []).Length == 0)
-        {
-
-            // Not a failure — providers can be added later via hot-reload. Operators should still see
-            // a signal that resilience is enabled with nothing to probe yet.
-            logger?.LogWarning(
-                "Arcanum:Resilience:Enabled is true but Arcanum:Providers is empty. The probe scheduler will idle until providers are configured.");
-
-        }
-
-    }
-
     private void ValidateEventBus(ArcanumSettings settings)
     {
 
-        EventBusSettings eventBus = settings.EventBus ?? new EventBusSettings();
+        EventBusSettings eventBus = settings.ResolveEventBus();
 
         int maxConnections = ArcanumSettingClamps.MaxSseConnections(eventBus.MaxSseConnections);
 
@@ -1279,7 +1492,7 @@ public sealed class ConfigurationValidator(
             // Not a failure — the global cap triggers first and remains safe, but the per-type
             // cap can never engage, which likely does not match operator intent.
             logger?.LogWarning(
-                "Arcanum:EventBus:MaxSseConnectionsPerType ({PerTypeLimit}) exceeds Arcanum:EventBus:MaxSseConnections ({MaxConnections}); the global cap will always trigger first, making the per-type cap meaningless.",
+                "Arcanum:Execution:MaxSseConnectionsPerType ({PerTypeLimit}) exceeds Arcanum:Execution:MaxSseConnections ({MaxConnections}); the global cap will always trigger first, making the per-type cap meaningless.",
                 perTypeLimit,
                 maxConnections);
 
@@ -1288,17 +1501,14 @@ public sealed class ConfigurationValidator(
     }
 
     /// <summary>
-    /// RAG Phase 1 — The Weave &amp; Divination. When <c>Arcanum:Embeddings:Enabled</c> is <c>true</c>,
-    /// <c>Provider</c> must reference an existing provider name and <c>Model</c> must be non-empty.
-    /// Every per-feature flag (Phase 2 <c>SessionSearchEnabled</c>, Phase 3
-    /// <c>CodebaseRetrievalEnabled</c>, Phase 4 <c>SagaEnabled</c>, Phase 5
-    /// <c>SemanticSpellRoutingEnabled</c>) requires <c>Enabled</c> to also be <c>true</c> — a flag
-    /// cannot be on while the shared embedding foundation is off.
+    /// RAG Phase 1 — The Weave &amp; Divination. When the embeddings substrate is enabled directly
+    /// or derived from an embedding-backed feature, the integration provider must reference an
+    /// existing provider name and its model must be non-empty.
     /// </summary>
     private static void ValidateEmbeddings(ArcanumSettings settings, List<ConfigurationValidationError> errors)
     {
 
-        EmbeddingSettings embeddings = settings.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = settings.ResolveEmbeddings();
 
         if (embeddings.Enabled)
         {
@@ -1307,8 +1517,8 @@ public sealed class ConfigurationValidator(
             {
 
                 errors.Add(new ConfigurationValidationError(
-                    "embeddings.provider",
-                    "Arcanum:Embeddings:Provider is required when Arcanum:Embeddings:Enabled is true."));
+                    "integrations.embeddings.provider",
+                    "Arcanum:Integrations:Embeddings:Provider is required when an embedding-backed feature is enabled."));
 
             }
             else if (!ProviderResolver.TryResolveProviderByName(settings, embeddings.Provider, out ProviderSettings? embeddingProvider)
@@ -1316,16 +1526,16 @@ public sealed class ConfigurationValidator(
             {
 
                 errors.Add(new ConfigurationValidationError(
-                    "embeddings.provider",
-                    $"Arcanum:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider."));
+                    "integrations.embeddings.provider",
+                    $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider."));
 
             }
             else if (embeddingProvider.Type != AiProviderKind.OpenAICompatible)
             {
 
                 errors.Add(new ConfigurationValidationError(
-                    "embeddings.provider",
-                    $"Arcanum:Embeddings:Provider '{embeddings.Provider}' must be type OpenAICompatible (Ollama embeddings via /v1 with exact model names)."));
+                    "integrations.embeddings.provider",
+                    $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' must be type OpenAICompatible (Ollama embeddings via /v1 with exact model names)."));
 
             }
 
@@ -1333,87 +1543,32 @@ public sealed class ConfigurationValidator(
             {
 
                 errors.Add(new ConfigurationValidationError(
-                    "embeddings.model",
-                    "Arcanum:Embeddings:Model is required when Arcanum:Embeddings:Enabled is true."));
+                    "integrations.embeddings.model",
+                    "Arcanum:Integrations:Embeddings:Model is required when an embedding-backed feature is enabled."));
 
             }
-
-        }
-
-        if (embeddings.SessionSearchEnabled && !embeddings.Enabled)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "embeddings.sessionSearchEnabled",
-                "Arcanum:Embeddings:SessionSearchEnabled requires Arcanum:Embeddings:Enabled to be true."));
-
-        }
-
-        if (embeddings.CodebaseRetrievalEnabled && !embeddings.Enabled)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "embeddings.codebaseRetrievalEnabled",
-                "Arcanum:Embeddings:CodebaseRetrievalEnabled requires Arcanum:Embeddings:Enabled to be true."));
-
-        }
-
-        if (embeddings.SagaEnabled && !embeddings.Enabled)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "embeddings.sagaEnabled",
-                "Arcanum:Embeddings:SagaEnabled requires Arcanum:Embeddings:Enabled to be true."));
-
-        }
-
-        if (embeddings.SemanticSpellRoutingEnabled && !embeddings.Enabled)
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "embeddings.semanticSpellRoutingEnabled",
-                "Arcanum:Embeddings:SemanticSpellRoutingEnabled requires Arcanum:Embeddings:Enabled to be true."));
 
         }
 
     }
 
     /// <summary>
-    /// Scrying — vision/multimodality. Validates <c>Arcanum:Scrying</c> clamp ranges (mirroring the
-    /// <see cref="ValidateResilience"/> raw-vs-clamp equality pattern) and that
-    /// <see cref="ScryingSettings.AllowedMimeTypes"/> is non-empty when the feature is enabled —
+    /// Scrying — vision/multimodality. Validates that the retained MIME policy is non-empty when
+    /// the feature is enabled —
     /// an empty allow-list would silently reject every image even though the operator turned
     /// Scrying on.
     /// </summary>
     private static void ValidateScrying(ArcanumSettings settings, List<ConfigurationValidationError> errors)
     {
 
-        ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
-
-        if (scrying.MaxImageBytes != ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "scrying.maxImageBytes",
-                $"Scrying.MaxImageBytes ({scrying.MaxImageBytes}) must be within the 1,024-20,971,520 byte clamp range."));
-
-        }
-
-        if (scrying.MaxImagesPerRequest != ArcanumSettingClamps.ScryingMaxImagesPerRequest(scrying.MaxImagesPerRequest))
-        {
-
-            errors.Add(new ConfigurationValidationError(
-                "scrying.maxImagesPerRequest",
-                $"Scrying.MaxImagesPerRequest ({scrying.MaxImagesPerRequest}) must be within the 1-100 clamp range."));
-
-        }
+        ScryingSettings scrying = settings.ResolveScrying();
 
         if (scrying.Enabled && (scrying.AllowedMimeTypes is null || scrying.AllowedMimeTypes.Length == 0))
         {
 
             errors.Add(new ConfigurationValidationError(
-                "scrying.allowedMimeTypes",
-                "Scrying.AllowedMimeTypes must not be empty when Scrying.Enabled is true."));
+                "security.allowedImageMimeTypes",
+                "Security.AllowedImageMimeTypes must not be empty when Features.Scrying is true."));
 
         }
 
@@ -1501,205 +1656,71 @@ public sealed class ConfigurationValidator(
         }
     }
 
-    private static void ValidatePromptCachingProfile(
-        PromptCachingProfile? profile,
+    private static void ValidateOptionalEnvironmentVariableName(
+        string? name,
         string pointer,
-        bool? legacySupportsPromptCaching,
         List<ConfigurationValidationError> errors)
     {
-        if (profile is null)
+        if (string.IsNullOrWhiteSpace(name))
         {
             return;
         }
 
-        bool validControlMode = Enum.IsDefined(profile.ControlMode);
-
-        if (!validControlMode)
+        string trimmed = name.Trim();
+        if (EnvironmentCredentialResolver.IsValidEnvironmentVariableName(trimmed))
         {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.controlMode",
-                $"Prompt caching ControlMode '{profile.ControlMode}' is not defined."));
-        }
+            if (trimmed.StartsWith("Arcanum__", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("ARCANUM_Arcanum__", StringComparison.OrdinalIgnoreCase)
+                || ReservedRuntimeEnvironmentVariableNames.Contains(trimmed))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    "Secret environment-variable references must not overlap Arcanum's configuration or explicit runtime-override namespace."));
+            }
 
-        bool validWireDialect = Enum.IsDefined(profile.WireDialect);
-
-        if (!validWireDialect)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.wireDialect",
-                $"Prompt caching WireDialect '{profile.WireDialect}' is not defined."));
-        }
-        else if (profile.WireDialect == PromptCachingWireDialect.OpenAiPromptCacheBreakpoints)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.wireDialect",
-                "Prompt caching WireDialect 'openAiPromptCacheBreakpoints' is reserved and is not supported by the pinned provider adapter."));
-        }
-
-        if (!Enum.IsDefined(profile.Retention))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.retention",
-                $"Prompt caching Retention '{profile.Retention}' is not defined."));
-        }
-
-        if (validControlMode
-            && profile.ControlMode != PromptCachingControlMode.Explicit
-            && (profile.EmitCacheKey
-                || profile.Retention != PromptCacheRetentionPolicy.ProviderDefault
-                || profile.EmitStablePrefixBreakpoint
-                || profile.ToolSchemasParticipate))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.controlMode",
-                "Prompt caching directives require ControlMode 'explicit'."));
-        }
-
-        if (validControlMode
-            && profile.ControlMode == PromptCachingControlMode.Explicit
-            && !profile.EmitCacheKey
-            && profile.Retention == PromptCacheRetentionPolicy.ProviderDefault
-            && !profile.EmitStablePrefixBreakpoint)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.controlMode",
-                "Prompt caching ControlMode 'explicit' requires at least one emitted directive."));
-        }
-
-        if (legacySupportsPromptCaching == false
-            && validControlMode
-            && profile.ControlMode == PromptCachingControlMode.Explicit)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.controlMode",
-                "An explicit prompt-cache profile conflicts with SupportsPromptCaching=false."));
-        }
-
-        if (profile.EmitCacheKey && !profile.CacheKeysSupported)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.emitCacheKey",
-                "EmitCacheKey requires CacheKeysSupported=true."));
-        }
-
-        if (profile.Retention != PromptCacheRetentionPolicy.ProviderDefault
-            && !profile.RetentionSelectionSupported)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.retention",
-                "A non-default prompt-cache retention requires RetentionSelectionSupported=true."));
-        }
-
-        if (profile.Retention == PromptCacheRetentionPolicy.ThirtyMinutes)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.retention",
-                "Thirty-minute retention requires a verified explicit-breakpoint dialect, which is not supported by this build."));
-        }
-
-        if (profile.EmitStablePrefixBreakpoint && !profile.StablePrefixBreakpointsSupported)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.emitStablePrefixBreakpoint",
-                "EmitStablePrefixBreakpoint requires StablePrefixBreakpointsSupported=true."));
-        }
-
-        if (profile.WireDialect == PromptCachingWireDialect.OpenAiPromptCacheRetention
-            && (profile.StablePrefixBreakpointsSupported || profile.EmitStablePrefixBreakpoint))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.emitStablePrefixBreakpoint",
-                "The openAiPromptCacheRetention dialect does not support explicit content breakpoints."));
-        }
-    }
-
-    private static void ValidateTokenizationProfile(
-        ModelTokenizationProfile? profile,
-        string pointer,
-        List<ConfigurationValidationError> errors)
-    {
-        if (profile is null)
-        {
             return;
         }
 
-        if (!Enum.IsDefined(profile.Type))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.type",
-                $"Tokenization profile Type '{profile.Type}' is not defined."));
-        }
-        else if (profile.Type == ModelTokenizationProfileType.ProviderTokenizerApi)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.type",
-                "ProviderTokenizerApi is not available for the configured provider types in this build; use an exact local tokenizer or calibrated approximation."));
-        }
+        errors.Add(new ConfigurationValidationError(
+            pointer,
+            "Environment-variable references must use portable names: an ASCII letter or '_' followed by ASCII letters, digits, or '_' only."));
+    }
 
-        if (profile.Type == ModelTokenizationProfileType.ExactLocalTokenizer
-            && string.IsNullOrWhiteSpace(profile.TokenizerId))
+    private static void AddEnvironmentVariableReference(
+        string name,
+        string pointer,
+        List<EnvironmentVariableReference> references)
+    {
+        if (EnvironmentCredentialResolver.IsValidEnvironmentVariableName(name))
         {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.tokenizerId",
-                "ExactLocalTokenizer requires a non-empty TokenizerId."));
-        }
-
-        if (profile.SafetyMarginPercent is { } margin
-            && margin != ArcanumSettingClamps.EstimatedTokenSafetyMarginPercent(margin))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.safetyMarginPercent",
-                $"Tokenization SafetyMarginPercent ({margin}) must be within the 1-100 clamp range."));
-        }
-
-        if (profile.PerMessageOverheadTokens is { } perMessage
-            && perMessage != ArcanumSettingClamps.PerMessageTemplateOverheadTokens(perMessage))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.perMessageOverheadTokens",
-                $"Tokenization PerMessageOverheadTokens ({perMessage}) must be within the 0-32 clamp range."));
-        }
-
-        if (profile.PerToolOverheadTokens is { } perTool
-            && perTool != ArcanumSettingClamps.TokenizationPerToolOverheadTokens(perTool))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.perToolOverheadTokens",
-                $"Tokenization PerToolOverheadTokens ({perTool}) must be within the 0-128 clamp range."));
-        }
-
-        if (profile.ProviderFramingTokens is { } framing
-            && framing != ArcanumSettingClamps.TokenizationProviderFramingTokens(framing))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.providerFramingTokens",
-                $"Tokenization ProviderFramingTokens ({framing}) must be within the 0-1,024 clamp range."));
-        }
-
-        if (profile.StopTokenOverheadTokens is { } stop
-            && stop != ArcanumSettingClamps.TokenizationStopTokenOverheadTokens(stop))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.stopTokenOverheadTokens",
-                $"Tokenization StopTokenOverheadTokens ({stop}) must be within the 0-128 clamp range."));
-        }
-
-        if (profile.UnknownImageReserveTokens is { } image
-            && image != ArcanumSettingClamps.UnknownImageTokenReserve(image))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.unknownImageReserveTokens",
-                $"Tokenization UnknownImageReserveTokens ({image}) must be within the 1-128,000 clamp range."));
-        }
-
-        if (profile.Confidence is { } confidence
-            && confidence != ArcanumSettingClamps.TokenizationConfidence(confidence))
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.confidence",
-                $"Tokenization Confidence ({confidence}) must be finite and between 0 and 1."));
+            references.Add(new EnvironmentVariableReference(name, pointer));
         }
     }
+
+    private static void ValidateUniqueEnvironmentVariableReferences(
+        IReadOnlyList<EnvironmentVariableReference> references,
+        List<ConfigurationValidationError> errors)
+    {
+        foreach (IGrouping<string, EnvironmentVariableReference> collision in references
+                     .GroupBy(
+                         static reference => reference.Name,
+                         StringComparer.OrdinalIgnoreCase)
+                     .Where(static group => group.Count() > 1))
+        {
+            foreach (EnvironmentVariableReference reference in collision)
+            {
+                AddErrorIfMissing(
+                    new ConfigurationValidationError(
+                        reference.Pointer,
+                        "Secret environment-variable references must resolve to unique names case-insensitively; this reference collides with another configured secret reference."),
+                    errors);
+            }
+        }
+    }
+
+    private readonly record struct EnvironmentVariableReference(
+        string Name,
+        string Pointer);
 
     /// <summary>
     /// Optional HTTPS binding. When <see cref="HttpsSettings.Enabled"/> is <c>true</c>, the certificate
@@ -1707,12 +1728,18 @@ public sealed class ConfigurationValidator(
     /// the referenced file(s) must exist on disk. All-interfaces bind (<see cref="HostSettings.ListenAny"/>
     /// / <c>ARCANUM_HOST_ANY</c>) additionally requires HTTPS enabled — plaintext any-IP HTTP is refused.
     /// No PKCS#12/PEM cryptographic load happens here — that is deferred to the Infrastructure loader at
-    /// bind time — and the certificate password is never read or echoed into any error message.
+    /// bind time — and the certificate password environment value is never read or echoed into any
+    /// validation error.
     /// </summary>
     private static void ValidateHttps(HostSettings host, List<ConfigurationValidationError> errors)
     {
 
         HttpsSettings https = host.Https ?? new HttpsSettings();
+
+        ValidateOptionalEnvironmentVariableName(
+            https.CertificatePasswordEnvironmentVariable,
+            "host.https.certificatePasswordEnvironmentVariable",
+            errors);
 
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
 

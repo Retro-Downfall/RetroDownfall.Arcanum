@@ -19,9 +19,8 @@ namespace RetroDownfall.Arcanum.Api.Mcp;
 /// (inherits <c>X-Arcanum-Key</c> from the <c>/api</c> group). The internal <c>arcanum-internal</c>
 /// server and all Forbidden Arts (<c>execute_command</c>, <c>write_file</c>, <c>replace_text_block</c>,
 /// <c>delete_lexicon</c>, <c>run_spell_script</c>, <c>apply_patch</c>, and
-/// <c>workspace_check</c>) are blocked. Workspace-local MCP servers must be trusted. Output is capped
-/// by <c>Intelligence.ToolOutputCapBytes</c> (enforced by the MCP bridge) and the request is bounded
-/// by <c>Mcp.RequestTimeoutSeconds</c>.
+/// <c>workspace_check</c>) are blocked. Workspace-local MCP servers must be trusted. MCP bridge
+/// output and request duration use code-owned physical limits.
 /// </summary>
 public sealed class DiagnosticMcpInvocationService
 {
@@ -43,7 +42,7 @@ public sealed class DiagnosticMcpInvocationService
 
     public const string BlockedToolMessage =
         "This tool cannot be invoked from the diagnostic endpoint because it is a Forbidden Art " +
-        "or requires the Wizard tool execution pipeline.";
+        "or requires the Master tool execution pipeline.";
 
     private const string TruncationMarker = "[truncated: exceeded";
 
@@ -224,7 +223,9 @@ public sealed class DiagnosticMcpInvocationService
 
         }
 
-        int timeoutSeconds = Math.Max(1, _settings.CurrentValue.Mcp.RequestTimeoutSeconds);
+        int timeoutSeconds = Math.Max(
+            1,
+            _settings.CurrentValue.ResolveMcp().RequestTimeoutSeconds);
 
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 

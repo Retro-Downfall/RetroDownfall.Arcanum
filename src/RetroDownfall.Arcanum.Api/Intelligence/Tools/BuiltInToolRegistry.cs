@@ -41,7 +41,7 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
             ArcanumSystemInfoTool.ToolName,
         ];
 
-        if (_settings.Value.WebBrowsing.Enabled)
+        if (_settings.Value.ResolveWebBrowsing().Enabled)
         {
             names.Add(ArcanumBrowseWebTool.ToolName);
         }
@@ -126,7 +126,7 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         }
 
         if (string.Equals(toolName, ArcanumBrowseWebTool.ToolName, StringComparison.Ordinal)
-            && _settings.Value.WebBrowsing.Enabled)
+            && _settings.Value.ResolveWebBrowsing().Enabled)
         {
             return new ArcanumBrowseWebTool(_httpClientFactory, _settings, _browseWebLogger);
         }

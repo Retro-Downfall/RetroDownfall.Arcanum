@@ -12,12 +12,13 @@ using RetroDownfall.Arcanum.Core.Weave;
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
 /// <summary>
-/// RAG Phase 4 — Saga: <c>GET /api/saga</c> (paginated listing), <c>POST /api/saga/divine</c>
+/// Saga long-term associative memory: <c>GET /api/saga</c> (paginated listing), <c>POST /api/saga/divine</c>
 /// (semantic search), <c>DELETE /api/saga/{id}</c> / <c>DELETE /api/saga</c> (deletion), and
 /// <c>GET /api/saga/stats</c> (aggregate summary). Every step degrades gracefully when The Weave is
-/// disabled or unavailable — see the graceful-degradation matrix in DESIGN.md §21.4. Saga is Arcanum's
+/// disabled or unavailable — see the graceful-degradation matrix in
+/// <c>docs/Arcanum.DESIGN.md</c> §21.4. Saga is Arcanum's
 /// auto-extracted long-term associative memory, distinct from the operator-authored Lore key-value
-/// store (<c>/api/lore</c>) — see DESIGN.md §17.
+/// store (<c>/api/lore</c>) — see <c>docs/Arcanum.DESIGN.md</c> §17.
 /// </summary>
 internal static class SagaEndpoints
 {
@@ -88,7 +89,7 @@ internal static class SagaEndpoints
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
+                EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (!embeddings.Enabled || !embeddings.SagaEnabled)
                 {
@@ -97,7 +98,7 @@ internal static class SagaEndpoints
                         traceId,
                         new Error(
                             ErrorCodes.Embeddings.FeatureDisabled,
-                            "Saga is disabled (Arcanum:Embeddings:Enabled and Arcanum:Embeddings:SagaEnabled must both be true)."));
+                            "Saga is disabled (Arcanum:Features:Embeddings and Arcanum:Features:Saga must both be true)."));
 
                 }
 

@@ -25,7 +25,7 @@ public static class SessionAttachmentTurnBudget
 
     /// <summary>
     /// Tries to consume one reference slot. Returns <c>false</c> when the combined turn budget is exhausted.
-    /// When no turn budget was begun, returns <c>true</c> (call sites without a Wizard turn are unconstrained here).
+    /// When no turn budget was begun, returns <c>true</c> (call sites without a Master turn are unconstrained here).
     /// </summary>
     public static bool TryConsume()
     {

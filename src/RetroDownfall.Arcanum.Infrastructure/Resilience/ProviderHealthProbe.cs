@@ -1,8 +1,6 @@
 using System.Net.Http.Headers;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Resilience;
-using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 
@@ -11,9 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 /// providers are probed via a short-lived, non-pooled HTTP call to <c>{endpoint}/models</c>.
 /// </summary>
 internal sealed class ProviderHealthProbe(
-    IHttpClientFactory httpFactory,
-    ConfigurationSecretProtector secretProtector,
-    IOptionsMonitor<ArcanumSettings> options) : IProviderHealthProbe
+    IHttpClientFactory httpFactory) : IProviderHealthProbe
 {
 
     public const string HttpClientName = "ProviderHealthProbe";
@@ -35,7 +31,7 @@ internal sealed class ProviderHealthProbe(
         string probeUrl = $"{baseUrl}/models";
 
         int timeoutSeconds = ArcanumSettingClamps.HealthProbeTimeoutSeconds(
-            options.CurrentValue.Resilience?.HealthProbeTimeoutSeconds ?? new ResilienceSettings().HealthProbeTimeoutSeconds);
+            ArcanumRuntimeDefaults.Resilience.HealthProbeTimeoutSeconds);
 
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -49,18 +45,13 @@ internal sealed class ProviderHealthProbe(
             // though this named client is shared across concurrent probes for different providers.
             HttpClient client = httpFactory.CreateClient(HttpClientName);
 
-            if (!string.IsNullOrEmpty(provider.ApiKey))
+            string? resolvedApiKey =
+                EnvironmentCredentialResolver.ResolveProviderApiKey(provider);
+
+            if (!string.IsNullOrEmpty(resolvedApiKey))
             {
-
-                string? resolvedApiKey = secretProtector.ResolveApiKey(provider.ApiKey);
-
-                if (!string.IsNullOrEmpty(resolvedApiKey))
-                {
-
-                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", resolvedApiKey);
-
-                }
-
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", resolvedApiKey);
             }
 
             using HttpResponseMessage response = await client.GetAsync(probeUrl, timeoutCts.Token).ConfigureAwait(false);

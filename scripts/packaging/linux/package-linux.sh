@@ -149,7 +149,7 @@ publish_cli() {
   mkdir -p "$stage_dir"
   cp "$published" "$stage_dir/arcanum"
   chmod +x "$stage_dir/arcanum"
-  cp "$REPO_ROOT/docs/PRIVATE-BETA-NOTES.md" "$stage_dir/PRIVATE-BETA-NOTES.md"
+  cp "$REPO_ROOT/docs/Arcanum.README.md" "$stage_dir/README.md"
 
   echo "==> Creating $archive"
   tar -C "$WORK/stage" -czf "$archive" "arcanum-linux-${ARCH_SUFFIX}"
@@ -176,7 +176,7 @@ publish_gui() {
 
   mkdir -p "$stage_dir"
   cp -a "$publish_dir/." "$stage_dir/"
-  cp "$REPO_ROOT/docs/PRIVATE-BETA-NOTES.md" "$stage_dir/PRIVATE-BETA-NOTES.md"
+  cp "$REPO_ROOT/docs/Arcanum.README.md" "$stage_dir/README.md"
 
   echo "==> Creating $archive"
   tar -C "$WORK/stage" -czf "$archive" "$folder_name"

@@ -19,16 +19,15 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// RAG Phase 3 — indexes workspace files into The Weave for semantic codebase retrieval. Maintains a
+/// Indexes workspace files into The Weave for semantic codebase retrieval. Maintains a
 /// thread-safe set of "known" workspace paths (populated by <see cref="RegisterWorkspace"/>, called by
 /// <c>WizardIntelligenceProvider</c> on every inference turn) and re-indexes each of them on a
 /// background interval, plus supports an immediate on-demand re-index via <see cref="IndexNowAsync"/>
 /// (used by the manual <c>POST /api/workspaces/{id}/files/index</c> endpoint).
 ///
-/// Idles (1s poll of <c>Arcanum:Embeddings:Enabled</c> / <c>Arcanum:Embeddings:CodebaseRetrievalEnabled</c>)
-/// when either flag is false — the default — so this is a no-op on the hot path until an operator opts
-/// in. Same idle-when-disabled pattern as <see cref="EntryWeavingService"/> and
-/// <see cref="RetroDownfall.Arcanum.Infrastructure.Resilience.ProviderHealthProbeService"/>.
+/// Idles unless <c>Arcanum:Features:CodebaseRetrieval</c> is enabled; the polling cadence is a
+/// code-owned invariant. This is therefore a no-op on the hot path until an operator opts in, using
+/// the same idle-when-disabled pattern as <see cref="EntryWeavingService"/>.
 ///
 /// Change detection: a file is only re-chunked/re-embedded when its <c>LastWriteTimeUtc</c> differs from
 /// the <c>FileLastWriteTime</c> recorded on its existing <c>workspace_file_chunks</c> rows — unchanged
@@ -132,7 +131,7 @@ internal sealed class WorkspaceIndexingService(
         try
         {
 
-            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
             if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
             {
@@ -164,7 +163,7 @@ internal sealed class WorkspaceIndexingService(
     /// <summary>
     /// Applies the same allowlist enforced at campaign-creation time
     /// (<see cref="CampaignPathPolicy.ValidateAndNormalizePath"/>, gated on
-    /// <see cref="CampaignsSettings.AllowedRoots"/>) to workspace registration/indexing. Without this,
+    /// <see cref="SecuritySettings.CampaignRoots"/>) to workspace registration/indexing. Without this,
     /// any caller supplying an arbitrary <c>WorkingDirectory</c> on an inference request could get
     /// unrelated, non-campaign directories (for example a user's home directory or other system paths)
     /// background-indexed and persisted into The Weave, then retrieved via semantic search — bypassing
@@ -186,7 +185,7 @@ internal sealed class WorkspaceIndexingService(
             try
             {
 
-                EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+                EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
                 bool enabled = embeddings.Enabled && embeddings.CodebaseRetrievalEnabled;
 
@@ -249,7 +248,7 @@ internal sealed class WorkspaceIndexingService(
         {
 
             logger.LogDebug(
-                "Workspace indexing tick skipped for {WorkspacePath}: The Weave is unavailable (Provider/Model not configured, or Embeddings disabled).",
+                "Workspace indexing tick skipped for {WorkspacePath}: The Weave is unavailable (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model).",
                 workspacePath);
 
             return;

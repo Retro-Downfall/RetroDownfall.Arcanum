@@ -10,7 +10,7 @@ internal static class InternalCodingToolSettingsFingerprint
         CodingToolsSettings? configured)
     {
         CodingToolsSettings settings =
-            configured ?? new CodingToolsSettings();
+            configured ?? ArcanumRuntimeDefaults.CodingTools;
         WorkspaceSearchSettings search =
             settings.Search ?? new WorkspaceSearchSettings();
         WorkspacePatchSettings patch =

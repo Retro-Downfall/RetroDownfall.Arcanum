@@ -8,9 +8,10 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// Operator-facing reset for RAG embedding tables when <c>Arcanum:Embeddings:Dimensions</c> (or the
-/// embedding model) changes. Clears the requested scope's embedding table(s) plus any companion
-/// metadata tables that would otherwise make the reset silently ineffective. See DESIGN.md §21.
+/// Operator-facing reset for RAG embedding tables when
+/// <c>Arcanum:Integrations:Embeddings:Dimensions</c> (or the embedding model) changes. Clears the
+/// requested scope's embedding table(s) plus any companion metadata tables that would otherwise
+/// make the reset silently ineffective. See <c>docs/Arcanum.DESIGN.md</c> §21.
 /// </summary>
 public sealed class EmbeddingsResetService(
     ArcanumDbContext db,

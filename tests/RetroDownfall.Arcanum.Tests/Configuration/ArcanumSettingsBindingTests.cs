@@ -27,11 +27,7 @@ public sealed class ArcanumSettingsBindingTests
                     "name": "Fireworks",
                     "type": "OpenAICompatible",
                     "endpoint": "https://api.fireworks.ai/inference/v1",
-                    "apiKey": "test-key",
-                    "promptCaching": {
-                      "controlMode": "providerManaged",
-                      "reportsCachedInputUsage": true
-                    },
+                    "credentialEnvironmentVariable": "FIREWORKS_API_KEY",
                     "models": [
                       {
                         "name": "accounts/fireworks/models/qwen3p7-plus",
@@ -45,10 +41,6 @@ public sealed class ArcanumSettingsBindingTests
                           "allowsClientOutput": true,
                           "wireDialect": "OpenRouter",
                           "maxBudgetTokens": 32768
-                        },
-                        "promptCaching": {
-                          "controlMode": "none",
-                          "reportsCachedInputUsage": false
                         }
                       }
                     ],
@@ -85,6 +77,10 @@ public sealed class ArcanumSettingsBindingTests
 
         Assert.Equal(AiProviderKind.OpenAICompatible, settings.Providers[0].Type);
 
+        Assert.Equal(
+            "FIREWORKS_API_KEY",
+            settings.Providers[0].CredentialEnvironmentVariable);
+
         Assert.Equal(25600, settings.Providers[0].ContextWindowLimit);
 
         Assert.Single(settings.Providers[0].Models);
@@ -105,16 +101,6 @@ public sealed class ArcanumSettingsBindingTests
         Assert.Equal(ReasoningWireDialect.OpenRouter, reasoning.WireDialect);
         Assert.Equal(32_768, reasoning.MaxBudgetTokens);
 
-        PromptCachingProfile providerCaching = Assert.IsType<PromptCachingProfile>(
-            settings.Providers[0].PromptCaching);
-        Assert.Equal(PromptCachingControlMode.ProviderManaged, providerCaching.ControlMode);
-        Assert.True(providerCaching.ReportsCachedInputUsage);
-
-        PromptCachingProfile modelCaching = Assert.IsType<PromptCachingProfile>(
-            settings.Providers[0].Models[0].PromptCaching);
-        Assert.Equal(PromptCachingControlMode.None, modelCaching.ControlMode);
-        Assert.False(modelCaching.ReportsCachedInputUsage);
-
     }
 
     [Fact]
@@ -124,12 +110,14 @@ public sealed class ArcanumSettingsBindingTests
             """
             {
               "Arcanum": {
-                "pricing": {
-                  "defaultPricing": {
-                    "inputPer1M": 10,
-                    "outputPer1M": 20,
-                    "reasoningPer1M": 80,
-                    "cachedPer1M": 1
+                "cost": {
+                  "pricing": {
+                    "defaultPricing": {
+                      "inputPer1M": 10,
+                      "outputPer1M": 20,
+                      "reasoningPer1M": 80,
+                      "cachedPer1M": 1
+                    }
                   }
                 }
               }
@@ -144,7 +132,7 @@ public sealed class ArcanumSettingsBindingTests
         using ServiceProvider provider = services.BuildServiceProvider();
 
         ModelPricingEntry pricing =
-            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Pricing.DefaultPricing;
+            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Cost.Pricing.DefaultPricing;
 
         Assert.Equal(10m, pricing.InputPer1M);
         Assert.Equal(20m, pricing.OutputPer1M);
@@ -153,41 +141,17 @@ public sealed class ArcanumSettingsBindingTests
     }
 
     [Fact]
-    public void Configure_binds_coding_tool_bounds_and_opaque_check_profiles_via_source_generator()
+    public void Configure_binds_workspace_check_feature_and_integration_via_source_generator()
     {
         const string json =
             """
             {
               "Arcanum": {
-                "codingTools": {
-                  "search": {
-                    "maxPatternChars": 2048,
-                    "regexTimeoutMilliseconds": 125,
-                    "maxElapsedMilliseconds": 9000,
-                    "maxFiles": 750,
-                    "maxBytes": 8388608,
-                    "maxTraversalSteps": 50000,
-                    "maxMatches": 250,
-                    "maxPreviewChars": 320
-                  },
-                  "patch": {
-                    "maxPatchBytes": 2097152,
-                    "maxFiles": 48,
-                    "maxHunks": 256,
-                    "maxLinesPerHunk": 4000,
-                    "fuzzyMatchWindowLines": 40,
-                    "maxResultItems": 96
-                  },
-                  "workspaceCheck": {
-                    "enabled": true,
-                    "timeoutSeconds": 420,
-                    "maxCustomProfiles": 12,
-                    "maxFixedArgumentsPerProfile": 16,
-                    "maxArgumentTokenChars": 128,
-                    "maxOptionsPerProfile": 8,
-                    "maxAllowedValuesPerOption": 6,
-                    "maxDiagnostics": 300,
-                    "maxOutputBytes": 524288,
+                "features": {
+                  "workspaceChecks": true
+                },
+                "integrations": {
+                  "workspaceChecks": {
                     "executableCatalog": {
                       "dotNet": {
                         "path": "/opt/dotnet/dotnet"
@@ -222,19 +186,16 @@ public sealed class ArcanumSettingsBindingTests
         services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
         using ServiceProvider provider = services.BuildServiceProvider();
 
-        CodingToolsSettings codingTools =
-            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.CodingTools;
+        ArcanumSettings settings =
+            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+        WorkspaceCheckIntegrationSettings workspaceChecks =
+            settings.Integrations.WorkspaceChecks;
 
-        Assert.Equal(2048, codingTools.Search.MaxPatternChars);
-        Assert.Equal(8_388_608, codingTools.Search.MaxBytes);
-        Assert.Equal(2_097_152, codingTools.Patch.MaxPatchBytes);
-        Assert.Equal(40, codingTools.Patch.FuzzyMatchWindowLines);
-        Assert.True(codingTools.WorkspaceCheck.Enabled);
-        Assert.Equal(420, codingTools.WorkspaceCheck.TimeoutSeconds);
-        Assert.Equal("/opt/dotnet/dotnet", codingTools.WorkspaceCheck.ExecutableCatalog.DotNet.Path);
+        Assert.True(settings.Features.WorkspaceChecks);
+        Assert.Equal("/opt/dotnet/dotnet", workspaceChecks.ExecutableCatalog.DotNet.Path);
 
         WorkspaceCheckProfileSettings profile =
-            Assert.Single(codingTools.WorkspaceCheck.CustomProfiles).Value;
+            Assert.Single(workspaceChecks.CustomProfiles).Value;
 
         Assert.Equal("dotnet", profile.ExecutableId);
         Assert.Equal(WorkspaceCheckKind.Build, profile.Kind);
@@ -246,16 +207,14 @@ public sealed class ArcanumSettingsBindingTests
     }
 
     [Theory]
-    [InlineData(typeof(CodingToolsSettings))]
-    [InlineData(typeof(WorkspaceSearchSettings))]
-    [InlineData(typeof(WorkspacePatchSettings))]
-    [InlineData(typeof(WorkspaceCheckSettings))]
+    [InlineData(typeof(IntegrationSettings))]
+    [InlineData(typeof(WorkspaceCheckIntegrationSettings))]
     [InlineData(typeof(WorkspaceCheckExecutableCatalogSettings))]
     [InlineData(typeof(WorkspaceCheckProfileSettings))]
     [InlineData(typeof(WorkspaceCheckProfileOptionSettings))]
     [InlineData(typeof(WorkspaceCheckKind))]
     [InlineData(typeof(WorkspaceCheckDiagnosticParserKind))]
-    public void ConfigurationJsonContext_registers_coding_tool_contract(Type type)
+    public void ConfigurationJsonContext_registers_workspace_check_integration_contract(Type type)
     {
         Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
     }

@@ -75,7 +75,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         }
 
-        IntelligenceSettings intelligenceSettings = _settings.Value.Intelligence ?? new IntelligenceSettings();
+        IntelligenceSettings intelligenceSettings = _settings.Value.ResolveIntelligence();
         ResolveProfileTarget(
             provider: null,
             model: null,

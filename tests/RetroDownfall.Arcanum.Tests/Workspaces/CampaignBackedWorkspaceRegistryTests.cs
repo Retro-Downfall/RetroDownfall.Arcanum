@@ -81,7 +81,7 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Campaigns = new CampaignsSettings { AllowedRoots = [_workspaceRoot] },
+            Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
         };
 
         GrimoireDbReadiness readiness = new();
@@ -133,7 +133,7 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Campaigns = new CampaignsSettings { AllowedRoots = [_workspaceRoot] },
+            Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
         };
 
         GrimoireDbReadiness readiness = new();

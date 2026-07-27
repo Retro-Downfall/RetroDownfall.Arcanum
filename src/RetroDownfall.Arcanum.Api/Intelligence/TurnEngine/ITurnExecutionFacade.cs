@@ -6,8 +6,9 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 
 /// <summary>
-/// Public facade over <see cref="TurnExecutionCoordinator"/> so Wizard can take a
-/// <see cref="Lazy{T}"/> without exposing the internal coordinator type on a public ctor.
+/// Public facade over <see cref="TurnExecutionCoordinator"/> so
+/// <c>WizardIntelligenceProvider</c> (the Master implementation) can take a <see cref="Lazy{T}"/>
+/// without exposing the internal coordinator type on a public ctor.
 /// </summary>
 public interface ITurnExecutionFacade
 {

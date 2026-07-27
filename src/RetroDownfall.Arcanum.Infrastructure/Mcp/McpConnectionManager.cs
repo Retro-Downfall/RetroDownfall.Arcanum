@@ -73,7 +73,7 @@ public sealed partial class McpConnectionManager(
 
     private string _cachedInternalToolSettingsFingerprint =
         InternalCodingToolSettingsFingerprint.Build(
-            settings.CurrentValue.CodingTools);
+            settings.CurrentValue.ResolveCodingTools());
 
     private long _toolSurfaceGeneration;
 
@@ -630,7 +630,7 @@ public sealed partial class McpConnectionManager(
 
         string fingerprint =
             InternalCodingToolSettingsFingerprint.Build(
-                settings.CurrentValue.CodingTools);
+                settings.CurrentValue.ResolveCodingTools());
 
         List<McpPartitionClients> retired = [];
 

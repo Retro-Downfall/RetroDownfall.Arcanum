@@ -29,7 +29,7 @@ public sealed class BudgetEndpointTests
     {
 
         await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
-            new BudgetSettings { Enabled = false, DailyLimitUsd = 10m },
+            new BudgetPolicySettings { Enabled = false, DailyLimitUsd = 10m },
             todaySpend: 999m);
 
         HttpClient client = factory.CreateAuthenticatedClient();
@@ -56,7 +56,7 @@ public sealed class BudgetEndpointTests
     {
 
         await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
-            new BudgetSettings { Enabled = true, DailyLimitUsd = 20m, AlertThresholdPercent = 80 },
+            new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
             todaySpend: 5m);
 
         HttpClient client = factory.CreateAuthenticatedClient();
@@ -93,14 +93,17 @@ internal static class BudgetEndpointTestFactoryExtensions
 
     public static ArcanumWebApplicationFactory WithBudget(
         this ArcanumWebApplicationFactory factory,
-        BudgetSettings budget,
+        BudgetPolicySettings budget,
         decimal todaySpend)
     {
 
         return new ArcanumWebApplicationFactory
         {
 
-            SettingsOverride = settings => settings with { Budget = budget },
+            SettingsOverride = settings => settings with
+            {
+                Cost = settings.Cost with { Budget = budget },
+            },
 
             ServiceOverrides = services =>
             {

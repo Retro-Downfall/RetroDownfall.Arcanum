@@ -13,13 +13,7 @@ public sealed class SessionEventHubTests
     [Fact]
     public async Task Publish_delivers_entry_to_session_subscriber()
     {
-
-        ArcanumSettings settings = new()
-        {
-            Apprentices = new ApprenticeSettings { ChronicleChannelCapacity = 8 },
-        };
-
-        SessionEventHub hub = new(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance);
+        SessionEventHub hub = new(NullLogger<SessionEventHub>.Instance);
 
         Guid sessionId = Guid.NewGuid();
 
@@ -65,15 +59,9 @@ public sealed class SessionEventHubTests
     [Fact]
     public async Task Publish_logs_warning_when_subscriber_channel_is_full()
     {
-
-        ArcanumSettings settings = new()
-        {
-            Apprentices = new ApprenticeSettings { ChronicleChannelCapacity = 4 },
-        };
-
         CapturingLogger<SessionEventHub> logger = new();
 
-        SessionEventHub hub = new(new TestOptionsMonitor<ArcanumSettings>(settings), logger);
+        SessionEventHub hub = new(logger);
 
         Guid sessionId = Guid.NewGuid();
 
@@ -92,8 +80,9 @@ public sealed class SessionEventHubTests
 
             Assert.True(await firstMove);
 
-            // ChronicleChannelCapacity clamps to a minimum of 100, so fill 100 then overflow.
-            for (int i = 0; i < 100; i++)
+            int capacity = ArcanumSettingClamps.ChronicleChannelCapacity(
+                ArcanumRuntimeDefaults.Apprentices.ChronicleChannelCapacity);
+            for (int i = 0; i < capacity; i++)
             {
 
                 hub.Publish(sessionId, MakeEntry(sessionId, i.ToString()));

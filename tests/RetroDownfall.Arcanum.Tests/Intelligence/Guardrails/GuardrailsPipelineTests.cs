@@ -15,7 +15,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_WhenDisabled_ReturnsAllowed()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = false, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = false, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "Email me at alice@example.com")],
@@ -33,7 +34,9 @@ public sealed class GuardrailsPipelineTests
 
         FakeGuardrailAuditLogger audit = new();
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true }, audit);
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true },
+            audit);
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "Please reply to alice@example.com for details.")],
@@ -55,7 +58,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_DetectsSsn()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "My SSN is 123-45-6789.")],
@@ -71,7 +75,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_DetectsCreditCard()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "Card: 4111 1111 1111 1111")],
@@ -87,7 +92,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_DetectsPhone()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "Call me at (555) 123-4567 today.")],
@@ -103,7 +109,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_CleanInput_IsAllowed()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "What is the weather in Paris?")],
@@ -117,7 +124,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_ToxicityBlocklist_BlocksAndReturnsBlockedCode()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -139,7 +146,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_ToxicityBlocklistDisabled_DoesNotBlock()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -159,7 +166,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_AllowedTopics_NonMatchingInput_IsBlocked()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -186,7 +193,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_AllowedTopicsEmpty_AllowsEverything()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -205,7 +212,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_BlockedTopics_MatchingInput_IsBlocked()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -226,7 +233,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_BlockedTopics_InvalidRegex_IsSkippedNotThrown()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -245,7 +252,7 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterOutputAsync_Toxicity_Blocks()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = false,
@@ -268,7 +275,7 @@ public sealed class GuardrailsPipelineTests
     {
 
         // PII detection is an input-only gate; output is not re-scanned for PII.
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
         {
             Enabled = true,
             DetectPii = true,
@@ -289,7 +296,7 @@ public sealed class GuardrailsPipelineTests
         FakeGuardrailAuditLogger audit = new();
 
         GuardrailsPipeline pipeline = CreatePipeline(
-            new GuardrailsSettings { Enabled = true, DetectPii = true },
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true },
             audit);
 
         await pipeline.FilterInputAsync(
@@ -318,7 +325,7 @@ public sealed class GuardrailsPipelineTests
         FakeGuardrailAuditLogger audit = new();
 
         GuardrailsPipeline pipeline = CreatePipeline(
-            new GuardrailsSettings { Enabled = false, DetectPii = true },
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = false, DetectPii = true },
             audit);
 
         await pipeline.FilterInputAsync(
@@ -336,7 +343,7 @@ public sealed class GuardrailsPipelineTests
         FakeGuardrailAuditLogger audit = new();
 
         GuardrailsPipeline pipeline = CreatePipeline(
-            new GuardrailsSettings
+            ArcanumRuntimeDefaults.Guardrails with
             {
                 Enabled = true,
                 DetectPii = true,
@@ -359,7 +366,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_PhoneWithMismatchedParens_StillDetectsPhoneNumber()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "Call (555-555-5555 today.")],
@@ -375,7 +383,8 @@ public sealed class GuardrailsPipelineTests
     public async Task FilterInputAsync_PhoneWithBalancedParens_Matches()
     {
 
-        GuardrailsPipeline pipeline = CreatePipeline(new GuardrailsSettings { Enabled = true, DetectPii = true });
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "Call (555) 555-5555 today.")],
@@ -389,8 +398,21 @@ public sealed class GuardrailsPipelineTests
 
     private static GuardrailsPipeline CreatePipeline(GuardrailsSettings guardrails, FakeGuardrailAuditLogger? audit = null)
     {
-
-        ArcanumSettings settings = new() { Guardrails = guardrails };
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { Guardrails = guardrails.Enabled },
+            Security = new SecuritySettings
+            {
+                Guardrails = new GuardrailsPolicySettings
+                {
+                    DetectPii = guardrails.DetectPii,
+                    BlockToxicity = guardrails.BlockToxicity,
+                    ToxicityBlocklist = guardrails.ToxicityBlocklist,
+                    AllowedTopics = guardrails.AllowedTopics,
+                    BlockedTopics = guardrails.BlockedTopics,
+                },
+            },
+        };
 
         return new GuardrailsPipeline(
             new TestOptionsMonitor<ArcanumSettings>(settings),

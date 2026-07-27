@@ -11,10 +11,14 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 [Collection("EnvVarSensitive")]
 public sealed class HttpsConfigurationTests : IDisposable
 {
+    private const string CertificatePasswordVariable =
+        "ARCANUM_TEST_COMPENDIUM_CERT_PASSWORD";
 
     private readonly string _originalHome;
 
     private readonly string _originalUserProfile;
+
+    private readonly string? _originalCertificatePassword;
 
     private readonly string _tempRoot;
 
@@ -25,6 +29,9 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         _originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE") ?? string.Empty;
 
+        _originalCertificatePassword =
+            Environment.GetEnvironmentVariable(CertificatePasswordVariable);
+
         _tempRoot = Path.Combine(Path.GetTempPath(), $"compendium-https-{Guid.NewGuid():N}");
 
         _ = Directory.CreateDirectory(_tempRoot);
@@ -33,10 +40,12 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         Environment.SetEnvironmentVariable("USERPROFILE", _tempRoot);
 
+        Environment.SetEnvironmentVariable(CertificatePasswordVariable, null);
+
     }
 
     [Fact]
-    public void Generate_writes_owner_only_loadable_localhost_pfx()
+    public void Generate_writes_owner_only_loadable_localhost_pem_pair()
     {
 
         LocalCertificateGenerator generator = new();
@@ -47,18 +56,13 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         Assert.True(File.Exists(result.CertificatePath));
 
-        Assert.False(string.IsNullOrWhiteSpace(result.Password));
+        Assert.True(File.Exists(result.PrivateKeyPath));
 
         Assert.NotEmpty(result.Warnings);
 
-        X509KeyStorageFlags keyStorageFlags = OperatingSystem.IsMacOS()
-            ? X509KeyStorageFlags.DefaultKeySet
-            : X509KeyStorageFlags.EphemeralKeySet;
-
-        using X509Certificate2 certificate = X509CertificateLoader.LoadPkcs12FromFile(
+        using X509Certificate2 certificate = X509Certificate2.CreateFromPemFile(
             result.CertificatePath,
-            result.Password,
-            keyStorageFlags);
+            result.PrivateKeyPath);
 
         Assert.Contains("CN=localhost", certificate.Subject, StringComparison.OrdinalIgnoreCase);
 
@@ -121,9 +125,11 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         Assert.False(string.IsNullOrWhiteSpace(host.HttpsCertificatePath));
 
-        Assert.False(string.IsNullOrWhiteSpace(host.HttpsCertificatePassword));
+        Assert.False(string.IsNullOrWhiteSpace(host.HttpsPrivateKeyPath));
 
-        Assert.Equal(string.Empty, host.HttpsPrivateKeyPath);
+        Assert.Equal(
+            string.Empty,
+            host.HttpsCertificatePasswordEnvironmentVariable);
 
     }
 
@@ -144,8 +150,11 @@ public sealed class HttpsConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task Save_encrypts_https_certificate_password_at_rest()
+    public async Task Save_persists_certificate_reference_without_secret_material()
     {
+        Environment.SetEnvironmentVariable(
+            CertificatePasswordVariable,
+            "plaintext-pfx-password");
 
         _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
@@ -153,9 +162,7 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         LocalCertificateResult certificate = generator.Generate(ArcanumPaths.CertificatesDirectory, DateTimeOffset.UtcNow);
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        ArcanumConfigurationStore store = new(protector);
+        ArcanumConfigurationStore store = new();
 
         ArcanumSettings settings = new()
         {
@@ -166,7 +173,9 @@ public sealed class HttpsConfigurationTests : IDisposable
                     Enabled = true,
                     Port = 5443,
                     CertificatePath = certificate.CertificatePath,
-                    CertificatePassword = "plaintext-pfx-password",
+                    PrivateKeyPath = certificate.PrivateKeyPath,
+                    CertificatePasswordEnvironmentVariable =
+                        CertificatePasswordVariable,
                 },
             },
         };
@@ -182,11 +191,13 @@ public sealed class HttpsConfigurationTests : IDisposable
 
         Assert.DoesNotContain("plaintext-pfx-password", rawJson);
 
-        Assert.Contains("dp:v1:", rawJson);
+        Assert.Contains(CertificatePasswordVariable, rawJson);
 
         ArcanumSettings reloaded = await store.ReadAsync();
 
-        Assert.Equal("plaintext-pfx-password", reloaded.Host.Https.CertificatePassword);
+        Assert.Equal(
+            CertificatePasswordVariable,
+            reloaded.Host.Https.CertificatePasswordEnvironmentVariable);
 
     }
 
@@ -196,6 +207,10 @@ public sealed class HttpsConfigurationTests : IDisposable
         Environment.SetEnvironmentVariable("HOME", _originalHome);
 
         Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
+
+        Environment.SetEnvironmentVariable(
+            CertificatePasswordVariable,
+            _originalCertificatePassword);
 
         try
         {

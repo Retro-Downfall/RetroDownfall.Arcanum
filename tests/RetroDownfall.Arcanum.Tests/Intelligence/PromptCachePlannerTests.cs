@@ -31,8 +31,7 @@ public sealed class PromptCachePlannerTests
 
         PromptCachePlan plan = PromptCachePlanner.Create(
             Provider(),
-            "cache-model",
-            ExplicitProfile(),
+            "gpt-5",
             document,
             new ChatOptions(),
             PromptCacheSemanticNamespace.Main,
@@ -85,24 +84,21 @@ public sealed class PromptCachePlannerTests
 
         PromptCachePlan first = PromptCachePlanner.Create(
             Provider(),
-            "cache-model",
-            ExplicitProfile() with { ToolSchemasParticipate = true },
+            "gpt-5",
             Document(Stable("preamble")),
             firstOptions,
             PromptCacheSemanticNamespace.Main,
             1_024);
         PromptCachePlan changed = PromptCachePlanner.Create(
             Provider(),
-            "cache-model",
-            ExplicitProfile() with { ToolSchemasParticipate = true },
+            "gpt-5",
             Document(Stable("preamble")),
             changedOptions,
             PromptCacheSemanticNamespace.Main,
             1_024);
         PromptCachePlan reordered = PromptCachePlanner.Create(
             Provider(),
-            "cache-model",
-            ExplicitProfile() with { ToolSchemasParticipate = true },
+            "gpt-5",
             Document(Stable("preamble")),
             reorderedOptions,
             PromptCacheSemanticNamespace.Main,
@@ -112,23 +108,24 @@ public sealed class PromptCachePlannerTests
         Assert.NotEqual(first.CacheKey, reordered.CacheKey);
     }
 
-    [Theory]
-    [InlineData(PromptCachingControlMode.ProviderManaged, PromptCacheEligibility.ProviderManaged)]
-    [InlineData(PromptCachingControlMode.None, PromptCacheEligibility.NonCacheable)]
-    public void Create_NonExplicitModesEmitNoKey(
-        PromptCachingControlMode mode,
-        PromptCacheEligibility expected)
+    [Fact]
+    public void Create_UnknownModelEmitsNoKey()
     {
+        ProviderSettings provider = Provider();
+        provider.Models = ["unknown-model"];
+
         PromptCachePlan plan = PromptCachePlanner.Create(
-            Provider(),
-            "cache-model",
-            new PromptCachingProfile { ControlMode = mode },
+            provider,
+            "unknown-model",
             Document(Stable("preamble")),
             new ChatOptions(),
             PromptCacheSemanticNamespace.Main,
             10);
 
-        Assert.Equal(expected, plan.Eligibility);
+        Assert.Equal(PromptCacheEligibility.ProviderManaged, plan.Eligibility);
+        Assert.Equal(
+            PromptCacheNonEligibilityReason.ProfileAbsent,
+            plan.NonEligibilityReason);
         Assert.Equal(string.Empty, plan.CacheKey);
         Assert.Empty(plan.Boundaries);
     }
@@ -136,8 +133,7 @@ public sealed class PromptCachePlannerTests
     private static PromptCachePlan CreateForDocument(SystemPromptDocument document) =>
         PromptCachePlanner.Create(
             Provider(),
-            "cache-model",
-            ExplicitProfile(),
+            "gpt-5",
             document,
             new ChatOptions(),
             PromptCacheSemanticNamespace.Main,
@@ -148,17 +144,8 @@ public sealed class PromptCachePlannerTests
         {
             Name = "provider",
             Type = AiProviderKind.OpenAICompatible,
-            Models = ["cache-model"],
-        };
-
-    private static PromptCachingProfile ExplicitProfile() =>
-        new()
-        {
-            ControlMode = PromptCachingControlMode.Explicit,
-            WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
-            CacheKeysSupported = true,
-            EmitCacheKey = true,
-            ReportsCachedInputUsage = true,
+            Endpoint = "https://api.openai.com/v1",
+            Models = ["gpt-5"],
         };
 
     private static SystemPromptDocument Document(params PromptSegment[] segments) => new(segments);

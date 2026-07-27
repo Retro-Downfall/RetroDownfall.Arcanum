@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -12,8 +11,7 @@ namespace RetroDownfall.Arcanum.Core.ProvingGrounds;
 
 [ExcludeFromCodeCoverage] // Reason: orchestrates live LLM semantic Inquisitors for Proving Grounds trials; covered via ProvingGroundsArbiterTests and trial endpoint integration tests.
 public sealed class ProvingGroundsArbiter(
-    IArcanumIntelligenceProvider intelligence,
-    IOptionsMonitor<ArcanumSettings> optionsMonitor) : IProvingGroundsArbiter
+    IArcanumIntelligenceProvider intelligence) : IProvingGroundsArbiter
 {
 
     private static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(1);
@@ -24,27 +22,11 @@ public sealed class ProvingGroundsArbiter(
         string? judgeModel,
         CancellationToken cancellationToken = default)
     {
-        ArcanumSettings arc = optionsMonitor.CurrentValue;
-
-        int maxInquisitors = ArcanumSettingClamps.MaxInquisitorsPerTrial(arc.ProvingGrounds.MaxInquisitorsPerTrial);
-
-        if (inquisitors.Count > maxInquisitors)
-        {
-            // W4.1: return a failed verdict rather than throwing, so a direct arbiter caller that
-            // skips the API runner's pre-validation gets the same Result-shaped outcome (one error
-            // model, not two).
-            return [new InquisitorVerdict(
-                "trial",
-                "trial",
-                false,
-                $"Trial defines {inquisitors.Count} Inquisitors; the maximum is {maxInquisitors}.")];
-        }
-
         // W3.6: clamp the trial output before any parse / judge-prompt assembly so a very large
         // target output cannot force an unbounded JsonDocument.Parse or an unbounded judge prompt
         // (the per-inference ping bounds do not apply to this internal adjudication path).
         int maxOutputChars = ArcanumSettingClamps.MaxPingPromptChars(
-            (arc.Intelligence ?? new IntelligenceSettings()).MaxPingPromptChars);
+            ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
 
         string boundedOutput = output.Length > maxOutputChars ? output[..maxOutputChars] : output;
 
@@ -65,7 +47,6 @@ public sealed class ProvingGroundsArbiter(
                     semantic,
                     boundedOutput,
                     judgeModel,
-                    arc,
                     cancellationToken).ConfigureAwait(false),
                 _ => new InquisitorVerdict("unknown", inquisitor.Label, false, "Unknown Inquisitor kind."),
             };
@@ -225,21 +206,12 @@ public sealed class ProvingGroundsArbiter(
         SemanticInquisitor inquisitor,
         string output,
         string? judgeModel,
-        ArcanumSettings arc,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(inquisitor.Question))
         {
             return new InquisitorVerdict("semantic", inquisitor.Label, false, "Semantic question is required.");
         }
-
-        int maxTokens = ArcanumSettingClamps.SemanticJudgeMaxTokens(arc.ProvingGrounds.SemanticJudgeMaxTokens);
-
-        int timeoutSeconds = ArcanumSettingClamps.SemanticJudgeTimeoutSeconds(arc.ProvingGrounds.SemanticJudgeTimeoutSeconds);
-
-        using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
         StringBuilder userPrompt = new();
 
@@ -265,25 +237,11 @@ public sealed class ProvingGroundsArbiter(
             DisableMcpTools: true,
             SkipSpellRouting: true,
             Temperature: 0f,
-            MaxOutputTokens: maxTokens,
             StatelessMessages: messages);
 
-        Result<PromptTurnResult> result;
-
-        try
-        {
-            result = await intelligence
-                .ExecutePromptAsync(ping, timeoutCts.Token)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return new InquisitorVerdict(
-                "semantic",
-                inquisitor.Label,
-                false,
-                $"Semantic judge inference timed out after {timeoutSeconds} seconds.");
-        }
+        Result<PromptTurnResult> result = await intelligence
+            .ExecutePromptAsync(ping, cancellationToken)
+            .ConfigureAwait(false);
 
         if (result.IsFailure)
         {

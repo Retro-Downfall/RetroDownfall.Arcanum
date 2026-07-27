@@ -115,7 +115,7 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public async Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default)
     {
-        CampaignsSettings settings = _arcOptions.Value.Campaigns ?? new CampaignsSettings();
+        CampaignsSettings settings = ArcanumRuntimeDefaults.Campaigns;
 
         int maxCampaigns = ArcanumSettingClamps.MaxCampaigns(settings.MaxCampaigns);
 

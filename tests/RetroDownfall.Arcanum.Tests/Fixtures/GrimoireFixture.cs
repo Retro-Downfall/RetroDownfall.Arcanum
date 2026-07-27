@@ -293,7 +293,7 @@ public sealed class GrimoireFixture : IDisposable
         // table to work against instead of each test standing up its own ad hoc schema.
         await WeaveSchemaInitializer.EnsureSchemaAsync(
             connection,
-            configuredDimensions: new ArcanumSettings().Embeddings.Dimensions,
+            configuredDimensions: new EmbeddingIntegrationSettings().Dimensions,
             availability: new WeaveIndexAvailability(),
             logger: null,
             cancellationToken).ConfigureAwait(false);

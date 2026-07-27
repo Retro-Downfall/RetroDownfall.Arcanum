@@ -41,7 +41,7 @@ public static class SessionAttachmentTurnService
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
 
-        AttachmentsSettings attachments = settings.Attachments ?? new AttachmentsSettings();
+        AttachmentsSettings attachments = settings.ResolveAttachments();
 
         if (!attachments.Enabled)
         {
@@ -198,7 +198,7 @@ public static class SessionAttachmentTurnService
                     else
                     {
                         long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-                            settings.Cli.MaxAttachFileSizeBytes);
+                            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
 
                         string text = DecodeTextWithByteBound(bytes, maxTextBytes);
 

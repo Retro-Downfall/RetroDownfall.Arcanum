@@ -11,13 +11,7 @@ public sealed class ChronicleHubTests
     [Fact]
     public async Task Publish_and_subscribe_are_scoped_per_apprentice()
     {
-
-        ArcanumSettings settings = new()
-        {
-            Apprentices = new ApprenticeSettings { ChronicleChannelCapacity = 8 },
-        };
-
-        ChronicleHub hub = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+        ChronicleHub hub = new();
 
         Guid apprenticeA = Guid.NewGuid();
 

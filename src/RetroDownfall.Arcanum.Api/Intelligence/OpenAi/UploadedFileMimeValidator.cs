@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 /// <summary>
 /// Defense-in-depth cross-check between a file's extension and its declared (multipart)
-/// <c>Content-Type</c> for <c>POST /v1/files</c> (DESIGN.md §11.20). This is a secondary guard —
+/// <c>Content-Type</c> for <c>POST /v1/files</c> (<c>docs/Arcanum.DESIGN.md</c> §11.20). This is a secondary guard —
 /// the primary XSS mitigation is that <c>GET /v1/files/{id}/content</c> always serves with
 /// <c>Content-Disposition: attachment</c>, never <c>inline</c>, regardless of MIME type. Unknown
 /// extensions are allowed through (there is nothing to cross-check them against); only a *known*

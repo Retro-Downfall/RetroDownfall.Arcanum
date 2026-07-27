@@ -13,8 +13,8 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Archive;
 /// The Archive — Saga long-term associative memory over <c>/api/saga/*</c>. A dock tool that lists
 /// memories, shows stats, runs Saga Divination (semantic search), deletes a single memory, and
 /// offers a guarded delete-all. List, stats, and delete are always available; Divination is
-/// server-gated on Embeddings+SagaEnabled and surfaces <c>Embeddings.FeatureDisabled</c> as an honest
-/// disabled state. Nothing throws on API failure.
+/// server-gated by <c>Arcanum:Features:Saga</c> plus valid embedding integration facts and surfaces
+/// <c>Embeddings.FeatureDisabled</c> as an honest disabled state. Nothing throws on API failure.
 /// </summary>
 public sealed partial class SagaArchiveViewModel : ViewModelBase
 {

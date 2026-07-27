@@ -32,13 +32,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
                 {
                     AllowUnsandboxedToolChildren = true,
                 },
-                CodingTools = new CodingToolsSettings
-                {
-                    Patch = new WorkspacePatchSettings
-                    {
-                        MaxPatchBytes = 1024,
-                    },
-                },
             });
 
         ServiceCollection services = new();
@@ -98,39 +91,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     [Fact]
-    public async Task Patch_settings_reload_rebuilds_handler_with_current_preflight_limits()
-    {
-
-        await using TempWorkspace workspace = new();
-        await workspace.InitializeAsync();
-        string oversizedForInitialLimit = new('x', 1536);
-
-        string before = await InvokeInvalidPatchAsync(
-            workspace.Root,
-            oversizedForInitialLimit);
-        Assert.Contains("\"code\":\"patch_too_large\"", before, StringComparison.Ordinal);
-
-        _settings.CurrentValue = _settings.CurrentValue with
-        {
-            CodingTools = new CodingToolsSettings
-            {
-                Patch = new WorkspacePatchSettings
-                {
-                    MaxPatchBytes = 4096,
-                },
-            },
-        };
-
-        string after = await InvokeInvalidPatchAsync(
-            workspace.Root,
-            oversizedForInitialLimit);
-
-        Assert.DoesNotContain("\"code\":\"patch_too_large\"", after, StringComparison.Ordinal);
-        Assert.Contains("\"status\":\"invalid_patch\"", after, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
     public async Task Initial_settings_fingerprint_does_not_retire_bootstrapped_global_partition()
     {
 
@@ -149,7 +109,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     [Fact]
-    public async Task Equivalent_settings_keep_generation_and_search_change_rebuilds_surface()
+    public async Task Equivalent_settings_keep_generation_and_workspace_check_change_rebuilds_surface()
     {
 
         await using TempWorkspace workspace = new();
@@ -159,14 +119,13 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             workspace.Root,
             ToolRiskClassifier.SearchWorkspaceToolName);
 
-        CodingToolsSettings current = _settings.CurrentValue.CodingTools!;
+        WorkspaceCheckIntegrationSettings current =
+            _settings.CurrentValue.Integrations.WorkspaceChecks;
         _settings.CurrentValue = _settings.CurrentValue with
         {
-            CodingTools = new CodingToolsSettings
+            Integrations = _settings.CurrentValue.Integrations with
             {
-                Search = current.Search with { },
-                Patch = current.Patch with { },
-                WorkspaceCheck = current.WorkspaceCheck with { },
+                WorkspaceChecks = current with { },
             },
         };
 
@@ -175,15 +134,19 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             ToolRiskClassifier.SearchWorkspaceToolName);
         Assert.Same(before, equivalent);
 
-        int changedMaxPatternChars =
-            current.Search.MaxPatternChars + 1;
         _settings.CurrentValue = _settings.CurrentValue with
         {
-            CodingTools = _settings.CurrentValue.CodingTools! with
+            Integrations = _settings.CurrentValue.Integrations with
             {
-                Search = current.Search with
+                WorkspaceChecks = current with
                 {
-                    MaxPatternChars = changedMaxPatternChars,
+                    ExecutableCatalog = current.ExecutableCatalog with
+                    {
+                        DotNet = current.ExecutableCatalog.DotNet with
+                        {
+                            Path = "dotnet-test",
+                        },
+                    },
                 },
             },
         };
@@ -193,13 +156,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             ToolRiskClassifier.SearchWorkspaceToolName);
 
         Assert.NotSame(equivalent, changed);
-        Assert.Equal(
-            changedMaxPatternChars,
-            changed.JsonSchema
-                .GetProperty("properties")
-                .GetProperty("pattern")
-                .GetProperty("maxLength")
-                .GetInt32());
 
     }
 
@@ -248,15 +204,11 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         await sink.HandoffStarted.Task.WaitAsync(
             TimeSpan.FromSeconds(5));
 
-        CodingToolsSettings coding = _settings.CurrentValue.CodingTools!;
         _settings.CurrentValue = _settings.CurrentValue with
         {
-            CodingTools = coding with
+            Features = _settings.CurrentValue.Features with
             {
-                Patch = coding.Patch with
-                {
-                    MaxPatchBytes = coding.Patch.MaxPatchBytes + 1,
-                },
+                WorkspaceChecks = false,
             },
         };
 
@@ -373,47 +325,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     }
 
-    private async Task<string> InvokeInvalidPatchAsync(
-        string workspaceRoot,
-        string patch)
-    {
-
-        IReadOnlyList<AITool> tools =
-            await _manager.GetAvailableToolsAsync(workspaceRoot);
-        AIFunction applyPatch = Assert.IsAssignableFrom<AIFunction>(
-            tools.Single(
-                tool => string.Equals(
-                    tool.Name,
-                    ToolRiskClassifier.ApplyPatchToolName,
-                    StringComparison.Ordinal)));
-        ApplyPatchInvocationContext context = new(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            new ToolInvocationIdentity(
-                Guid.NewGuid().ToString("N"),
-                "settings-reload-call",
-                ToolRoundOrdinal: 0,
-                CallOrdinal: 0,
-                ToolRiskClassifier.ApplyPatchToolName),
-            "{\"patch\":\"settings-reload\"}",
-            "test-model",
-            DateTimeOffset.UtcNow,
-            new UnexpectedReceiptSink());
-
-        using IDisposable scope = ApplyPatchInvocationAmbient.Begin(context);
-        object? result = await applyPatch.InvokeAsync(
-            new AIFunctionArguments(
-                new Dictionary<string, object?>
-                {
-                    ["patch"] = patch,
-                    ["dryRun"] = false,
-                }),
-            CancellationToken.None);
-
-        return Assert.IsType<TrustedStructuredToolResult>(result).Text;
-
-    }
-
     private static void AddClientToPrivatePartition(
         McpConnectionManager manager,
         string partitionKey,
@@ -478,41 +389,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         public void Dispose()
         {
         }
-    }
-
-    private sealed class UnexpectedReceiptSink : IApplyPatchPendingReceiptSink
-    {
-        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
-            ApplyPatchReceiptProbe probe,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(
-                new ApplyPatchReceiptProbeResult(
-                    ApplyPatchReceiptProbeOutcome.NotFound,
-                    SerializedResult: null));
-
-        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
-            ApplyPatchReceiptPreflight preflight,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(
-                new ApplyPatchReceiptPreflightResult(
-                    ApplyPatchReceiptPreflightOutcome.Admitted,
-                    SerializedResult: null));
-
-        public ValueTask<MandatoryToolInteractionAppendOutcome>
-            PersistRecoveryReceiptAsync(
-                ApplyPatchRecoveryReceipt receipt,
-                CancellationToken cancellationToken) =>
-            ValueTask.FromResult(
-                MandatoryToolInteractionAppendOutcome.Ambiguous);
-
-        public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
-            PendingApplyPatchReceipt receipt,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(
-                new ApplyPatchPendingReceiptHandoffResult(
-                    MandatoryToolInteractionAppendOutcome.Ambiguous,
-                    Cleanup: null,
-                    Rollback: null));
     }
 
     private sealed class BlockingCommittedReceiptSink
