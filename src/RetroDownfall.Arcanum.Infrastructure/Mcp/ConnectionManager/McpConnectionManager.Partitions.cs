@@ -222,6 +222,8 @@ public sealed partial class McpConnectionManager
     private void InvalidateCachesForServer(ManagedMcpServerEntry entry)
     {
 
+        _ = Interlocked.Increment(
+            ref _toolSurfaceGeneration);
         _mergedToolsByWorkspace.Clear();
 
         if (entry.ScopeWorkingDirectory is null)

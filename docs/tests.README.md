@@ -40,7 +40,7 @@ See [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Authoritative Arc
 - run: ./scripts/coverage.sh --threshold
 ```
 
-Coverage thresholds are enforced in CI. The latest Windows Git Bash parallel run passed **3,448 tests** (6 platform skips) at **86.37% line / 76.05% branch**, with every gated security type at 100% branch coverage. Run the same hard gate locally with `./scripts/coverage.sh --threshold`. Coverage HTML + Cobertura upload as the `arcanum-coverage-report` workflow artifact.
+Coverage thresholds are enforced in CI; do not copy a historical test count or percentage into release claims. Run the same hard gate locally with `./scripts/coverage.sh --threshold`. Coverage HTML + Cobertura upload as the `arcanum-coverage-report` workflow artifact.
 
 Compendium runs as a separate `dotnet test` step in the same job (coverage filters remain Arcanum-only). **The Forge remains excluded from CI build and test**; use the Windows verification command above until `tests/RetroDownfall.TheForge.Tests` and the `RetroDownfall.TheForge.Ux` solution build are re-enabled in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
@@ -109,7 +109,28 @@ One blank line after each C# statement in test code (matches production style).
 
 ### Process and workspace boundaries
 
-Windows process-boundary coverage lives in `ProcessResourceLimiterWindowsBehaviorTests`, `WindowsJobObjectSessionTests`, and `ChildProcessBoundaryBehaviorTests`: Job Object create/configure/assign errors use hand-written API fakes, stream setup/read failures use custom `Encoding`/`Decoder` implementations, filesystem cleanup uses uniquely owned temp paths, and process-tree termination uses immediate-exit or 30-second bounded children with prompt-termination assertions and unconditional cleanup. `SpellVersionPathPolicyTests` covers the complete label and sidecar-filename policy without touching the filesystem.
+Windows process-boundary coverage lives in `ProcessResourceLimiterWindowsBehaviorTests`, `WindowsJobObjectSessionTests`, and `ChildProcessBoundaryBehaviorTests`: Job Object create/configure/assign errors use hand-written API fakes, stream setup/read failures use custom `Encoding`/`Decoder` implementations, filesystem cleanup uses uniquely owned temp paths, and process-tree termination uses immediate-exit or 30-second bounded children with prompt-termination assertions and unconditional cleanup. `SpellVersionPathPolicyTests` covers the complete label and sidecar-filename policy without touching the filesystem. `WorkspacePathPolicyTests` / `WorkspacePathPolicySymlinkTests` cover the primary lexical, symlink-component, and handle-revalidation boundary independently of campaign Sanctum.
+
+## Reliable editing loop
+
+Focused normal-CLR run:
+
+```bash
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --filter "FullyQualifiedName~WorkspaceSearchToolTests|FullyQualifiedName~ApplyPatchToolTests|FullyQualifiedName~MultiFileCommitCoordinatorTests|FullyQualifiedName~MandatoryGrimoireRepositoryTests|FullyQualifiedName~WorkspaceCheckToolTests|FullyQualifiedName~WorkspacePathPolicy|FullyQualifiedName~ToolRiskClassifierTests|FullyQualifiedName~ToolAttunementTests|FullyQualifiedName~ArcanumInternalToolServerTests|FullyQualifiedName~McpToolMergerTests|FullyQualifiedName~DiagnosticMcpInvocationServiceTests|FullyQualifiedName~SessionEventHubTests|FullyQualifiedName~InferenceAuditLoggerTests|FullyQualifiedName~WizardIntelligenceProviderTests|FullyQualifiedName~ArcanumMetricsTests|FullyQualifiedName~PrometheusMetricsExporterTests|FullyQualifiedName~MetricsEndpointTests|FullyQualifiedName~AuditEndpointTests"
+```
+
+Contract matrix:
+
+- `WorkspaceSearchToolTests` proves strict line scope (including mixed newlines and no cross-line regex), ordinal literal case modes, AOT-safe culture-invariant non-backtracking → interpreted fallback with no `Compiled`, deterministic path/line/column order, strict UTF-8/binary/symlink handling, every resource cap/status, and cancellation at traversal/glob/read/decode/literal/regex checkpoints. These tests intentionally do not involve The Weave.
+- `ApplyPatchToolTests` separates pure parser cases from filesystem planner cases, validates all-file-before-mutation behavior, strict text/newline/mode handling, unique bounded hunk relocation, alias/cycle/topology/metadata rejection, dry-run non-mutation, exact result ordering/capping, bound-session receipts, all four mandatory persistence outcomes, independent calls, caller-cancellation propagation/classification, rollback, relative recovery paths, and the explicit non-isolated/crash-boundary contract.
+- `MultiFileCommitCoordinatorTests` exercises all-stage-before-first-mutation, sequential visibility, destination/artifact revalidation, concurrent edits, cancellation, reverse rollback, incomplete cleanup, identity-safe artifact retention, and identity-checked deepest-first cleanup/recovery of transaction-created directories. A passing test means reversible rollback semantics, **not** multi-file isolation or crash atomicity.
+- `MandatoryGrimoireRepositoryTests` proves deterministic receipt/Entry IDs, exact argument/result payload readback, assistant-call then system-result insertion, idempotent recovered commits, failed/partial/mismatched/ambiguous classifications, bounded cancellation classification, and no duplicate generic persistence.
+- `WorkspaceCheckToolTests` covers closed built-in/custom profiles, enforced `--no-restore`, reserved-token rejection, empty/sanitized environment, trusted executable/SDK/global.json/package identities (including upward `global.json` selection and sanitized trusted-root search paths), read-only source/packages with separate owner-only output roots, fixed restore-artifact seeding caps (128 projects / 640 files / 64 MiB per run and 64 inputs / 8 MiB per project), deadline admission and cleanup grace, typed diagnostic parsers/caps, timeout/caller-cancel tree cleanup, macOS Seatbelt advertisement, Linux/Windows unavailability, open-network disclosure, and the deliberately unproved malicious detached-descendant boundary. Real build/test/lint process cases are macOS capability-gated.
+- `ToolRiskClassifierTests`, `ToolAttunementTests`, `ArcanumInternalToolServerTests`, `McpToolMergerTests`, and `DiagnosticMcpInvocationServiceTests` cover tool catalog presence, settings refresh, intrinsic-name collision handling, `workspace_check` eligibility-based advertisement, intrinsic Wards, and diagnostic blocking of `apply_patch` / `workspace_check` even when an external server reuses those names.
+- `SessionEventHubTests` covers the process-local per-subscriber bounded fan-out and slow-subscriber drop reporting; persisted `Entries`, not the hub, are the replay authority.
+- `InferenceAuditLoggerTests`, `WizardIntelligenceProviderTests`, `AuditEndpointTests`, `ArcanumMetricsTests`, `PrometheusMetricsExporterTests`, and `MetricsEndpointTests` cover successful-turn-only audit rows, default argument redaction/no result bodies, the closed tool `outcome` domain, and `arcanum_apply_patch_artifact_cleanup_total{outcome="complete|retained"}`. They do **not** establish bounded `tool_name` cardinality: the metric uses direct invocation names (except the `use_commlink` alias), so unknown names remain distinct label values subject only to per-value/request limits.
+
+All filesystem/process tests use uniquely owned temporary roots. `apply_patch` receipt tests use scratch Grimoire fixtures only. The reliable editing loop changes no schema and tests require no real-database migration or reinstall.
 
 ## Bug-squash coverage (changeset review)
 

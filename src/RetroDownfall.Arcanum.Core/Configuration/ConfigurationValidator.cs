@@ -6,7 +6,9 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logger = null)
+public sealed class ConfigurationValidator(
+    ILogger<ConfigurationValidator>? logger = null,
+    IWorkspaceCheckAdvertisementEligibility? workspaceCheckEligibility = null)
 {
 
     internal const string ObsoleteLlamaCppMigrationMessage =
@@ -439,6 +441,11 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         }
 
+        ValidateCodingTools(
+            settings,
+            errors,
+            workspaceCheckEligibility?.IsCurrentlyEligible == true);
+
         ValidatePathAllowlist((settings.Campaigns ?? new CampaignsSettings()).AllowedRoots, "campaigns.allowedRoots", errors);
 
         ValidatePathAllowlist((settings.Spells ?? new SpellSettings()).AllowedWorkspaceRoots, "spells.allowedWorkspaceRoots", errors);
@@ -469,6 +476,685 @@ public sealed class ConfigurationValidator(ILogger<ConfigurationValidator>? logg
 
         return Result.Success();
 
+    }
+
+    private static void ValidateCodingTools(
+        ArcanumSettings settings,
+        List<ConfigurationValidationError> errors,
+        bool workspaceCheckEligibleForAdvertisement)
+    {
+        CodingToolsSettings codingTools = settings.CodingTools ?? new CodingToolsSettings();
+        WorkspaceSearchSettings search = codingTools.Search ?? new WorkspaceSearchSettings();
+        WorkspacePatchSettings patch = codingTools.Patch ?? new WorkspacePatchSettings();
+        WorkspaceCheckSettings check = codingTools.WorkspaceCheck ?? new WorkspaceCheckSettings();
+
+        ValidateBound(
+            search.MaxPatternChars,
+            ArcanumSettingClamps.WorkspaceSearchMaxPatternChars(search.MaxPatternChars),
+            "codingTools.search.maxPatternChars",
+            "1-16,384",
+            errors);
+        ValidateBound(
+            search.RegexTimeoutMilliseconds,
+            ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds(search.RegexTimeoutMilliseconds),
+            "codingTools.search.regexTimeoutMilliseconds",
+            "10-10,000",
+            errors);
+        ValidateBound(
+            search.MaxElapsedMilliseconds,
+            ArcanumSettingClamps.WorkspaceSearchMaxElapsedMilliseconds(search.MaxElapsedMilliseconds),
+            "codingTools.search.maxElapsedMilliseconds",
+            "100-120,000",
+            errors);
+        ValidateBound(
+            search.MaxFiles,
+            ArcanumSettingClamps.WorkspaceSearchMaxFiles(search.MaxFiles),
+            "codingTools.search.maxFiles",
+            "1-100,000",
+            errors);
+        ValidateBound(
+            search.MaxBytes,
+            ArcanumSettingClamps.WorkspaceSearchMaxBytes(search.MaxBytes),
+            "codingTools.search.maxBytes",
+            "1,024-1,073,741,824",
+            errors);
+        ValidateBound(
+            search.MaxTraversalSteps,
+            ArcanumSettingClamps.WorkspaceSearchMaxTraversalSteps(search.MaxTraversalSteps),
+            "codingTools.search.maxTraversalSteps",
+            "1-10,000,000",
+            errors);
+        ValidateBound(
+            search.MaxMatches,
+            ArcanumSettingClamps.WorkspaceSearchMaxMatches(search.MaxMatches),
+            "codingTools.search.maxMatches",
+            "1-100,000",
+            errors);
+        ValidateBound(
+            search.MaxPreviewChars,
+            ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(search.MaxPreviewChars),
+            "codingTools.search.maxPreviewChars",
+            "16-4,096",
+            errors);
+
+        ValidateBound(
+            patch.MaxPatchBytes,
+            ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(patch.MaxPatchBytes),
+            "codingTools.patch.maxPatchBytes",
+            "1,024-67,108,864",
+            errors);
+        ValidateBound(
+            patch.MaxInputBytesPerFile,
+            ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile(
+                patch.MaxInputBytesPerFile),
+            "codingTools.patch.maxInputBytesPerFile",
+            "1,024-268,435,456",
+            errors);
+        ValidateBound(
+            patch.MaxTotalInputBytes,
+            ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes(
+                patch.MaxTotalInputBytes),
+            "codingTools.patch.maxTotalInputBytes",
+            "1,024-1,073,741,824",
+            errors);
+        ValidateBound(
+            patch.MaxOutputBytesPerFile,
+            ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile(
+                patch.MaxOutputBytesPerFile),
+            "codingTools.patch.maxOutputBytesPerFile",
+            "1,024-268,435,456",
+            errors);
+        ValidateBound(
+            patch.MaxTotalOutputBytes,
+            ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes(
+                patch.MaxTotalOutputBytes),
+            "codingTools.patch.maxTotalOutputBytes",
+            "1,024-1,073,741,824",
+            errors);
+        ValidateBound(
+            patch.MaxStagingBytesPerFile,
+            ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile(
+                patch.MaxStagingBytesPerFile),
+            "codingTools.patch.maxStagingBytesPerFile",
+            "1,024-536,870,912",
+            errors);
+        ValidateBound(
+            patch.MaxTotalStagingBytes,
+            ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes(
+                patch.MaxTotalStagingBytes),
+            "codingTools.patch.maxTotalStagingBytes",
+            "1,024-2,147,483,648",
+            errors);
+        ValidateBound(
+            patch.MaxElapsedMilliseconds,
+            ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds(
+                patch.MaxElapsedMilliseconds),
+            "codingTools.patch.maxElapsedMilliseconds",
+            "100-300,000",
+            errors);
+        ValidateBound(
+            patch.RollbackReserveMilliseconds,
+            ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds(
+                patch.RollbackReserveMilliseconds),
+            "codingTools.patch.rollbackReserveMilliseconds",
+            "50-60,000",
+            errors);
+        if (patch.RollbackReserveMilliseconds >= patch.MaxElapsedMilliseconds)
+        {
+
+            errors.Add(
+                new ConfigurationValidationError(
+                    "codingTools.patch.rollbackReserveMilliseconds",
+                    $"CodingTools.Patch.RollbackReserveMilliseconds ({patch.RollbackReserveMilliseconds}) must be less than MaxElapsedMilliseconds ({patch.MaxElapsedMilliseconds})."));
+
+        }
+        ValidateBound(
+            patch.MaxFiles,
+            ArcanumSettingClamps.WorkspacePatchMaxFiles(patch.MaxFiles),
+            "codingTools.patch.maxFiles",
+            "1-1,000",
+            errors);
+        ValidateBound(
+            patch.MaxHunks,
+            ArcanumSettingClamps.WorkspacePatchMaxHunks(patch.MaxHunks),
+            "codingTools.patch.maxHunks",
+            "1-10,000",
+            errors);
+        ValidateBound(
+            patch.MaxLinesPerHunk,
+            ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk(patch.MaxLinesPerHunk),
+            "codingTools.patch.maxLinesPerHunk",
+            "1-100,000",
+            errors);
+        ValidateBound(
+            patch.FuzzyMatchWindowLines,
+            ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines(patch.FuzzyMatchWindowLines),
+            "codingTools.patch.fuzzyMatchWindowLines",
+            "0-1,000",
+            errors);
+        ValidateBound(
+            patch.MaxResultItems,
+            ArcanumSettingClamps.WorkspacePatchMaxResultItems(patch.MaxResultItems),
+            "codingTools.patch.maxResultItems",
+            "1-10,000",
+            errors);
+
+        ValidateBound(
+            check.TimeoutSeconds,
+            ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(check.TimeoutSeconds),
+            "codingTools.workspaceCheck.timeoutSeconds",
+            "30-1,800",
+            errors);
+        ValidateBound(
+            check.MaxCustomProfiles,
+            ArcanumSettingClamps.WorkspaceCheckMaxCustomProfiles(check.MaxCustomProfiles),
+            "codingTools.workspaceCheck.maxCustomProfiles",
+            "0-256",
+            errors);
+        ValidateBound(
+            check.MaxFixedArgumentsPerProfile,
+            ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile(
+                check.MaxFixedArgumentsPerProfile),
+            "codingTools.workspaceCheck.maxFixedArgumentsPerProfile",
+            "1-128",
+            errors);
+        ValidateBound(
+            check.MaxArgumentTokenChars,
+            ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars(check.MaxArgumentTokenChars),
+            "codingTools.workspaceCheck.maxArgumentTokenChars",
+            "16-4,096",
+            errors);
+        ValidateBound(
+            check.MaxOptionsPerProfile,
+            ArcanumSettingClamps.WorkspaceCheckMaxOptionsPerProfile(check.MaxOptionsPerProfile),
+            "codingTools.workspaceCheck.maxOptionsPerProfile",
+            "0-64",
+            errors);
+        ValidateBound(
+            check.MaxAllowedValuesPerOption,
+            ArcanumSettingClamps.WorkspaceCheckMaxAllowedValuesPerOption(
+                check.MaxAllowedValuesPerOption),
+            "codingTools.workspaceCheck.maxAllowedValuesPerOption",
+            "1-128",
+            errors);
+        ValidateBound(
+            check.MaxDiagnostics,
+            ArcanumSettingClamps.WorkspaceCheckMaxDiagnostics(check.MaxDiagnostics),
+            "codingTools.workspaceCheck.maxDiagnostics",
+            "1-10,000",
+            errors);
+        ValidateBound(
+            check.MaxOutputBytes,
+            ArcanumSettingClamps.WorkspaceCheckMaxOutputBytes(check.MaxOutputBytes),
+            "codingTools.workspaceCheck.maxOutputBytes",
+            "4,096-67,108,864",
+            errors);
+
+        ValidateWorkspaceCheckExecutable(
+            check.ExecutableCatalog?.DotNet,
+            settings.Host?.Workspace,
+            errors);
+        ValidateWorkspaceCheckProfiles(check, errors);
+
+        if (check.Enabled && workspaceCheckEligibleForAdvertisement)
+        {
+            int checkTimeout = ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(
+                check.TimeoutSeconds);
+            int inferenceTimeout = ArcanumSettingClamps.InferenceTimeoutSeconds(
+                (settings.Intelligence ?? new IntelligenceSettings()).InferenceTimeoutSeconds);
+
+            if ((long)checkTimeout + ArcanumSettingClamps.WorkspaceCheckCleanupGraceSeconds
+                > inferenceTimeout)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    "codingTools.workspaceCheck.timeoutSeconds",
+                    $"CodingTools.WorkspaceCheck.TimeoutSeconds ({checkTimeout}) plus "
+                    + $"{ArcanumSettingClamps.WorkspaceCheckCleanupGraceSeconds} seconds of cleanup grace "
+                    + $"must not exceed Intelligence.InferenceTimeoutSeconds ({inferenceTimeout}) "
+                    + "while workspace_check is eligible for advertisement."));
+            }
+        }
+    }
+
+    private static void ValidateWorkspaceCheckProfiles(
+        WorkspaceCheckSettings check,
+        List<ConfigurationValidationError> errors)
+    {
+        Dictionary<string, WorkspaceCheckProfileSettings> profiles =
+            check.CustomProfiles ?? new Dictionary<string, WorkspaceCheckProfileSettings>();
+        int maxProfiles = ArcanumSettingClamps.WorkspaceCheckMaxCustomProfiles(
+            check.MaxCustomProfiles);
+
+        if (profiles.Count > maxProfiles)
+        {
+            errors.Add(new ConfigurationValidationError(
+                "codingTools.workspaceCheck.customProfiles",
+                $"WorkspaceCheck.CustomProfiles contains {profiles.Count} entries; the configured cap is {maxProfiles}."));
+        }
+
+        HashSet<string> seenIds = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach ((string profileId, WorkspaceCheckProfileSettings? profile) in profiles)
+        {
+            string pointer = $"codingTools.workspaceCheck.customProfiles[{profileId}]";
+
+            if (!seenIds.Add(profileId))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Workspace-check profile ID '{profileId}' is duplicated case-insensitively."));
+            }
+
+            if (!IsValidProfileId(profileId))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    "Workspace-check profile IDs must be 1-64 lowercase ASCII letters, digits, or hyphens, and must start with a letter or digit."));
+            }
+
+            if (WorkspaceCheckCatalogDefaults.ReservedProfileIds.Contains(profileId))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Workspace-check profile ID '{profileId}' is reserved for an immutable built-in profile."));
+            }
+
+            if (profile is null)
+            {
+                errors.Add(new ConfigurationValidationError(pointer, "Workspace-check profile must be an object."));
+                continue;
+            }
+
+            if (!string.Equals(
+                    profile.ExecutableId,
+                    WorkspaceCheckCatalogDefaults.DotNetExecutableId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.executableId",
+                    $"Workspace-check profile executable '{profile.ExecutableId}' is not in the closed executable catalog."));
+            }
+
+            if (!Enum.IsDefined(profile.Kind))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.kind",
+                    $"Workspace-check profile kind '{profile.Kind}' is not defined."));
+            }
+
+            if (!Enum.IsDefined(profile.Parser))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}.parser",
+                    $"Workspace-check diagnostic parser '{profile.Parser}' is not defined."));
+            }
+
+            ValidateWorkspaceCheckProfileShape(profileId, profile, pointer, check, errors);
+        }
+    }
+
+    private static void ValidateWorkspaceCheckProfileShape(
+        string profileId,
+        WorkspaceCheckProfileSettings profile,
+        string pointer,
+        WorkspaceCheckSettings check,
+        List<ConfigurationValidationError> errors)
+    {
+        string[] fixedArguments = profile.FixedArguments ?? [];
+        int maxFixedArguments = ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile(
+            check.MaxFixedArgumentsPerProfile);
+        int maxTokenChars = ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars(
+            check.MaxArgumentTokenChars);
+
+        if (fixedArguments.Length == 0)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.fixedArguments",
+                $"Workspace-check profile '{profileId}' must declare its closed dotnet subcommand."));
+        }
+        else if (fixedArguments.Length > maxFixedArguments)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.fixedArguments",
+                $"Workspace-check profile '{profileId}' has {fixedArguments.Length} fixed arguments; the configured cap is {maxFixedArguments}."));
+        }
+
+        for (int i = 0; i < fixedArguments.Length; i++)
+        {
+            ValidateWorkspaceCheckArgumentToken(
+                fixedArguments[i],
+                $"{pointer}.fixedArguments[{i}]",
+                maxTokenChars,
+                errors);
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Target)
+            && !IsValidWorkspaceCheckTarget(
+                profile.Target,
+                maxTokenChars))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.target",
+                "Workspace-check target must be a bounded workspace-relative .sln, .slnx, .csproj, .fsproj, or .vbproj path."));
+        }
+
+        if (Enum.IsDefined(profile.Kind)
+            && fixedArguments.Length > 0
+            && !ProfileSubcommandMatchesKind(profile.Kind, fixedArguments))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.fixedArguments",
+                $"Workspace-check profile '{profileId}' fixed arguments do not match its closed '{profile.Kind}' kind."));
+        }
+
+        if (Enum.IsDefined(profile.Kind)
+            && Enum.IsDefined(profile.Parser)
+            && !ParserMatchesKind(profile.Kind, profile.Parser))
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.parser",
+                $"Workspace-check parser '{profile.Parser}' does not match profile kind '{profile.Kind}'."));
+        }
+
+        Dictionary<string, WorkspaceCheckProfileOptionSettings> options =
+            profile.Options ?? new Dictionary<string, WorkspaceCheckProfileOptionSettings>();
+        int maxOptions = ArcanumSettingClamps.WorkspaceCheckMaxOptionsPerProfile(
+            check.MaxOptionsPerProfile);
+
+        if (options.Count > maxOptions)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{pointer}.options",
+                $"Workspace-check profile '{profileId}' has {options.Count} options; the configured cap is {maxOptions}."));
+        }
+
+        HashSet<string> seenOptions = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach ((string optionId, WorkspaceCheckProfileOptionSettings? option) in options)
+        {
+            string optionPointer = $"{pointer}.options[{optionId}]";
+
+            if (!seenOptions.Add(optionId))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    optionPointer,
+                    $"Workspace-check option ID '{optionId}' is duplicated case-insensitively."));
+            }
+
+            if (!IsValidProfileId(optionId))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    optionPointer,
+                    "Workspace-check option IDs must use the same lowercase ASCII ID format as profile IDs."));
+            }
+
+            if (option is null)
+            {
+                errors.Add(new ConfigurationValidationError(optionPointer, "Workspace-check option must be an object."));
+                continue;
+            }
+
+            ValidateWorkspaceCheckAllowedValues(
+                option.AllowedValues,
+                optionPointer,
+                check,
+                errors);
+        }
+    }
+
+    private static void ValidateWorkspaceCheckAllowedValues(
+        Dictionary<string, string[]>? allowedValues,
+        string optionPointer,
+        WorkspaceCheckSettings check,
+        List<ConfigurationValidationError> errors)
+    {
+        Dictionary<string, string[]> values = allowedValues ?? new Dictionary<string, string[]>();
+        int maxValues = ArcanumSettingClamps.WorkspaceCheckMaxAllowedValuesPerOption(
+            check.MaxAllowedValuesPerOption);
+        int maxTokens = ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile(
+            check.MaxFixedArgumentsPerProfile);
+        int maxTokenChars = ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars(
+            check.MaxArgumentTokenChars);
+
+        if (values.Count == 0)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{optionPointer}.allowedValues",
+                "Workspace-check options must allow at least one exact value rendering."));
+            return;
+        }
+
+        if (values.Count > maxValues)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{optionPointer}.allowedValues",
+                $"Workspace-check option has {values.Count} allowed values; the configured cap is {maxValues}."));
+        }
+
+        HashSet<string> seenValues = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach ((string valueId, string[]? rendering) in values)
+        {
+            string valuePointer = $"{optionPointer}.allowedValues[{valueId}]";
+
+            if (!seenValues.Add(valueId))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    valuePointer,
+                    $"Workspace-check option value '{valueId}' is duplicated case-insensitively."));
+            }
+
+            if (string.IsNullOrWhiteSpace(valueId) || valueId.Length > maxTokenChars)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    valuePointer,
+                    $"Workspace-check option values must be non-empty and at most {maxTokenChars} characters."));
+            }
+
+            string[] tokens = rendering ?? [];
+
+            if (tokens.Length == 0 || tokens.Length > maxTokens)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    valuePointer,
+                    $"Workspace-check option rendering must contain 1-{maxTokens} exact argument tokens."));
+                continue;
+            }
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                ValidateWorkspaceCheckArgumentToken(
+                    tokens[i],
+                    $"{valuePointer}[{i}]",
+                    maxTokenChars,
+                    errors);
+            }
+        }
+    }
+
+    private static void ValidateWorkspaceCheckArgumentToken(
+        string? token,
+        string pointer,
+        int maxTokenChars,
+        List<ConfigurationValidationError> errors)
+    {
+        if (string.IsNullOrWhiteSpace(token)
+            || token.Length > maxTokenChars
+            || token.IndexOfAny(['\0', '\r', '\n']) >= 0)
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                $"Workspace-check argument tokens must be non-empty, single-line, and at most {maxTokenChars} characters."));
+            return;
+        }
+
+        if (token[0] == '@' || IsScriptPath(token))
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                "Workspace-check profiles cannot invoke response files, scripts, shells, or command interpreters."));
+        }
+
+        if (WorkspaceCheckArgumentPolicy.IsRuntimeReservedToken(token))
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                "Workspace-check profiles cannot enable restore or override runtime-owned output, intermediate, package, result, or log paths."));
+        }
+    }
+
+    private static void ValidateWorkspaceCheckExecutable(
+        WorkspaceCheckExecutableSettings? executable,
+        string? workspace,
+        List<ConfigurationValidationError> errors)
+    {
+        string configuredPath = executable?.Path?.Trim() ?? string.Empty;
+        const string pointer = "codingTools.workspaceCheck.executableCatalog.dotNet.path";
+
+        if (configuredPath.Length == 0)
+        {
+            return;
+        }
+
+        WorkspaceCheckExecutableConfigurationResult result =
+            WorkspaceCheckExecutableConfigurationPolicy.ForCurrentPlatform()
+                .Validate(configuredPath, workspace);
+
+        if (!result.IsValid)
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                result.Error ?? "The configured workspace-check executable failed validation."));
+        }
+    }
+
+    private static bool IsValidProfileId(string value)
+    {
+        if (value.Length is < 1 or > 64
+            || !char.IsAsciiLetterOrDigit(value[0]))
+        {
+            return false;
+        }
+
+        foreach (char character in value)
+        {
+            if (!char.IsAsciiLetterOrDigit(character)
+                && character != '-')
+            {
+                return false;
+            }
+
+            if (character is >= 'A' and <= 'Z')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsValidWorkspaceCheckTarget(
+        string value,
+        int maxChars)
+    {
+        if (value.Length > maxChars
+            || value.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        string normalized = value.Replace('\\', '/');
+
+        if (normalized.StartsWith("/", StringComparison.Ordinal)
+            || (normalized.Length >= 2
+                && char.IsAsciiLetter(normalized[0])
+                && normalized[1] == ':'))
+        {
+            return false;
+        }
+
+        string[] segments = normalized.Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries);
+
+        if (segments.Length == 0
+            || segments.Any(static segment =>
+                segment is "." or ".."
+                || segment.Contains(':', StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        string extension = Path.GetExtension(normalized);
+
+        return extension.Equals(".sln", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".slnx", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".fsproj", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ProfileSubcommandMatchesKind(
+        WorkspaceCheckKind kind,
+        IReadOnlyList<string> arguments) =>
+        kind switch
+        {
+            WorkspaceCheckKind.Build =>
+                string.Equals(arguments[0], "build", StringComparison.Ordinal),
+            WorkspaceCheckKind.Test =>
+                string.Equals(arguments[0], "test", StringComparison.Ordinal),
+            WorkspaceCheckKind.Lint =>
+                string.Equals(arguments[0], "format", StringComparison.Ordinal)
+                && arguments.Contains("--verify-no-changes", StringComparer.Ordinal),
+            _ => false,
+        };
+
+    private static bool ParserMatchesKind(
+        WorkspaceCheckKind kind,
+        WorkspaceCheckDiagnosticParserKind parser) =>
+        (kind, parser) switch
+        {
+            (WorkspaceCheckKind.Build, WorkspaceCheckDiagnosticParserKind.MsBuild) => true,
+            (WorkspaceCheckKind.Test, WorkspaceCheckDiagnosticParserKind.VsTest) => true,
+            (WorkspaceCheckKind.Lint, WorkspaceCheckDiagnosticParserKind.DotNetFormat) => true,
+            _ => false,
+        };
+
+    private static bool IsScriptPath(string value) =>
+        Path.GetExtension(value).ToLowerInvariant() is
+            ".sh" or ".bash" or ".zsh"
+            or ".cmd" or ".bat" or ".ps1"
+            or ".py" or ".pyw" or ".js" or ".mjs"
+            or ".rb" or ".pl" or ".fsx" or ".csx";
+
+    private static void ValidateBound(
+        int configured,
+        int effective,
+        string pointer,
+        string range,
+        List<ConfigurationValidationError> errors)
+    {
+        if (configured != effective)
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                $"Configured value ({configured}) must be within the {range} clamp range."));
+        }
+    }
+
+    private static void ValidateBound(
+        long configured,
+        long effective,
+        string pointer,
+        string range,
+        List<ConfigurationValidationError> errors)
+    {
+        if (configured != effective)
+        {
+            errors.Add(new ConfigurationValidationError(
+                pointer,
+                $"Configured value ({configured}) must be within the {range} clamp range."));
+        }
     }
 
     private static void ValidatePricing(

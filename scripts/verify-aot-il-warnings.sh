@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 PROJECT="$ROOT/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj"
 
+REGEX_SMOKE_PROJECT="$ROOT/tests/RetroDownfall.Arcanum.RegexAotSmoke/RetroDownfall.Arcanum.RegexAotSmoke.csproj"
+
 DEFAULT_RIDS=(osx-arm64 osx-x64 linux-x64 win-x64)
 
 ALLOWED=(
@@ -18,7 +20,8 @@ ALLOWED=(
 
 usage() {
   cat <<'EOF'
-Verify Native AOT publish IL warnings for RetroDownfall.Arcanum.Cli.
+Verify Native AOT publish IL warnings for RetroDownfall.Arcanum.Cli and publish/run
+the runtime-regex smoke executable.
 
 Usage:
   verify-aot-il-warnings.sh [RID|all] [options]
@@ -138,7 +141,7 @@ explain_publish_failure() {
   tail -n 8 "$log" | sed 's/^/    /' >&2
 }
 
-publish_rid() {
+publish_cli_rid() {
   local rid="$1"
   local log="$2"
   local -a publish_args=(
@@ -166,6 +169,66 @@ publish_rid() {
 
   explain_publish_failure "$rid" "$log"
   return 1
+}
+
+publish_regex_smoke_rid() {
+  local rid="$1"
+  local log="$2"
+  local output
+  output="$(mktemp -d)"
+  local -a publish_args=(
+    publish "$REGEX_SMOKE_PROJECT"
+    -c Release
+    -r "$rid"
+    -o "$output"
+  )
+
+  echo "  Publishing runtime-regex Native-AOT smoke for $rid..." >&2
+
+  if ! dotnet "${publish_args[@]}" 2>&1 | tee -a "$log"; then
+    if rg -q "llvm-objcopy|objcopy.*not found|Symbol stripping tool" "$log"; then
+      echo "  Symbol stripper missing; retrying regex smoke with StripSymbols=false..." >&2
+
+      if ! dotnet "${publish_args[@]}" -p:StripSymbols=false 2>&1 | tee -a "$log"; then
+        rm -rf "$output"
+        explain_publish_failure "$rid" "$log"
+        return 1
+      fi
+    else
+      rm -rf "$output"
+      explain_publish_failure "$rid" "$log"
+      return 1
+    fi
+  fi
+
+  if [[ "$rid" == "$(host_rid)" ]]; then
+    local executable="$output/RetroDownfall.Arcanum.RegexAotSmoke"
+
+    if [[ "$rid" == win-* ]]; then
+      executable="$executable.exe"
+    fi
+
+    echo "  Running runtime-regex Native-AOT smoke for $rid..." >&2
+
+    if ! "$executable" 2>&1 | tee -a "$log"; then
+      rm -rf "$output"
+      echo "  Runtime-regex Native-AOT smoke failed for $rid." >&2
+      return 1
+    fi
+  else
+    echo "  Regex smoke published but not run because $rid is not the host RID." >&2
+  fi
+
+  rm -rf "$output"
+  return 0
+}
+
+publish_rid() {
+  local rid="$1"
+  local log="$2"
+
+  publish_cli_rid "$rid" "$log" \
+    && publish_regex_smoke_rid "$rid" "$log"
 }
 
 count_il_violations() {
@@ -196,7 +259,7 @@ count_il_violations() {
 }
 
 check_nowarn_banned() {
-  if rg -q "IlcArg.*--nowarn" "$PROJECT"; then
+  if rg -q "IlcArg.*--nowarn" "$PROJECT" "$REGEX_SMOKE_PROJECT"; then
     echo "AOT IL gate failed: blanket IlcArg --nowarn is not permitted" >&2
     return 1
   fi

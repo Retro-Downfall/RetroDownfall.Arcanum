@@ -39,6 +39,9 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
+    private readonly CancellationTokenSource _completionCts =
+        new();
+
     private SdkMcpClient? _sdkClient;
 
     private bool _initialized;
@@ -159,6 +162,15 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             // Completion is documented to always complete successfully; defensive only.
         }
 
+        try
+        {
+            await _completionCts.CancelAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Intentional disposal already completed the same lifetime.
+        }
+
         if (!_disposed)
         {
             OnTransportEnded?.Invoke();
@@ -268,8 +280,13 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         using CancellationTokenSource? timeoutCts = noPerRequestTimeout ? null : new CancellationTokenSource(timeout);
 
         using CancellationTokenSource linked = timeoutCts is null
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            ? CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                _completionCts.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                timeoutCts.Token,
+                _completionCts.Token);
 
         try
         {
@@ -285,9 +302,14 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         }
         catch (OperationCanceledException oce)
         {
-            // Only remaining source of OperationCanceledException here is our own per-request timeout.
+            // Timeout or client/session completion after CallToolAsync began is conservatively
+            // classified as dispatched-or-unknown. A fallback must not re-run the operation.
             throw new McpTransportUnavailableException(
-                "MCP tool call timed out before a response was received.", oce);
+                timeoutCts?.IsCancellationRequested == true
+                    ? "MCP tool call timed out before a response was received."
+                    : "MCP client session completed before a tool response was received.",
+                McpRequestDispatchState.DispatchedOrUnknown,
+                oce);
         }
     }
 
@@ -301,11 +323,20 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
         _disposed = true;
 
+        try
+        {
+            await _completionCts.CancelAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
         if (_sdkClient is not null)
         {
             await _sdkClient.DisposeAsync().ConfigureAwait(false);
         }
 
+        _completionCts.Dispose();
         _initLock.Dispose();
     }
 }

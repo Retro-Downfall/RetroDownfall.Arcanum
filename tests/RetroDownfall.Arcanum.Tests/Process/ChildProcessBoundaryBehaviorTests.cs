@@ -80,6 +80,62 @@ public sealed class ChildProcessBoundaryBehaviorTests
 
     }
 
+    [Fact]
+    public async Task CleanupTempPathsAsync_without_remaining_cleanup_time_returns_without_recursive_delete()
+    {
+        string root = Directory.CreateDirectory(
+            Path.Combine(
+                Path.GetTempPath(),
+                "arcanum-cleanup-deadline-"
+                + Guid.NewGuid().ToString("N"))).FullName;
+        string directory = Directory.CreateDirectory(
+            Path.Combine(root, "invocation-temp")).FullName;
+        File.WriteAllText(
+            Path.Combine(directory, "child.tmp"),
+            "temporary");
+
+        try
+        {
+            bool cleaned =
+                await ChildProcessFilesystemJail.CleanupTempPathsAsync(
+                    [directory],
+                    TimeSpan.Zero);
+
+            Assert.False(cleaned);
+            Assert.True(Directory.Exists(directory));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CleanupTempPathsAsync_bounds_an_in_progress_recursive_delete()
+    {
+        using ManualResetEventSlim releaseCleanup = new(false);
+        Stopwatch stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            bool cleaned =
+                await ChildProcessFilesystemJail.CleanupTempPathsAsync(
+                    ["blocked"],
+                    TimeSpan.FromMilliseconds(100),
+                    _ => releaseCleanup.Wait());
+
+            stopwatch.Stop();
+            Assert.False(cleaned);
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                $"Cleanup exceeded its bound: {stopwatch.Elapsed}.");
+        }
+        finally
+        {
+            releaseCleanup.Set();
+        }
+    }
+
     [SkippableFact]
     public void CleanupTempPaths_on_windows_ignores_locked_file_and_continues()
     {

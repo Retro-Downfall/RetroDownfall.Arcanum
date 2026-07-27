@@ -26,10 +26,10 @@ internal interface IMcpClient : IAsyncDisposable
     /// <summary>
     /// Calls <c>tools/call</c> for <paramref name="toolName"/>. A null <paramref name="requestTimeout"/>
     /// uses the client's configured default; <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>
-    /// disables the per-request timeout (used for <c>ask_human</c>). Transport/connectivity failures
-    /// surface as <see cref="McpTransportUnavailableException"/> so <see cref="McpBridgeTool"/> can
-    /// fall back; a tool-level error (<c>isError: true</c>) is returned normally on
-    /// <see cref="CallToolResult.IsError"/> for the caller to interpret.
+    /// disables the per-request timeout (used for <c>ask_human</c>). Transport/connectivity
+    /// failures surface as <see cref="McpTransportUnavailableException"/> with conservative
+    /// dispatch classification; fallback is allowed only when no dispatch occurred. A tool-level
+    /// error (<c>isError: true</c>) is returned normally on <see cref="CallToolResult.IsError"/>.
     /// </summary>
     Task<CallToolResult> CallToolAsync(
         string toolName,

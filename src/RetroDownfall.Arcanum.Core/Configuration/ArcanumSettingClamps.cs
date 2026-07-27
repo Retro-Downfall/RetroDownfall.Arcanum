@@ -88,6 +88,76 @@ public static class ArcanumSettingClamps
 
     public static int InferenceTimeoutSeconds(int value) => Math.Clamp(value, 5, 3600);
 
+    public static int WorkspaceSearchMaxPatternChars(int value) => Math.Clamp(value, 1, 16_384);
+
+    public static int WorkspaceSearchRegexTimeoutMilliseconds(int value) => Math.Clamp(value, 10, 10_000);
+
+    public static int WorkspaceSearchMaxElapsedMilliseconds(int value) => Math.Clamp(value, 100, 120_000);
+
+    public static int WorkspaceSearchMaxFiles(int value) => Math.Clamp(value, 1, 100_000);
+
+    public static long WorkspaceSearchMaxBytes(long value) => Math.Clamp(value, 1_024L, 1024L * 1024L * 1024L);
+
+    public static int WorkspaceSearchMaxTraversalSteps(int value) => Math.Clamp(value, 1, 10_000_000);
+
+    public static int WorkspaceSearchMaxMatches(int value) => Math.Clamp(value, 1, 100_000);
+
+    public static int WorkspaceSearchMaxPreviewChars(int value) => Math.Clamp(value, 16, 4_096);
+
+    public static long WorkspacePatchMaxPatchBytes(long value) => Math.Clamp(value, 1_024L, 64L * 1024L * 1024L);
+
+    public static long WorkspacePatchMaxInputBytesPerFile(long value) =>
+        Math.Clamp(value, 1_024L, 256L * 1024L * 1024L);
+
+    public static long WorkspacePatchMaxTotalInputBytes(long value) =>
+        Math.Clamp(value, 1_024L, 1L * 1024L * 1024L * 1024L);
+
+    public static long WorkspacePatchMaxOutputBytesPerFile(long value) =>
+        Math.Clamp(value, 1_024L, 256L * 1024L * 1024L);
+
+    public static long WorkspacePatchMaxTotalOutputBytes(long value) =>
+        Math.Clamp(value, 1_024L, 1L * 1024L * 1024L * 1024L);
+
+    public static long WorkspacePatchMaxStagingBytesPerFile(long value) =>
+        Math.Clamp(value, 1_024L, 512L * 1024L * 1024L);
+
+    public static long WorkspacePatchMaxTotalStagingBytes(long value) =>
+        Math.Clamp(value, 1_024L, 2L * 1024L * 1024L * 1024L);
+
+    public static int WorkspacePatchMaxElapsedMilliseconds(int value) =>
+        Math.Clamp(value, 100, 300_000);
+
+    public static int WorkspacePatchRollbackReserveMilliseconds(int value) =>
+        Math.Clamp(value, 50, 60_000);
+
+    public static int WorkspacePatchMaxFiles(int value) => Math.Clamp(value, 1, 1_000);
+
+    public static int WorkspacePatchMaxHunks(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int WorkspacePatchMaxLinesPerHunk(int value) => Math.Clamp(value, 1, 100_000);
+
+    public static int WorkspacePatchFuzzyMatchWindowLines(int value) => Math.Clamp(value, 0, 1_000);
+
+    public static int WorkspacePatchMaxResultItems(int value) => Math.Clamp(value, 1, 10_000);
+
+    public const int WorkspaceCheckCleanupGraceSeconds = 30;
+
+    public static int WorkspaceCheckTimeoutSeconds(int value) => Math.Clamp(value, 30, 1_800);
+
+    public static int WorkspaceCheckMaxCustomProfiles(int value) => Math.Clamp(value, 0, 256);
+
+    public static int WorkspaceCheckMaxFixedArgumentsPerProfile(int value) => Math.Clamp(value, 1, 128);
+
+    public static int WorkspaceCheckMaxArgumentTokenChars(int value) => Math.Clamp(value, 16, 4_096);
+
+    public static int WorkspaceCheckMaxOptionsPerProfile(int value) => Math.Clamp(value, 0, 64);
+
+    public static int WorkspaceCheckMaxAllowedValuesPerOption(int value) => Math.Clamp(value, 1, 128);
+
+    public static int WorkspaceCheckMaxDiagnostics(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static long WorkspaceCheckMaxOutputBytes(long value) => Math.Clamp(value, 4_096L, 64L * 1024L * 1024L);
+
     public static int SemanticRouterPreflightTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int ContextWindowCompressionThreshold(int value) => Math.Clamp(value, 50, 100);

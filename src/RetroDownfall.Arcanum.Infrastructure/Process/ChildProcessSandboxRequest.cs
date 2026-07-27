@@ -13,6 +13,9 @@ internal sealed class ChildProcessSandboxRequest
     /// <summary>Absolute roots granted read + write.</summary>
     internal required IReadOnlyList<string> ReadWriteRoots { get; init; }
 
+    /// <summary>Absolute roots granted read-only access; execution is not granted by this class.</summary>
+    internal IReadOnlyList<string> ReadOnlyRoots { get; init; } = [];
+
     /// <summary>Absolute roots granted read + execute only (system runtime, spell script trees).</summary>
     internal required IReadOnlyList<string> ReadExecuteRoots { get; init; }
 
@@ -28,6 +31,12 @@ internal sealed class ChildProcessSandboxRequest
     /// </summary>
     internal bool WindowsPathBoundaryRequired { get; init; }
 
+    /// <summary>
+    /// When true, only an actively applied filesystem jail may proceed. No operator escape hatch,
+    /// Windows no-jail posture, or other non-applied status satisfies this requirement.
+    /// </summary>
+    internal bool RequireAppliedFilesystemJail { get; init; }
+
     /// <summary>Tool name for escape-hatch / denial diagnostics (no secrets).</summary>
     internal string? ToolName { get; init; }
 
@@ -36,5 +45,11 @@ internal sealed class ChildProcessSandboxRequest
 
     /// <summary>Optional workspace root for escape-hatch logging (redacted to leaf name).</summary>
     internal string? WorkspaceRootForLog { get; init; }
+
+    /// <summary>Canonical source root used to classify a denied sandbox write.</summary>
+    internal string? SourceReadOnlyRoot { get; init; }
+
+    /// <summary>Canonical package-cache root used to classify a denied sandbox write.</summary>
+    internal string? PackageReadOnlyRoot { get; init; }
 
 }

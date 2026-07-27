@@ -108,6 +108,273 @@ public sealed class CappedChildProcessRunnerTests
 
     }
 
+    [SkippableFact]
+    public async Task RunAsync_kills_process_group_descendants_after_normal_parent_exit()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix process-group cleanup is covered on Unix hosts.");
+        ProcessStartInfo psi = new()
+        {
+            FileName = "/bin/sh",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add("sleep 60 </dev/null >/dev/null 2>&1 & echo $!; exit 0");
+
+        CappedChildProcessRunResult result =
+            await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 65_536,
+                timeout: TimeSpan.FromSeconds(10),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+        int descendantPid = int.Parse(
+            result.Stdout.Text.Trim(),
+            System.Globalization.CultureInfo.InvariantCulture);
+        await Task.Delay(200);
+
+        try
+        {
+
+            using global::System.Diagnostics.Process descendant =
+                global::System.Diagnostics.Process.GetProcessById(descendantPid);
+            Assert.True(
+                descendant.HasExited,
+                $"Detached descendant {descendantPid} survived normal parent exit.");
+
+        }
+        catch (ArgumentException)
+        {
+
+            // Process no longer exists.
+
+        }
+        finally
+        {
+
+            try
+            {
+
+                using global::System.Diagnostics.Process descendant =
+                    global::System.Diagnostics.Process.GetProcessById(descendantPid);
+                descendant.Kill(entireProcessTree: true);
+
+            }
+            catch (Exception)
+            {
+
+            }
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task RunAsync_kills_process_group_descendants_on_timeout()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Unix process-group cleanup is covered on Unix hosts.");
+        ProcessStartInfo psi = new()
+        {
+            FileName = "/bin/sh",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(
+            "sleep 60 </dev/null >/dev/null 2>&1 & echo $!; sleep 60");
+
+        CappedChildProcessRunResult result =
+            await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 65_536,
+                timeout: TimeSpan.FromMilliseconds(750),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None);
+
+        Assert.Equal(
+            CappedChildProcessOutcome.TimedOut,
+            result.Outcome);
+        int descendantPid = int.Parse(
+            result.Stdout.Text.Trim(),
+            System.Globalization.CultureInfo.InvariantCulture);
+        await Task.Delay(200);
+
+        try
+        {
+            using global::System.Diagnostics.Process descendant =
+                global::System.Diagnostics.Process.GetProcessById(
+                    descendantPid);
+            Assert.True(
+                descendant.HasExited,
+                $"Detached descendant {descendantPid} survived timeout cleanup.");
+        }
+        catch (ArgumentException)
+        {
+            // Process no longer exists.
+        }
+        finally
+        {
+            try
+            {
+                using global::System.Diagnostics.Process descendant =
+                    global::System.Diagnostics.Process.GetProcessById(
+                        descendantPid);
+                descendant.Kill(entireProcessTree: true);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("Process.setsid")]
+    [InlineData("Process.setpgid(0, 0)")]
+    public async Task RunAsync_kills_group_escaping_closed_pipe_descendant_after_parent_success(
+        string escape)
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS(),
+            "macOS descendant ancestry containment is platform-specific.");
+        ProcessStartInfo psi = new()
+        {
+            FileName = "/usr/bin/ruby",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("-e");
+        psi.ArgumentList.Add(
+            $"fork {{ {escape}; puts Process.pid; STDOUT.flush; STDOUT.close; STDERR.close; sleep 15 }}; sleep 1.5; exit 0");
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        CappedChildProcessRunResult result =
+            await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 65_536,
+                timeout: TimeSpan.FromSeconds(10),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None);
+        stopwatch.Stop();
+
+        Assert.Equal(
+            CappedChildProcessOutcome.Completed,
+            result.Outcome);
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"Containment cleanup took {stopwatch.Elapsed}.");
+        int descendantPid = int.Parse(
+            result.Stdout.Text.Trim(),
+            System.Globalization.CultureInfo.InvariantCulture);
+        await Task.Delay(200);
+
+        try
+        {
+            using global::System.Diagnostics.Process descendant =
+                global::System.Diagnostics.Process.GetProcessById(
+                    descendantPid);
+            Assert.True(
+                descendant.HasExited,
+                $"Escaped descendant {descendantPid} survived parent success.");
+        }
+        catch (ArgumentException)
+        {
+            // Process no longer exists.
+        }
+        finally
+        {
+            try
+            {
+                using global::System.Diagnostics.Process descendant =
+                    global::System.Diagnostics.Process.GetProcessById(
+                        descendantPid);
+                descendant.Kill(entireProcessTree: true);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_revalidates_trusted_identity_immediately_before_spawn()
+    {
+
+        ProcessStartInfo psi = CreateHarmlessEchoProcessStartInfo();
+        int validationCount = 0;
+
+        CappedChildProcessRunResult result =
+            await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.WorkspaceCheck,
+                totalOutputCapBytes: 65_536,
+                timeout: TimeSpan.FromSeconds(30),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None,
+                preStartValidation: () =>
+                {
+                    validationCount++;
+                    return new CappedChildProcessPreStartValidationResult(
+                        false,
+                        "trusted identity changed");
+                });
+
+        Assert.Equal(1, validationCount);
+        Assert.Equal(
+            CappedChildProcessOutcome.PreStartValidationFailed,
+            result.Outcome);
+        Assert.Empty(result.Stdout.Text ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task RunAsync_rechecks_outer_cancellation_after_prestart_validation()
+    {
+
+        ProcessStartInfo startInfo = CreateHarmlessEchoProcessStartInfo();
+        using CancellationTokenSource cancellation = new();
+
+        CappedChildProcessRunResult result =
+            await CappedChildProcessRunner.RunAsync(
+                startInfo,
+                ChildProcessEnvironmentProfile.WorkspaceCheck,
+                totalOutputCapBytes: 65_536,
+                timeout: TimeSpan.FromSeconds(30),
+                resourceLimits: null,
+                resourceLimiter: null,
+                cancellation.Token,
+                preStartValidation: () =>
+                {
+                    cancellation.Cancel();
+                    return new CappedChildProcessPreStartValidationResult(
+                        true,
+                        Error: null,
+                        Code: null);
+                });
+
+        Assert.Equal(
+            CappedChildProcessOutcome.CanceledBeforeStart,
+            result.Outcome);
+        Assert.Empty(result.Stdout.Text ?? string.Empty);
+
+    }
+
     [Fact]
     public void ApplyProfile_ToolExec_strips_arcanum_prefixed_keys_and_keeps_others()
     {

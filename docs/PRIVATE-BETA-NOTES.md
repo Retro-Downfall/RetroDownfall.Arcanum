@@ -40,12 +40,14 @@ If Secret Service / libsecret is unavailable, The Forge may prompt for an API ke
 
 ## Tool-child sandbox (beta honesty)
 
-- **macOS:** filesystem jail active via deprecated `/usr/bin/sandbox-exec`
-- **Linux:** Landlock helper in-tree but **inactive** — command tools fail closed unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`
-- **Windows:** no filesystem jail (Job Objects only); Sanctum path-boundary may deny command tools
+- **macOS:** filesystem jail active via deprecated `/usr/bin/sandbox-exec`. `workspace_check` is advertised only when this Seatbelt jail plus trusted `dotnet`/SDK/launch-chain health checks pass.
+- **Linux:** Landlock helper in-tree but **inactive** — command tools fail closed unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. `workspace_check` is unavailable regardless of that escape hatch.
+- **Windows:** no filesystem jail (Job Objects only); Sanctum path-boundary may deny command tools. `workspace_check` is unavailable.
 - Network isolation for tool children is **not provided**
 
-Run `arcanum doctor` and inspect `GET /api/health` component `ToolChildSandbox`.
+Run `arcanum doctor` and inspect `GET /api/health` components `ToolChildSandbox` and `WorkspaceCheck`.
+
+`workspace_check` executes workspace-authored MSBuild tasks, source generators, analyzers, and tests even though the model selects only a closed profile. On eligible macOS hosts its source, package cache, `dotnet`, SDK, and runtime roots are read-only and all ordinary output goes to owner-only per-run roots, but network egress remains open. Process-group/descendant cleanup is best effort; an intentionally malicious detached descendant may survive and continue exfiltrating readable source/package data. Ward approval is explicit acceptance of that residual risk. Do not approve an untrusted repository merely because the argv surface is fixed.
 
 ## Safe defaults (breaking for beta operators)
 
@@ -59,13 +61,23 @@ Run `arcanum doctor` and inspect `GET /api/health` component `ToolChildSandbox`.
 - **Compatibility claim:** OpenAI **Chat Completions compatibility subset** — not full parity; images/audio/moderation are unsupported.
 - **A2A / Conclave / diagnostic MCP:** gated to Development edition.
 
-Accurate claim: default inference no longer exposes arbitrary host process execution. An API key still authorizes privileged file, network, and MCP operations.
+Accurate claim: Local defaults remove arbitrary **command selection** (`execute_command` / `run_spell_script`). They do not prove that no code executes: an eligible macOS host may advertise Ward-gated `workspace_check`, which runs repository code under a closed profile. An API key still authorizes privileged file, network, and MCP operations.
 
-## Inference accounting, idempotency, reasoning, and context budgets (Grimoire reinstall required)
+## Reliable workspace editing loop
+
+- `search_workspace` is available on supported hosts as strict-UTF-8, deterministic, line-scoped literal or bounded runtime-regex search. Patterns do not span lines; regex uses non-backtracking first and a bounded interpreted fallback, never dynamic compilation. It does not query The Weave.
+- `apply_patch` is a bound-session intrinsic Ward tool. It parses the complete canonical unified diff, plans and fingerprints every file/hunk before mutation, then commits one call as a reversible **sequential, observable, non-isolated** transaction. It offers rollback and normalized relative recovery artifacts, not process-wide isolation or crash atomicity.
+- The exact bounded patch result is persisted with deterministic assistant `ToolCall` then system `ToolResult` Entries before a successful result reaches the model. A persistence failure rolls back; an ambiguous result retains the applied patch/recovery artifacts and fails the turn. Multiple patch calls remain independent transactions.
+- `workspace_check` enforces `--no-restore`, requires a pre-existing read-only NuGet package cache, seeds validated restore artifacts into per-run roots, and returns capped typed diagnostics plus stdout/stderr fallback. It is **not available in these Windows/Linux archives**.
+- `WorkspacePathPolicy` containment and handle identity are always primary. Campaign Sanctum, when enabled, adds policy; it is not required for base containment.
+
+The reliable editing loop adds no database table or column and requires **no Grimoire reinstall**.
+
+## Existing inference-accounting upgrade (older Grimoire only)
 
 New raw-SQL tables: `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments`, `IdempotencyClaims`.
 
-**Stop/delete/reinstall the Grimoire database before running this build** — there is no user migration path, and the existing accounting install script changed in place to add `BillableOperations.ReasoningTokens`. Stop every Arcanum host/daemon and back up anything needed, then delete all three SQLite files before starting the host:
+This notice is unrelated to the reliable editing loop. If the developer database was created before the existing accounting install script gained `BillableOperations.ReasoningTokens`, there is no migration path: stop every Arcanum host/daemon, back up anything needed, then delete all three SQLite files before starting the host. Databases already created by the current script need no reinstall:
 
 ```bash
 rm -f -- "$HOME/.config/arcanum/arcanum.db" "$HOME/.config/arcanum/arcanum.db-wal" "$HOME/.config/arcanum/arcanum.db-shm"

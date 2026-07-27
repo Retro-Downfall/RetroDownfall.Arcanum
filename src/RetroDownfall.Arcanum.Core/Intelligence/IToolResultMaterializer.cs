@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization.Metadata;
+
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
@@ -8,6 +10,13 @@ public interface IToolResultMaterializer
 {
 
     ToolResultMaterialization Materialize(string toolName, string rawText, ToolResultMaterializerOptions? options = null);
+
+    ToolResultMaterialization MaterializeStructured<T>(
+        string toolName,
+        T result,
+        JsonTypeInfo<T> jsonTypeInfo,
+        ToolResultMaterializerOptions? options = null)
+        where T : IStructuredToolResult<T>;
 
 }
 

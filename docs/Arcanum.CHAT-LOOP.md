@@ -132,7 +132,7 @@ flowchart TD
 
 ## 2. Entry points
 
-Five HTTP surfaces all funnel into the same `IArcanumIntelligenceProvider` contract:
+Seven listed HTTP route variants all funnel into the same `IArcanumIntelligenceProvider` contract:
 
 
 | Surface | Method | Path | Calls |
@@ -188,7 +188,7 @@ Both modes of `RunInferenceAttemptAsync` (buffered and streaming) perform the sa
 6. **Semantic context retrieval** — `RetrieveSemanticContextAsync` (Phase 3 RAG) pulls `SemanticContextChunk[]` from The Weave.
 7. **Saga memory retrieval** — `RetrieveSagaMemoriesAsync` (Phase 4 RAG) pulls `SagaMemory[]`.
 8. **Build system prompt** — `SystemPromptBuilder.BuildDocument` assembles ordered stable/volatile DCI segments from Codex, active Spell, attached files, resonant dependency Spells (Arcane Resonance), semantic context, and Saga memories; `Render()` preserves the prior system text byte-for-byte.
-9. **Build tool set** — `BuildToolSetWithMcpAsync`: built-in tools (`ArcanumLocalTimeTool`, `ArcanumSystemInfoTool`, `ArcanumSpellScriptTool` if script roots, `ArcanumBrowseWebTool` if `WebBrowsing.Enabled`) plus MCP tools from `IMcpConnectionManager`, then applies **Artifact Attunement** (a Spell's `declaredTools` allowlist). When `ForwardClientTools` is true, instead builds `ClientForwardedFunction` wrappers from the client-supplied tool definitions.
+9. **Build tool set** — `BuildToolSetWithMcpAsync`: built-in tools (`ArcanumLocalTimeTool`, `ArcanumSystemInfoTool`, `ArcanumSpellScriptTool` only if script roots exist **and** `Arcanum:Edition=Development` plus `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`, `ArcanumBrowseWebTool` if `WebBrowsing.Enabled`) plus MCP tools from `IMcpConnectionManager`, then applies **Artifact Attunement** (a Spell's `declaredTools` allowlist). Local edition strips both host-process tools, including externally supplied `execute_command` / `run_spell_script` name collisions. When `ForwardClientTools` is true, instead builds `ClientForwardedFunction` wrappers from the client-supplied tool definitions.
 10. **Build turn context** — `BuildTurnContextAsync`: loads the `Campaign` by working-directory path, reads `RequireWardForForbiddenArts` and the `SanctumConfig`, applies tool policy filters, and strips `ask_human` unless `HumanInteractionAvailable` (streaming + attended + live HITL emitter). Buffered turns never advertise `ask_human`.
 
 ---
@@ -210,10 +210,12 @@ Each iteration of the inner loop:
 6. **No tool calls → break** — the model produced a final text answer; exit the loop and proceed to finalization.
 7. **Forward-client-tools branch** — when `ForwardClientTools=true`, the Wizard **does not execute** the calls server-side: it records them as `PromptToolCall`s, sets `finishReason=tool_calls`, and breaks so the OpenAI v1 layer can echo them back to the client for client-side execution.
 8. **Tool round budget check** — increment `toolRoundsExecuted`; if it exceeds `MaxToolInferenceRounds`, return `ErrorCodes.Hub.ToolLoop`.
-9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token-budget materialized for the model. The result is appended to `observedToolCalls` and the audit context.
+9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token-budget materialized for the model. The result is appended to `observedToolCalls` and the audit context. `search_workspace` is direct, exact, line-scoped filesystem search (literal or bounded runtime regex), not a Weave query. `workspace_check` executes workspace-authored MSBuild/tasks/generators/analyzers/tests under its separate macOS-only fail-closed capability and host-bound deadline.
 10. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id), any raw `TextReasoningContent` from that provider round, and a tool message containing `FunctionResultContent(callId, resultText)`. This is the feedback that feeds the next inference round. Raw reasoning never crosses to a fallback provider and exists only for this same-provider continuation.
-11. **Persist tool interaction to Grimoire** — `grimoireTurnWriter.TryAppendToolInteractionAsync` persists only the tool interaction and publishes recent Entries to `SessionEventHub`; raw or client-safe reasoning is never written to Grimoire.
+11. **Persist tool interaction to Grimoire** — normally `grimoireTurnWriter.TryAppendToolInteractionAsync` persists the assistant `ToolCall` and system `ToolResult` Entries for a stateful turn and publishes them to `SessionEventHub`; this includes normal `search_workspace` and `workspace_check` calls. Raw or client-safe reasoning is never written to Grimoire. `SessionEventHub` is only a process-local live fan-out: each subscriber has a bounded `DropOldest` channel, so a slow subscriber may miss published Entries (with a warning), and subscriptions do not survive restart. `apply_patch` is the deliberate exception: it requires the already-persisted session/assistant-turn binding, commits a still-reversible per-call filesystem transaction, and durably appends deterministic assistant `ToolCall` then system `ToolResult` rows containing the exact argument snapshot and exact bounded result **inside the invocation, before that result can continue toward the model**. `ProcessedToolCall.ReceiptHandled` then suppresses this generic second append.
 12. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) gets a new breakdown and admission decision; the initial count is never reused. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 6). Step 10 is what makes this a loop rather than a single call.
+
+`apply_patch` receipt classification is part of correctness, not best-effort logging. `NewlyCommitted` / `RecoveredCommitted` keep the patch and make its reversible transaction irreversible after bounded artifact cleanup; `Failed` rolls back and returns `conflict/receipt_failed` (or `rollback_incomplete` with relative recovery paths); `Ambiguous` retains the applied patch and recovery artifacts and fails the turn so the model cannot assume an unproved persisted result. Caller cancellation propagates: before or during the filesystem commit it first triggers rollback under an independent cleanup deadline, while cancellation during receipt handoff preserves any persistence classification attached to the exception. `search_workspace` likewise propagates caller cancellation; only its own elapsed cap produces structured `timed_out`. Each patch invocation is independent: multiple patch calls in one model round are not one isolated transaction.
 
 ### 6.1 Sequence diagram for a single tool round
 
@@ -261,8 +263,13 @@ sequenceDiagram
         end
         TEP-->>W: ProcessedToolCall (callId, name, args, result, wardEvents, failed)
         W->>W: AppendToolExchangeToMessages (assistant call + tool result)
-        W->>G: TryAppendToolInteractionAsync
-        G->>Hub: PublishLatestSavedEntriesAsync (live session stream)
+        alt ordinary tool
+            W->>G: TryAppendToolInteractionAsync
+            G->>Hub: PublishLatestSavedEntriesAsync (live session stream)
+        else apply_patch
+            Note over TEP,G: exact call/result receipt was persisted while the filesystem commit remained reversible
+            TEP-->>W: ReceiptHandled=true (skip duplicate append)
+        end
     end
 
     W->>W: loop back → GetResponseAsync with augmented chatMessages
@@ -274,11 +281,15 @@ sequenceDiagram
 
 `ToolExecutionPipeline.ProcessSingleToolCallAsync` delegates to `ExecuteToolCallWithWardAsync`. Gate order:
 
-1. **Unattended auto-deny** — if the tool is a Ward candidate (`RequiresWardForTool`: Ward enabled + tool in `Arcanum:Ward:ForbiddenArts`; `execute_command` always requires Ward, others only if `CampaignRequiresWard`) and `UnattendedMode && AutoDenyInUnattendedMode`, return a synthetic deny result (no operator available).
+1. **Unattended auto-deny** — if the tool is a Ward candidate and `UnattendedMode && AutoDenyInUnattendedMode`, return a synthetic deny result (no operator available). While Wards are enabled, `ToolRiskClassifier` makes exactly `execute_command`, `apply_patch`, and `workspace_check` intrinsic candidates regardless of campaign settings or a replacement `Ward:ForbiddenArts` list. The default configurable list additionally contains `write_file`, `replace_text_block`, `delete_lexicon`, and `run_spell_script`; these configurable names require `CampaignRequiresWard`.
 2. **Not a Forbidden Art → skip Ward, go straight to Sanctum** — `InvokeToolCallWithSanctumAsync`.
 3. **Forbidden Art → Ward round-trip** — emits a `Warded` IntelligenceEvent (so the streaming client sees the approval prompt), calls `IWard.WardAsync(wardId, toolName, args, sessionId, timeout)` which blocks for operator (DM) resolution via the Comm Link / `petition_dungeon_master` flow, emits a `WardResolved` event, then either returns a denial or proceeds to `InvokeToolCallWithSanctumAsync`.
 
 `InvokeToolCallWithSanctumAsync` → `EnforceSanctumAsync`: if the Campaign has Sanctum enabled, `ISanctumGuard.ValidateToolAsync` (tool allowlist) then `ValidateToolPathsAndNetworkAsync` (validates paths/network per tool kind — `execute_command` cwd, `write_file`/`read_file_chunk` relativePath, `run_spell_script` script paths across resonant roots, `send_commlink_alert`/`use_commlink`/`petition_dungeon_master` webhook URL, `browse_web` URL). In `SanctumMode.Strict` a denial returns a synthetic result string; otherwise the tool runs anyway.
+
+Sanctum is an additional campaign-conditional policy. `WorkspacePathPolicy` containment, symlink/handle-identity checks, and coding-tool-specific validation run whether or not a campaign exists. In particular, `search_workspace` remains read-only and bounded; `apply_patch` parses then plans every path/hunk/fingerprint before mutation; and `workspace_check` fixes its source root and runs with source/packages/SDK read-only plus server-owned per-run output roots.
+
+`workspace_check` is advertised only on an eligible macOS host with active `/usr/bin/sandbox-exec` Seatbelt, a trusted native `dotnet`, selected SDK/runtime, and trusted launch chain. Linux and Windows are unavailable, and the generic unsandboxed-tool escape hatch does not enable it. Closed argv is not a code-safety boundary: repository code executes, network egress remains open, and macOS process-group/descendant cleanup is best effort. Its Ward disclosure requires the operator to accept the residual risk that an intentionally malicious detached descendant may survive and continue network exfiltration. Before spawn, the bound inference deadline must fit the 300-second default check timeout plus 30 seconds of cleanup grace; stale configuration or failed capability health removes the tool from a new `tools/list`.
 
 Finally `InvokeToolCallAsync` resolves the `AIFunction` from `chatOptions.Tools` by name and calls `func.InvokeAsync(args, ct)`. The result is stringified.
 
@@ -369,6 +380,11 @@ All of these live under `Arcanum:` in `arcanum.json` and have runtime clamps in 
 | `Intelligence:MaxToolInferenceRounds` | 8 | Hard cap on tool-call iterations before `Hub.ToolLoop` |
 | `Intelligence:InferenceTimeoutSeconds` | 600 | Wall-clock cap per inference turn (linked `CancellationTokenSource`) |
 | `Intelligence:TolerateToolFailures` | true | When true, a tool exception is synthesized into a result and the buffered turn continues; when false, it fails the buffered turn. Streaming always tolerates tool invocation failures (mode policy; ADR 0004). |
+| `CodingTools:Search:*` | 4,096 chars; 250 ms/match; 10 s; 2,000 files; 32 MiB; 100,000 steps; 1,000 matches; 512-char previews | Bounds exact line-scoped `search_workspace`; regex uses non-backtracking first, bounded interpreted fallback, no dynamic compilation or Weave. |
+| `CodingTools:Patch:*` | 4 MiB; 128 files; 1,024 hunks; 10,000 lines/hunk; 100-line relocation; 256 result items | Bounds parser/planner, per-call reversible commit, and structured `apply_patch` result. These limits do not imply isolation or crash atomicity. |
+| `CodingTools:WorkspaceCheck:Enabled` | true | Eligibility gate only: advertisement still requires macOS Seatbelt plus trusted executable/SDK/launch chain; Linux/Windows remain unavailable. |
+| `CodingTools:WorkspaceCheck:TimeoutSeconds` | 300 | Process deadline; must fit the inference deadline with fixed 30-second cleanup grace. |
+| `CodingTools:WorkspaceCheck:MaxDiagnostics` / `MaxOutputBytes` | 500 / 1 MiB | Bounds typed diagnostics and stdout/stderr fallback. |
 | `Resilience:Enabled` | false | Gates the provider fallback loop (#1) |
 | `Resilience:MaxFallbackAttempts` | 3 | Bounds candidates tried per turn |
 | `StructuredOutput:MaxValidationRetries` | 2 | Bounds the structured-output retry loop (#6) |

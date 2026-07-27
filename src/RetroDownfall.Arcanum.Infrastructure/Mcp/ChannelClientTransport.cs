@@ -103,22 +103,38 @@ internal sealed class ChannelClientTransport(
 
             SessionAttachmentAmbientSend.BindSdkToolsCall(_ambientConnectionKey, message);
 
-            string json = JsonSerializer.Serialize(message, JsonRpcMessageTypeInfo);
-
-            if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(json, _maxJsonRpcLineBytes))
-            {
-                throw new McpLineSizeExceededException(_maxJsonRpcLineBytes, Encoding.UTF8.GetByteCount(json));
-            }
-
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
             try
             {
-                await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+
+                string json = JsonSerializer.Serialize(message, JsonRpcMessageTypeInfo);
+
+                if (McpSecurityLimits.ExceedsMaxLineUtf8Bytes(json, _maxJsonRpcLineBytes))
+                {
+                    throw new McpLineSizeExceededException(_maxJsonRpcLineBytes, Encoding.UTF8.GetByteCount(json));
+                }
+
+                await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                try
+                {
+                    await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+                    SessionAttachmentAmbientSend
+                        .MarkSdkToolsCallDispatched(
+                            _ambientConnectionKey,
+                            message);
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
             }
-            finally
+            catch
             {
-                _writeLock.Release();
+
+                SessionAttachmentAmbientSend.UnbindFailedSdkToolsCall(
+                    _ambientConnectionKey,
+                    message);
+                throw;
             }
         }
 

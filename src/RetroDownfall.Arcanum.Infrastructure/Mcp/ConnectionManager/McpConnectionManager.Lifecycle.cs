@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -90,9 +91,14 @@ public sealed partial class McpConnectionManager
                 line),
         });
 
-        SdkMcpClientWrapper client = CreateSdkMcpClientWrapper(transport);
+        SdkMcpClientWrapper sdkClient =
+            CreateSdkMcpClientWrapper(transport);
 
-        client.OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration);
+        sdkClient.OnTransportEnded = () =>
+            HandleTransportEnded(
+                capturedEntry,
+                transportGeneration);
+        McpClientGeneration client = new(sdkClient);
 
         return await FinishStartAsync(entry, cfg, client, logScope, cancellationToken).ConfigureAwait(false);
     }
@@ -115,14 +121,19 @@ public sealed partial class McpConnectionManager
 
         long transportGeneration = ++entry.TransportGeneration;
 
-        SdkMcpClientWrapper client = CreateHttpMcpClient(endpointResult.Value);
+        SdkMcpClientWrapper sdkClient =
+            CreateHttpMcpClient(endpointResult.Value);
 
         // W-MCP-HTTP: the official SDK's Streamable HTTP transport is stateful (an Mcp-Session-Id
         // tracked server-side), unlike the pre-SDK-migration stateless-POST McpHttpClient. Wiring
         // OnTransportEnded off McpClient.Completion here means a dropped/expired HTTP session now
         // reactively flips the entry to Error + publishes an McpServerEvent, the same as stdio —
         // a capability the bespoke stateless implementation never had.
-        client.OnTransportEnded = () => HandleTransportEnded(capturedEntry, transportGeneration);
+        sdkClient.OnTransportEnded = () =>
+            HandleTransportEnded(
+                capturedEntry,
+                transportGeneration);
+        McpClientGeneration client = new(sdkClient);
 
         return await FinishStartAsync(entry, cfg, client, logScope, cancellationToken).ConfigureAwait(false);
     }
@@ -513,6 +524,10 @@ public sealed partial class McpConnectionManager
 
         bool a2aClientEffective = conclaveEffective && a2a.Enabled && a2a.ClientEnabled;
 
+        WorkspaceCheckSettings workspaceCheck =
+            settings.CurrentValue.CodingTools?.WorkspaceCheck
+            ?? _defaultWorkspaceCheckSettings;
+
         (ChannelWriter<string> toServer, ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
                 humanPromptRegistry,
@@ -530,7 +545,14 @@ public sealed partial class McpConnectionManager
                 attachmentsToolEnabled,
                 GetClampedMcpMaxJsonRpcLineBytes(),
                 logger: null,
-                allowHostProcessTools: allowHostProcessTools);
+                allowHostProcessTools: allowHostProcessTools,
+                codingToolsSettings: settings.CurrentValue.CodingTools,
+                workspaceCheckRuntime: new WorkspaceCheckRuntime(
+                    workspaceCheck,
+                    scopeFactory,
+                    currentSettingsProvider: () =>
+                        settings.CurrentValue.CodingTools?.WorkspaceCheck
+                        ?? _defaultWorkspaceCheckSettings));
 
         // The server's own RunAsync loop terminates when the client-to-server channel completes
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).
@@ -546,7 +568,7 @@ public sealed partial class McpConnectionManager
             GetClampedMcpMaxJsonRpcLineBytes(),
             server.AmbientConnectionKey);
 
-        SdkMcpClientWrapper? client = null;
+        McpClientGeneration? client = null;
 
         List<IMcpClient> partitionClients = partition.Clients;
 
@@ -554,21 +576,66 @@ public sealed partial class McpConnectionManager
 
         try
         {
-            client = CreateSdkMcpClientWrapper(clientTransport);
+            client = new McpClientGeneration(
+                CreateSdkMcpClientWrapper(
+                    clientTransport));
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
             IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
             partitionClients.Add(client);
+            partition.InternalClient = client;
 
             client = null;
 
             attached = true;
 
+            TimeSpan workspaceCheckRequestTimeout =
+                WorkspaceCheckDeadlinePolicy.GetMcpRequestTimeout(
+                    TimeSpan.FromSeconds(
+                        ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(
+                            workspaceCheck.TimeoutSeconds)));
+
             foreach (McpBridgeTool t in tools)
             {
-                tagged.Add(new LoadedMcpToolRow(t, InternalMcpServerConfig, partitionClients[^1]));
+                McpBridgeTool trustedTool = t;
+
+                if (string.Equals(
+                        t.Name,
+                        ToolRiskClassifier.SearchWorkspaceToolName,
+                        StringComparison.Ordinal))
+                {
+
+                    trustedTool = trustedTool.WithTrustedStructuredResult(
+                        TrustedStructuredToolResultKind.WorkspaceSearch);
+                }
+                else if (string.Equals(
+                             t.Name,
+                             ToolRiskClassifier.ApplyPatchToolName,
+                             StringComparison.Ordinal))
+                {
+
+                    trustedTool = trustedTool.WithTrustedStructuredResult(
+                        TrustedStructuredToolResultKind.WorkspacePatch);
+                }
+                else if (string.Equals(
+                             t.Name,
+                             ToolRiskClassifier.WorkspaceCheckToolName,
+                             StringComparison.Ordinal))
+                {
+
+                    trustedTool = trustedTool
+                        .WithRequestTimeout(workspaceCheckRequestTimeout)
+                        .WithTrustedStructuredResult(
+                            TrustedStructuredToolResultKind.WorkspaceCheck);
+                }
+
+                tagged.Add(
+                    new LoadedMcpToolRow(
+                        trustedTool,
+                        InternalMcpServerConfig,
+                        partitionClients[^1]));
             }
 
             partition.Servers.Add(new McpServerMetadata(

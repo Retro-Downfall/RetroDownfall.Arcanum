@@ -292,7 +292,7 @@ internal static class IntelligenceEndpoints
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
 
-        apiGroup.MapPost("/intelligence/arsenal", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext, CancellationToken ct) =>
+        apiGroup.MapPost("/intelligence/arsenal", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, IOptionsSnapshot<ArcanumSettings> settings, IWorkspaceCheckCapabilityReporter workspaceCheckCapability, HttpContext httpContext, CancellationToken ct) =>
         {
             string workingDirectory = body?.WorkingDirectory ?? string.Empty;
 
@@ -315,7 +315,20 @@ internal static class IntelligenceEndpoints
 
             List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(workingDirectory, ct).ConfigureAwait(false);
 
-            WorkspaceArsenalDto dto = new(spellNames, nativeTools, servers, spellSummaries.ToList());
+            WorkspaceCheckCapabilityStatus checkStatus =
+                await workspaceCheckCapability
+                    .GetStatusAsync(
+                        spellRoot,
+                        ct)
+                    .ConfigureAwait(false);
+            WorkspaceArsenalDto dto = new(
+                spellNames,
+                nativeTools,
+                servers,
+                spellSummaries.ToList(),
+                new WorkspaceCheckCapabilityDto(
+                    checkStatus.IsAvailable,
+                    checkStatus.Reason));
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 

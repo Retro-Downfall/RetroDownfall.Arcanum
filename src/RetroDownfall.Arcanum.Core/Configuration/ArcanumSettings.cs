@@ -57,6 +57,8 @@ public sealed record ArcanumSettings
 
     public McpSettings Mcp { get; set; } = new();
 
+    public CodingToolsSettings CodingTools { get; set; } = new();
+
     public PromptSettings Prompts { get; set; } = new();
 
     public ResilienceSettings Resilience { get; set; } = new();
@@ -86,7 +88,4 @@ public sealed record ArcanumSettings
     public GuardrailsSettings Guardrails { get; set; } = new();
 
 }
-
-
-
 

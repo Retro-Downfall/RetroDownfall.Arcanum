@@ -140,6 +140,43 @@ internal static class ChildProcessFilesystemJail
 
     }
 
+    internal static async Task<bool> CleanupTempPathsAsync(
+        IReadOnlyList<string>? paths,
+        TimeSpan remaining,
+        Action<IReadOnlyList<string>?>? cleanupAction = null)
+    {
+        if (paths is null || paths.Count == 0)
+        {
+            return true;
+        }
+
+        if (remaining <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        Task cleanup = Task.Run(
+            () => (cleanupAction ?? CleanupTempPaths)(paths));
+
+        try
+        {
+            await cleanup
+                .WaitAsync(remaining)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            _ = cleanup.ContinueWith(
+                static task => _ = task.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted
+                | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return false;
+        }
+    }
+
     private static ChildProcessSandboxApplyResult ApplyWindows(
         ChildProcessSandboxRequest request,
         ILogger? logger)
@@ -214,9 +251,13 @@ internal static class ChildProcessFilesystemJail
 
             List<string> readWriteRoots = NormalizeExistingRoots(request.ReadWriteRoots);
 
+            List<string> readOnlyRoots = NormalizeExistingRoots(request.ReadOnlyRoots);
+
             List<string> readExecuteRoots = NormalizeExistingRoots(request.ReadExecuteRoots);
 
-            if (readWriteRoots.Count == 0 && readExecuteRoots.Count == 0)
+            if (readWriteRoots.Count == 0
+                && readOnlyRoots.Count == 0
+                && readExecuteRoots.Count == 0)
             {
 
                 return FailClosedOrEscape(request, logger, "No allowed filesystem roots for the child-process jail.");
@@ -260,7 +301,8 @@ internal static class ChildProcessFilesystemJail
             string profile = MacOsSandboxExecProfileBuilder.Build(
                 readWriteRoots,
                 readExecuteRoots,
-                invocationTempDir);
+                invocationTempDir,
+                readOnlyRoots);
 
             profilePath = WriteOwnerOnlyTempFile("arcanum-sb-", ".sb", profile);
 
@@ -429,7 +471,20 @@ internal static class ChildProcessFilesystemJail
     private static string CreateOwnerOnlyTempDirectory(string prefix)
     {
 
-        string path = Path.Combine(Path.GetTempPath(), prefix + Guid.NewGuid().ToString("N"));
+        // Unix-domain socket paths are length-bounded on macOS. dotnet format's MSBuild build host
+        // creates CoreFxPipe sockets beneath TMPDIR, so the normal per-user /var/folders path plus
+        // our invocation name can exceed that limit and leave the host waiting forever. A unique
+        // owner-only child directly beneath /private/tmp remains a narrow per-run jail grant.
+        string tempRoot = OperatingSystem.IsMacOS()
+            && Directory.Exists("/private/tmp")
+                ? "/private/tmp"
+                : Path.GetTempPath();
+
+        string nonce = Guid.NewGuid().ToString("N");
+        string directoryName = OperatingSystem.IsMacOS()
+            ? "a-" + nonce[..10]
+            : prefix + nonce;
+        string path = Path.Combine(tempRoot, directoryName);
 
         Directory.CreateDirectory(path);
 

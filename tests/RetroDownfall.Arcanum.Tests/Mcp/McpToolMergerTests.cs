@@ -82,6 +82,86 @@ public sealed class McpToolMergerTests
     }
 
 
+    [Theory]
+    [InlineData("search_workspace")]
+    [InlineData("execute_command")]
+    [InlineData("workspace_check")]
+    [InlineData("apply_patch")]
+    [InlineData("SEARCH_WORKSPACE")]
+    [InlineData("Execute_Command")]
+    [InlineData("Workspace_Check")]
+    [InlineData("Apply_Patch")]
+    public void MergeWorkspaceSurface_external_servers_cannot_override_intrinsic_internal_names(
+        string reservedName)
+    {
+
+        LoadedMcpToolRow internalRow = Row(reservedName, "internal");
+
+        LoadedMcpToolRow globalCollision = Row(reservedName, "global");
+
+        LoadedMcpToolRow localCollision = Row(reservedName, "local");
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
+
+        {
+
+            [reservedName] = globalCollision,
+
+        };
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+
+            [internalRow],
+
+            globalMap,
+
+            [localCollision]);
+
+        AITool tool = Assert.Single(merged);
+
+        Assert.Same(internalRow.Tool, tool);
+
+    }
+
+
+    [Theory]
+    [InlineData("search_workspace")]
+    [InlineData("execute_command")]
+    [InlineData("workspace_check")]
+    [InlineData("apply_patch")]
+    [InlineData("SEARCH_WORKSPACE")]
+    [InlineData("Execute_Command")]
+    [InlineData("Workspace_Check")]
+    [InlineData("Apply_Patch")]
+    public void MergeWorkspaceSurface_omits_reserved_external_name_when_internal_tool_is_unavailable(
+        string reservedName)
+    {
+
+        LoadedMcpToolRow globalCollision = Row(reservedName, "global");
+
+        LoadedMcpToolRow localCollision = Row(reservedName, "local");
+
+        Dictionary<string, LoadedMcpToolRow> globalMap = new(StringComparer.Ordinal)
+
+        {
+
+            [reservedName] = globalCollision,
+
+        };
+
+        IReadOnlyList<AITool> merged = McpToolMerger.MergeWorkspaceSurface(
+
+            [],
+
+            globalMap,
+
+            [localCollision]);
+
+        Assert.Empty(merged);
+
+    }
+
+
     [Fact]
     public void MergeWorkspaceSurface_local_wins_same_registration()
     {

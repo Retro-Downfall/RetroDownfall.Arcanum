@@ -33,6 +33,12 @@ public sealed class ArcanumJsonContextCompletenessTests
     [InlineData(typeof(PromptCachingWireDialect))]
     [InlineData(typeof(PromptCacheRetentionPolicy))]
     [InlineData(typeof(ArcanumSettings))]
+    [InlineData(typeof(CodingToolsSettings))]
+    [InlineData(typeof(WorkspaceSearchSettings))]
+    [InlineData(typeof(WorkspacePatchSettings))]
+    [InlineData(typeof(WorkspaceCheckSettings))]
+    [InlineData(typeof(WorkspaceCheckProfileSettings))]
+    [InlineData(typeof(WorkspaceCheckCapabilityDto))]
     [InlineData(typeof(ApiResponse<ArcanumSettings>))]
     [InlineData(typeof(OpenAiReasoningEffort))]
     [InlineData(typeof(SubmitHumanResponseRequest))]
@@ -117,6 +123,34 @@ public sealed class ArcanumJsonContextCompletenessTests
         Assert.Equal(
             typeof(IReadOnlyList<ReasoningContentSegment>),
             typeof(PromptResponseDto).GetProperty("Reasoning")?.PropertyType);
+    }
+
+    [Fact]
+    public void Workspace_arsenal_round_trips_workspace_check_capability_reason()
+    {
+
+        WorkspaceArsenalDto original = new(
+            [],
+            [],
+            [],
+            [],
+            new WorkspaceCheckCapabilityDto(
+                false,
+                "Linux mandatory jail unavailable."));
+
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(
+            original,
+            ArcanumJsonContext.Default.WorkspaceArsenalDto);
+        WorkspaceArsenalDto? result = JsonSerializer.Deserialize(
+            bytes,
+            ArcanumJsonContext.Default.WorkspaceArsenalDto);
+
+        Assert.NotNull(result);
+        Assert.False(result.WorkspaceCheck!.Available);
+        Assert.Contains(
+            "mandatory jail",
+            result.WorkspaceCheck.Reason,
+            StringComparison.Ordinal);
     }
 
 }

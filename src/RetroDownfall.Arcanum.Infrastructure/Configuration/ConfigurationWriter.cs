@@ -45,7 +45,7 @@ internal sealed class ConfigurationWriter
 
             var wrapper = new ArcanumConfigurationFile { Arcanum = storedSettings };
 
-            await AtomicFile.ReplaceAsync(
+            AtomicReplaceStatus replaceStatus = await AtomicFile.ReplaceAsync(
                 path,
                 tempPath,
                 (stream, ct) => JsonSerializer.SerializeAsync(
@@ -60,6 +60,14 @@ internal sealed class ConfigurationWriter
 
                     return true;
                 }).ConfigureAwait(false);
+
+            if (replaceStatus != AtomicReplaceStatus.Succeeded)
+            {
+
+                throw new IOException(
+                    $"Atomic configuration replacement did not succeed ({replaceStatus}).");
+
+            }
 
             return Result.Success();
         }

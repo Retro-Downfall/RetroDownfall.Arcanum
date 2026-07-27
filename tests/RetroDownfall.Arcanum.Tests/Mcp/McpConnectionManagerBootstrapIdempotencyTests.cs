@@ -7,8 +7,10 @@ using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
@@ -18,19 +20,33 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     private McpConnectionManager _manager = null!;
 
+    private MutableOptionsMonitor _settings = null!;
+
     public Task InitializeAsync()
     {
+
+        _settings = new MutableOptionsMonitor(
+            new ArcanumSettings
+            {
+                Security = new SecuritySettings
+                {
+                    AllowUnsandboxedToolChildren = true,
+                },
+                CodingTools = new CodingToolsSettings
+                {
+                    Patch = new WorkspacePatchSettings
+                    {
+                        MaxPatchBytes = 1024,
+                    },
+                },
+            });
 
         ServiceCollection services = new();
 
         services.AddSingleton<ISanctumGuard, PermissiveSanctumGuard>();
 
         services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings>>(
-            new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings
-                {
-                    Security = new SecuritySettings { AllowUnsandboxedToolChildren = true },
-                }));
+            _settings);
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -50,7 +66,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            _settings);
 
         return Task.CompletedTask;
 
@@ -81,6 +97,359 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     }
 
+    [Fact]
+    public async Task Patch_settings_reload_rebuilds_handler_with_current_preflight_limits()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+        string oversizedForInitialLimit = new('x', 1536);
+
+        string before = await InvokeInvalidPatchAsync(
+            workspace.Root,
+            oversizedForInitialLimit);
+        Assert.Contains("\"code\":\"patch_too_large\"", before, StringComparison.Ordinal);
+
+        _settings.CurrentValue = _settings.CurrentValue with
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Patch = new WorkspacePatchSettings
+                {
+                    MaxPatchBytes = 4096,
+                },
+            },
+        };
+
+        string after = await InvokeInvalidPatchAsync(
+            workspace.Root,
+            oversizedForInitialLimit);
+
+        Assert.DoesNotContain("\"code\":\"patch_too_large\"", after, StringComparison.Ordinal);
+        Assert.Contains("\"status\":\"invalid_patch\"", after, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Initial_settings_fingerprint_does_not_retire_bootstrapped_global_partition()
+    {
+
+        await _manager.InitializeAsync();
+        TrackingMcpClient bootstrappedClient = new();
+        AddClientToPrivatePartition(
+            _manager,
+            "__arcanum_mcp_global__",
+            bootstrappedClient);
+
+        _ = await _manager.GetAvailableToolsAsync(
+            workingDirectory: null);
+
+        Assert.Equal(0, bootstrappedClient.DisposeCount);
+
+    }
+
+    [Fact]
+    public async Task Equivalent_settings_keep_generation_and_search_change_rebuilds_surface()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+
+        AIFunction before = await GetToolAsync(
+            workspace.Root,
+            ToolRiskClassifier.SearchWorkspaceToolName);
+
+        CodingToolsSettings current = _settings.CurrentValue.CodingTools!;
+        _settings.CurrentValue = _settings.CurrentValue with
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Search = current.Search with { },
+                Patch = current.Patch with { },
+                WorkspaceCheck = current.WorkspaceCheck with { },
+            },
+        };
+
+        AIFunction equivalent = await GetToolAsync(
+            workspace.Root,
+            ToolRiskClassifier.SearchWorkspaceToolName);
+        Assert.Same(before, equivalent);
+
+        int changedMaxPatternChars =
+            current.Search.MaxPatternChars + 1;
+        _settings.CurrentValue = _settings.CurrentValue with
+        {
+            CodingTools = _settings.CurrentValue.CodingTools! with
+            {
+                Search = current.Search with
+                {
+                    MaxPatternChars = changedMaxPatternChars,
+                },
+            },
+        };
+
+        AIFunction changed = await GetToolAsync(
+            workspace.Root,
+            ToolRiskClassifier.SearchWorkspaceToolName);
+
+        Assert.NotSame(equivalent, changed);
+        Assert.Equal(
+            changedMaxPatternChars,
+            changed.JsonSchema
+                .GetProperty("properties")
+                .GetProperty("pattern")
+                .GetProperty("maxLength")
+                .GetInt32());
+
+    }
+
+    [Fact]
+    public async Task Active_apply_patch_survives_settings_generation_reload()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+        workspace.WriteFile("active-reload.txt", "before\n");
+
+        AIFunction applyPatch = await GetToolAsync(
+            workspace.Root,
+            ToolRiskClassifier.ApplyPatchToolName);
+        BlockingCommittedReceiptSink sink = new();
+        ApplyPatchInvocationContext context = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new ToolInvocationIdentity(
+                Guid.NewGuid().ToString("N"),
+                "active-reload-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            "{\"patch\":\"active-reload\"}",
+            "test-model",
+            DateTimeOffset.UtcNow,
+            sink);
+
+        using IDisposable scope =
+            ApplyPatchInvocationAmbient.Begin(context);
+        Task<object?> invocation = applyPatch.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["patch"] =
+                        "--- a/active-reload.txt\n"
+                        + "+++ b/active-reload.txt\n"
+                        + "@@ -1 +1 @@\n"
+                        + "-before\n"
+                        + "+after\n",
+                    ["dryRun"] = false,
+                }),
+            CancellationToken.None).AsTask();
+
+        await sink.HandoffStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        CodingToolsSettings coding = _settings.CurrentValue.CodingTools!;
+        _settings.CurrentValue = _settings.CurrentValue with
+        {
+            CodingTools = coding with
+            {
+                Patch = coding.Patch with
+                {
+                    MaxPatchBytes = coding.Patch.MaxPatchBytes + 1,
+                },
+            },
+        };
+
+        _ = await _manager.GetAvailableToolsAsync(
+            workspace.Root);
+
+        Assert.False(invocation.IsCompleted);
+
+        sink.ReleaseHandoff();
+        TrustedStructuredToolResult result =
+            Assert.IsType<TrustedStructuredToolResult>(
+                await invocation.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.Contains(
+            "\"status\":\"ok\"",
+            result.Text,
+            StringComparison.Ordinal);
+        Assert.True(context.ReceiptHandled);
+        Assert.Equal(
+            "after\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(
+                    workspace.Root,
+                    "active-reload.txt")));
+
+    }
+
+    [Fact]
+    public async Task Explicit_reload_drains_active_apply_patch_before_generation_disposal()
+    {
+
+        await using TempWorkspace workspace = new();
+        await workspace.InitializeAsync();
+        workspace.WriteFile("explicit-reload.txt", "before\n");
+
+        AIFunction applyPatch = await GetToolAsync(
+            workspace.Root,
+            ToolRiskClassifier.ApplyPatchToolName);
+        BlockingCommittedReceiptSink sink = new();
+        ApplyPatchInvocationContext context = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new ToolInvocationIdentity(
+                Guid.NewGuid().ToString("N"),
+                "explicit-reload-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            "{\"patch\":\"explicit-reload\"}",
+            "test-model",
+            DateTimeOffset.UtcNow,
+            sink);
+
+        using IDisposable scope =
+            ApplyPatchInvocationAmbient.Begin(context);
+        Task<object?> invocation = applyPatch.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["patch"] =
+                        "--- a/explicit-reload.txt\n"
+                        + "+++ b/explicit-reload.txt\n"
+                        + "@@ -1 +1 @@\n"
+                        + "-before\n"
+                        + "+after\n",
+                    ["dryRun"] = false,
+                }),
+            CancellationToken.None).AsTask();
+
+        await sink.HandoffStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+        Task reload = _manager.ReloadAsync(
+            workspace.Root);
+        await Task.Delay(50);
+
+        Assert.False(reload.IsCompleted);
+        Assert.False(invocation.IsCompleted);
+
+        sink.ReleaseHandoff();
+        TrustedStructuredToolResult result =
+            Assert.IsType<TrustedStructuredToolResult>(
+                await invocation.WaitAsync(
+                    TimeSpan.FromSeconds(5)));
+        await reload.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Contains(
+            "\"status\":\"ok\"",
+            result.Text,
+            StringComparison.Ordinal);
+        Assert.True(context.ReceiptHandled);
+        Assert.Equal(
+            "after\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(
+                    workspace.Root,
+                    "explicit-reload.txt")));
+
+    }
+
+    private async Task<AIFunction> GetToolAsync(
+        string workspaceRoot,
+        string toolName)
+    {
+
+        IReadOnlyList<AITool> tools =
+            await _manager.GetAvailableToolsAsync(workspaceRoot);
+
+        return Assert.IsAssignableFrom<AIFunction>(
+            tools.Single(
+                tool => string.Equals(
+                    tool.Name,
+                    toolName,
+                    StringComparison.Ordinal)));
+
+    }
+
+    private async Task<string> InvokeInvalidPatchAsync(
+        string workspaceRoot,
+        string patch)
+    {
+
+        IReadOnlyList<AITool> tools =
+            await _manager.GetAvailableToolsAsync(workspaceRoot);
+        AIFunction applyPatch = Assert.IsAssignableFrom<AIFunction>(
+            tools.Single(
+                tool => string.Equals(
+                    tool.Name,
+                    ToolRiskClassifier.ApplyPatchToolName,
+                    StringComparison.Ordinal)));
+        ApplyPatchInvocationContext context = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new ToolInvocationIdentity(
+                Guid.NewGuid().ToString("N"),
+                "settings-reload-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            "{\"patch\":\"settings-reload\"}",
+            "test-model",
+            DateTimeOffset.UtcNow,
+            new UnexpectedReceiptSink());
+
+        using IDisposable scope = ApplyPatchInvocationAmbient.Begin(context);
+        object? result = await applyPatch.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["patch"] = patch,
+                    ["dryRun"] = false,
+                }),
+            CancellationToken.None);
+
+        return Assert.IsType<TrustedStructuredToolResult>(result).Text;
+
+    }
+
+    private static void AddClientToPrivatePartition(
+        McpConnectionManager manager,
+        string partitionKey,
+        IMcpClient client)
+    {
+
+        System.Reflection.FieldInfo? field =
+            typeof(McpConnectionManager).GetField(
+                "_partitionClients",
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        object? partitions = field!.GetValue(manager);
+        Assert.NotNull(partitions);
+        System.Reflection.PropertyInfo? indexer =
+            partitions!.GetType().GetProperty("Item");
+        Assert.NotNull(indexer);
+        object? lazy = indexer!.GetValue(
+            partitions,
+            [partitionKey]);
+        Assert.NotNull(lazy);
+        object? partition =
+            lazy!.GetType().GetProperty("Value")?.GetValue(lazy);
+        Assert.NotNull(partition);
+        object? clients =
+            partition!.GetType().GetProperty("Clients")?.GetValue(
+                partition);
+        Assert.NotNull(clients);
+        System.Reflection.MethodInfo? add =
+            clients!.GetType().GetMethod("Add");
+        Assert.NotNull(add);
+
+        _ = add!.Invoke(clients, [client]);
+
+    }
+
     private sealed class AlwaysTrustedWorkspaceStore : ITrustedMcpWorkspaceStore
     {
 
@@ -90,6 +459,142 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+    }
+
+    private sealed class MutableOptionsMonitor(ArcanumSettings current)
+        : Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings>
+    {
+        public ArcanumSettings CurrentValue { get; set; } = current;
+
+        public ArcanumSettings Get(string? name) => CurrentValue;
+
+        public IDisposable OnChange(
+            Action<ArcanumSettings, string?> listener) =>
+            new NoopDisposable();
+    }
+
+    private sealed class NoopDisposable : IDisposable
+    {
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class UnexpectedReceiptSink : IApplyPatchPendingReceiptSink
+    {
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
+            ApplyPatchReceiptProbe probe,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptProbeResult(
+                    ApplyPatchReceiptProbeOutcome.NotFound,
+                    SerializedResult: null));
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptPreflightResult(
+                    ApplyPatchReceiptPreflightOutcome.Admitted,
+                    SerializedResult: null));
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                MandatoryToolInteractionAppendOutcome.Ambiguous);
+
+        public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
+            PendingApplyPatchReceipt receipt,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchPendingReceiptHandoffResult(
+                    MandatoryToolInteractionAppendOutcome.Ambiguous,
+                    Cleanup: null,
+                    Rollback: null));
+    }
+
+    private sealed class BlockingCommittedReceiptSink
+        : IApplyPatchPendingReceiptSink
+    {
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource HandoffStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
+            ApplyPatchReceiptProbe probe,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptProbeResult(
+                    ApplyPatchReceiptProbeOutcome.NotFound,
+                    SerializedResult: null));
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptPreflightResult(
+                    ApplyPatchReceiptPreflightOutcome.Admitted,
+                    SerializedResult: null));
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted);
+
+        public async ValueTask<ApplyPatchPendingReceiptHandoffResult>
+            HandoffAsync(
+                PendingApplyPatchReceipt receipt,
+                CancellationToken cancellationToken)
+        {
+
+            HandoffStarted.TrySetResult();
+            await _release.Task.WaitAsync(
+                cancellationToken);
+            WorkspaceArtifactCleanupResult cleanup =
+                await receipt.MarkIrreversibleAsync(
+                    CancellationToken.None);
+
+            return new ApplyPatchPendingReceiptHandoffResult(
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+                cleanup,
+                Rollback: null);
+        }
+
+        public void ReleaseHandoff() =>
+            _release.TrySetResult();
+    }
+
+    private sealed class TrackingMcpClient : IMcpClient
+    {
+        public int DisposeCount { get; private set; }
+
+        public Task InitializeAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<McpBridgeTool>>([]);
+
+        public Task<ModelContextProtocol.Protocol.CallToolResult>
+            CallToolAsync(
+                string toolName,
+                IReadOnlyDictionary<string, object?> arguments,
+                TimeSpan? requestTimeout = null,
+                CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard

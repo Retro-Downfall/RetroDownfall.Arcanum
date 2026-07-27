@@ -17,7 +17,8 @@ public sealed class ArcanumHealthChecker(
     IMcpConnectionManager mcpConnectionManager,
     IOptionsMonitor<ArcanumSettings> settings,
     WeaveIndexAvailability weaveIndexAvailability,
-    IProviderHealthTracker providerHealthTracker)
+    IProviderHealthTracker providerHealthTracker,
+    IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null)
 {
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
@@ -108,6 +109,25 @@ public sealed class ArcanumHealthChecker(
             hostTools.IsHealthDegraded ? HealthStatus.Degraded : HealthStatus.Healthy,
             $"edition={hostTools.Edition}; allowed={hostTools.Allowed}; "
             + $"escapeHatchEnv={hostTools.EscapeHatchEnvSet}. {hostTools.PublicMessage}"));
+
+        WorkspaceCheckCapabilityStatus workspaceCheck =
+            workspaceCheckCapabilityReporter is null
+            ? new WorkspaceCheckCapabilityStatus(
+                false,
+                false,
+                "Workspace-check capability reporter is unavailable.")
+            : await workspaceCheckCapabilityReporter
+                .GetStatusAsync(
+                    settings.CurrentValue.Host?.Workspace,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        components.Add(new HealthComponentDto(
+            "WorkspaceCheck",
+            workspaceCheck.IsHealthDegraded
+                ? HealthStatus.Degraded
+                : HealthStatus.Healthy,
+            $"available={workspaceCheck.IsAvailable}. {workspaceCheck.Reason}"));
 
         (bool embeddingsEnabled, string vectorMode, string vectorDiagnostic, int managedBudget) =
             EmbeddingsVectorStatus.Resolve(settings.CurrentValue.Embeddings, weaveIndexAvailability);

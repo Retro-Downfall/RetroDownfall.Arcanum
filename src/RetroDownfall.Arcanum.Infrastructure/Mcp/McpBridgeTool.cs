@@ -28,6 +28,10 @@ internal sealed class McpBridgeTool : AIFunction
 
     private readonly long _toolOutputCapBytes;
 
+    private readonly TrustedStructuredToolResultKind? _trustedStructuredResultKind;
+
+    private readonly TimeSpan? _requestTimeout;
+
     internal long ToolOutputCapBytes => _toolOutputCapBytes;
 
     public McpBridgeTool(
@@ -37,7 +41,9 @@ internal sealed class McpBridgeTool : AIFunction
         IMcpClient client,
         long toolOutputCapBytes,
         IMcpClient? fallbackClient = null,
-        ILogger? fallbackLogger = null)
+        ILogger? fallbackLogger = null,
+        TrustedStructuredToolResultKind? trustedStructuredResultKind = null,
+        TimeSpan? requestTimeout = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(client);
@@ -48,6 +54,8 @@ internal sealed class McpBridgeTool : AIFunction
         _toolOutputCapBytes = toolOutputCapBytes;
         _fallbackClient = fallbackClient;
         _fallbackLogger = fallbackLogger;
+        _trustedStructuredResultKind = trustedStructuredResultKind;
+        _requestTimeout = requestTimeout;
     }
 
     public override string Name => _name;
@@ -60,7 +68,11 @@ internal sealed class McpBridgeTool : AIFunction
     {
         try
         {
-            return await CallAndFormatAsync(_client, arguments, cancellationToken).ConfigureAwait(false);
+            return await CallAndFormatAsync(
+                _client,
+                arguments,
+                trustStructuredResult: true,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -70,20 +82,24 @@ internal sealed class McpBridgeTool : AIFunction
             // wire-cancel notification to the local server so it stops.
             throw;
         }
-        catch (Exception ex) when (IsTransportFailure(ex))
+        catch (McpTransportUnavailableException ex)
+            when (ex.DispatchState
+                == McpRequestDispatchState.NotDispatched)
         {
-            // W3.4 Group C #6: restrict the global fallback to TRANSPORT/CONNECTIVITY failures
-            // only (local server down/unreachable / channel closed / transport disposed before
-            // a response). A tools/call that returned an error (isError: true) is a
-            // tool-execution failure — the tool already ran, possibly with side effects — so it
-            // must NOT be re-run on the fallback. Those surface as InvalidOperationException and
-            // propagate without a fallback attempt below.
+            // A fallback is safe only when the client positively classified the request as never
+            // dispatched. Timeout, disposal, channel completion, and generic transport failures
+            // after CallToolAsync begins are ambiguous: the tool may already have side effects,
+            // so retrying on another server could double-execute a mutation.
             if (_fallbackClient is null)
             {
                 throw;
             }
 
-            object? result = await CallAndFormatAsync(_fallbackClient, arguments, cancellationToken).ConfigureAwait(false);
+            object? result = await CallAndFormatAsync(
+                _fallbackClient,
+                arguments,
+                trustStructuredResult: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             _fallbackLogger?.LogWarning(
                 ex,
@@ -94,17 +110,29 @@ internal sealed class McpBridgeTool : AIFunction
         }
     }
 
-    private async Task<object?> CallAndFormatAsync(IMcpClient client, AIFunctionArguments arguments, CancellationToken cancellationToken)
+    private async Task<object?> CallAndFormatAsync(
+        IMcpClient client,
+        AIFunctionArguments arguments,
+        bool trustStructuredResult,
+        CancellationToken cancellationToken)
     {
         TimeSpan? callTimeout = string.Equals(_name, "ask_human", StringComparison.Ordinal)
             ? Timeout.InfiniteTimeSpan
-            : null;
+            : _requestTimeout;
 
         CallToolResult result = await client
             .CallToolAsync(_name, arguments, callTimeout, cancellationToken)
             .ConfigureAwait(false);
 
-        string text = McpToolResultFormatter.FormatContentText(result, _toolOutputCapBytes);
+        bool receiptHandled =
+            trustStructuredResult
+            && _trustedStructuredResultKind
+                == TrustedStructuredToolResultKind.WorkspacePatch
+            && ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true;
+
+        string text = McpToolResultFormatter.FormatContentText(
+            result,
+            receiptHandled ? long.MaxValue : _toolOutputCapBytes);
 
         if (result.IsError == true)
         {
@@ -121,23 +149,52 @@ internal sealed class McpBridgeTool : AIFunction
             throw new InvalidOperationException(errorText);
         }
 
-        return text;
+        return trustStructuredResult
+            && _trustedStructuredResultKind is { } kind
+            ? new TrustedStructuredToolResult(
+                kind,
+                text,
+                ReceiptHandled: receiptHandled)
+            : text;
     }
 
-    // W3.4 Group C #6: classifies exceptions raised while calling the SDK client as a
-    // transport/connectivity failure (the local server is down, unreachable, or the connection
-    // closed before a response was received). ClientTransportClosedException (the SDK's own
-    // transport-closed signal) derives from IOException, so it — along with general
-    // IOException/ObjectDisposedException/HttpRequestException/TimeoutException — is eligible for
-    // fallback. Tool-execution failures (InvalidOperationException from isError / a JSON-RPC
-    // error response, surfaced by the SDK as McpProtocolException) are intentionally excluded so
-    // McpBridgeTool does not re-run a possibly-mutating tool on the fallback server.
-    private static bool IsTransportFailure(Exception exception) =>
-        exception is IOException
-            or ObjectDisposedException
-            or System.Net.Http.HttpRequestException
-            or TimeoutException
-            or McpTransportUnavailableException;
+    internal McpBridgeTool WithTrustedStructuredResult(
+        TrustedStructuredToolResultKind kind) =>
+        new(
+            _name,
+            _description,
+            _inputSchema,
+            _client,
+            _toolOutputCapBytes,
+            _fallbackClient,
+            _fallbackLogger,
+            kind,
+            _requestTimeout);
+
+    internal McpBridgeTool WithClient(IMcpClient client) =>
+        new(
+            _name,
+            _description,
+            _inputSchema,
+            client,
+            _toolOutputCapBytes,
+            _fallbackClient,
+            _fallbackLogger,
+            _trustedStructuredResultKind,
+            _requestTimeout);
+
+    internal McpBridgeTool WithRequestTimeout(TimeSpan requestTimeout) =>
+        new(
+            _name,
+            _description,
+            _inputSchema,
+            _client,
+            _toolOutputCapBytes,
+            _fallbackClient,
+            _fallbackLogger,
+            _trustedStructuredResultKind,
+            requestTimeout);
+
 }
 
 /// <summary>

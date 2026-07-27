@@ -143,6 +143,48 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task WriteAsync_reports_failure_when_atomic_replace_aborts()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings original = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "original", ApiKey = "sk-original" },
+            ],
+        };
+
+        Assert.True((await writer.WriteAsync(original, CancellationToken.None)).IsSuccess);
+
+        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+        string aliasPath = Path.Combine(_workspace.Root, "arcanum-hard-link.json");
+
+        Assert.True(HardLinkTestSupport.TryCreate(aliasPath, configPath));
+
+        byte[] originalBytes = await File.ReadAllBytesAsync(configPath);
+
+        ArcanumSettings replacement = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "replacement", ApiKey = "sk-replacement" },
+            ],
+        };
+
+        Result result = await writer.WriteAsync(replacement, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(configPath));
+
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(aliasPath));
+
+    }
+
     private static ConfigurationWriter CreateWriter()
     {
 

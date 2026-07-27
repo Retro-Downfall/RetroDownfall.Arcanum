@@ -1,8 +1,11 @@
 using System.Text;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class AtomicFileTests : IDisposable
 {
 
@@ -19,6 +22,8 @@ public sealed class AtomicFileTests : IDisposable
 
     public void Dispose()
     {
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
 
         if (Directory.Exists(_root))
         {
@@ -72,6 +77,33 @@ public sealed class AtomicFileTests : IDisposable
         Assert.Equal("replacement", await File.ReadAllTextAsync(destination));
 
         Assert.Single(Directory.GetFiles(_root));
+
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_new_destination_does_not_overwrite_concurrent_create()
+    {
+
+        string destination = Path.Combine(_root, "concurrent.txt");
+
+        string tempPath = TempPathFor(destination);
+
+        await Assert.ThrowsAsync<IOException>(
+            () => AtomicFile.ReplaceAsync(
+                destination,
+                tempPath,
+                (stream, ct) => WriteTextAsync(stream, "transaction", ct),
+                CancellationToken.None,
+                beforeMove: () =>
+                {
+
+                    File.WriteAllText(destination, "external");
+
+                }));
+
+        Assert.Equal("external", await File.ReadAllTextAsync(destination));
+
+        Assert.False(File.Exists(tempPath));
 
     }
 
@@ -158,6 +190,70 @@ public sealed class AtomicFileTests : IDisposable
     }
 
     [Fact]
+    public async Task ReplaceAsync_does_not_restore_over_external_post_move_replacement()
+    {
+
+        string destination = Path.Combine(_root, "external-after-move.txt");
+
+        await File.WriteAllTextAsync(destination, "original");
+
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+            destination,
+            TempPathFor(destination),
+            (stream, ct) => WriteTextAsync(stream, "transaction", ct),
+            CancellationToken.None,
+            afterReplace: () =>
+            {
+
+                File.Delete(destination);
+
+                File.WriteAllText(destination, "external");
+
+                return false;
+
+            });
+
+        Assert.Equal(AtomicReplaceStatus.ReplacedButUnverified, status);
+
+        Assert.Equal("external", await File.ReadAllTextAsync(destination));
+
+        string backup = Assert.Single(
+            Directory.GetFiles(_root, ".arcanum-bak-*"));
+
+        Assert.Equal("original", await File.ReadAllTextAsync(backup));
+
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_detects_post_move_content_change_and_retains_recovery()
+    {
+
+        string destination = Path.Combine(_root, "content-race.txt");
+
+        await File.WriteAllTextAsync(destination, "original");
+
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+            destination,
+            TempPathFor(destination),
+            (stream, ct) => WriteTextAsync(stream, "transaction", ct),
+            CancellationToken.None,
+            afterMoveBeforeVerify: () =>
+                File.WriteAllText(destination, "external-after-move"));
+
+        Assert.Equal(AtomicReplaceStatus.RolledBack, status);
+
+        Assert.Equal("original", await File.ReadAllTextAsync(destination));
+
+        string recovery = Assert.Single(
+            Directory.GetFiles(_root, ".arcanum-quarantine-*"));
+
+        Assert.Equal(
+            "external-after-move",
+            await File.ReadAllTextAsync(recovery));
+
+    }
+
+    [Fact]
     public async Task ReplaceAsync_when_afterReplace_fails_without_prior_file_quarantines_destination()
     {
 
@@ -206,6 +302,124 @@ public sealed class AtomicFileTests : IDisposable
         Assert.False(File.Exists(tempPath));
 
         Assert.Equal("original", await File.ReadAllTextAsync(destination));
+
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_preserves_existing_unix_mode_and_changes_mtime()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        string destination = Path.Combine(_root, "executable.sh");
+
+        await File.WriteAllTextAsync(destination, "old");
+
+        UnixFileMode mode =
+            UnixFileMode.UserRead
+            | UnixFileMode.UserWrite
+            | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead;
+
+        File.SetUnixFileMode(destination, mode);
+
+        DateTime oldMtime = DateTime.UtcNow.AddMinutes(-10);
+
+        File.SetLastWriteTimeUtc(destination, oldMtime);
+
+        AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+            destination,
+            TempPathFor(destination),
+            (stream, ct) => WriteTextAsync(stream, "new", ct),
+            CancellationToken.None);
+
+        Assert.Equal(AtomicReplaceStatus.Succeeded, status);
+
+        Assert.Equal(mode, File.GetUnixFileMode(destination));
+
+        Assert.NotEqual(oldMtime, File.GetLastWriteTimeUtc(destination));
+
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_rejects_existing_file_with_multiple_hard_links()
+    {
+
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string destination = Path.Combine(_root, "linked.txt");
+
+        string alias = Path.Combine(Path.GetTempPath(), $"arcanum-atomic-link-{Guid.NewGuid():N}.txt");
+
+        await File.WriteAllTextAsync(destination, "original");
+
+        try
+        {
+
+            Assert.True(HardLinkTestSupport.TryCreate(alias, destination));
+
+            AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+                destination,
+                TempPathFor(destination),
+                (stream, ct) => WriteTextAsync(stream, "new", ct),
+                CancellationToken.None);
+
+            Assert.Equal(AtomicReplaceStatus.Aborted, status);
+
+            Assert.Equal("original", await File.ReadAllTextAsync(destination));
+
+            Assert.Equal("original", await File.ReadAllTextAsync(alias));
+
+        }
+        finally
+        {
+
+            File.Delete(alias);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_fails_closed_when_existing_link_metadata_is_unavailable()
+    {
+
+        string destination = Path.Combine(_root, "unknown-links.txt");
+
+        await File.WriteAllTextAsync(destination, "original");
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ => null;
+
+        try
+        {
+
+            AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+                destination,
+                TempPathFor(destination),
+                (stream, ct) => WriteTextAsync(stream, "new", ct),
+                CancellationToken.None);
+
+            Assert.Equal(AtomicReplaceStatus.Aborted, status);
+
+            Assert.Equal("original", await File.ReadAllTextAsync(destination));
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+        }
 
     }
 

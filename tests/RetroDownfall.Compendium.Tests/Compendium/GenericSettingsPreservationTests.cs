@@ -329,6 +329,73 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             Assert.Single(Assert.Single(saved.Providers).Models).Tokenization);
     }
 
+    [Fact]
+    public async Task Workspace_check_custom_profiles_remain_opaque_and_survive_save_reload()
+    {
+        WorkspaceCheckProfileSettings expected = new()
+        {
+            ExecutableId = "dotnet",
+            Kind = WorkspaceCheckKind.Test,
+            Parser = WorkspaceCheckDiagnosticParserKind.VsTest,
+            FixedArguments = ["test"],
+            Options = new Dictionary<string, WorkspaceCheckProfileOptionSettings>
+            {
+                ["configuration"] = new()
+                {
+                    AllowedValues = new Dictionary<string, string[]>
+                    {
+                        ["release"] = ["--configuration", "Release"],
+                    },
+                },
+            },
+        };
+        await SeedAsync(new ArcanumSettings
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
+                    {
+                        ["ci-test"] = expected,
+                    },
+                },
+            },
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.CodingTools);
+
+        Assert.DoesNotContain(
+            section.Fields,
+            static field => field.Descriptor.Key.StartsWith(
+                "codingTools.workspaceCheck.customProfiles.",
+                StringComparison.Ordinal));
+
+        ArcanumSettings built = vm.BuildSettings();
+        WorkspaceCheckProfileSettings builtProfile = built.CodingTools.WorkspaceCheck.CustomProfiles["ci-test"];
+
+        Assert.Equal(expected.ExecutableId, builtProfile.ExecutableId);
+        Assert.Equal(expected.Kind, builtProfile.Kind);
+        Assert.Equal(expected.Parser, builtProfile.Parser);
+        Assert.Equal(expected.FixedArguments, builtProfile.FixedArguments);
+        Assert.Equal(
+            ["--configuration", "Release"],
+            builtProfile.Options["configuration"].AllowedValues["release"]);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        WorkspaceCheckProfileSettings savedProfile = saved.CodingTools.WorkspaceCheck.CustomProfiles["ci-test"];
+
+        Assert.Equal(expected.FixedArguments, savedProfile.FixedArguments);
+        Assert.Equal(
+            ["--configuration", "Release"],
+            savedProfile.Options["configuration"].AllowedValues["release"]);
+    }
+
     private static ConfigurationViewModel CreateViewModel()
     {
 

@@ -77,4 +77,31 @@ public sealed class JsonRpcModelsTests
 
     }
 
+    [Fact]
+    public void SearchWorkspaceParams_round_trips_through_source_generated_context()
+    {
+
+        SearchWorkspaceParams original = new()
+        {
+            Pattern = "needle",
+            Mode = "literal",
+            CaseSensitive = false,
+            Root = "src",
+            Globs = ["**/*.cs"],
+            Extensions = [".cs"],
+        };
+
+        string wire = JsonSerializer.Serialize(original, Json.SearchWorkspaceParams);
+        SearchWorkspaceParams? parsed = JsonSerializer.Deserialize(wire, Json.SearchWorkspaceParams);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("needle", parsed.Pattern);
+        Assert.Equal("literal", parsed.Mode);
+        Assert.False(parsed.CaseSensitive);
+        Assert.Equal("src", parsed.Root);
+        Assert.Equal(["**/*.cs"], parsed.Globs);
+        Assert.Equal([".cs"], parsed.Extensions);
+
+    }
+
 }

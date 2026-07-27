@@ -1988,6 +1988,252 @@ public sealed class ConfigurationValidatorTests
 
     }
 
+    [Fact]
+    public void CodingTools_defaults_are_bounded_and_workspace_check_timeout_is_five_minutes()
+    {
+        CodingToolsSettings settings = new();
+
+        Assert.Equal(300, settings.WorkspaceCheck.TimeoutSeconds);
+        Assert.Equal(300, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(300));
+        Assert.Equal(30, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(int.MinValue));
+        Assert.Equal(1800, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(int.MaxValue));
+
+        Assert.Equal(
+            settings.Search.MaxMatches,
+            ArcanumSettingClamps.WorkspaceSearchMaxMatches(settings.Search.MaxMatches));
+        Assert.Equal(
+            settings.Patch.MaxPatchBytes,
+            ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(settings.Patch.MaxPatchBytes));
+    }
+
+    [Fact]
+    public void Validate_CodingToolValuesOutsideClamps_ReturnsFocusedFailures()
+    {
+        ArcanumSettings settings = new()
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Search = new WorkspaceSearchSettings
+                {
+                    MaxPatternChars = 0,
+                    RegexTimeoutMilliseconds = 0,
+                    MaxMatches = 0,
+                },
+                Patch = new WorkspacePatchSettings
+                {
+                    MaxPatchBytes = 0,
+                    MaxFiles = 0,
+                    FuzzyMatchWindowLines = -1,
+                },
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    TimeoutSeconds = 1,
+                    MaxDiagnostics = 0,
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.search.maxPatternChars");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.search.regexTimeoutMilliseconds");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.search.maxMatches");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.patch.maxPatchBytes");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.patch.maxFiles");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.patch.fuzzyMatchWindowLines");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.workspaceCheck.timeoutSeconds");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.workspaceCheck.maxDiagnostics");
+    }
+
+    [Fact]
+    public void Validate_WorkspaceCheckDeadlineRelation_AppliesOnlyWhenCurrentlyAdvertisable()
+    {
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 600 },
+            CodingTools = new CodingToolsSettings
+            {
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    Enabled = true,
+                    TimeoutSeconds = 571,
+                },
+            },
+        };
+
+        Result eligible = new ConfigurationValidator(
+            workspaceCheckEligibility: new StubWorkspaceCheckEligibility(true)).Validate(settings);
+        Result unavailable = new ConfigurationValidator(
+            workspaceCheckEligibility: new StubWorkspaceCheckEligibility(false)).Validate(settings);
+        settings.CodingTools.WorkspaceCheck.Enabled = false;
+        Result disabled = new ConfigurationValidator(
+            workspaceCheckEligibility: new StubWorkspaceCheckEligibility(true)).Validate(settings);
+
+        Assert.True(eligible.IsFailure);
+        Assert.Contains(
+            eligible.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.timeoutSeconds");
+        Assert.True(unavailable.IsSuccess);
+        Assert.True(disabled.IsSuccess);
+    }
+
+    [Fact]
+    public void Validate_CustomWorkspaceCheckProfiles_RejectsReservedIdsAndOpenExecutableReferences()
+    {
+        ArcanumSettings settings = new()
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
+                    {
+                        ["dotnet-build"] = new()
+                        {
+                            ExecutableId = "shell",
+                            Kind = WorkspaceCheckKind.Build,
+                            Parser = WorkspaceCheckDiagnosticParserKind.MsBuild,
+                            FixedArguments = ["build"],
+                        },
+                    },
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[dotnet-build]");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer.EndsWith(".executableId", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_CustomWorkspaceCheckProfiles_RejectsInvalidKindsTokensOptionsAndDuplicates()
+    {
+        Dictionary<string, WorkspaceCheckProfileSettings> profiles = new(StringComparer.Ordinal)
+        {
+            ["bad profile"] = new()
+            {
+                ExecutableId = "dotnet",
+                Kind = (WorkspaceCheckKind)99,
+                Parser = (WorkspaceCheckDiagnosticParserKind)99,
+                FixedArguments = ["build", "danger.ps1"],
+            },
+            ["custom-test"] = new()
+            {
+                ExecutableId = "dotnet",
+                Kind = WorkspaceCheckKind.Test,
+                Parser = WorkspaceCheckDiagnosticParserKind.MsBuild,
+                Target = "../escape.csproj",
+                FixedArguments = ["build", "--configuration"],
+                Options = new Dictionary<string, WorkspaceCheckProfileOptionSettings>
+                {
+                    ["configuration"] = new()
+                    {
+                        AllowedValues = new Dictionary<string, string[]>
+                        {
+                            ["debug"] = ["--configuration", "Debug"],
+                            ["release"] = ["--configuration", "Release"],
+                        },
+                    },
+                },
+            },
+            ["CUSTOM-TEST"] = new()
+            {
+                ExecutableId = "dotnet",
+                Kind = WorkspaceCheckKind.Build,
+                Parser = WorkspaceCheckDiagnosticParserKind.MsBuild,
+                FixedArguments = ["build"],
+            },
+        };
+        ArcanumSettings settings = new()
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    MaxCustomProfiles = 2,
+                    MaxFixedArgumentsPerProfile = 1,
+                    MaxOptionsPerProfile = 0,
+                    MaxAllowedValuesPerOption = 1,
+                    CustomProfiles = profiles,
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[bad profile].kind");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[bad profile].parser");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer.EndsWith(".fixedArguments[1]", StringComparison.Ordinal));
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[custom-test].parser");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[custom-test].target");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[custom-test].options");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Detail.Contains("duplicated case-insensitively", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_ConfiguredWorkspaceCheckExecutableInsideWorkspace_ReturnsFailure()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"arcanum-check-validator-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        string executable = Path.Combine(workspace, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+        File.WriteAllText(executable, "not a real executable");
+
+        try
+        {
+            ArcanumSettings settings = new()
+            {
+                Host = new HostSettings { Workspace = workspace },
+                CodingTools = new CodingToolsSettings
+                {
+                    WorkspaceCheck = new WorkspaceCheckSettings
+                    {
+                        ExecutableCatalog = new WorkspaceCheckExecutableCatalogSettings
+                        {
+                            DotNet = new WorkspaceCheckExecutableSettings { Path = executable },
+                        },
+                    },
+                },
+            };
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsFailure);
+            Assert.Contains(
+                result.Error.Details!,
+                static e => e.Pointer == "codingTools.workspaceCheck.executableCatalog.dotNet.path"
+                    && e.Detail.Contains("outside the source workspace", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
     private static ArcanumSettings SettingsWithReasoning(ReasoningCapabilities reasoning) =>
         new()
         {
@@ -2023,6 +2269,12 @@ public sealed class ConfigurationValidatorTests
         };
 
         return new ArcanumSettings { Providers = [provider] };
+    }
+
+    private sealed class StubWorkspaceCheckEligibility(bool isCurrentlyEligible)
+        : IWorkspaceCheckAdvertisementEligibility
+    {
+        public bool IsCurrentlyEligible { get; } = isCurrentlyEligible;
     }
 
 }

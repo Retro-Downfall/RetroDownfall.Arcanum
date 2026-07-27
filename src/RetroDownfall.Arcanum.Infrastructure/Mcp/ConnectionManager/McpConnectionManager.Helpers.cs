@@ -120,6 +120,8 @@ public sealed partial class McpConnectionManager
 
         public List<IMcpClient> Clients { get; } = [];
 
+        public IMcpClient? InternalClient { get; set; }
+
         public List<McpServerMetadata> Servers { get; } = [];
 
         public bool InternalServerStarted { get; set; }
@@ -133,6 +135,10 @@ public sealed partial class McpConnectionManager
         string Status,
         List<string> ToolNames,
         string? ErrorMessage);
+
+    private sealed record CachedMcpToolSurface(
+        long Generation,
+        IReadOnlyList<AITool> Tools);
 
     private static McpServerStatusDto ToStatusDto(McpServerMetadata meta)
     {

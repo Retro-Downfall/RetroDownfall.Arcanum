@@ -6,6 +6,21 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 [Collection("ProcessEnvironment")]
 public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
 {
+    [Fact]
+    public void Ci_has_packaged_sqlcipher_native_asset()
+    {
+        if (!string.Equals(
+                global::System.Environment.GetEnvironmentVariable("CI"),
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        Assert.True(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+    }
 
     [SkippableFact]
     public async Task CopyDatabase_waits_for_template_lifecycle_lock()

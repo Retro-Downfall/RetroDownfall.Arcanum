@@ -70,6 +70,55 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  macos-workspace-check:
+    name: macOS workspace-check runtime
+    runs-on: macos-14
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+            .config/dotnet-tools.json
+
+      - name: Pin trusted root-owned dotnet host
+        run: |
+          set -euo pipefail
+          test -n "${DOTNET_ROOT:-}"
+          sudo rm -rf /opt/dotnet
+          sudo mkdir -p /opt/dotnet
+          sudo cp -R "$DOTNET_ROOT/." /opt/dotnet/
+          sudo chown -R root:wheel /opt/dotnet
+          sudo chmod -R go-w /opt/dotnet
+          /opt/dotnet/dotnet --info
+
+      - name: Build Arcanum tests
+        run: |
+          dotnet restore tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
+          dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --no-restore
+
+      - name: Exercise production workspace-check jail
+        run: |
+          dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+            -c Release \
+            --no-build \
+            --no-restore \
+            --filter "FullyQualifiedName~Macos_ci_requires_real_workspace_check_production_surface|FullyQualifiedName~MacOsSandbox_DeniesLaunchServicesBrokerEscape|FullyQualifiedName~Real_dotnet_build_uses_seeded_assets|FullyQualifiedName~Real_dotnet_lint_uses_seeded_project_state|FullyQualifiedName~Real_dotnet_test_uses_seeded_assets|FullyQualifiedName~Ci_has_packaged_sqlcipher_native_asset"
+
+      - name: Verify macOS AOT IL warnings and search regex smoke
+        run: ./scripts/verify-aot-il-warnings.sh
+
   aot-il:
     name: AOT IL warning gate
     runs-on: ubuntu-latest
@@ -91,5 +140,5 @@ jobs:
             **/Directory.Packages.props
             .config/dotnet-tools.json
 
-      - name: Verify AOT IL warnings (host RID)
+      - name: Verify AOT IL warnings and regex smoke (host RID)
         run: ./scripts/verify-aot-il-warnings.sh

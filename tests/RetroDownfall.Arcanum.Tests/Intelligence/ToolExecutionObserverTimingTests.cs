@@ -76,6 +76,63 @@ public sealed class ToolExecutionObserverTimingTests
         _ = await invoke.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    [Fact]
+    public async Task Workspace_check_Ward_receives_host_owned_execution_risk_disclosure()
+    {
+
+        CapturingDenyWard ward = new();
+        ToolExecutionPipeline pipeline = new(
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
+            {
+                Ward = new WardSettings
+                {
+                    Enabled = true,
+                    ForbiddenArts = [],
+                },
+            }),
+            ward,
+            new AllowAllSanctumGuard(),
+            new NoOpSessionAttachmentStore(),
+            NullLogger<ToolExecutionPipeline>.Instance);
+        FunctionCallContent call = new(
+            "call-check",
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            new Dictionary<string, object?>
+            {
+                ["profile"] = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+            });
+
+        _ = await pipeline.ProcessSingleToolCallAsync(
+            call,
+            new PingRequest("check"),
+            new ChatOptions { Tools = [] },
+            activeSpell: null,
+            sessionId: null,
+            new ToolExecutionPipeline.TurnContext
+            {
+                CampaignRequiresWard = false,
+            },
+            suppressInvocationFailures: true,
+            CancellationToken.None);
+
+        Assert.Contains(
+            "workspace-authored code",
+            ward.ArgumentsJson,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "read-only",
+            ward.ArgumentsJson,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "writable build",
+            ward.ArgumentsJson,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "network",
+            ward.ArgumentsJson,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class GatingWard(TaskCompletionSource entered, TaskCompletionSource release) : IWard
     {
 
@@ -98,6 +155,39 @@ public sealed class ToolExecutionObserverTimingTests
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
 
+    }
+
+    private sealed class CapturingDenyWard : IWard
+    {
+
+        public string ArgumentsJson { get; private set; } = string.Empty;
+
+        public Task<WardResolution> WardAsync(
+            string wardId,
+            string toolName,
+            JsonDocument? arguments,
+            string? sessionId,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+
+            ArgumentsJson = arguments?.RootElement.GetRawText()
+                ?? string.Empty;
+
+            return Task.FromResult(
+                new WardResolution(
+                    Allowed: false,
+                    Reason: "denied",
+                    DateTimeOffset.UtcNow));
+        }
+
+        public ResolveStatus Resolve(
+            string wardId,
+            bool allow,
+            string? reason) =>
+            ResolveStatus.Success;
+
+        public IReadOnlyList<ActiveWard> GetActiveWards() => [];
     }
 
     private sealed class AllowAllSanctumGuard : ISanctumGuard

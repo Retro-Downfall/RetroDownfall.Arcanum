@@ -54,6 +54,21 @@ public sealed class SettingDescriptorCoverageTests
     }
 
     [Fact]
+    public void Workspace_check_custom_profiles_have_one_opaque_dictionary_descriptor()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static d => d.Key == "codingTools.workspaceCheck.customProfiles");
+
+        Assert.Equal(SettingKind.Dictionary, descriptor.Kind);
+        Assert.DoesNotContain(
+            SettingDescriptors.All,
+            static d => d.Key.StartsWith(
+                "codingTools.workspaceCheck.customProfiles.",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
 
     public void Every_descriptor_key_matches_a_real_ArcanumSettings_property()
     {

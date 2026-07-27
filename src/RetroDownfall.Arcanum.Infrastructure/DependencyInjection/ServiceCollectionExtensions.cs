@@ -47,6 +47,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 
@@ -214,6 +215,14 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<PidFileService>();
 
         services.AddSingleton<ConfigurationWriter>();
+
+        services.AddSingleton<WorkspaceCheckCapabilityReporter>();
+
+        services.AddSingleton<IWorkspaceCheckCapabilityReporter>(
+            static sp => sp.GetRequiredService<WorkspaceCheckCapabilityReporter>());
+
+        services.AddSingleton<IWorkspaceCheckAdvertisementEligibility>(
+            static sp => sp.GetRequiredService<WorkspaceCheckCapabilityReporter>());
 
         services.AddSingleton<ConfigurationValidator>();
 

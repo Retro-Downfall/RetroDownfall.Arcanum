@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
 
@@ -149,6 +150,114 @@ public sealed class ArcanumSettingsBindingTests
         Assert.Equal(20m, pricing.OutputPer1M);
         Assert.Equal(80m, pricing.ReasoningPer1M);
         Assert.Equal(1m, pricing.CachedPer1M);
+    }
+
+    [Fact]
+    public void Configure_binds_coding_tool_bounds_and_opaque_check_profiles_via_source_generator()
+    {
+        const string json =
+            """
+            {
+              "Arcanum": {
+                "codingTools": {
+                  "search": {
+                    "maxPatternChars": 2048,
+                    "regexTimeoutMilliseconds": 125,
+                    "maxElapsedMilliseconds": 9000,
+                    "maxFiles": 750,
+                    "maxBytes": 8388608,
+                    "maxTraversalSteps": 50000,
+                    "maxMatches": 250,
+                    "maxPreviewChars": 320
+                  },
+                  "patch": {
+                    "maxPatchBytes": 2097152,
+                    "maxFiles": 48,
+                    "maxHunks": 256,
+                    "maxLinesPerHunk": 4000,
+                    "fuzzyMatchWindowLines": 40,
+                    "maxResultItems": 96
+                  },
+                  "workspaceCheck": {
+                    "enabled": true,
+                    "timeoutSeconds": 420,
+                    "maxCustomProfiles": 12,
+                    "maxFixedArgumentsPerProfile": 16,
+                    "maxArgumentTokenChars": 128,
+                    "maxOptionsPerProfile": 8,
+                    "maxAllowedValuesPerOption": 6,
+                    "maxDiagnostics": 300,
+                    "maxOutputBytes": 524288,
+                    "executableCatalog": {
+                      "dotNet": {
+                        "path": "/opt/dotnet/dotnet"
+                      }
+                    },
+                    "customProfiles": {
+                      "custom-build": {
+                        "executableId": "dotnet",
+                        "kind": "build",
+                        "parser": "msBuild",
+                        "fixedArguments": ["build"],
+                        "options": {
+                          "configuration": {
+                            "allowedValues": {
+                              "debug": ["--configuration", "Debug"],
+                              "release": ["--configuration", "Release"]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        using MemoryStream stream = new(System.Text.Encoding.UTF8.GetBytes(json));
+        IConfigurationRoot configuration = new ConfigurationBuilder()
+            .AddJsonStream(stream)
+            .Build();
+        ServiceCollection services = new();
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        CodingToolsSettings codingTools =
+            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.CodingTools;
+
+        Assert.Equal(2048, codingTools.Search.MaxPatternChars);
+        Assert.Equal(8_388_608, codingTools.Search.MaxBytes);
+        Assert.Equal(2_097_152, codingTools.Patch.MaxPatchBytes);
+        Assert.Equal(40, codingTools.Patch.FuzzyMatchWindowLines);
+        Assert.True(codingTools.WorkspaceCheck.Enabled);
+        Assert.Equal(420, codingTools.WorkspaceCheck.TimeoutSeconds);
+        Assert.Equal("/opt/dotnet/dotnet", codingTools.WorkspaceCheck.ExecutableCatalog.DotNet.Path);
+
+        WorkspaceCheckProfileSettings profile =
+            Assert.Single(codingTools.WorkspaceCheck.CustomProfiles).Value;
+
+        Assert.Equal("dotnet", profile.ExecutableId);
+        Assert.Equal(WorkspaceCheckKind.Build, profile.Kind);
+        Assert.Equal(WorkspaceCheckDiagnosticParserKind.MsBuild, profile.Parser);
+        Assert.Equal(["build"], profile.FixedArguments);
+        Assert.Equal(
+            ["--configuration", "Release"],
+            profile.Options["configuration"].AllowedValues["release"]);
+    }
+
+    [Theory]
+    [InlineData(typeof(CodingToolsSettings))]
+    [InlineData(typeof(WorkspaceSearchSettings))]
+    [InlineData(typeof(WorkspacePatchSettings))]
+    [InlineData(typeof(WorkspaceCheckSettings))]
+    [InlineData(typeof(WorkspaceCheckExecutableCatalogSettings))]
+    [InlineData(typeof(WorkspaceCheckProfileSettings))]
+    [InlineData(typeof(WorkspaceCheckProfileOptionSettings))]
+    [InlineData(typeof(WorkspaceCheckKind))]
+    [InlineData(typeof(WorkspaceCheckDiagnosticParserKind))]
+    public void ConfigurationJsonContext_registers_coding_tool_contract(Type type)
+    {
+        Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
     }
 
 }

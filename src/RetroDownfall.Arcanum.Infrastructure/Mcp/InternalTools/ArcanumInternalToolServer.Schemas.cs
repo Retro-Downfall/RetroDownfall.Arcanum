@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Text.Json;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -127,6 +129,199 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteBoolean("additionalProperties", false);
         });
+    }
+
+    private static JsonElement BuildSearchWorkspaceSchema(
+        WorkspaceSearchSettings settings)
+    {
+        return BuildSchema(w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            w.WriteStartObject("pattern");
+            w.WriteString("type", "string");
+            w.WriteString(
+                "description",
+                "Exact literal text or a runtime .NET regex matched independently against each logical line.");
+            w.WriteNumber("minLength", 1);
+            w.WriteNumber("maxLength", settings.MaxPatternChars);
+            w.WriteEndObject();
+
+            w.WriteStartObject("mode");
+            w.WriteString("type", "string");
+            w.WriteString("description", "Search mode: literal or regex.");
+            w.WriteStartArray("enum");
+            w.WriteStringValue("literal");
+            w.WriteStringValue("regex");
+            w.WriteEndArray();
+            w.WriteEndObject();
+
+            WriteBooleanProperty(
+                w,
+                "caseSensitive",
+                "Explicitly controls ordinal literal or culture-invariant regex case sensitivity.");
+
+            WriteStringProperty(
+                w,
+                "root",
+                "Optional normalized directory relative to the workspace root. Omit or use '.' for the full workspace.");
+
+            w.WriteStartObject("globs");
+            w.WriteString("type", "array");
+            w.WriteString(
+                "description",
+                "Optional normalized slash-separated path globs relative to root; supports *, ?, and **.");
+            w.WriteNumber("maxItems", 64);
+            w.WriteStartObject("items");
+            w.WriteString("type", "string");
+            w.WriteNumber("minLength", 1);
+            w.WriteNumber("maxLength", settings.MaxPatternChars);
+            w.WriteEndObject();
+            w.WriteEndObject();
+
+            w.WriteStartObject("extensions");
+            w.WriteString("type", "array");
+            w.WriteString(
+                "description",
+                "Optional extension allowlist, with or without a leading dot.");
+            w.WriteNumber("maxItems", 64);
+            w.WriteStartObject("items");
+            w.WriteString("type", "string");
+            w.WriteNumber("minLength", 1);
+            w.WriteNumber("maxLength", settings.MaxPatternChars);
+            w.WriteEndObject();
+            w.WriteEndObject();
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+            w.WriteStringValue("pattern");
+            w.WriteStringValue("mode");
+            w.WriteStringValue("caseSensitive");
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildWorkspaceCheckSchema(
+        WorkspaceCheckProfileCatalog profiles,
+        WorkspaceCheckSettings settings)
+    {
+
+        return BuildSchema(w =>
+        {
+            w.WriteString("type", "object");
+            w.WriteStartObject("properties");
+            w.WriteStartObject("profile");
+            w.WriteString("type", "string");
+            w.WriteString(
+                "description",
+                "Closed operator-owned workspace-check profile ID.");
+            w.WriteNumber("minLength", 1);
+            w.WriteNumber("maxLength", 64);
+            w.WriteEndObject();
+            w.WriteStartObject("options");
+            w.WriteString("type", "object");
+            w.WriteString(
+                "description",
+                "Optional profile-specific option IDs to exact allowlisted values.");
+            w.WriteEndObject();
+            w.WriteEndObject();
+            w.WriteBoolean("additionalProperties", false);
+            w.WriteStartArray("oneOf");
+
+            foreach (string profileId in profiles.ProfileIds
+                         .OrderBy(
+                             static value => value,
+                             StringComparer.OrdinalIgnoreCase))
+            {
+                w.WriteStartObject();
+                w.WriteString("type", "object");
+                w.WriteStartObject("properties");
+                w.WriteStartObject("profile");
+                w.WriteString("type", "string");
+                w.WriteString("const", profileId);
+                w.WriteEndObject();
+                w.WriteStartObject("options");
+                w.WriteString("type", "object");
+                w.WriteNumber(
+                    "maxProperties",
+                    ArcanumSettingClamps
+                        .WorkspaceCheckMaxOptionsPerProfile(
+                            settings.MaxOptionsPerProfile));
+                w.WriteStartObject("properties");
+
+                foreach ((string _, string optionId, IReadOnlyCollection<string> valueIds)
+                         in profiles.EnumerateOptionSchemas()
+                             .Where(option => string.Equals(
+                                 option.ProfileId,
+                                 profileId,
+                                 StringComparison.OrdinalIgnoreCase)))
+                {
+                    w.WriteStartObject(optionId);
+                    w.WriteString("type", "string");
+                    w.WriteStartArray("enum");
+
+                    foreach (string valueId in valueIds)
+                    {
+                        w.WriteStringValue(valueId);
+                    }
+
+                    w.WriteEndArray();
+                    w.WriteEndObject();
+                }
+
+                w.WriteEndObject();
+                w.WriteBoolean("additionalProperties", false);
+                w.WriteEndObject();
+                w.WriteEndObject();
+                w.WriteStartArray("required");
+                w.WriteStringValue("profile");
+                w.WriteEndArray();
+                w.WriteBoolean("additionalProperties", false);
+                w.WriteEndObject();
+            }
+
+            w.WriteEndArray();
+        });
+    }
+
+    private static JsonElement BuildApplyPatchSchema(
+        WorkspacePatchSettings settings)
+    {
+
+        return BuildSchema(w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            w.WriteStartObject("patch");
+            w.WriteString("type", "string");
+            w.WriteString(
+                "description",
+                "Canonical unified diff. Supports Git headers, create/delete/rename metadata, quoted paths, multiple files and hunks, and no-final-newline markers.");
+            w.WriteNumber("minLength", 1);
+            w.WriteNumber("maxLength", settings.MaxPatchBytes);
+            w.WriteEndObject();
+
+            WriteBooleanProperty(
+                w,
+                "dryRun",
+                "When true, parses, contains, fingerprints, and plans every hunk without staging, creating directories, or mutating files.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+            w.WriteStringValue("patch");
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+
     }
 
     private static JsonElement BuildExecuteCommandSchema(int timeoutSeconds)

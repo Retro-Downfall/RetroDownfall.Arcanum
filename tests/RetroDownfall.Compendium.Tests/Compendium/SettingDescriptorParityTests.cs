@@ -159,6 +159,35 @@ public sealed class SettingDescriptorParityTests
         Assert.Equal(nameof(ArcanumSettingClamps.PricingOutputPer1M), descriptor.ClampName);
     }
 
+    [Theory]
+    [InlineData(
+        "codingTools.search.maxPatternChars",
+        1,
+        16_384,
+        nameof(ArcanumSettingClamps.WorkspaceSearchMaxPatternChars))]
+    [InlineData(
+        "codingTools.patch.fuzzyMatchWindowLines",
+        0,
+        1_000,
+        nameof(ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines))]
+    [InlineData(
+        "codingTools.workspaceCheck.timeoutSeconds",
+        30,
+        1_800,
+        nameof(ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds))]
+    public void Coding_tool_descriptor_matches_contract_bounds(
+        string key,
+        double min,
+        double max,
+        string clampName)
+    {
+        SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, d => d.Key == key);
+
+        Assert.Equal(min, descriptor.Min);
+        Assert.Equal(max, descriptor.Max);
+        Assert.Equal(clampName, descriptor.ClampName);
+    }
+
     private static object GetMinValue(Type type)
     {
 

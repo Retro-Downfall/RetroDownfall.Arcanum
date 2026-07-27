@@ -324,6 +324,31 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
     }
 
+    public Task<MandatoryToolInteractionProbeResult>
+        ProbeMandatoryToolInteractionAsync(
+            MandatoryToolInteractionProbe probe,
+            CancellationToken cancellationToken = default) =>
+        _entryPersistence.ProbeMandatoryToolInteractionAsync(
+            probe,
+            cancellationToken);
+
+    public Task<MandatoryToolInteractionPreflightResult>
+        PreflightMandatoryToolInteractionAsync(
+            MandatoryToolInteraction interaction,
+            CancellationToken cancellationToken = default) =>
+        _entryPersistence.PreflightMandatoryToolInteractionAsync(
+            interaction,
+            GetSessionSettings(),
+            cancellationToken);
+
+    public Task<MandatoryToolInteractionAppendResult> AppendMandatoryToolInteractionAsync(
+        MandatoryToolInteraction interaction,
+        CancellationToken cancellationToken = default) =>
+        _entryPersistence.AppendMandatoryToolInteractionAsync(
+            interaction,
+            GetSessionSettings(),
+            cancellationToken);
+
     public async Task SaveCompletedExchangeAsync(
         string userPrompt,
         string assistantText,

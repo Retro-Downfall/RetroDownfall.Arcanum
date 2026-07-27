@@ -164,6 +164,13 @@ internal sealed partial class ArcanumInternalToolServer
             return gate;
         }
 
+        gate = TryRequirePersistedToolInvocation();
+
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         ReplaceTextBlockParams? args;
 
         try
@@ -268,6 +275,13 @@ internal sealed partial class ArcanumInternalToolServer
         CancellationToken cancellationToken)
     {
         McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+            return gate;
+        }
+
+        gate = TryRequirePersistedToolInvocation();
 
         if (gate is not null)
         {

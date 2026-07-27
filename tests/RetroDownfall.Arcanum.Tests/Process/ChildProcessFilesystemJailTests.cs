@@ -79,8 +79,39 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         Assert.Contains(temp, profile, StringComparison.Ordinal);
 
+        Assert.DoesNotContain(
+            "(allow file-write-create (vnode-type SOCKET))",
+            profile,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            $"(allow file-write-create (vnode-type SOCKET) (subpath \"{temp}\"))",
+            profile,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("(allow mach*)", profile, StringComparison.Ordinal);
+        Assert.DoesNotContain("(allow ipc*)", profile, StringComparison.Ordinal);
+        Assert.Contains("(deny appleevent-send)", profile, StringComparison.Ordinal);
+        Assert.Contains("/usr/bin/open", profile, StringComparison.Ordinal);
+        Assert.Contains("/usr/bin/osascript", profile, StringComparison.Ordinal);
+        Assert.Contains("/usr/bin/automator", profile, StringComparison.Ordinal);
+        Assert.Contains("/usr/bin/shortcuts", profile, StringComparison.Ordinal);
+        Assert.Contains("/bin/launchctl", profile, StringComparison.Ordinal);
+
         Assert.Throws<ArgumentException>(() =>
             MacOsSandboxExecProfileBuilder.Build([workspace], ["/"], temp));
+        Assert.Throws<InvalidOperationException>(() =>
+            MacOsSandboxExecProfileBuilder.AssertNoLaunchBrokerFootguns(
+                """
+                (version 1)
+                (deny default)
+                (deny appleevent-send)
+                (allow file-read*
+                  (literal "/usr/bin/open")
+                  (literal "/usr/bin/osascript")
+                  (literal "/usr/bin/automator")
+                  (literal "/usr/bin/shortcuts")
+                  (literal "/bin/launchctl"))
+                """));
 
     }
 
@@ -479,6 +510,93 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public async Task MacOsSandbox_DeniesLaunchServicesBrokerEscape()
+    {
+
+        if (!OperatingSystem.IsMacOS() || !IsMacOsSandboxExecRunnable())
+        {
+
+            return;
+        }
+
+        string marker = Path.Combine(
+            _outsideDir,
+            "launch-services-escape.txt");
+        string script = Path.Combine(
+            _workspace,
+            "launch-services-escape.sh");
+        string escapedMarker = marker.Replace(
+            "'",
+            "'\"'\"'",
+            StringComparison.Ordinal);
+        await File.WriteAllTextAsync(
+            script,
+            $$"""
+            #!/bin/sh
+            set -eu
+            app="$TMPDIR/ArcanumEscape.app"
+            executable="$app/Contents/MacOS/escape"
+            mkdir -p "$app/Contents/MacOS"
+            cat > "$app/Contents/Info.plist" <<'PLIST'
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+              <key>CFBundleExecutable</key><string>escape</string>
+              <key>CFBundleIdentifier</key><string>test.arcanum.escape</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+            </dict></plist>
+            PLIST
+            cat > "$executable" <<'PAYLOAD'
+            #!/bin/sh
+            echo escaped > '{{escapedMarker}}'
+            PAYLOAD
+            chmod +x "$executable"
+            /usr/bin/open -W "$app"
+            """);
+        File.SetUnixFileMode(
+            script,
+            UnixFileMode.UserRead
+            | UnixFileMode.UserWrite
+            | UnixFileMode.UserExecute);
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/sh",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = _workspace,
+        };
+        startInfo.ArgumentList.Add(script);
+
+        ChildProcessSandboxRequest request =
+            ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                sanctumAllowedPaths: null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: false);
+        CappedChildProcessRunResult result =
+            await CappedChildProcessRunner.RunAsync(
+                startInfo,
+                ChildProcessEnvironmentProfile.ToolExec,
+                64 * 1024,
+                TimeSpan.FromSeconds(15),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None,
+                request,
+                NullLogger.Instance);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.False(
+            File.Exists(marker),
+            $"LaunchServices escaped the sandbox. stdout=[{result.Stdout.Text}] stderr=[{result.Stderr.Text}]");
+
+    }
+
+    [Fact]
     public async Task MacOsSandbox_AllowsWorkspaceReadWrite()
     {
 
@@ -551,7 +669,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         Assert.Contains("tmpok", result.Stdout.Text, StringComparison.Ordinal);
 
-        Assert.Contains("arcanum-child-tmp-", result.Stdout.Text, StringComparison.Ordinal);
+        Assert.Contains("tmpdir=", result.Stdout.Text, StringComparison.Ordinal);
 
     }
 

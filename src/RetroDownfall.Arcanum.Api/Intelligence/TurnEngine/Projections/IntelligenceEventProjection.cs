@@ -146,7 +146,7 @@ internal sealed class IntelligenceEventProjection
                     ToolCall: new IntelligenceToolCallEvent(
                         completed.CallId,
                         completed.ToolName,
-                        completed.ResultText)),
+                    completed.ArgumentsJson)),
                 new IntelligenceEvent(
                     IntelligenceEventType.ToolResult,
                     completed.ToolName,
@@ -154,7 +154,7 @@ internal sealed class IntelligenceEventProjection
                     ToolCall: new IntelligenceToolCallEvent(
                         completed.CallId,
                         completed.ToolName,
-                        completed.ResultText)),
+                        completed.ArgumentsJson)),
             ],
 
             ToolInvocationCompleted completed =>
@@ -166,7 +166,7 @@ internal sealed class IntelligenceEventProjection
                     ToolCall: new IntelligenceToolCallEvent(
                         completed.CallId,
                         completed.ToolName,
-                        completed.ResultText)),
+                        completed.ArgumentsJson)),
             ],
 
             RunCompleted completed => MapCompleted(completed, includeReasoning: true),

@@ -8,11 +8,13 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
@@ -91,10 +93,632 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         Assert.Contains("list_directory", names);
 
+        Assert.Contains("search_workspace", names);
+
         Assert.Contains("write_file", names);
 
         Assert.Contains("execute_command", names);
 
+    }
+
+    [Fact]
+    public async Task ToolsList_without_workspace_omits_workspace_filesystem_tools()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            configureWorkspace: false);
+
+        JsonRpcResponse response = await session.SendRequestAsync(
+            "tools/list",
+            null);
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+        string[] names = tools.Tools.Select(
+            static tool => tool.Name).ToArray();
+
+        Assert.DoesNotContain("read_file_chunk", names);
+        Assert.DoesNotContain("replace_text_block", names);
+        Assert.DoesNotContain("write_file", names);
+        Assert.DoesNotContain("list_directory", names);
+        Assert.DoesNotContain(
+            ToolRiskClassifier.SearchWorkspaceToolName,
+            names);
+        Assert.DoesNotContain(
+            ToolRiskClassifier.ApplyPatchToolName,
+            names);
+        Assert.DoesNotContain(
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            names);
+        Assert.DoesNotContain(
+            ToolRiskClassifier.ExecuteCommandToolName,
+            names);
+        Assert.Contains("ask_human", names);
+
+    }
+
+    [Fact]
+    public async Task ToolsList_search_workspace_schema_exposes_bounded_exact_search_contract()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        McpToolDefinitionWire search = Assert.Single(
+            tools.Tools,
+            static tool => tool.Name == "search_workspace");
+        JsonElement schema = search.InputSchema;
+        JsonElement properties = schema.GetProperty("properties");
+
+        Assert.Equal("string", properties.GetProperty("pattern").GetProperty("type").GetString());
+        Assert.Equal(
+            ["literal", "regex"],
+            properties.GetProperty("mode").GetProperty("enum")
+                .EnumerateArray()
+                .Select(static item => item.GetString()));
+        Assert.Equal("boolean", properties.GetProperty("caseSensitive").GetProperty("type").GetString());
+        Assert.Equal(
+            ["pattern", "mode", "caseSensitive"],
+            schema.GetProperty("required")
+                .EnumerateArray()
+                .Select(static item => item.GetString()));
+
+    }
+
+    [Fact]
+    public async Task ToolsList_apply_patch_exposes_canonical_bounded_schema_and_AOT_contract()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonRpcResponse response = await session.SendRequestAsync(
+            "tools/list",
+            null);
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+        McpToolDefinitionWire patch = Assert.Single(
+            tools.Tools,
+            static tool =>
+                tool.Name == ToolRiskClassifier.ApplyPatchToolName);
+        JsonElement properties = patch.InputSchema.GetProperty("properties");
+
+        Assert.Equal(
+            ["patch", "dryRun"],
+            properties.EnumerateObject().Select(static property => property.Name));
+        Assert.Equal(
+            "string",
+            properties.GetProperty("patch").GetProperty("type").GetString());
+        Assert.Equal(
+            "boolean",
+            properties.GetProperty("dryRun").GetProperty("type").GetString());
+        Assert.Equal(
+            ["patch"],
+            patch.InputSchema.GetProperty("required")
+                .EnumerateArray()
+                .Select(static value => value.GetString()));
+        Assert.False(
+            patch.InputSchema.GetProperty("additionalProperties").GetBoolean());
+        Assert.NotNull(McpJsonSerializerContext.Default.ApplyPatchParams);
+        Assert.NotNull(
+            McpJsonSerializerContext.Default.WorkspacePatchToolResultEnvelope);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_apply_patch_requires_bound_persisted_invocation_before_planning()
+    {
+
+        _workspace.WriteFile("binary-target.txt", "before\0binary");
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            ToolRiskClassifier.ApplyPatchToolName,
+            JsonSerializer.SerializeToElement(
+                new ApplyPatchParams(
+                    """
+                    --- a/binary-target.txt
+                    +++ b/binary-target.txt
+                    @@ -1 +1 @@
+                    -before
+                    +after
+                    """),
+                McpJsonSerializerContext.Default.ApplyPatchParams));
+
+        Assert.False(result.IsError);
+        using JsonDocument payload = JsonDocument.Parse(
+            Assert.Single(result.Content).Text);
+        Assert.Equal(
+            "session_required",
+            payload.RootElement.GetProperty("code").GetString());
+        Assert.Equal(
+            "before\0binary",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, "binary-target.txt")));
+        Assert.Empty(
+            Directory.GetFiles(
+                _workspace.Root,
+                "*.arcanum-*",
+                SearchOption.AllDirectories));
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_apply_patch_binds_pending_receipt_and_returns_the_exact_result()
+    {
+
+        _workspace.WriteFile("bound-patch.txt", "before\n");
+        await using TestMcpSession session = await CreateSessionAsync();
+        RecordingPatchReceiptSink sink = new();
+        ApplyPatchParams request = new(
+            """
+            --- a/bound-patch.txt
+            +++ b/bound-patch.txt
+            @@ -1 +1 @@
+            -before
+            +after
+            """);
+        JsonElement exactArguments = JsonSerializer.SerializeToElement(
+            request,
+            McpJsonSerializerContext.Default.ApplyPatchParams);
+        ApplyPatchInvocationContext context = new(
+            SessionId: Guid.Parse("01ffb5fc-fc66-44b3-81a3-cb2914498615"),
+            AssistantEntryId: Guid.Parse("df59f2cb-c4b7-451f-aa67-d3103e28bca3"),
+            Identity: new ToolInvocationIdentity(
+                "turn-bound-patch",
+                "provider-call",
+                ToolRoundOrdinal: 2,
+                CallOrdinal: 1,
+                ToolRiskClassifier.ApplyPatchToolName),
+            SerializedArguments: exactArguments.GetRawText(),
+            ModelUsed: "test-model",
+            CreatedAt: DateTimeOffset.Parse(
+                "2026-07-26T12:00:00Z",
+                System.Globalization.CultureInfo.InvariantCulture),
+            Sink: sink);
+
+        using IDisposable binding =
+            ApplyPatchInvocationAmbient.Begin(context);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            ToolRiskClassifier.ApplyPatchToolName,
+            exactArguments);
+
+        Assert.False(result.IsError);
+        string exactResult = Assert.Single(result.Content).Text;
+        PendingApplyPatchReceipt pending = Assert.Single(sink.Receipts);
+
+        Assert.Equal(exactResult, pending.SerializedResult);
+        Assert.Equal(exactArguments.GetRawText(), pending.SerializedArguments);
+        Assert.Equal("after\n", await File.ReadAllTextAsync(
+            Path.Combine(_workspace.Root, "bound-patch.txt")));
+
+        WorkspaceRollbackResult rollback =
+            await pending.RollbackAsync(CancellationToken.None);
+
+        Assert.True(rollback.Complete);
+        Assert.Equal("before\n", await File.ReadAllTextAsync(
+            Path.Combine(_workspace.Root, "bound-patch.txt")));
+
+    }
+
+    [Fact]
+    public async Task ToolsList_workspace_check_is_capability_gated_and_has_no_open_execution_surface()
+    {
+
+        FakeWorkspaceCheckRuntime runtime = new(
+            new WorkspaceCheckExecutionStatus(
+                true,
+                false,
+                "available"));
+        await using TestMcpSession session = await CreateSessionAsync(
+            workspaceCheckRuntime: runtime);
+
+        JsonRpcResponse response = await session.SendRequestAsync(
+            "tools/list",
+            null);
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+        McpToolDefinitionWire check = Assert.Single(
+            tools.Tools,
+            static tool => tool.Name == ToolRiskClassifier.WorkspaceCheckToolName);
+        Assert.False(
+            check.InputSchema.TryGetProperty(
+                "x-profileOptions",
+                out _));
+        Assert.False(check.InputSchema.GetProperty("additionalProperties").GetBoolean());
+        JsonElement[] branches = check.InputSchema
+            .GetProperty("oneOf")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(3, branches.Length);
+
+        foreach (JsonElement branch in branches)
+        {
+            JsonElement properties = branch.GetProperty("properties");
+            Assert.Equal(
+                ["profile", "options"],
+                properties.EnumerateObject()
+                    .Select(static property => property.Name));
+            Assert.DoesNotContain(
+                properties.EnumerateObject(),
+                static property => property.Name is
+                    "command" or "arguments" or "argumentList" or "argv"
+                    or "shell" or "interpreter" or "script");
+            Assert.False(
+                branch.GetProperty("additionalProperties")
+                    .GetBoolean());
+            Assert.Equal(
+                ["profile"],
+                branch.GetProperty("required")
+                    .EnumerateArray()
+                    .Select(static value => value.GetString()));
+            Assert.False(
+                properties.GetProperty("options")
+                    .GetProperty("additionalProperties")
+                    .GetBoolean());
+            Assert.False(string.IsNullOrWhiteSpace(
+                properties.GetProperty("profile")
+                    .GetProperty("const")
+                    .GetString()));
+        }
+
+        JsonElement buildBranch = branches.Single(
+            static branch =>
+                branch.GetProperty("properties")
+                    .GetProperty("profile")
+                    .GetProperty("const")
+                    .GetString()
+                == WorkspaceCheckCatalogDefaults.DotNetBuildProfileId);
+        JsonElement buildOptions = buildBranch
+            .GetProperty("properties")
+            .GetProperty("options")
+            .GetProperty("properties");
+        Assert.Equal(
+            ["configuration", "verbosity"],
+            buildOptions.EnumerateObject()
+                .Select(static property => property.Name));
+        Assert.Equal(
+            ["debug", "release"],
+            buildOptions.GetProperty("configuration")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(static value => value.GetString()));
+        Assert.NotNull(McpJsonSerializerContext.Default.WorkspaceCheckParams);
+    }
+
+    [Fact]
+    public async Task ToolsList_workspace_check_omits_unavailable_platform_capability()
+    {
+
+        FakeWorkspaceCheckRuntime runtime = new(
+            new WorkspaceCheckExecutionStatus(
+                false,
+                true,
+                WorkspaceCheckExecutionPolicy.LinuxUnavailableReason));
+        await using TestMcpSession session = await CreateSessionAsync(
+            workspaceCheckRuntime: runtime);
+
+        JsonRpcResponse response = await session.SendRequestAsync(
+            "tools/list",
+            null);
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        Assert.DoesNotContain(
+            tools.Tools,
+            static tool => tool.Name == ToolRiskClassifier.WorkspaceCheckToolName);
+    }
+
+    [Fact]
+    public async Task ToolsCall_workspace_check_returns_structured_normal_outcome()
+    {
+
+        FakeWorkspaceCheckRuntime runtime = new(
+            new WorkspaceCheckExecutionStatus(true, false, "available"))
+        {
+            Result = new WorkspaceCheckToolResultEnvelope
+            {
+                Status = "failed",
+                Code = "check_failed",
+                ProfileId = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+                SelectedSdkVersion = "10.0.302",
+                ExitCode = 1,
+            },
+        };
+        await using TestMcpSession session = await CreateSessionAsync(
+            workspaceCheckRuntime: runtime);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            JsonSerializer.SerializeToElement(
+                new WorkspaceCheckParams
+                {
+                    Profile = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+                    Options = new Dictionary<string, string>
+                    {
+                        ["configuration"] = "release",
+                    },
+                },
+                McpJsonSerializerContext.Default.WorkspaceCheckParams));
+
+        Assert.False(result.IsError);
+        using JsonDocument payload = JsonDocument.Parse(result.Content[0].Text);
+        Assert.Equal(
+            "failed",
+            payload.RootElement.GetProperty("status").GetString());
+        Assert.Equal(
+            "10.0.302",
+            payload.RootElement.GetProperty("selectedSdkVersion").GetString());
+        Assert.Equal(
+            WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+            runtime.LastRequest!.ProfileId);
+        Assert.Equal(
+            "release",
+            runtime.LastRequest.Options["configuration"]);
+    }
+
+    [Fact]
+    public async Task Stale_workspace_check_invocation_rechecks_capability_and_fails_closed()
+    {
+
+        FakeWorkspaceCheckRuntime runtime = new(
+            new WorkspaceCheckExecutionStatus(true, false, "available"));
+        await using TestMcpSession session = await CreateSessionAsync(
+            workspaceCheckRuntime: runtime);
+        _ = await session.SendRequestAsync("tools/list", null);
+        runtime.Status = new WorkspaceCheckExecutionStatus(
+            false,
+            true,
+            "The pinned executable changed.");
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            JsonSerializer.SerializeToElement(
+                new WorkspaceCheckParams
+                {
+                    Profile = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+                },
+                McpJsonSerializerContext.Default.WorkspaceCheckParams));
+
+        Assert.False(result.IsError);
+        using JsonDocument payload = JsonDocument.Parse(result.Content[0].Text);
+        Assert.Equal(
+            "unavailable",
+            payload.RootElement.GetProperty("status").GetString());
+        Assert.Equal(
+            "capability_unavailable",
+            payload.RootElement.GetProperty("code").GetString());
+        Assert.Equal(0, runtime.RunCount);
+    }
+
+    [Fact]
+    public async Task ToolsCall_workspace_check_receives_host_bound_monotonic_inference_deadline()
+    {
+
+        FakeWorkspaceCheckRuntime runtime = new(
+            new WorkspaceCheckExecutionStatus(true, false, "available"));
+        await using TestMcpSession session = await CreateSessionAsync(
+            workspaceCheckRuntime: runtime);
+        long before = TimeProvider.System.GetTimestamp();
+
+        using IDisposable deadline =
+            WorkspaceCheckInferenceDeadlineAmbient.Begin(
+                TimeProvider.System,
+                TimeSpan.FromMinutes(10));
+        _ = await session.CallToolAsync(
+            ToolRiskClassifier.WorkspaceCheckToolName,
+            JsonSerializer.SerializeToElement(
+                new WorkspaceCheckParams
+                {
+                    Profile = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+                },
+                McpJsonSerializerContext.Default.WorkspaceCheckParams));
+
+        Assert.NotNull(runtime.LastRequest);
+        Assert.True(
+            runtime.LastRequest.InferenceDeadlineTimestamp > before);
+    }
+
+    [Fact]
+    public async Task ToolsCall_search_workspace_returns_normal_structured_no_match_and_invalid_outcomes()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        McpToolsCallResultWire noMatch = await session.CallToolAsync(
+            "search_workspace",
+            JsonSerializer.SerializeToElement(
+                new SearchWorkspaceParams
+                {
+                    Pattern = "absent",
+                    Mode = "literal",
+                    CaseSensitive = true,
+                },
+                McpJsonSerializerContext.Default.SearchWorkspaceParams));
+
+        McpToolsCallResultWire invalidPattern = await session.CallToolAsync(
+            "search_workspace",
+            JsonSerializer.SerializeToElement(
+                new SearchWorkspaceParams
+                {
+                    Pattern = "[",
+                    Mode = "regex",
+                    CaseSensitive = true,
+                },
+                McpJsonSerializerContext.Default.SearchWorkspaceParams));
+
+        McpToolsCallResultWire invalidMode = await session.CallToolAsync(
+            "search_workspace",
+            JsonSerializer.SerializeToElement(
+                new SearchWorkspaceParams
+                {
+                    Pattern = "sample",
+                    Mode = "fuzzy",
+                    CaseSensitive = true,
+                },
+                McpJsonSerializerContext.Default.SearchWorkspaceParams));
+
+        McpToolsCallResultWire invalidRoot = await session.CallToolAsync(
+            "search_workspace",
+            JsonSerializer.SerializeToElement(
+                new SearchWorkspaceParams
+                {
+                    Pattern = "sample",
+                    Mode = "literal",
+                    CaseSensitive = true,
+                    Root = "../outside",
+                },
+                McpJsonSerializerContext.Default.SearchWorkspaceParams));
+
+        Assert.False(noMatch.IsError);
+        Assert.False(invalidPattern.IsError);
+        Assert.False(invalidMode.IsError);
+        Assert.False(invalidRoot.IsError);
+
+        using JsonDocument noMatchJson = JsonDocument.Parse(noMatch.Content[0].Text);
+        using JsonDocument invalidPatternJson = JsonDocument.Parse(invalidPattern.Content[0].Text);
+        using JsonDocument invalidModeJson = JsonDocument.Parse(invalidMode.Content[0].Text);
+        using JsonDocument invalidRootJson = JsonDocument.Parse(invalidRoot.Content[0].Text);
+
+        Assert.Equal("no_match", noMatchJson.RootElement.GetProperty("status").GetString());
+        Assert.Equal("invalid_pattern", invalidPatternJson.RootElement.GetProperty("status").GetString());
+        Assert.Equal("invalid_request", invalidModeJson.RootElement.GetProperty("status").GetString());
+        Assert.Equal("invalid_mode", invalidModeJson.RootElement.GetProperty("code").GetString());
+        Assert.Equal("invalid_request", invalidRootJson.RootElement.GetProperty("status").GetString());
+        Assert.Equal("invalid_root", invalidRootJson.RootElement.GetProperty("code").GetString());
+
+    }
+
+    [Fact]
+    public async Task NotificationsCancelled_cancels_in_flight_search_workspace_regex()
+    {
+        _workspace.WriteFile(
+            "expensive-search.txt",
+            new string('a', 100_000) + "!");
+        CodingToolsSettings codingTools = new()
+        {
+            Search = new WorkspaceSearchSettings
+            {
+                RegexTimeoutMilliseconds = 1_000,
+                MaxElapsedMilliseconds = 5_000,
+            },
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            codingToolsSettings: codingTools);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new SearchWorkspaceParams
+            {
+                Pattern = @"^(a+)+(?=b)",
+                Mode = "regex",
+                CaseSensitive = true,
+            },
+            McpJsonSerializerContext.Default.SearchWorkspaceParams);
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams
+            {
+                Name = ToolRiskClassifier.SearchWorkspaceToolName,
+                Arguments = arguments,
+            },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        (int requestId, Task<JsonRpcResponse> responseTask) = await session
+            .SendRequestFireAndForgetAsync("tools/call", callParams);
+
+        await Task.Delay(50);
+        await session.SendCancelNotificationAsync(requestId);
+
+        JsonRpcResponse response = await responseTask.WaitAsync(
+            TimeSpan.FromSeconds(2));
+
+        Assert.Null(response.Error);
+
+        McpToolsCallResultWire result = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task Search_workspace_wire_and_model_budgets_preserve_valid_cumulative_truncation()
+    {
+        _workspace.WriteFile(
+            "many-search-results.txt",
+            string.Join(
+                '\n',
+                Enumerable.Range(1, 500)
+                    .Select(static index =>
+                        $"needle {index:D3} {new string('x', 96)}")));
+        IntelligenceSettings intelligenceSettings = new()
+        {
+            EnableLexiconSystem = false,
+            EnableArchiveSearch = false,
+            ToolOutputCapBytes = 4_096,
+        };
+        CodingToolsSettings codingTools = new()
+        {
+            Search = new WorkspaceSearchSettings
+            {
+                MaxMatches = 1_000,
+                MaxPreviewChars = 128,
+            },
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: intelligenceSettings,
+            maxJsonRpcLineBytes: 16_384,
+            codingToolsSettings: codingTools);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            ToolRiskClassifier.SearchWorkspaceToolName,
+            JsonSerializer.SerializeToElement(
+                new SearchWorkspaceParams
+                {
+                    Pattern = "needle",
+                    Mode = "literal",
+                    CaseSensitive = true,
+                },
+                McpJsonSerializerContext.Default.SearchWorkspaceParams));
+        string wireText = Assert.Single(result.Content).Text;
+
+        using JsonDocument wireJson = JsonDocument.Parse(wireText);
+        int wireRetained = wireJson.RootElement.GetProperty("matches").GetArrayLength();
+        int total = wireJson.RootElement.GetProperty("totalMatchCount").GetInt32();
+
+        Assert.True(wireJson.RootElement.GetProperty("truncated").GetBoolean());
+        Assert.Equal(
+            total - wireRetained,
+            wireJson.RootElement.GetProperty("omittedMatchCount").GetInt32());
+
+        string modelText = ToolExecutionPipeline.MaterializeToolResultForModel(
+            ToolRiskClassifier.SearchWorkspaceToolName,
+            new TrustedStructuredToolResult(
+                TrustedStructuredToolResultKind.WorkspaceSearch,
+                wireText),
+            new ToolResultMaterializer(),
+            new ToolResultMaterializerOptions(
+                MaxTokens: 10_000,
+                MaxUtf8Bytes: 1_024));
+
+        using JsonDocument modelJson = JsonDocument.Parse(modelText);
+        int modelRetained = modelJson.RootElement.GetProperty("matches").GetArrayLength();
+
+        Assert.InRange(modelRetained, 1, wireRetained - 1);
+        Assert.Equal(total, modelJson.RootElement.GetProperty("totalMatchCount").GetInt32());
+        Assert.Equal(
+            total - modelRetained,
+            modelJson.RootElement.GetProperty("omittedMatchCount").GetInt32());
+        Assert.True(modelJson.RootElement.GetProperty("truncated").GetBoolean());
     }
 
     [Fact]
@@ -138,6 +762,159 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         registeredNames.Remove("use_commlink");
 
         Assert.Equal(registeredNames, listedNames);
+
+    }
+
+    [Fact]
+    public async Task Client_channel_completion_cancels_and_classifies_in_flight_apply_patch()
+    {
+
+        const string relativePath = "channel-completion-patch.txt";
+        _workspace.WriteFile(relativePath, "before\n");
+        await using TestMcpSession session = await CreateSessionAsync();
+        CancellationObservingPatchReceiptSink sink = new();
+        ApplyPatchParams request = new(
+            $"""
+             --- a/{relativePath}
+             +++ b/{relativePath}
+             @@ -1 +1 @@
+             -before
+             +after
+             """);
+        JsonElement exactArguments = JsonSerializer.SerializeToElement(
+            request,
+            McpJsonSerializerContext.Default.ApplyPatchParams);
+        ApplyPatchInvocationContext context = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new ToolInvocationIdentity(
+                "channel-completion-turn",
+                "channel-completion-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            exactArguments.GetRawText(),
+            "test-model",
+            DateTimeOffset.UtcNow,
+            sink);
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams
+            {
+                Name = ToolRiskClassifier.ApplyPatchToolName,
+                Arguments = exactArguments,
+            },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        Task<JsonRpcResponse> response;
+        using (ApplyPatchInvocationAmbient.Begin(context))
+        {
+            (_, response) =
+                await session.SendRequestFireAndForgetAsync(
+                    "tools/call",
+                    callParams);
+        }
+
+        _ = response.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+        await sink.HandoffStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        await session.CloseClientChannelAsync();
+        await sink.CancellationObserved.Task.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        await session.ServerCompletion.WaitAsync(
+            TimeSpan.FromSeconds(2));
+
+        Assert.True(context.CancellationClassified);
+        Assert.True(context.RequiresTurnFailure);
+        Assert.Equal(
+            MandatoryToolInteractionAppendOutcome.Ambiguous,
+            context.HandoffOutcome);
+        Assert.Equal(
+            "after\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+
+    }
+
+    [Fact]
+    public async Task Client_channel_completion_before_patch_commit_cancels_without_ghost_mutation()
+    {
+
+        const string relativePath = "channel-precommit-patch.txt";
+        _workspace.WriteFile(relativePath, "before\n");
+        await using TestMcpSession session = await CreateSessionAsync();
+        CancellationBeforeCommitPatchReceiptSink sink = new();
+        ApplyPatchParams request = new(
+            $"""
+             --- a/{relativePath}
+             +++ b/{relativePath}
+             @@ -1 +1 @@
+             -before
+             +after
+             """);
+        JsonElement exactArguments = JsonSerializer.SerializeToElement(
+            request,
+            McpJsonSerializerContext.Default.ApplyPatchParams);
+        ApplyPatchInvocationContext context = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new ToolInvocationIdentity(
+                "channel-precommit-turn",
+                "channel-precommit-call",
+                ToolRoundOrdinal: 0,
+                CallOrdinal: 0,
+                ToolRiskClassifier.ApplyPatchToolName),
+            exactArguments.GetRawText(),
+            "test-model",
+            DateTimeOffset.UtcNow,
+            sink);
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams
+            {
+                Name = ToolRiskClassifier.ApplyPatchToolName,
+                Arguments = exactArguments,
+            },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        Task<JsonRpcResponse> response;
+        using (ApplyPatchInvocationAmbient.Begin(context))
+        {
+            (_, response) =
+                await session.SendRequestFireAndForgetAsync(
+                    "tools/call",
+                    callParams);
+        }
+
+        _ = response.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+        await sink.ProbeStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        await session.CloseClientChannelAsync();
+        await sink.CancellationObserved.Task.WaitAsync(
+            TimeSpan.FromSeconds(2));
+        await session.ServerCompletion.WaitAsync(
+            TimeSpan.FromSeconds(2));
+
+        Assert.True(context.WasDispatched);
+        Assert.True(context.RequiresTurnFailure);
+        Assert.Null(context.HandoffOutcome);
+        Assert.Equal(
+            "before\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+        Assert.Empty(
+            Directory.GetFiles(
+                _workspace.Root,
+                "*.arcanum-*",
+                SearchOption.AllDirectories));
 
     }
 
@@ -246,6 +1023,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     {
 
         await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new WriteFileParams("created.txt", "written by test"),
@@ -264,10 +1042,35 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsCall_write_file_requires_bound_persisted_turn_context()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+        const string relativePath = "unbound-write.txt";
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "write_file",
+            JsonSerializer.SerializeToElement(
+                new WriteFileParams(relativePath, "must not be written"),
+                McpJsonSerializerContext.Default.WriteFileParams));
+
+        Assert.True(result.IsError);
+        Assert.Contains(
+            "persisted",
+            Assert.Single(result.Content).Text,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(
+            File.Exists(
+                Path.Combine(_workspace.Root, relativePath)));
+
+    }
+
+    [Fact]
     public async Task ToolsCall_replace_text_block_replaces_verbatim_block()
     {
 
         await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new ReplaceTextBlockParams
@@ -326,6 +1129,31 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.True(result.IsError);
 
         Assert.Contains("not_a_real_tool", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_mixed_case_policy_name_does_not_change_exact_wire_routing()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
+        const string relativePath = "wire-routing.txt";
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "WRITE_FILE",
+            JsonSerializer.SerializeToElement(
+                new WriteFileParams(relativePath, "must not route"),
+                McpJsonSerializerContext.Default.WriteFileParams));
+
+        Assert.True(result.IsError);
+        Assert.Contains(
+            "Unknown tool",
+            Assert.Single(result.Content).Text,
+            StringComparison.Ordinal);
+        Assert.False(
+            File.Exists(
+                Path.Combine(_workspace.Root, relativePath)));
 
     }
 
@@ -624,6 +1452,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     {
 
         await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new WriteFileParams("../escape.txt", "nope"),
@@ -642,6 +1471,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     {
 
         await using TestMcpSession session = await CreateSessionAsync();
+        using IDisposable persistedTurn = BeginPersistedTurn();
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new WriteFileParams("deep/nested/file.txt", "nested write"),
@@ -1118,7 +1948,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         bool sagaEnabled = false,
         bool a2aClientEnabled = false,
         bool attachmentsToolEnabled = false,
-        IA2AClientService? a2aClientService = null)
+        IA2AClientService? a2aClientService = null,
+        CodingToolsSettings? codingToolsSettings = null,
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
 
         string? normalizedRoot = configureWorkspace
@@ -1180,7 +2012,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             a2aClientEnabled: a2aClientEnabled,
             attachmentsToolEnabled: attachmentsToolEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
-            logger: NullLogger<ArcanumInternalToolServer>.Instance);
+            logger: NullLogger<ArcanumInternalToolServer>.Instance,
+            codingToolsSettings: codingToolsSettings,
+            workspaceCheckRuntime: workspaceCheckRuntime);
 
         CancellationTokenSource cts = new();
 
@@ -1191,6 +2025,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         return new TestMcpSession(transport, server, serverTask, cts);
 
     }
+
+    private static IDisposable BeginPersistedTurn() =>
+        PersistedToolInvocationAmbient.Begin(
+            new PersistedToolInvocationContext(
+                Guid.NewGuid(),
+                Guid.NewGuid()));
 
     private static (string Command, string[] ArgumentList) ResolveHarmlessEchoCommand()
     {
@@ -1229,6 +2069,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         public ArcanumInternalToolServer Server => server;
 
+        public Task ServerCompletion => serverTask;
+
         private int _nextId;
 
         public async ValueTask DisposeAsync()
@@ -1251,6 +2093,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             lifetime.Dispose();
 
         }
+
+        public ValueTask CloseClientChannelAsync() =>
+            transport.DisposeAsync();
 
         public async Task<JsonRpcResponse> SendRequestAsync(string method, JsonElement? parameters)
         {
@@ -1462,6 +2307,193 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         }
 
+    }
+
+    private sealed class FakeWorkspaceCheckRuntime(
+        WorkspaceCheckExecutionStatus status) : IWorkspaceCheckRuntime
+    {
+
+        public WorkspaceCheckExecutionStatus Status { get; set; } = status;
+
+        public WorkspaceCheckToolResultEnvelope Result { get; init; } =
+            new()
+            {
+                Status = "ok",
+                ProfileId = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId,
+                SelectedSdkVersion = "10.0.302",
+            };
+
+        public WorkspaceCheckRuntimeRequest? LastRequest { get; private set; }
+
+        public int RunCount { get; private set; }
+
+        public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot) =>
+            Status;
+
+        public Task<WorkspaceCheckToolResultEnvelope> RunAsync(
+            WorkspaceCheckRuntimeRequest request,
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+            RunCount++;
+            LastRequest = request;
+            return Task.FromResult(Result);
+        }
+    }
+
+    private sealed class RecordingPatchReceiptSink
+        : IApplyPatchPendingReceiptSink
+    {
+        internal List<PendingApplyPatchReceipt> Receipts { get; } = [];
+
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
+            ApplyPatchReceiptProbe probe,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptProbeResult(
+                    ApplyPatchReceiptProbeOutcome.NotFound,
+                    SerializedResult: null));
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptPreflightResult(
+                    ApplyPatchReceiptPreflightOutcome.Admitted,
+                    SerializedResult: null));
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted);
+
+        public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
+            PendingApplyPatchReceipt receipt,
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Receipts.Add(receipt);
+
+            return ValueTask.FromResult(
+                new ApplyPatchPendingReceiptHandoffResult(
+                    MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+                    Cleanup: null,
+                    Rollback: null));
+
+        }
+    }
+
+    private sealed class CancellationObservingPatchReceiptSink
+        : IApplyPatchPendingReceiptSink
+    {
+        internal TaskCompletionSource HandoffStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
+            ApplyPatchReceiptProbe probe,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptProbeResult(
+                    ApplyPatchReceiptProbeOutcome.NotFound,
+                    SerializedResult: null));
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                new ApplyPatchReceiptPreflightResult(
+                    ApplyPatchReceiptPreflightOutcome.Admitted,
+                    SerializedResult: null));
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            ValueTask.FromResult(
+                MandatoryToolInteractionAppendOutcome.Ambiguous);
+
+        public async ValueTask<ApplyPatchPendingReceiptHandoffResult>
+            HandoffAsync(
+                PendingApplyPatchReceipt receipt,
+                CancellationToken cancellationToken)
+        {
+
+            HandoffStarted.TrySetResult();
+
+            try
+            {
+                await Task.Delay(
+                    Timeout.InfiniteTimeSpan,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                CancellationObserved.TrySetResult();
+                throw;
+            }
+
+            throw new InvalidOperationException(
+                "The cancellation-observing handoff unexpectedly completed.");
+        }
+    }
+
+    private sealed class CancellationBeforeCommitPatchReceiptSink
+        : IApplyPatchPendingReceiptSink
+    {
+        internal TaskCompletionSource ProbeStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<ApplyPatchReceiptProbeResult>
+            ProbeAsync(
+                ApplyPatchReceiptProbe probe,
+                CancellationToken cancellationToken)
+        {
+            ProbeStarted.TrySetResult();
+
+            try
+            {
+                await Task.Delay(
+                    Timeout.InfiniteTimeSpan,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                CancellationObserved.TrySetResult();
+                throw;
+            }
+
+            throw new InvalidOperationException(
+                "The pre-commit cancellation probe unexpectedly completed.");
+        }
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "A canceled receipt probe must not reach preflight.");
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "A canceled receipt probe must not reach recovery persistence.");
+
+        public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
+            PendingApplyPatchReceipt receipt,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "A canceled receipt probe must not reach handoff.");
     }
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard

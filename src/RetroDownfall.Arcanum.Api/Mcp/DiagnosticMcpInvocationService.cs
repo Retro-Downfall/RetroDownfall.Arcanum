@@ -5,9 +5,11 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Mcp;
 
@@ -16,9 +18,10 @@ namespace RetroDownfall.Arcanum.Api.Mcp;
 /// tools by an operator. <strong>Not</strong> model execution; <strong>not</strong> unauthenticated
 /// (inherits <c>X-Arcanum-Key</c> from the <c>/api</c> group). The internal <c>arcanum-internal</c>
 /// server and all Forbidden Arts (<c>execute_command</c>, <c>write_file</c>, <c>replace_text_block</c>,
-/// <c>delete_lexicon</c>, <c>run_spell_script</c>) are blocked. Workspace-local MCP servers must be
-/// trusted. Output is capped by <c>Intelligence.ToolOutputCapBytes</c> (enforced by the MCP bridge) and
-/// the request is bounded by <c>Mcp.RequestTimeoutSeconds</c>.
+/// <c>delete_lexicon</c>, <c>run_spell_script</c>, <c>apply_patch</c>, and
+/// <c>workspace_check</c>) are blocked. Workspace-local MCP servers must be trusted. Output is capped
+/// by <c>Intelligence.ToolOutputCapBytes</c> (enforced by the MCP bridge) and the request is bounded
+/// by <c>Mcp.RequestTimeoutSeconds</c>.
 /// </summary>
 public sealed class DiagnosticMcpInvocationService
 {
@@ -27,13 +30,15 @@ public sealed class DiagnosticMcpInvocationService
     public const string InternalServerName = "arcanum-internal";
 
     /// <summary>The fixed set of Forbidden Art / high-risk internal tool names that are always blocked.</summary>
-    public static readonly IReadOnlySet<string> BlockedToolNames = new HashSet<string>(StringComparer.Ordinal)
+    public static readonly IReadOnlySet<string> BlockedToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "execute_command",
+        ToolRiskClassifier.ExecuteCommandToolName,
         "write_file",
         "replace_text_block",
         "delete_lexicon",
-        "run_spell_script",
+        HostProcessToolPolicy.RunSpellScriptToolName,
+        ToolRiskClassifier.ApplyPatchToolName,
+        ToolRiskClassifier.WorkspaceCheckToolName,
     };
 
     public const string BlockedToolMessage =
@@ -98,7 +103,10 @@ public sealed class DiagnosticMcpInvocationService
         // already hidden by GetServerStatusesAsync except arcanum-internal, so the visible set is
         // trusted-by-construction for workspace-local entries.
         List<McpServerStatusDto> externalServers = servers
-            .Where(static s => !string.Equals(s.ServerName, InternalServerName, StringComparison.Ordinal))
+            .Where(static s => !string.Equals(
+                s.ServerName,
+                InternalServerName,
+                StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(serverName))
@@ -178,7 +186,10 @@ public sealed class DiagnosticMcpInvocationService
 
         // Provenance-preserving: invoke the tool object bound to this server only — never re-resolve
         // by bare name on the merged inference surface (internal/local collisions).
-        if (string.Equals(resolvedServerName, InternalServerName, StringComparison.Ordinal))
+        if (string.Equals(
+                resolvedServerName,
+                InternalServerName,
+                StringComparison.OrdinalIgnoreCase))
         {
 
             return Result<DiagnosticMcpInvocationOutcome>.Failure(

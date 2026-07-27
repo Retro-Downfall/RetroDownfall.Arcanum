@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -134,7 +135,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null,
-        bool allowHostProcessTools = true)
+        bool allowHostProcessTools = true,
+        CodingToolsSettings? codingToolsSettings = null,
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
         (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
             humanPromptRegistry,
@@ -153,7 +156,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             maxJsonRpcLineBytes,
             logger,
             jsonContext,
-            allowHostProcessTools);
+            allowHostProcessTools,
+            codingToolsSettings,
+            workspaceCheckRuntime);
 
         InProcessMcpTransport transport = new(
             clientToServer.Writer,
@@ -188,7 +193,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null,
-        bool allowHostProcessTools = false)
+        bool allowHostProcessTools = false,
+        CodingToolsSettings? codingToolsSettings = null,
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
         (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
             humanPromptRegistry,
@@ -207,7 +214,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             maxJsonRpcLineBytes,
             logger,
             jsonContext,
-            allowHostProcessTools);
+            allowHostProcessTools,
+            codingToolsSettings,
+            workspaceCheckRuntime);
 
         return (clientToServer.Writer, serverToClient.Reader, server);
     }
@@ -229,7 +238,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger,
         McpJsonSerializerContext? jsonContext,
-        bool allowHostProcessTools)
+        bool allowHostProcessTools,
+        CodingToolsSettings? codingToolsSettings,
+        IWorkspaceCheckRuntime? workspaceCheckRuntime)
     {
         ArgumentNullException.ThrowIfNull(humanPromptRegistry);
 
@@ -281,7 +292,9 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             allowHostProcessTools,
             ambientConnectionKey,
             logger,
-            jsonContext);
+            jsonContext,
+            codingToolsSettings,
+            workspaceCheckRuntime);
 
         return (clientToServer, serverToClient, server);
     }
@@ -314,19 +327,38 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         JsonRpcRequest toSend = SessionAttachmentAmbientSend.ApplyAmbientBinding(_ambientConnectionKey, request);
 
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        bool lockTaken = false;
 
         try
         {
+            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            lockTaken = true;
+
             string json = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest);
 
             McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
 
             await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+            SessionAttachmentAmbientSend.MarkToolsCallDispatched(
+                _ambientConnectionKey,
+                request);
+        }
+        catch
+        {
+
+            SessionAttachmentAmbientSend.UnbindFailedToolsCall(
+                _ambientConnectionKey,
+                request);
+            throw;
         }
         finally
         {
-            _writeLock.Release();
+
+            if (lockTaken)
+            {
+
+                _writeLock.Release();
+            }
         }
     }
 

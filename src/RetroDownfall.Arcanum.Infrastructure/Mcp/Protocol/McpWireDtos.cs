@@ -190,6 +190,55 @@ public sealed record ListDirectoryParams
 }
 
 /// <summary>
+/// Arguments accepted by the in-process <c>search_workspace</c> tool.
+/// Search is exact and independently scoped to each logical line.
+/// </summary>
+public sealed record SearchWorkspaceParams
+{
+    [JsonPropertyName("pattern")]
+    public required string Pattern { get; init; }
+
+    [JsonPropertyName("mode")]
+    public required string Mode { get; init; }
+
+    [JsonPropertyName("caseSensitive")]
+    public required bool CaseSensitive { get; init; }
+
+    [JsonPropertyName("root")]
+    public string? Root { get; init; }
+
+    [JsonPropertyName("globs")]
+    public string[] Globs { get; init; } = [];
+
+    [JsonPropertyName("extensions")]
+    public string[] Extensions { get; init; } = [];
+}
+
+/// <summary>
+/// Arguments accepted by the in-process <c>apply_patch</c> tool.
+/// The patch is a canonical unified diff; <see cref="DryRun"/> performs the complete
+/// containment/fingerprint/hunk plan without staging or mutation.
+/// </summary>
+public sealed record ApplyPatchParams(
+    [property: JsonPropertyName("patch")] string Patch,
+    [property: JsonPropertyName("dryRun")] bool DryRun = false);
+
+/// <summary>
+/// Arguments accepted by <c>workspace_check</c>. The model selects only a closed profile and
+/// exact allowlisted option values; executable names and arbitrary argument surfaces are absent.
+/// </summary>
+public sealed record WorkspaceCheckParams
+{
+
+    [JsonPropertyName("profile")]
+    public required string Profile { get; init; }
+
+    [JsonPropertyName("options")]
+    public Dictionary<string, string> Options { get; init; } =
+        new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
 /// Arguments accepted by the in-process <c>execute_command</c> tool.
 /// </summary>
 /// <remarks>

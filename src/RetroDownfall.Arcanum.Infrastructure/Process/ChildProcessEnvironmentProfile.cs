@@ -22,4 +22,10 @@ public enum ChildProcessEnvironmentProfile
     /// </summary>
     SpellScript,
 
+    /// <summary>
+    /// <c>workspace_check</c>: the caller clears and reconstructs the complete environment from
+    /// a small OS/runtime allowlist before invoking the runner.
+    /// </summary>
+    WorkspaceCheck,
+
 }

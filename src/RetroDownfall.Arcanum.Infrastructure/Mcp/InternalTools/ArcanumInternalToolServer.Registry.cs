@@ -1,6 +1,7 @@
 using System.Text.Json;
-using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -31,6 +32,12 @@ internal sealed partial class ArcanumInternalToolServer
             ["write_file"] = ExecuteWriteFileAsync,
 
             ["list_directory"] = ExecuteListDirectoryAsync,
+
+            [ToolRiskClassifier.SearchWorkspaceToolName] = ExecuteSearchWorkspaceAsync,
+
+            [ToolRiskClassifier.ApplyPatchToolName] = ExecuteApplyPatchAsync,
+
+            [ToolRiskClassifier.WorkspaceCheckToolName] = ExecuteWorkspaceCheckAsync,
 
             ["execute_command"] = ExecuteCommandAsync,
 

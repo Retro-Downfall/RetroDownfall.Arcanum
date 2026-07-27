@@ -30,6 +30,14 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
 
+        FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
+
+        FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
         if (File.Exists(_outsideFile))
         {
 
@@ -176,6 +184,91 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.True(success);
 
         Assert.Equal("atomic content", await File.ReadAllTextAsync(target));
+
+    }
+
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_rejects_existing_hard_link()
+    {
+
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string target = Path.Combine(_workspace.Root, "linked-write.txt");
+
+        string outsideAlias = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-sandbox-link-{Guid.NewGuid():N}.txt");
+
+        await File.WriteAllTextAsync(target, "original");
+
+        try
+        {
+
+            Assert.True(HardLinkTestSupport.TryCreate(outsideAlias, target));
+
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "replacement",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.NotNull(error);
+
+            Assert.Equal("original", await File.ReadAllTextAsync(target));
+
+            Assert.Equal("original", await File.ReadAllTextAsync(outsideAlias));
+
+        }
+        finally
+        {
+
+            File.Delete(outsideAlias);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_fails_closed_when_link_count_is_unavailable()
+    {
+
+        string target = Path.Combine(_workspace.Root, "unknown-link-count.txt");
+
+        await File.WriteAllTextAsync(target, "original");
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ => null;
+
+        try
+        {
+
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "replacement",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.NotNull(error);
+
+            Assert.Equal("original", await File.ReadAllTextAsync(target));
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+        }
 
     }
 
@@ -368,7 +461,6 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.Contains("sandbox", error!.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
 
         }
-
         finally
         {
 

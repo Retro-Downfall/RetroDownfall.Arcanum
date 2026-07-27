@@ -49,7 +49,8 @@ public sealed partial class McpConnectionManager(
 
     private readonly ConcurrentDictionary<string, Lazy<SemaphoreSlim>> _workspaceInitLocks = new(StringComparer.Ordinal);
 
-    private readonly ConcurrentDictionary<string, IReadOnlyList<AITool>> _mergedToolsByWorkspace = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, CachedMcpToolSurface>
+        _mergedToolsByWorkspace = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, Lazy<McpPartitionClients>> _partitionClients = new(StringComparer.Ordinal);
 
@@ -64,6 +65,20 @@ public sealed partial class McpConnectionManager(
     /// growth across the connection manager's lifetime.
     /// </summary>
     private readonly ConcurrentDictionary<Task, byte> _pendingTransportEndedTasks = new();
+
+    private readonly ConcurrentDictionary<Task, byte>
+        _retiredPartitionDisposals = new();
+
+    private readonly object _internalSettingsCacheGate = new();
+
+    private string _cachedInternalToolSettingsFingerprint =
+        InternalCodingToolSettingsFingerprint.Build(
+            settings.CurrentValue.CodingTools);
+
+    private long _toolSurfaceGeneration;
+
+    private readonly WorkspaceCheckSettings _defaultWorkspaceCheckSettings =
+        new();
 
     private bool _globalInitialized;
 
@@ -523,39 +538,203 @@ public sealed partial class McpConnectionManager(
 
         string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
 
-        if (_mergedToolsByWorkspace.TryGetValue(workspaceKey, out IReadOnlyList<AITool>? cached))
+        while (true)
         {
-            return cached;
+            InvalidateInternalToolCachesForSettingsChange();
+            long generation = Volatile.Read(
+                ref _toolSurfaceGeneration);
+
+            if (_mergedToolsByWorkspace.TryGetValue(
+                    workspaceKey,
+                    out CachedMcpToolSurface? cached)
+                && cached.Generation == generation)
+            {
+                return cached.Tools;
+            }
+
+            await EnsureGlobalLoadedAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            SemaphoreSlim workspaceLock = _workspaceInitLocks
+                .GetOrAdd(
+                    workspaceKey,
+                    static _ => new Lazy<SemaphoreSlim>(
+                        static () => new SemaphoreSlim(1, 1),
+                        LazyThreadSafetyMode.ExecutionAndPublication))
+                .Value;
+
+            await workspaceLock.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            try
+            {
+                if (generation != Volatile.Read(
+                        ref _toolSurfaceGeneration))
+                {
+                    continue;
+                }
+
+                if (_mergedToolsByWorkspace.TryGetValue(
+                        workspaceKey,
+                        out cached)
+                    && cached.Generation == generation)
+                {
+                    return cached.Tools;
+                }
+
+                McpPartitionClients partition =
+                    GetOrCreatePartition(workspaceKey);
+                IReadOnlyList<AITool> merged;
+
+                try
+                {
+                    merged =
+                        await BuildMergedToolsForWorkspaceAsync(
+                                partition,
+                                workspaceKey,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                }
+                catch (McpTransportUnavailableException)
+                    when (generation != Volatile.Read(
+                        ref _toolSurfaceGeneration))
+                {
+                    TrackRetiredPartitionDisposal(
+                        partition);
+                    continue;
+                }
+
+                if (generation != Volatile.Read(
+                        ref _toolSurfaceGeneration))
+                {
+                    TrackRetiredPartitionDisposal(partition);
+                    continue;
+                }
+
+                _mergedToolsByWorkspace[workspaceKey] =
+                    new CachedMcpToolSurface(
+                        generation,
+                        merged);
+
+                return merged;
+            }
+            finally
+            {
+                workspaceLock.Release();
+            }
+        }
+    }
+
+    private void InvalidateInternalToolCachesForSettingsChange()
+    {
+
+        string fingerprint =
+            InternalCodingToolSettingsFingerprint.Build(
+                settings.CurrentValue.CodingTools);
+
+        List<McpPartitionClients> retired = [];
+
+        lock (_internalSettingsCacheGate)
+        {
+
+            if (string.Equals(
+                    fingerprint,
+                    _cachedInternalToolSettingsFingerprint,
+                    StringComparison.Ordinal))
+            {
+
+                return;
+            }
+
+            _cachedInternalToolSettingsFingerprint = fingerprint;
+            _ = Interlocked.Increment(
+                ref _toolSurfaceGeneration);
+            _mergedToolsByWorkspace.Clear();
+
+            foreach (string key in _partitionClients.Keys.ToArray())
+            {
+                if (string.Equals(
+                        key,
+                        GlobalPartitionKey,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!_partitionClients.TryRemove(
+                        key,
+                        out Lazy<McpPartitionClients>? removed)
+                    || !removed.IsValueCreated)
+                {
+                    continue;
+                }
+
+                retired.Add(removed.Value);
+            }
         }
 
-        await EnsureGlobalLoadedAsync(cancellationToken).ConfigureAwait(false);
+        foreach (McpPartitionClients partition in retired)
+        {
+            TrackRetiredPartitionDisposal(partition);
+        }
+    }
 
-        SemaphoreSlim workspaceLock = _workspaceInitLocks
-            .GetOrAdd(
-                workspaceKey,
-                static _ => new Lazy<SemaphoreSlim>(
-                    static () => new SemaphoreSlim(1, 1),
-                    LazyThreadSafetyMode.ExecutionAndPublication))
-            .Value;
+    private void TrackRetiredPartitionDisposal(
+        McpPartitionClients partition)
+    {
+        Task disposal = DisposeRetiredPartitionAsync(partition);
+        _retiredPartitionDisposals[disposal] = 0;
+        _ = disposal.ContinueWith(
+            completed =>
+            {
+                _ = _retiredPartitionDisposals.TryRemove(
+                    completed,
+                    out _);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
 
-        await workspaceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+    private async Task DisposeRetiredPartitionAsync(
+        McpPartitionClients partition)
+    {
+        if (partition.InternalClient is not { } client)
+        {
+            return;
+        }
 
         try
         {
-            if (_mergedToolsByWorkspace.TryGetValue(workspaceKey, out cached))
-            {
-                return cached;
-            }
-
-            IReadOnlyList<AITool> merged = await BuildMergedToolsForWorkspaceAsync(workspaceKey, cancellationToken).ConfigureAwait(false);
-
-            _mergedToolsByWorkspace[workspaceKey] = merged;
-
-            return merged;
+            await client.DisposeAsync().ConfigureAwait(false);
         }
-        finally
+        catch (Exception ex)
         {
-            workspaceLock.Release();
+            logger.LogDebug(
+                ex,
+                "Failed to dispose an MCP partition retired after internal coding-tool settings changed.");
+        }
+    }
+
+    private async Task AwaitRetiredPartitionDisposalsAsync()
+    {
+        Task[] pending =
+            _retiredPartitionDisposals.Keys.ToArray();
+
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(
+                ex,
+                "Failed while awaiting retired MCP client generations.");
         }
     }
 
@@ -611,6 +790,9 @@ public sealed partial class McpConnectionManager(
 
         try
         {
+            _ = Interlocked.Increment(
+                ref _toolSurfaceGeneration);
+
             foreach (ManagedMcpServerEntry entry in _registry.Values.ToArray())
             {
                 await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -655,6 +837,9 @@ public sealed partial class McpConnectionManager(
                 }
             }
 
+            await AwaitRetiredPartitionDisposalsAsync()
+                .ConfigureAwait(false);
+
             _partitionClients.Clear();
 
             _mergedToolsByWorkspace.Clear();
@@ -662,25 +847,6 @@ public sealed partial class McpConnectionManager(
             _globalInitialized = false;
 
             _globalInitOperation = null;
-
-            foreach (Lazy<SemaphoreSlim> workspaceLockLazy in _workspaceInitLocks.Values)
-            {
-                if (!workspaceLockLazy.IsValueCreated)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    workspaceLockLazy.Value.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Error disposing workspace init lock during MCP reload.");
-                }
-            }
-
-            _workspaceInitLocks.Clear();
 
             _globalFirstByToolName = new(StringComparer.Ordinal);
 
@@ -758,6 +924,9 @@ public sealed partial class McpConnectionManager(
 
             partition.Clients.Clear();
         }
+
+        await AwaitRetiredPartitionDisposalsAsync()
+            .ConfigureAwait(false);
 
         _partitionClients.Clear();
 

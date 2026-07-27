@@ -17,10 +17,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 public sealed partial class McpConnectionManager
 {
 
-    private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(string workspaceKey, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(
+        McpPartitionClients partition,
+        string workspaceKey,
+        CancellationToken cancellationToken)
     {
-        McpPartitionClients partition = GetOrCreatePartition(workspaceKey);
-
         List<LoadedMcpToolRow> internalTagged = await EnsurePartitionInternalToolsAsync(partition, workspaceKey, cancellationToken).ConfigureAwait(false);
 
         List<LoadedMcpToolRow> workspaceLocalTagged = [];

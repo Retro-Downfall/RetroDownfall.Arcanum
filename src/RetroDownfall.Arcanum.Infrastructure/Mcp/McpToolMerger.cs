@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 
 
@@ -14,6 +15,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal static class McpToolMerger
 {
 
+    private static readonly HashSet<string> IntrinsicInternalToolNames =
+        new(
+            ToolRiskClassifier.IntrinsicWardToolNames,
+            StringComparer.OrdinalIgnoreCase)
+        {
+            ToolRiskClassifier.SearchWorkspaceToolName,
+        };
+
     internal readonly record struct GlobalDedupResult(
 
         Dictionary<string, LoadedMcpToolRow> FirstByToolName,
@@ -24,7 +33,9 @@ internal static class McpToolMerger
     /// <summary>
     /// First-seen dedup of global-partition tool rows by <see cref="AITool.Name"/> (<see cref="StringComparer.Ordinal"/>).
     /// </summary>
-    internal static GlobalDedupResult DedupeGlobalTaggedTools(IReadOnlyList<LoadedMcpToolRow> globalTagged)
+    internal static GlobalDedupResult DedupeGlobalTaggedTools(
+        IReadOnlyList<LoadedMcpToolRow> globalTagged,
+        ILogger? collisionLogger = null)
     {
 
         Dictionary<string, LoadedMcpToolRow> byName = new(StringComparer.Ordinal);
@@ -33,6 +44,15 @@ internal static class McpToolMerger
 
         foreach (LoadedMcpToolRow row in globalTagged)
         {
+
+            if (IsIntrinsicInternalName(row.Tool.Name))
+            {
+
+                LogExternalCollision(collisionLogger, row.Tool.Name, "global");
+
+                continue;
+
+            }
 
             if (byName.TryAdd(row.Tool.Name, row))
             {
@@ -81,6 +101,15 @@ internal static class McpToolMerger
 
         foreach (KeyValuePair<string, LoadedMcpToolRow> kv in globalFirstByToolName)
         {
+
+            if (IsIntrinsicInternalName(kv.Key))
+            {
+
+                LogExternalCollision(bridgeFallbackLogger, kv.Key, "global");
+
+                continue;
+
+            }
 
             if (mergedByName.TryAdd(kv.Key, kv.Value))
             {
@@ -148,6 +177,15 @@ internal static class McpToolMerger
 
             string name = localRow.Tool.Name;
 
+            if (IsIntrinsicInternalName(name))
+            {
+
+                LogExternalCollision(bridgeFallbackLogger, name, "workspace");
+
+                continue;
+
+            }
+
             if (!indexByName.TryGetValue(name, out int idx))
             {
 
@@ -193,5 +231,18 @@ internal static class McpToolMerger
         return merged;
 
     }
+
+    private static bool IsIntrinsicInternalName(string name) =>
+        IntrinsicInternalToolNames.Contains(name);
+
+
+    private static void LogExternalCollision(
+        ILogger? logger,
+        string toolName,
+        string source) =>
+        logger?.LogWarning(
+            "Omitting {Source} MCP tool {ToolName} because the name is reserved for an intrinsic Arcanum tool.",
+            source,
+            toolName);
 
 }

@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed record WardSettings
@@ -7,7 +9,9 @@ public sealed record WardSettings
 
     private readonly List<string> _forbiddenArts = new()
     {
-        "execute_command",
+        ToolRiskClassifier.ExecuteCommandToolName,
+        ToolRiskClassifier.ApplyPatchToolName,
+        ToolRiskClassifier.WorkspaceCheckToolName,
         "write_file",
         "replace_text_block",
         "delete_lexicon",

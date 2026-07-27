@@ -2,7 +2,7 @@
 
 Arcanum's primary persistent store is the **Grimoire**, an encrypted SQLite (SQLCipher) database managed through EF Core with a compiled model, AOT-safe source-generated JSON contexts, and embedded hand-authored SQL migrations. This document tracks which operational state lives in the Grimoire, which still lives in memory, and the conventions each subsystem follows when it moves from one to the other.
 
-One deliberately **non-Grimoire** persisted artifact exists alongside it: the **persisted inference audit log** (`Arcanum:Host:AuditLog`, disabled by default, DESIGN.md §8.26) — plain dated JSONL files (`~/.config/arcanum/audit-YYYYMMDD.jsonl` by default), not a SQLite table. It records operational metadata about completed inference turns (model, tokens, latency, tool activity), and is intentionally kept out of the encrypted Grimoire so operators can `tail`/`grep`/ship it with standard log tooling without needing the Grimoire's decryption key.
+One deliberately **non-Grimoire** persisted artifact exists alongside it: the **persisted inference audit log** (`Arcanum:Host:AuditLog`, disabled by default, DESIGN.md §8.26) — plain dated JSONL files (`~/.config/arcanum/audit-YYYYMMDD.jsonl` by default), not a SQLite table. It records operational metadata only after a turn completes successfully; errors, timeouts, cancellations, and interrupted streams do not produce rows. Tool names/counts are retained, raw tool argument JSON is omitted by default (`RedactToolArguments=true`), and tool results plus prompt/answer/reasoning bodies are never audit fields. It is intentionally kept out of the encrypted Grimoire so operators can `tail`/`grep`/ship it with standard log tooling without needing the Grimoire's decryption key.
 
 **Session attachment bytes** follow the same split as OpenAI `/v1/files`: metadata in the Grimoire (`SessionAttachments`), raw bytes on disk under `~/.config/arcanum/attachments/` — **not** SQLCipher-encrypted (see §13). The audit log remains out of scope for the rest of this document's Grimoire-backed state tables; attachment metadata is in-scope below.
 
@@ -24,6 +24,7 @@ This is a living document. It is updated each time an in-memory subsystem gains 
 | **Inference accounting** (runs, billable ops, budget reservations, cost adjustments; ADR 0002) | `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments` | Existing — hand-authored SQL migration `20260721010000_AddInferenceAccountingAndIdempotencyClaims`; raw SQL via `ITurnRunWriter` / `IBudgetReservationService`. `BillableOperations.ReasoningTokens` is a non-null count and reasoning remains a subset of output. **Not** part of the compiled EF model. Session `TotalCostUsd` remains a projection only. |
 | **Uploaded file metadata** (`POST /v1/files`; DESIGN.md §11.20) | `UploadedFiles` | Existing — row is metadata only; file bytes live on disk under `ArcanumPaths.FilesDirectory`, named by a fresh GUID (never the client filename) |
 | **Session attachment metadata** (Command Center + host; DESIGN.md §10.2.5) | `SessionAttachments` | Existing — hand-authored SQL migration `20260719180000_AddSessionAttachments`; raw SQL via `ISessionAttachmentStore` / `SessionAttachmentStore`. Bytes under `ArcanumPaths.AttachmentsDirectory` (original filenames preserved under version folders). **Not** part of the compiled EF model. |
+| **Mandatory `apply_patch` interaction receipt** | existing `Entries` | Existing schema only — deterministic assistant `ToolCall` and system `ToolResult` Entry IDs/payloads are appended together through `AppendMandatoryToolInteractionAsync`. There is no receipt table, EF-model change, or migration. |
 | **Batch job metadata** (`/v1/batches`; DESIGN.md §11.21) | `Batches` | Existing — no request-count columns; `GET` computes `request_counts` on the fly by reading the input/output/error files off disk (all three are themselves `UploadedFiles` rows) |
 | **Session accumulated cost** (USD spend per session, updated atomically with `TotalTokensUsed`) | `Sessions.TotalCostUsd` | Existing — `NUMERIC NOT NULL DEFAULT 0` column on the existing `Sessions` table (precision 18, scale 8) |
 | **Budget alerts** | `BudgetAlerts` | Existing — unique `(Threshold, date(AlertedAt))`; insert-before-dispatch so the index is the dedup authority. |
@@ -77,6 +78,10 @@ Watermarks are **one row per configured job key** (cardinality ≈ configured `A
 
 Watermark writes are **write-through** (no batching). WAL + `SqliteBusyRetry` cover durability/contention. Failed writes are logged and swallowed — in-memory state may diverge until the next successful write.
 
+`apply_patch` deliberately spans a filesystem/Grimoire boundary and therefore does **not** claim one atomic transaction across both. The filesystem coordinator prepares same-directory outputs/backups before its first destination change, then mutates destinations sequentially; those intermediate changes are observable. While the commit remains reversible, the Grimoire appends the exact deterministic call/result rows in one SQLite transaction. A committed or recovered receipt makes the filesystem transaction irreversible and runs bounded artifact cleanup; a definitive persistence failure rolls back; an ambiguous readback retains the applied changes and relative recovery artifacts and fails the turn.
+
+This supplies bounded rollback/recovery, not isolation or crash atomicity. There is no durable transaction journal or startup replay service. A process/power failure during sequential destination changes, after filesystem commit but before receipt classification, or during cleanup can leave same-directory `.arcanum-*` recovery artifacts and possibly applied files for operator inspection. Recovery paths exposed to callers/logs are normalized workspace-relative paths; cleanup never deletes an artifact whose identity no longer matches.
+
 ## 6. Read path
 
 `UnseenServantService` hydrates once at `ExecuteAsync` start (after Grimoire migrations):
@@ -92,9 +97,10 @@ Watermark writes are **write-through** (no batching). WAL + `SqliteBusyRetry` co
 ## 7. What is NOT persisted
 
 - **Wards** (`WardGate`) — ephemeral `TaskCompletionSource`s; nothing to resume after restart.
-- **SSE subscriber state** / **live token streams** — connection-bound.
+- **SSE subscriber state** / **live token streams** — connection-bound. `SessionEventHub` is process-local live fan-out, not a durable queue: each subscriber has a bounded `DropOldest` channel, slow subscribers can miss Entries (the hub logs a warning), and subscriptions disappear on restart. The Entries themselves remain in the Grimoire and are the replay authority.
 - **`_firstDispatchAfterUtc` startup jitter** — regenerated each process start.
 - **A2A task mappings** — runtime index; Apprentices/Sessions/Entries already persist. In-flight external A2A tasks die with the process (same as other live streams).
+- **Reliable-tool execution scratch** — search traversal/matcher state is in memory, and `workspace_check` owner-only output/intermediate/test/home/cache/temp roots are per-run and best-effort deleted. In a stateful turn, however, normal `search_workspace` and `workspace_check` assistant-call/system-result interactions persist as ordinary generic `Entries`; they are not request-only. `apply_patch` has no database journal beyond its two deterministic `Entries`. Recovery artifacts may remain on disk only when bounded rollback/cleanup cannot safely prove deletion.
 
 ## 7a. The Lexicon (raw-SQL, no EF migration)
 
@@ -232,3 +238,15 @@ Soft caps `MaxBytesPerSession` / `MaxVersionsPerLogicalKey` reject new writes wh
 | OS encryption / backup | Operator responsibility |
 
 Deleting or resetting only `arcanum.db` leaves orphan bytes under `attachments/`. For full conversation continuity (or a clean uninstall), copy or remove `~/.config/arcanum/attachments` together with the database. Distinct from `/v1/files` opaque `files/{guid}` storage.
+
+## 14. Reliable editing loop persistence
+
+- `search_workspace` performs no filesystem writes. In a stateful turn, its exact assistant call and bounded system result persist through the normal generic tool-interaction `Entries`; only traversal, decoded-file, matcher, and result-materialization scratch is ephemeral.
+- `workspace_check` enforces `--no-restore`, reads the pre-existing global package cache read-only, seeds validated restore-affecting artifacts into fresh per-run roots, and does not write source. Its structured call/result persists through the same normal generic tool-interaction path when the turn is stateful; only per-run execution roots are ephemeral and best-effort deleted.
+- `apply_patch` has no stateless fallback. The inference pipeline binds a persisted session and assistant Entry, exact serialized arguments, model, timestamp, and deterministic invocation identity. One invocation produces one reversible filesystem transaction and one immutable receipt payload; multiple calls in a turn remain independent.
+- Receipt IDs are deterministic UUIDv8 values. Domain `RetroDownfall.Arcanum/receipt-format-v1` hashes canonical fields in this order: required invocation ID (trimmed, NFC), optional provider tool-call ID (blank becomes empty; otherwise trimmed, NFC), non-negative tool-round and call ordinals (signed 32-bit big-endian), and required tool name (trimmed, NFC, invariant-lowercase). Strings are UTF-8 with signed 32-bit big-endian length prefixes. Arguments, patch text, and result content are deliberately excluded. Domain `RetroDownfall.Arcanum/entry-format-v1` separately derives the call/result Entry IDs from the receipt ID's `D` string plus row kind `call` or `result`; SHA-256's first 16 bytes are marked UUID version 8 with the RFC variant.
+- Receipt outcomes are exactly `NewlyCommitted`, `RecoveredCommitted`, `Failed`, and `Ambiguous`. Matching deterministic rows make retries idempotent (`RecoveredCommitted`); no rows after a proven rollback is `Failed`; partial, mismatched, or unreadable rows are `Ambiguous`.
+- Caller cancellation from `search_workspace` propagates rather than becoming its structured elapsed-time timeout. `apply_patch` caller cancellation also propagates: pre/during-commit cancellation first runs reverse rollback on an independent cleanup deadline, and cancellation during receipt handoff preserves any attached persistence classification. Rollback removes transaction-created parent directories deepest-first only when their captured identity still matches and they remain empty; otherwise the directory or its same-parent cleanup artifact is retained and reported.
+- The model-visible patch result and persisted system `ToolResult` use the same bounded serialized JSON. File items retain unified-diff manifest order; normalized affected/recovery paths use deterministic sorting. Result capping preserves status plus total/omitted counts.
+
+These tools add no tables or columns, do not touch the compiled EF model or migration snapshot, and require **no database reinstall**. The older reasoning-accounting reinstall note in §10 remains limited to databases created before that install script acquired `BillableOperations.ReasoningTokens`.

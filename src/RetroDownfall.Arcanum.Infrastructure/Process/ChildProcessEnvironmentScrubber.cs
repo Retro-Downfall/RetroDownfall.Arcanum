@@ -35,6 +35,12 @@ internal static class ChildProcessEnvironmentScrubber
                 // MCP builds an explicit env block via BuildMcpChildEnvironment before start.
                 break;
 
+            case ChildProcessEnvironmentProfile.WorkspaceCheck:
+
+                // WorkspaceCheckEnvironmentBuilder already cleared and reconstructed the entire
+                // environment. Do not reintroduce or copy anything from the host here.
+                break;
+
         }
 
     }

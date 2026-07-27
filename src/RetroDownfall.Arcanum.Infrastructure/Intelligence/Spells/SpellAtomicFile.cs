@@ -31,11 +31,19 @@ internal static class SpellAtomicFile
 
         byte[] bytes = Encoding.UTF8.GetBytes(contents);
 
-        await AtomicFile.ReplaceAsync(
+        AtomicReplaceStatus replaceStatus = await AtomicFile.ReplaceAsync(
             destinationPath,
             tempPath,
             (stream, ct) => stream.WriteAsync(bytes, ct).AsTask(),
             cancellationToken).ConfigureAwait(false);
+
+        if (replaceStatus != AtomicReplaceStatus.Succeeded)
+        {
+
+            throw new IOException(
+                $"Atomic spell replacement did not succeed ({replaceStatus}).");
+
+        }
 
     }
 

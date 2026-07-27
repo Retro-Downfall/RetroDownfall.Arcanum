@@ -1,5 +1,7 @@
 using System.Buffers;
 
+using System.Diagnostics.CodeAnalysis;
+
 using System.Globalization;
 
 using System.Runtime.CompilerServices;
@@ -7,6 +9,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 using Microsoft.Extensions.AI;
 
@@ -36,9 +39,15 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -54,7 +63,8 @@ public sealed class ToolExecutionPipeline(
     ISanctumGuard sanctumGuard,
     ISessionAttachmentStore sessionAttachmentStore,
     ILogger<ToolExecutionPipeline> logger,
-    IToolResultMaterializer? toolResultMaterializer = null)
+    IToolResultMaterializer? toolResultMaterializer = null,
+    GrimoireTurnWriter? grimoireTurnWriter = null)
 {
 
     /// <summary>
@@ -71,6 +81,9 @@ public sealed class ToolExecutionPipeline(
     private const string WardTimeoutReason =
         "The ward held until timeout — action was not allowed";
 
+    private const string ApplyPatchSessionRequiredResult =
+        "{\"status\":\"invalid_request\",\"code\":\"session_required\",\"message\":\"apply_patch requires a bound persisted session and assistant-turn invocation.\"}";
+
     public sealed class TurnContext
     {
 
@@ -79,6 +92,14 @@ public sealed class ToolExecutionPipeline(
         public string? CampaignId { get; init; }
 
         public string? WorkspaceRoot { get; init; }
+
+        public Guid? PersistedSessionId { get; init; }
+
+        public Guid? AssistantEntryId { get; init; }
+
+        public string? InvocationId { get; init; }
+
+        public string? ModelUsed { get; init; }
 
         public bool CampaignRequiresWard { get; init; }
 
@@ -109,7 +130,8 @@ public sealed class ToolExecutionPipeline(
         string ResultText,
         IReadOnlyList<IntelligenceEvent> WardEvents,
         bool Failed = false,
-        IReadOnlyList<AIContent>? AdditionalContextContents = null);
+        IReadOnlyList<AIContent>? AdditionalContextContents = null,
+        bool ReceiptHandled = false);
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
@@ -259,14 +281,82 @@ public sealed class ToolExecutionPipeline(
         bool suppressInvocationFailures,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
-        Func<ToolExecutionEvent, ValueTask>? observer = null)
+        Func<ToolExecutionEvent, ValueTask>? observer = null,
+        string? argumentsSnapshot = null,
+        int toolRoundOrdinal = 0,
+        int callOrdinal = 0)
     {
 
-        string argsSnapshot = SerializeToolArgumentsForGrimoire(fcc);
+        string argsSnapshot =
+            argumentsSnapshot ?? SerializeToolArgumentsForGrimoire(fcc);
 
+        string? providerToolCallId = string.IsNullOrEmpty(fcc.CallId)
+            ? null
+            : fcc.CallId;
         string callId = ResolveCallId(fcc);
 
         string toolName = fcc.Name ?? string.Empty;
+
+        bool isApplyPatch = string.Equals(
+                toolName,
+                ToolRiskClassifier.ApplyPatchToolName,
+                StringComparison.OrdinalIgnoreCase);
+
+        if (isApplyPatch
+            && (turnContext.PersistedSessionId is not { } persistedSessionId
+                || persistedSessionId == Guid.Empty
+                || turnContext.AssistantEntryId is not { } assistantEntryId
+                || assistantEntryId == Guid.Empty
+                || string.IsNullOrWhiteSpace(turnContext.InvocationId)
+                || string.IsNullOrWhiteSpace(turnContext.ModelUsed)
+                || grimoireTurnWriter is null))
+        {
+            return new ProcessedToolCall(
+                callId,
+                toolName,
+                argsSnapshot,
+                ApplyPatchSessionRequiredResult,
+                []);
+        }
+
+        ApplyPatchInvocationContext? applyPatchContext = null;
+
+        if (isApplyPatch)
+        {
+            applyPatchContext = new ApplyPatchInvocationContext(
+                turnContext.PersistedSessionId!.Value,
+                turnContext.AssistantEntryId!.Value,
+                new ToolInvocationIdentity(
+                    turnContext.InvocationId!,
+                    providerToolCallId,
+                    toolRoundOrdinal,
+                    callOrdinal,
+                    toolName),
+                argsSnapshot,
+                turnContext.ModelUsed!,
+                DateTimeOffset.UtcNow,
+                new GrimoirePendingReceiptSink(grimoireTurnWriter!));
+        }
+
+        PersistedToolInvocationContext? persistedToolContext =
+            turnContext.PersistedSessionId is { } boundSessionId
+            && boundSessionId != Guid.Empty
+            && turnContext.AssistantEntryId is { } boundAssistantEntryId
+            && boundAssistantEntryId != Guid.Empty
+                ? new PersistedToolInvocationContext(
+                    boundSessionId,
+                    boundAssistantEntryId)
+                : null;
+
+        using IDisposable? persistedToolScope =
+            persistedToolContext is null
+                ? null
+                : PersistedToolInvocationAmbient.Begin(
+                    persistedToolContext);
+
+        using IDisposable? applyPatchScope = applyPatchContext is null
+            ? null
+            : ApplyPatchInvocationAmbient.Begin(applyPatchContext);
 
         WardedToolExecutionResult wardedExecution;
 
@@ -297,6 +387,13 @@ public sealed class ToolExecutionPipeline(
 
                 throw;
 
+            }
+            catch (Exception) when (
+                applyPatchContext?.RequiresTurnFailure == true
+                || applyPatchContext?.CancellationClassified == true)
+            {
+                RecordToolInvocationMetric(toolName, "error");
+                throw;
             }
             catch (HumanPromptTimeoutException ex)
             {
@@ -437,7 +534,8 @@ public sealed class ToolExecutionPipeline(
             wardedExecution.ResultText,
             wardedExecution.WardEvents,
             wardedExecution.Failed,
-            additionalContext);
+            additionalContext,
+            applyPatchContext?.ReceiptHandled == true);
 
     }
 
@@ -625,7 +723,7 @@ public sealed class ToolExecutionPipeline(
 
     }
 
-    private static async Task<string> InvokeToolCallAsync(
+    private static async Task<object?> InvokeToolCallAsync(
         FunctionCallContent fcc,
         ChatOptions chatOptions,
         CancellationToken cancellationToken)
@@ -648,14 +746,7 @@ public sealed class ToolExecutionPipeline(
             .InvokeAsync(args, cancellationToken)
             .ConfigureAwait(false);
 
-        return output switch
-        {
-
-            null => string.Empty,
-            string s => s,
-            _ => output.ToString() ?? string.Empty,
-
-        };
+        return output;
 
     }
 
@@ -711,7 +802,9 @@ public sealed class ToolExecutionPipeline(
 
         string wardId = Guid.NewGuid().ToString();
 
-        JsonDocument? argsDocument = TryParseToolArgumentsDocument(argsSnapshot);
+        JsonDocument? argsDocument = BuildWardArgumentsDocument(
+            toolName,
+            argsSnapshot);
 
         JsonElement? wardArguments = argsDocument?.RootElement.Clone();
 
@@ -736,7 +829,11 @@ public sealed class ToolExecutionPipeline(
 
         if (observer is not null)
         {
-            await observer(new ToolApprovalRequestedEvent(wardId, toolName, argsSnapshot))
+            await observer(
+                    new ToolApprovalRequestedEvent(
+                        wardId,
+                        toolName,
+                        wardArguments?.GetRawText() ?? argsSnapshot))
                 .ConfigureAwait(false);
         }
 
@@ -865,16 +962,160 @@ public sealed class ToolExecutionPipeline(
 
         }
 
-        string resultText = await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+        object? rawResult = await InvokeToolCallAsync(
+            fcc,
+            chatOptions,
+            cancellationToken).ConfigureAwait(false);
+
+        if (rawResult is TrustedStructuredToolResult
+            {
+                Kind: TrustedStructuredToolResultKind.WorkspacePatch,
+            } exactPatchResult
+            && (exactPatchResult.ReceiptHandled
+                || ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true))
+        {
+            return (exactPatchResult.Text, false);
+        }
 
         if (toolResultMaterializer is not null)
         {
             string toolName = fcc.Name ?? string.Empty;
-            resultText = toolResultMaterializer.Materialize(toolName, resultText).TextForModel;
+            string materialized = MaterializeToolResultForModel(
+                toolName,
+                rawResult,
+                toolResultMaterializer);
+
+            return (materialized, false);
         }
 
-        return (resultText, false);
+        return (rawResult?.ToString() ?? string.Empty, false);
 
+    }
+
+    private sealed class GrimoirePendingReceiptSink(
+        GrimoireTurnWriter writer) : IApplyPatchPendingReceiptSink
+    {
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
+            ApplyPatchReceiptProbe probe,
+            CancellationToken cancellationToken) =>
+            writer.ProbeApplyPatchReceiptAsync(
+                probe,
+                cancellationToken);
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            writer.PreflightApplyPatchReceiptAsync(
+                preflight,
+                cancellationToken);
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            writer.PersistApplyPatchRecoveryReceiptAsync(
+                receipt,
+                cancellationToken);
+
+        public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
+            PendingApplyPatchReceipt receipt,
+            CancellationToken cancellationToken) =>
+            writer.HandlePendingApplyPatchReceiptAsync(
+                receipt,
+                cancellationToken);
+    }
+
+    internal static string MaterializeToolResultForModel(
+        string toolName,
+        object? rawResult,
+        IToolResultMaterializer materializer,
+        ToolResultMaterializerOptions? options = null)
+    {
+
+        ArgumentNullException.ThrowIfNull(materializer);
+
+        if (rawResult is TrustedStructuredToolResult
+            {
+                Kind: TrustedStructuredToolResultKind.WorkspacePatch,
+                ReceiptHandled: true,
+            } exactPatchResult)
+        {
+            return exactPatchResult.Text;
+        }
+
+        string rawText = rawResult?.ToString() ?? string.Empty;
+
+        if (rawResult is TrustedStructuredToolResult trustedResult)
+        {
+            string? materialized = trustedResult.Kind switch
+            {
+                TrustedStructuredToolResultKind.WorkspaceSearch =>
+                    TryMaterializeStructured(
+                        toolName,
+                        rawText,
+                        materializer,
+                        McpJsonSerializerContext.Default
+                            .WorkspaceSearchToolResultEnvelope,
+                        options),
+                TrustedStructuredToolResultKind.WorkspacePatch =>
+                    TryMaterializeStructured(
+                        toolName,
+                        rawText,
+                        materializer,
+                        McpJsonSerializerContext.Default
+                            .WorkspacePatchToolResultEnvelope,
+                        options),
+                TrustedStructuredToolResultKind.WorkspaceCheck =>
+                    TryMaterializeStructured(
+                        toolName,
+                        rawText,
+                        materializer,
+                        McpJsonSerializerContext.Default
+                            .WorkspaceCheckToolResultEnvelope,
+                        options),
+                _ => null,
+            };
+
+            if (materialized is not null)
+            {
+                return materialized;
+            }
+        }
+
+        return materializer.Materialize(
+            toolName,
+            rawText,
+            options).TextForModel;
+
+    }
+
+    private static string? TryMaterializeStructured<T>(
+        string toolName,
+        string rawText,
+        IToolResultMaterializer materializer,
+        JsonTypeInfo<T> jsonTypeInfo,
+        ToolResultMaterializerOptions? options)
+        where T : class, IStructuredToolResult<T>
+    {
+        try
+        {
+            T? structured = JsonSerializer.Deserialize(
+                rawText,
+                jsonTypeInfo);
+
+            return structured is null
+                ? null
+                : materializer.MaterializeStructured(
+                    toolName,
+                    structured,
+                    jsonTypeInfo,
+                    options).TextForModel;
+        }
+        catch (JsonException)
+        {
+            // A malformed trusted payload is treated as ordinary text.
+            return null;
+        }
     }
 
     private sealed record SanctumEnforcementOutcome(SanctumResult Result, SanctumMode Mode, bool Enabled);
@@ -954,7 +1195,7 @@ public sealed class ToolExecutionPipeline(
         CancellationToken cancellationToken)
     {
 
-        switch (toolName)
+        switch (toolName.ToLowerInvariant())
         {
 
             case "execute_command":
@@ -995,6 +1236,117 @@ public sealed class ToolExecutionPipeline(
 
                 break;
 
+            }
+
+            case ToolRiskClassifier.SearchWorkspaceToolName:
+            {
+
+                if (!TryGetJsonStringProperty(argsRoot, "root", out string? relativeRoot)
+                    || string.IsNullOrWhiteSpace(relativeRoot))
+                {
+
+                    break;
+
+                }
+
+                if (!TryResolveSearchRootUnderWorkspace(
+                        workspaceRoot,
+                        relativeRoot,
+                        out string? absoluteRoot))
+                {
+
+                    return await sanctumGuard.ValidatePathAsync(
+                        campaignId,
+                        relativeRoot,
+                        "search root",
+                        toolName,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                SanctumResult rootResult = await sanctumGuard
+                    .ValidatePathAsync(
+                        campaignId,
+                        absoluteRoot,
+                        "search root",
+                        toolName,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!rootResult.Allowed)
+                {
+
+                    return rootResult;
+
+                }
+
+                break;
+
+            }
+
+            case ToolRiskClassifier.ApplyPatchToolName:
+            {
+
+                WorkspacePatchSettings patchSettings =
+                    settings.Value.CodingTools?.Patch
+                    ?? new WorkspacePatchSettings();
+
+                if (!TryParseApplyPatchManifest(
+                        argsRoot,
+                        patchSettings,
+                        cancellationToken,
+                        out UnifiedDiffManifest? manifest))
+                {
+                    return new SanctumResult
+                    {
+                        Allowed = false,
+                        DenyReason =
+                            "apply_patch target paths could not be validated within the active policy limits.",
+                        Breach = new SanctumBreach
+                        {
+                            BreachId = Guid.NewGuid().ToString("N"),
+                            CampaignId = campaignId,
+                            ToolName = toolName,
+                            BreachType = "PatchPathPreflight",
+                            Detail =
+                                "The patch manifest could not be parsed for complete path validation.",
+                            Timestamp = DateTimeOffset.UtcNow,
+                        },
+                    };
+                }
+
+                foreach (string relativePath in manifest.NormalizedPaths)
+                {
+                    if (!WorkspaceRelativePath.TryResolve(
+                            workspaceRoot,
+                            relativePath,
+                            out string? absolutePath,
+                            out _))
+                    {
+                        return await sanctumGuard.ValidatePathAsync(
+                            campaignId,
+                            relativePath,
+                            "patch path",
+                            toolName,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    SanctumResult pathResult = await sanctumGuard
+                        .ValidatePathAsync(
+                            campaignId,
+                            absolutePath,
+                            "patch path",
+                            toolName,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (!pathResult.Allowed)
+                    {
+                        return pathResult;
+                    }
+                }
+
+                break;
             }
 
             case "write_file":
@@ -1165,6 +1517,97 @@ public sealed class ToolExecutionPipeline(
     }
 
     /// <summary>
+    /// Pure apply-patch preflight seam. It consumes only model arguments and operator limits;
+    /// no workspace root or filesystem service is available to this method.
+    /// </summary>
+    internal static bool TryParseApplyPatchManifest(
+        JsonElement arguments,
+        WorkspacePatchSettings settings,
+        CancellationToken cancellationToken,
+        [NotNullWhen(true)] out UnifiedDiffManifest? manifest)
+    {
+
+        manifest = null;
+
+        if (arguments.ValueKind != JsonValueKind.Object
+            || !arguments.TryGetProperty(
+                "patch",
+                out JsonElement patchElement)
+            || patchElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        UnifiedDiffParseResult parsed = UnifiedDiffParser.Parse(
+            patchElement.GetString(),
+            settings,
+            cancellationToken);
+
+        manifest = parsed.Manifest;
+
+        return parsed.Success && manifest is not null;
+
+    }
+
+    /// <summary>
+    /// Resolves an explicit search root under the workspace for campaign-scoped Sanctum
+    /// defense-in-depth. The search handler independently revalidates containment.
+    /// </summary>
+    internal static bool TryResolveSearchRootUnderWorkspace(
+        string workspaceRoot,
+        string relativeRoot,
+        out string absolutePath)
+    {
+
+        absolutePath = string.Empty;
+
+        try
+        {
+
+            string root = Path.GetFullPath(workspaceRoot.Trim());
+            string trimmed = relativeRoot.Trim();
+
+            if (trimmed is "." or "./" or @".\")
+            {
+
+                absolutePath = root;
+
+                return true;
+
+            }
+
+            if (!WorkspaceRelativePath.TryResolve(
+                    root,
+                    trimmed,
+                    out string? resolved,
+                    out _)
+                || !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    root,
+                    resolved,
+                    out string? finalPath))
+            {
+
+                return false;
+
+            }
+
+            absolutePath = finalPath ?? resolved;
+
+            return true;
+
+        }
+        catch (Exception)
+        {
+
+            absolutePath = string.Empty;
+
+            return false;
+
+        }
+
+    }
+
+    /// <summary>
     /// Resolves <paramref name="relativePath"/> under <paramref name="workspaceRoot"/> and requires
     /// workspace containment (lexical + symlink walk). Defense-in-depth for Sanctum preflight;
     /// underlying tools still enforce their own sandbox checks.
@@ -1277,26 +1720,7 @@ public sealed class ToolExecutionPipeline(
         && !(request.UnattendedMode && wardSettings.AutoDenyInUnattendedMode);
 
     private static bool RequiresWardForTool(string toolName, bool campaignRequiresWard, WardSettings wardSettings)
-    {
-
-        if (!wardSettings.Enabled
-            || !wardSettings.ForbiddenArts.Contains(toolName, StringComparer.OrdinalIgnoreCase))
-        {
-
-            return false;
-
-        }
-
-        if (string.Equals(toolName, "execute_command", StringComparison.OrdinalIgnoreCase))
-        {
-
-            return true;
-
-        }
-
-        return campaignRequiresWard;
-
-    }
+        => ToolRiskClassifier.RequiresWard(toolName, campaignRequiresWard, wardSettings);
 
     private static string UnattendedDenyMessage(string toolName) =>
         $"Forbidden art denied: unattended mode — this action requires an operator to resolve the ward";
@@ -1336,6 +1760,63 @@ public sealed class ToolExecutionPipeline(
 
         }
 
+    }
+
+    private static JsonDocument? BuildWardArgumentsDocument(
+        string toolName,
+        string argsSnapshot)
+    {
+
+        JsonDocument? original = TryParseToolArgumentsDocument(argsSnapshot);
+        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName);
+
+        if (string.IsNullOrEmpty(disclosure))
+        {
+
+            return original;
+        }
+
+        using MemoryStream stream = new();
+
+        using (Utf8JsonWriter writer = new(stream))
+        {
+
+            writer.WriteStartObject();
+
+            if (original?.RootElement.ValueKind == JsonValueKind.Object)
+            {
+
+                foreach (JsonProperty property in original.RootElement
+                             .EnumerateObject())
+                {
+
+                    if (!string.Equals(
+                            property.Name,
+                            "_arcanumRiskDisclosure",
+                            StringComparison.Ordinal))
+                    {
+
+                        property.WriteTo(writer);
+                    }
+
+                }
+
+            }
+            else if (original is not null)
+            {
+
+                writer.WritePropertyName("arguments");
+                original.RootElement.WriteTo(writer);
+            }
+
+            writer.WriteString(
+                "_arcanumRiskDisclosure",
+                disclosure);
+            writer.WriteEndObject();
+        }
+
+        original?.Dispose();
+        return JsonDocument.Parse(stream.ToArray());
     }
 
 }

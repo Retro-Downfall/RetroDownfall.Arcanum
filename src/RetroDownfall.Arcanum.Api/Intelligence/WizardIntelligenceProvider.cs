@@ -163,10 +163,31 @@ public sealed class WizardIntelligenceProvider(
             .EmitAsync(new RunStarted(emitter.NextCorrelation()), cancellationToken)
             .ConfigureAwait(false);
 
+        StreamingIntelligenceMapper mapper = new();
+
+        async ValueTask EmitBufferedFrameAsync(
+            IntelligenceEvent frame,
+            CancellationToken frameCancellationToken)
+        {
+            if (frame.Type is IntelligenceEventType.Error
+                or IntelligenceEventType.Result)
+            {
+                return;
+            }
+
+            foreach (TurnEvent mapped in mapper.Map(frame, emitter))
+            {
+                await emitter
+                    .EmitAsync(mapped, frameCancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
         Result<PromptTurnResult> result = await ExecutePromptCoreAsync(
                 request.Request,
                 cancellationToken,
-                auditContext)
+                auditContext,
+                EmitBufferedFrameAsync)
             .ConfigureAwait(false);
 
         if (result.IsSuccess)
@@ -512,7 +533,9 @@ public sealed class WizardIntelligenceProvider(
     private async Task<Result<PromptTurnResult>> ExecutePromptCoreAsync(
         PingRequest request,
         CancellationToken cancellationToken = default,
-        InferenceAuditContext? auditContext = null)
+        InferenceAuditContext? auditContext = null,
+        Func<IntelligenceEvent, CancellationToken, ValueTask>?
+            eventSink = null)
     {
         string prompt = request.Prompt;
 
@@ -560,6 +583,9 @@ public sealed class WizardIntelligenceProvider(
 
         CancellationToken inferenceToken = inferenceTimeoutCts.Token;
 
+        using IDisposable workspaceCheckDeadlineScope =
+            CreateWorkspaceCheckDeadlineScope();
+
         bool resilienceEnabled = settings.Value.Resilience?.Enabled == true && healthTracker is not null;
 
         if (!resilienceEnabled)
@@ -589,20 +615,35 @@ public sealed class WizardIntelligenceProvider(
                     return Result<PromptTurnResult>.Failure(reasoningValidation.Error);
                 }
 
-                InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(singleLease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
+                InferenceAttemptResult single = await DrainBufferedInferenceAttemptAsync(
+                        singleLease,
+                        request,
+                        inferenceToken,
+                        callerToken,
+                        auditContext,
+                        eventSink)
+                    .ConfigureAwait(false);
 
                 return single.Result;
             }
         }
 
-        return await ExecutePromptWithFallbackAsync(request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
+        return await ExecutePromptWithFallbackAsync(
+                request,
+                inferenceToken,
+                callerToken,
+                auditContext,
+                eventSink)
+            .ConfigureAwait(false);
     }
 
     private async Task<Result<PromptTurnResult>> ExecutePromptWithFallbackAsync(
         PingRequest request,
         CancellationToken inferenceToken,
         CancellationToken callerToken,
-        InferenceAuditContext? auditContext)
+        InferenceAuditContext? auditContext,
+        Func<IntelligenceEvent, CancellationToken, ValueTask>?
+            eventSink)
     {
 
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
@@ -682,7 +723,14 @@ public sealed class WizardIntelligenceProvider(
 
             using (lease)
             {
-                InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(lease, request, inferenceToken, callerToken, auditContext).ConfigureAwait(false);
+                InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(
+                        lease,
+                        request,
+                        inferenceToken,
+                        callerToken,
+                        auditContext,
+                        eventSink)
+                    .ConfigureAwait(false);
 
                 if (attempt.IsConnectivityFailure)
                 {
@@ -750,12 +798,14 @@ public sealed class WizardIntelligenceProvider(
         PingRequest request,
         CancellationToken inferenceToken,
         CancellationToken callerToken,
-        InferenceAuditContext? auditContext)
+        InferenceAuditContext? auditContext,
+        Func<IntelligenceEvent, CancellationToken, ValueTask>?
+            eventSink)
     {
 
         StreamFailureClassification classification = new();
 
-        await foreach (IntelligenceEvent _ in RunInferenceAttemptAsync(
+        await foreach (IntelligenceEvent frame in RunInferenceAttemptAsync(
                 lease,
                 request,
                 request.Prompt,
@@ -766,7 +816,10 @@ public sealed class WizardIntelligenceProvider(
                 auditContext)
             .ConfigureAwait(false))
         {
-            // Buffered mode suppresses live events; terminal lives on classification.BufferedTerminal.
+            if (eventSink is not null)
+            {
+                await eventSink(frame, callerToken).ConfigureAwait(false);
+            }
         }
 
         if (classification.BufferedTerminal is { } terminal)
@@ -847,6 +900,9 @@ public sealed class WizardIntelligenceProvider(
         using CancellationTokenSource inferenceTimeoutCts = CreateInferenceTimeoutSource(callerToken);
 
         CancellationToken inferenceToken = inferenceTimeoutCts.Token;
+
+        using IDisposable workspaceCheckDeadlineScope =
+            CreateWorkspaceCheckDeadlineScope();
 
         bool resilienceEnabled = settings.Value.Resilience?.Enabled == true && healthTracker is not null;
 
@@ -1722,12 +1778,15 @@ public sealed class WizardIntelligenceProvider(
                     request,
                     streamResolvedSpell,
                     grimoireTurn.SessionId ?? request.SessionId,
+                    grimoireTurn.AssistantEntryId,
                     inferenceToken).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
             request,
             streamToolSet,
             humanInteractionAvailable,
+            grimoireTurn,
+            targetModel,
             inferenceToken).ConfigureAwait(false);
 
         bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
@@ -2500,15 +2559,12 @@ public sealed class WizardIntelligenceProvider(
 
                             string callId = toolExecutionPipeline.ResolveCallId(invokeFcc);
 
-                            if (streaming)
-                            {
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.ToolCall,
-                                    invokeFcc.Name ?? string.Empty,
-                                    toolCallData,
-                                    null,
-                                    new IntelligenceToolCallEvent(callId, invokeFcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
-                            }
+                            yield return new IntelligenceEvent(
+                                IntelligenceEventType.ToolCall,
+                                invokeFcc.Name ?? string.Empty,
+                                toolCallData,
+                                null,
+                                new IntelligenceToolCallEvent(callId, invokeFcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
 
                             Channel<IntelligenceEvent> liveWards = Channel.CreateUnbounded<IntelligenceEvent>();
 
@@ -2549,7 +2605,10 @@ public sealed class WizardIntelligenceProvider(
                                                             .ConfigureAwait(false);
                                                     }
                                                 }
-                                                : null)
+                                                : null,
+                                            argumentsSnapshot: argsSnapshot,
+                                            toolRoundOrdinal: streamToolRoundCount - 1,
+                                            callOrdinal: toolCallIndex)
                                         .ConfigureAwait(false);
                                 }
                                 finally
@@ -2581,31 +2640,6 @@ public sealed class WizardIntelligenceProvider(
 
                             (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
 
-                            if (streaming)
-                            {
-                                foreach (IntelligenceEvent wardEvent in processed.WardEvents)
-                                {
-                                    yield return wardEvent;
-                                }
-
-                                if (processed.Failed)
-                                {
-                                    yield return new IntelligenceEvent(
-                                        IntelligenceEventType.ToolError,
-                                        processed.ToolName,
-                                        "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
-                                        null,
-                                        new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
-                                }
-
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.ToolResult,
-                                    processed.ToolName,
-                                    processed.ResultText,
-                                    null,
-                                    new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ResultText, toolCallIndex));
-                            }
-
                             auditContext?.ToolNames.Add(processed.ToolName);
 
                             auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
@@ -2626,14 +2660,39 @@ public sealed class WizardIntelligenceProvider(
                                 streamPendingAttachmentExtras.AddRange(extras);
                             }
 
-                            await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                                grimoireTurn.SessionId,
+                            if (!processed.ReceiptHandled)
+                            {
+                                await grimoireTurnWriter.TryAppendToolInteractionAsync(
+                                    grimoireTurn.SessionId,
+                                    processed.ToolName,
+                                    processed.ArgsSnapshot,
+                                    processed.ResultText,
+                                    targetModel,
+                                    inferenceToken)
+                                    .ConfigureAwait(false);
+                            }
+
+                            foreach (IntelligenceEvent wardEvent in processed.WardEvents)
+                            {
+                                yield return wardEvent;
+                            }
+
+                            if (processed.Failed)
+                            {
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.ToolError,
+                                    processed.ToolName,
+                                    "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                                    null,
+                                    new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex));
+                            }
+
+                            yield return new IntelligenceEvent(
+                                IntelligenceEventType.ToolResult,
                                 processed.ToolName,
-                                processed.ArgsSnapshot,
                                 processed.ResultText,
-                                targetModel,
-                                inferenceToken)
-                                .ConfigureAwait(false);
+                                null,
+                                new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex));
 
                             toolCallIndex++;
                         }
@@ -3133,6 +3192,8 @@ public sealed class WizardIntelligenceProvider(
         PingRequest request,
         IReadOnlyList<AITool> toolSet,
         bool humanInteractionAvailable,
+        GrimoireTurnWriter.TurnHandle grimoireTurn,
+        string targetModel,
         CancellationToken cancellationToken)
     {
         Campaign? campaign = null;
@@ -3190,6 +3251,10 @@ public sealed class WizardIntelligenceProvider(
             Campaign = campaign,
             CampaignId = campaignId,
             WorkspaceRoot = workspaceRoot,
+            PersistedSessionId = grimoireTurn.SessionId,
+            AssistantEntryId = grimoireTurn.AssistantEntryId,
+            InvocationId = grimoireTurn.AssistantEntryId?.ToString("D"),
+            ModelUsed = targetModel,
             CampaignRequiresWard = campaignRequiresWard,
             SanctumEnabled = sanctumEnabled,
             SanctumMode = sanctumMode,
@@ -3399,21 +3464,6 @@ public sealed class WizardIntelligenceProvider(
     {
         ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(fcc, message);
 
-        // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.
-        yield return new IntelligenceEvent(
-            IntelligenceEventType.ToolError,
-            denied.ToolName,
-            message,
-            null,
-            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
-
-        yield return new IntelligenceEvent(
-            IntelligenceEventType.ToolResult,
-            denied.ToolName,
-            denied.ResultText,
-            null,
-            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
-
         auditContext?.ToolNames.Add(denied.ToolName);
 
         auditContext?.ToolArgumentsJson.Add(denied.ArgsSnapshot);
@@ -3433,6 +3483,21 @@ public sealed class WizardIntelligenceProvider(
             targetModel,
             cancellationToken)
             .ConfigureAwait(false);
+
+        // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.
+        yield return new IntelligenceEvent(
+            IntelligenceEventType.ToolError,
+            denied.ToolName,
+            message,
+            null,
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+
+        yield return new IntelligenceEvent(
+            IntelligenceEventType.ToolResult,
+            denied.ToolName,
+            denied.ResultText,
+            null,
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
     }
 
     private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
@@ -4265,6 +4330,7 @@ public sealed class WizardIntelligenceProvider(
         PingRequest request,
         ResolvedSpell? resolvedSpell,
         Guid? sessionIdForTurn,
+        Guid? assistantEntryIdForTurn,
         CancellationToken cancellationToken)
     {
         if (request.DisableAllTools)
@@ -4336,10 +4402,31 @@ public sealed class WizardIntelligenceProvider(
             && attachments.EnableModelAttachTool
             && (request.SessionId.HasValue || sessionIdForTurn.HasValue);
 
+        bool advertiseApplyPatch =
+            sessionIdForTurn is { } patchSessionId
+            && patchSessionId != Guid.Empty
+            && assistantEntryIdForTurn is { } patchAssistantEntryId
+            && patchAssistantEntryId != Guid.Empty;
+
         foreach (AITool t in attunement.Allowed)
         {
             if (!advertiseAttachTool
                 && string.Equals(t.Name, "attach_session_file", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!advertiseApplyPatch
+                && string.Equals(
+                    t.Name,
+                    ToolRiskClassifier.ApplyPatchToolName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!advertiseApplyPatch
+                && IsLegacyMutatingFilesystemTool(t.Name))
             {
                 continue;
             }
@@ -4354,6 +4441,17 @@ public sealed class WizardIntelligenceProvider(
 
         return tools;
     }
+
+    private static bool IsLegacyMutatingFilesystemTool(
+        string? toolName) =>
+        string.Equals(
+            toolName,
+            "write_file",
+            StringComparison.OrdinalIgnoreCase)
+        || string.Equals(
+            toolName,
+            "replace_text_block",
+            StringComparison.OrdinalIgnoreCase);
 
     private static List<AITool> FilterHostProcessTools(List<AITool> tools, bool hostProcessToolsAllowed)
     {
@@ -4448,7 +4546,9 @@ public sealed class WizardIntelligenceProvider(
         {
             WardSettings wardSettings = settings.Value.Ward ?? new WardSettings();
 
-            return FilterToolsExcludingNames(tools, wardSettings.ForbiddenArts);
+            return FilterToolsExcludingNames(
+                tools,
+                ToolRiskClassifier.BuildForbiddenToolNames(wardSettings.ForbiddenArts));
         }
 
         return tools;
@@ -4460,6 +4560,7 @@ public sealed class WizardIntelligenceProvider(
         "list_directory",
         "read_lore",
         "search_archives",
+        ToolRiskClassifier.SearchWorkspaceToolName,
         "ask_human",
         "send_commlink_alert",
         "use_commlink",
@@ -5706,6 +5807,19 @@ public sealed class WizardIntelligenceProvider(
 
         return linked;
 
+    }
+
+    private IDisposable CreateWorkspaceCheckDeadlineScope()
+    {
+
+        IntelligenceSettings intelligence =
+            settings.Value.Intelligence ?? new IntelligenceSettings();
+        int seconds = ArcanumSettingClamps.InferenceTimeoutSeconds(
+            intelligence.InferenceTimeoutSeconds);
+
+        return WorkspaceCheckInferenceDeadlineAmbient.Begin(
+            TimeProvider.System,
+            TimeSpan.FromSeconds(seconds));
     }
 
 }

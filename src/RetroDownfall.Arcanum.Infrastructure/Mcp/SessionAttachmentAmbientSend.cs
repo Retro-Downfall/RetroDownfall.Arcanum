@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol.Protocol;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
 using ArcanumJsonRpcRequest = RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol.JsonRpcRequest;
 
@@ -24,12 +25,13 @@ internal static class SessionAttachmentAmbientSend
             return;
         }
 
+        string requestId = request.Id.ToString();
+        BindRequestContexts(connectionKey, requestId);
+
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
             return;
         }
-
-        string requestId = request.Id.ToString();
 
         if (!string.IsNullOrEmpty(requestId))
         {
@@ -42,6 +44,38 @@ internal static class SessionAttachmentAmbientSend
 
         request.Params = InjectOpaqueTokenIntoSdkParams(request.Params, token);
 
+    }
+
+    public static void UnbindFailedSdkToolsCall(
+        string connectionKey,
+        JsonRpcMessage message)
+    {
+
+        if (message is not JsonRpcRequest { Method: "tools/call" } request)
+        {
+
+            return;
+        }
+
+        string requestId = request.Id.ToString();
+        UnbindRequestContexts(connectionKey, requestId);
+    }
+
+    public static void MarkSdkToolsCallDispatched(
+        string connectionKey,
+        JsonRpcMessage message)
+    {
+        if (message is not JsonRpcRequest
+            {
+                Method: "tools/call",
+            } request)
+        {
+            return;
+        }
+
+        MarkApplyPatchDispatched(
+            connectionKey,
+            request.Id.ToString());
     }
 
     /// <summary>
@@ -57,12 +91,13 @@ internal static class SessionAttachmentAmbientSend
             return request;
         }
 
+        string requestId = NormalizeArcanumRequestId(request.Id);
+        BindRequestContexts(connectionKey, requestId);
+
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
             return request;
         }
-
-        string requestId = NormalizeArcanumRequestId(request.Id);
 
         if (!string.IsNullOrEmpty(requestId))
         {
@@ -75,6 +110,110 @@ internal static class SessionAttachmentAmbientSend
 
         return request with { Params = InjectOpaqueTokenIntoArcanumParams(request.Params, token) };
 
+    }
+
+    public static void UnbindFailedToolsCall(
+        string connectionKey,
+        ArcanumJsonRpcRequest request)
+    {
+
+        if (!string.Equals(
+                request.Method,
+                "tools/call",
+                StringComparison.Ordinal))
+        {
+
+            return;
+        }
+
+        string requestId = NormalizeArcanumRequestId(request.Id);
+        UnbindRequestContexts(connectionKey, requestId);
+    }
+
+    public static void MarkToolsCallDispatched(
+        string connectionKey,
+        ArcanumJsonRpcRequest request)
+    {
+        if (!string.Equals(
+                request.Method,
+                "tools/call",
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        MarkApplyPatchDispatched(
+            connectionKey,
+            NormalizeArcanumRequestId(request.Id));
+    }
+
+    private static void BindRequestContexts(
+        string connectionKey,
+        string requestId)
+    {
+        if (string.IsNullOrEmpty(requestId))
+        {
+            return;
+        }
+
+        if (WorkspaceCheckInferenceDeadlineAmbient.CurrentDeadlineTimestamp
+            is long deadline)
+        {
+            WorkspaceCheckDeadlineBinding.BindRequest(
+                connectionKey,
+                requestId,
+                deadline);
+        }
+
+        if (ApplyPatchInvocationAmbient.Current
+            is ApplyPatchInvocationContext patchContext)
+        {
+            ApplyPatchInvocationBinding.BindRequest(
+                connectionKey,
+                requestId,
+                patchContext);
+        }
+
+        if (PersistedToolInvocationAmbient.Current
+            is PersistedToolInvocationContext persistedContext)
+        {
+            PersistedToolInvocationBinding.BindRequest(
+                connectionKey,
+                requestId,
+                persistedContext);
+        }
+    }
+
+    private static void UnbindRequestContexts(
+        string connectionKey,
+        string requestId)
+    {
+        SessionAttachmentToolAmbient.UnbindRequest(
+            connectionKey,
+            requestId);
+        WorkspaceCheckDeadlineBinding.UnbindRequest(
+            connectionKey,
+            requestId);
+        ApplyPatchInvocationBinding.UnbindRequest(
+            connectionKey,
+            requestId);
+        PersistedToolInvocationBinding.UnbindRequest(
+            connectionKey,
+            requestId);
+    }
+
+    private static void MarkApplyPatchDispatched(
+        string connectionKey,
+        string requestId)
+    {
+        if (ApplyPatchInvocationBinding.TryResolveRequest(
+                connectionKey,
+                requestId,
+                out ApplyPatchInvocationContext? context)
+            && context is not null)
+        {
+            context.MarkDispatched();
+        }
     }
 
     /// <summary>

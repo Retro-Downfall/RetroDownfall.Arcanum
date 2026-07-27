@@ -44,6 +44,15 @@ public static class ArcanumMetrics
     public static readonly Counter<long> ToolInvocationsTotal = Meter.CreateCounter<long>(
         "arcanum_tool_invocations_total", description: "Total tool invocations");
 
+    /// <summary>
+    /// Bounded cleanup attempts after a mandatory apply_patch receipt commits. Label:
+    /// <c>outcome</c> (<c>complete</c> | <c>retained</c>).
+    /// </summary>
+    public static readonly Counter<long> ApplyPatchArtifactCleanupTotal =
+        Meter.CreateCounter<long>(
+            "arcanum_apply_patch_artifact_cleanup_total",
+            description: "Post-commit apply_patch recovery artifact cleanup attempts");
+
     /// <summary>Current active SSE connections. Labels: <c>event_type</c> (see <c>SseEventTypes</c>).</summary>
     public static readonly UpDownCounter<long> SseConnectionsCurrent = Meter.CreateUpDownCounter<long>(
         "arcanum_sse_connections_current", description: "Current active SSE connections");

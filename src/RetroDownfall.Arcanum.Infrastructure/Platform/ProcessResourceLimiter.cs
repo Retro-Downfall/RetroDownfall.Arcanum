@@ -124,7 +124,10 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
     }
 
     private static bool HasUnixLimit(ResourceLimits limits) =>
-        limits.MaxCpuSeconds > 0 || limits.MaxMemoryMb > 0 || limits.MaxFileDescriptors > 0;
+        limits.MaxCpuSeconds > 0
+        || limits.MaxMemoryMb > 0
+        || limits.MaxFileDescriptors > 0
+        || limits.MaxProcessCount > 0;
 
     private ProcessResourceLimiterResult ApplyOnWindows(ProcessStartInfo startInfo, ResourceLimits limits)
     {
@@ -179,8 +182,16 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
     }
 
-    private static ProcessResourceLimiterResult ApplyOnMacOs(ProcessStartInfo startInfo, ResourceLimits limits)
+    private ProcessResourceLimiterResult ApplyOnMacOs(ProcessStartInfo startInfo, ResourceLimits limits)
     {
+
+        if (limits.MaxProcessCount > 0)
+        {
+
+            _logger?.LogWarning(
+                "macOS cannot safely enforce a per-tree process-count limit through setrlimit; process-group teardown remains enforced.");
+
+        }
 
         string prelude = BuildUlimitPrelude(limits, includeMemory: true);
 
@@ -279,7 +290,8 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
     private string? TryCreateAndConfigureCgroup(ResourceLimits limits)
     {
 
-        if (limits.MaxMemoryMb <= 0)
+        if (limits.MaxMemoryMb <= 0
+            && limits.MaxProcessCount <= 0)
         {
 
             // Nothing for cgroups to contribute; CPU/FD are always handled by the ulimit prelude.
@@ -332,13 +344,26 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
     private static void WriteCgroupLimits(string cgroupPath, ResourceLimits limits)
     {
 
-        long memoryBytes = (long)limits.MaxMemoryMb * 1024L * 1024L;
+        if (limits.MaxMemoryMb > 0)
+        {
 
-        string memoryText = memoryBytes.ToString(CultureInfo.InvariantCulture);
+            long memoryBytes = (long)limits.MaxMemoryMb * 1024L * 1024L;
 
-        File.WriteAllText(Path.Combine(cgroupPath, "memory.max"), memoryText);
+            string memoryText = memoryBytes.ToString(CultureInfo.InvariantCulture);
 
-        File.WriteAllText(Path.Combine(cgroupPath, "memory.high"), memoryText);
+            File.WriteAllText(Path.Combine(cgroupPath, "memory.max"), memoryText);
+
+            File.WriteAllText(Path.Combine(cgroupPath, "memory.high"), memoryText);
+        }
+
+        if (limits.MaxProcessCount > 0)
+        {
+
+            File.WriteAllText(
+                Path.Combine(cgroupPath, "pids.max"),
+                limits.MaxProcessCount.ToString(
+                    CultureInfo.InvariantCulture));
+        }
 
         if (limits.MaxCpuSeconds > 0)
         {
@@ -369,6 +394,16 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         try
         {
+
+            string killPath = Path.Combine(
+                cgroupPath,
+                "cgroup.kill");
+
+            if (File.Exists(killPath))
+            {
+
+                File.WriteAllText(killPath, "1");
+            }
 
             Directory.Delete(cgroupPath, recursive: false);
 

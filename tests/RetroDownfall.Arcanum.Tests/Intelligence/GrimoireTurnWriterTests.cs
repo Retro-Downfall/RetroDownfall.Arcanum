@@ -19,6 +19,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Workspaces;
 
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -642,6 +644,69 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(0, grimoire.DiscardCallCount);
     }
 
+    [Theory]
+    [InlineData(MandatoryToolInteractionAppendOutcome.Failed)]
+    [InlineData(MandatoryToolInteractionAppendOutcome.Ambiguous)]
+    public async Task HandlePendingApplyPatchReceiptAsync_UncommittedOutcome_DoesNotPublishSessionEvents(
+        MandatoryToolInteractionAppendOutcome outcome)
+    {
+        Guid sessionId = Guid.NewGuid();
+        TrackingGrimoireRepository grimoire = new()
+        {
+            MandatoryAppendOutcome = outcome,
+            ReturnEntryOnLookup = true,
+        };
+        SessionEventHub hub = CreateHub();
+        GrimoireTurnWriter writer = CreateWriter(
+            grimoire,
+            NullLogger<GrimoireTurnWriter>.Instance,
+            hub);
+        using CancellationTokenSource cancellation = new();
+        await using IAsyncEnumerator<Entry> subscription =
+            hub.SubscribeAsync(sessionId, cancellation.Token)
+                .GetAsyncEnumerator(cancellation.Token);
+        Task<bool> pendingEvent = subscription.MoveNextAsync().AsTask();
+        ToolInteractionReceipt receipt = ToolInteractionReceiptDerivation.Derive(
+            new ToolInvocationIdentity(
+                "outcome-publication-test",
+                "call-1",
+                0,
+                0,
+                ToolRiskClassifier.ApplyPatchToolName));
+        ReversibleWorkspaceCommit transaction = new(
+            Path.GetTempPath(),
+            [],
+            [],
+            new MultiFileCommitCoordinatorOptions());
+        PendingApplyPatchReceipt pending = new(
+            sessionId,
+            receipt,
+            "call-1",
+            ToolRiskClassifier.ApplyPatchToolName,
+            "{}",
+            """{"status":"ok"}""",
+            "test-model",
+            DateTimeOffset.UtcNow,
+            Recovery: null,
+            transaction);
+
+        ApplyPatchPendingReceiptHandoffResult result =
+            await writer.HandlePendingApplyPatchReceiptAsync(
+                pending,
+                CancellationToken.None);
+
+        Assert.Equal(outcome, result.Outcome);
+        Assert.Equal(1, grimoire.MandatoryAppendCallCount);
+        Assert.Equal(0, grimoire.EntryByIdPublishCount);
+        Assert.False(
+            pendingEvent.IsCompleted,
+            "A failed or ambiguous mandatory receipt published a session event.");
+
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => _ = await pendingEvent);
+    }
+
     private static GrimoireTurnWriter CreateWriter(IGrimoireRepository grimoire) =>
         CreateWriter(grimoire, NullLogger<GrimoireTurnWriter>.Instance);
 
@@ -735,6 +800,8 @@ public sealed class GrimoireTurnWriterTests
 
         public int AppendCallCount { get; private set; }
 
+        public int MandatoryAppendCallCount { get; private set; }
+
         public int RecentEntriesPublishCount { get; private set; }
 
         public int EntryByIdPublishCount { get; private set; }
@@ -754,6 +821,9 @@ public sealed class GrimoireTurnWriterTests
         public Exception? DiscardException { get; init; }
 
         public Exception? AppendException { get; init; }
+
+        public MandatoryToolInteractionAppendOutcome MandatoryAppendOutcome { get; init; } =
+            MandatoryToolInteractionAppendOutcome.Failed;
 
         public Exception? RecentEntriesException { get; init; }
 
@@ -860,6 +930,20 @@ public sealed class GrimoireTurnWriterTests
 
             return Task.CompletedTask;
 
+        }
+
+        public Task<MandatoryToolInteractionAppendResult>
+            AppendMandatoryToolInteractionAsync(
+            MandatoryToolInteraction interaction,
+            CancellationToken cancellationToken = default)
+        {
+            MandatoryAppendCallCount++;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(
+                new MandatoryToolInteractionAppendResult(
+                    MandatoryAppendOutcome,
+                    interaction.Receipt));
         }
 
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>

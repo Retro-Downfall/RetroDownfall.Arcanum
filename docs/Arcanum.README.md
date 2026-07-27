@@ -22,7 +22,7 @@ The shipping artifact is a **Native AOT** binary with **zero runtime prerequisit
 - **Source-generated request delegates.** `Api` sets `EnableRequestDelegateGenerator`; handlers must be RDG-compatible (no unbounded reflection model binding, no anonymous return DTOs).
 - **Hand-authored tool schemas.** New `AIFunction` tools use explicit `JsonDocument` schemas, **not** `AIFunctionFactory.Create`.
 - **Config binding** uses `EnableConfigurationBindingGenerator`. Settings POCOs under `Arcanum:…` must use `{ get; set; }` (not `init`) — the generator silently skips `init`-only properties (dotnet/runtime#107856), which previously left `Providers` / `DefaultModel` empty at runtime while `arcanum.json` still looked correct.
-- **Verification gate:** a clean `dotnet publish` AOT run with zero first-party IL trim/AOT warnings. Use `./scripts/verify-aot-il-warnings.sh` (see [Build & verify](#build-test--verify)).
+- **Verification gate:** a clean `dotnet publish` AOT run with zero first-party IL trim/AOT warnings. Use `./scripts/verify-aot-il-warnings.sh` (see [Build, test & verify](#build-test--verify)).
 
 ### 2. API-first design
 
@@ -61,7 +61,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](Arcanu
 - Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`).
 - Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over **HTTPS only** (plaintext any-IP HTTP is refused; `Host:Https` + cert required).
-- Path containment + symlink revalidation for file tools; host-process tools (`execute_command` / `run_spell_script`) use `ArgumentList` (no shell) with child-env scrubbing and are **gated by Local edition** unless Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1` (ADR 0001); workspace MCP requires trust. **Tool-child FS jail** (macOS Seatbelt active; Linux inactive fail-closed; Windows Job Objects only / Degraded) — filesystem-only — unless `AllowUnsandboxedToolChildren`. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
+- `WorkspacePathPolicy` containment, symlink walking, and handle-identity revalidation are the primary boundary for file/search/patch tools; campaign Sanctum is an additional conditional allowlist. Host-process tools (`execute_command` / `run_spell_script`) use `ArgumentList` (no shell) with child-env scrubbing and are **gated by Local edition** unless Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1` (ADR 0001); workspace MCP requires trust. **Tool-child FS jail** (macOS Seatbelt active; Linux inactive fail-closed; Windows Job Objects only / Degraded) is filesystem-only. `workspace_check` is stricter and separate: advertised only on an eligible macOS Seatbelt host, never enabled by `AllowUnsandboxedToolChildren`, and unavailable on Linux/Windows. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
 
 ### 6. Strict Content Security Policy on every web surface
 
@@ -93,7 +93,7 @@ Any change to architecture, contracts, configuration, persistence, MCP surfaces,
 | Project | Role | Owns | AOT |
 |---------|------|------|-----|
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`) | `IsAotCompatible` |
-| **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), workspace scanning, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
+| **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
 | **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Single shipping executable | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` (the native image) |
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
@@ -150,7 +150,7 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **New endpoint checklist:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or documented streaming shape) → register every new payload type on `ArcanumJsonContext` → `.WithName(...)` for OpenAPI → use explicit `JsonTypeInfo` on failable `Results.Json` → update DESIGN.md §4.3 + this README's API map.
 - **New CLI verb:** add a public method (XML doc `<summary>`/`<param>` comments drive `--help` text and aliases) to a grouped command class under `Cli/Commands`, registered via `app.Add<T>("path")` in `CliApplicationFactory.RunAsync`; prefer `AddArcanumEyeOfTheWorld()` over full infrastructure for lightweight verbs.
 - **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact.
-- **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor workspace path containment and `ToolOutputCapBytes`; decide whether it's a **Forbidden Art** (ward-gated).
+- **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and `ToolOutputCapBytes`; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [DESIGN.md §8.2](Arcanum.DESIGN.md#82-arcanumjsoncontext--source-generated-public)).
 
 ---
@@ -236,6 +236,8 @@ Summaries only — full contracts live in DESIGN.
 - **OpenAI reasoning errors:** semantic validation is identical for buffered and `stream:true` requests and returns HTTP 400, `type:"invalid_request_error"`, `param:"reasoning"`, with `invalid_reasoning_options`, `invalid_reasoning_budget`, `unsupported_reasoning_control`, `reasoning_budget_exceeds_model_limit`, or `unsupported_reasoning_output`. Unknown enum strings and defined/undefined integer enum values fail earlier as strict JSON binding: HTTP 400, code `invalid_json`, no `param`.
 - **Reasoning separation:** native buffered responses expose an ordered `reasoning` array; NDJSON uses typed `reasoning` frames; OpenAI buffered/SSE uses additive `reasoning_summary` / `reasoning_content`; native usage exposes additive `cached_tokens` and `reasoning_tokens`, while OpenAI usage uses `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`. Answer fields remain answer-only. Visible reasoning is ephemeral, provider `ProtectedData` stays in memory only for same-provider tool continuation, and no reasoning body enters Grimoire, logs/audit, trace export, Master/Apprentice handoff, checkpoints, or Chronicles. The Forge Tome renders a live reasoning role and traces retain only redacted type/output/count metadata.
 - **Agentic layers:** spell routing (+ optional embedding pre-filter), Arcane Resonance, Artifact Attunement, MCP tool loops, read-time compression, Wards, Sanctum. See [DESIGN §10](Arcanum.DESIGN.md#10-intelligence-pipeline) and [CHAT-LOOP](Arcanum.CHAT-LOOP.md).
+- **Reliable workspace tools:** `search_workspace` performs strict-UTF-8, deterministic, line-scoped literal or bounded runtime-regex search directly over the workspace (non-backtracking first, interpreted fallback, no `RegexOptions.Compiled`, no Weave). `apply_patch` separates pure unified-diff parsing from all-file filesystem planning, then uses one reversible **sequential, observable, non-isolated** transaction per call; it requires a persisted assistant turn and deterministically persists the exact arguments/result before the result reaches the model. It offers rollback and relative recovery artifacts, not process-wide isolation or crash atomicity. `workspace_check` runs closed `.NET` build/test/lint profiles with `--no-restore`, read-only source/package/SDK roots, and owner-only per-run outputs. Repository tasks/generators/analyzers/tests still execute arbitrary code, so it always Wards while Wards are on. It is advertised only with eligible macOS Seatbelt + trusted `dotnet`/SDK/launch chain; Linux/Windows are unavailable. Network remains open and intentionally detached-descendant cleanup is best effort. Full status/recovery contract: [DESIGN §10.2.1](Arcanum.DESIGN.md#1021-built-in-tools-and-mcp-workspace-tools).
+- **Inference audit:** the opt-in JSONL log records successful completed turns only. Tool names/counts are retained; raw argument JSON is omitted by default (`Host:AuditLog:RedactToolArguments=true`); tool results and prompt/answer/reasoning bodies are not audit fields.
 - **Scrying / attachments:** [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) / [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default).
 - **RAG (Weave / Divination / Saga):** [§21](Arcanum.DESIGN.md#21-the-weave-divination-and-saga-rag) — all phases gated by `Arcanum:Embeddings:*`, off by default.
@@ -258,6 +260,7 @@ Settings bind under the `Arcanum` object in **`arcanum.json`** (`~/.config/arcan
 | `DefaultModel` / `FastModel` / `Providers` | Multi-provider hub; per-provider/per-model typed tokenization plus vision/reasoning capabilities |
 | `Intelligence` | Timeouts, tool rounds, Lexicon, compression, fallback-token safety/image reserves, injection bounds |
 | `Mcp` | Client timeouts, tools/list bounds, bootstrap |
+| `CodingTools` | Exact search caps; unified-diff parser/planner and result caps; macOS-only closed workspace-check profiles, trusted `dotnet`, diagnostics/output/deadline bounds |
 | `Ward` / Sanctum / `AllowUnsandboxedToolChildren` | Forbidden Arts, sandbox, FS-jail escape hatch |
 | `Apprentices` | Concurrency, retries, Simulacra |
 | `Grimoire` / `Sessions` | Load/query caps, memory-management gate, fork depth |
@@ -337,7 +340,7 @@ Tokenization settings are optional; existing provider/model config remains valid
 
 Model-level tokenization overrides the provider-level `tokenization` object. Exact-local profiles require a valid tokenizer id and ignore safety margins; unknown models otherwise use `Intelligence.TokenizerEncoding`, `EstimatedTokenSafetyMarginPercent` (default 15), and `UnknownImageTokenReserve` (default 2048).
 
-The token-accounting feature changes no Grimoire table or compiled EF model and introduces no database migration. It does not add any reinstall requirement beyond the pre-existing reasoning-accounting notice below.
+The token-accounting feature changes no Grimoire table or compiled EF model and introduces no database migration. The reliable editing loop also uses existing `Entries` rows for mandatory `apply_patch` call/result receipts and adds no table, column, EF migration, or reinstall requirement. The notice below applies only to a developer database created before the pre-existing reasoning-accounting install-script change.
 
 ```bash
 export ARCANUM_Arcanum__Providers__1__ApiKey='your-key-here'
@@ -347,7 +350,7 @@ export ARCANUM_Arcanum__Providers__1__ApiKey='your-key-here'
 
 ### Mandatory local Grimoire reinstall
 
-First-class reasoning adds `BillableOperations.ReasoningTokens` by changing the existing embedded install script in place. A database that already recorded that script's migration id will not replay it. **Before running this build, stop every Arcanum host/background daemon, back up anything you need, delete the local Grimoire database, and restart Arcanum to install a fresh schema.**
+This is a **pre-existing reasoning-accounting upgrade**, not an editing-loop requirement. First-class reasoning added `BillableOperations.ReasoningTokens` by changing the existing embedded install script in place. A database that already recorded that script's migration id will not replay it. Only when upgrading such an older developer database: stop every Arcanum host/background daemon, back up anything you need, delete the local Grimoire database, and restart Arcanum to install a fresh schema. A database already created by the current script needs no reinstall for `search_workspace`, `apply_patch`, or `workspace_check`.
 
 macOS/Linux (Bash):
 
@@ -369,6 +372,22 @@ There is intentionally no data migration and no EF-model regeneration for this r
 ### Optional HTTPS
 
 HTTP remains the default on **loopback**. `Host:Https:Enabled` adds a TLS listener; with `ListenAny` / `ARCANUM_HOST_ANY`, HTTPS is **required and exclusive**. Cert password is `dp:v1:`-encrypted and redacted on `GET /api/config`. Clients do not bypass TLS validation. PFX vs PEM shapes and Compendium self-signed generation: [DESIGN §3.4 Host](Arcanum.DESIGN.md#34-configuration-reference-arcanumsettings) / [Compendium.README](Compendium.README.md#host-https).
+
+---
+
+## Build, test & verify
+
+Run from the repository root. The focused test projects run on the normal CLR; the final script checks the Native AOT publish closure for first-party trim/AOT warnings.
+
+```bash
+dotnet build RetroDownfall.Arcanum.slnx
+dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
+dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
+./scripts/coverage.sh --threshold
+./scripts/verify-aot-il-warnings.sh
+```
+
+Reliable-editing-loop focused filters and platform notes are in [tests.README.md](tests.README.md#reliable-editing-loop). Do not use `workspace_check` as the bootstrap verifier for an untrusted repository: it executes repository-authored code and itself requires an eligible macOS runtime plus an operator Ward.
 
 ---
 

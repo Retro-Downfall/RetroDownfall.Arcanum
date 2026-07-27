@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -98,6 +99,10 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(ReplaceTextBlockParams))]
 [JsonSerializable(typeof(WriteFileParams))]
 [JsonSerializable(typeof(ListDirectoryParams))]
+[JsonSerializable(typeof(SearchWorkspaceParams))]
+[JsonSerializable(typeof(ApplyPatchParams))]
+[JsonSerializable(typeof(WorkspaceCheckParams))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(ExecuteCommandParams))]
 [JsonSerializable(typeof(AskHumanParams))]
 [JsonSerializable(typeof(ScribeLexiconParams))]
@@ -113,4 +118,16 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(CastSendingResultWire))]
 [JsonSerializable(typeof(DispatchSendingParams))]
 [JsonSerializable(typeof(DispatchSendingResultWire))]
+[JsonSerializable(typeof(MinimalStructuredToolResultEnvelope))]
+[JsonSerializable(typeof(WorkspaceSearchToolResultItem))]
+[JsonSerializable(typeof(WorkspaceSearchToolResultItem[]))]
+[JsonSerializable(typeof(WorkspaceSearchToolResultEnvelope))]
+[JsonSerializable(typeof(WorkspacePatchHunkDiagnostic))]
+[JsonSerializable(typeof(WorkspacePatchHunkDiagnostic[]))]
+[JsonSerializable(typeof(WorkspacePatchToolResultItem))]
+[JsonSerializable(typeof(WorkspacePatchToolResultItem[]))]
+[JsonSerializable(typeof(WorkspacePatchToolResultEnvelope))]
+[JsonSerializable(typeof(WorkspaceCheckToolResultItem))]
+[JsonSerializable(typeof(WorkspaceCheckToolResultItem[]))]
+[JsonSerializable(typeof(WorkspaceCheckToolResultEnvelope))]
 public partial class McpJsonSerializerContext : JsonSerializerContext;

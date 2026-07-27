@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -49,9 +50,27 @@ internal enum CappedChildProcessOutcome
     /// </summary>
     FilesystemSandboxDeniedByWindowsSanctum,
 
+    /// <summary>
+    /// A caller-owned trusted executable/SDK/cache identity check failed after sandbox/resource
+    /// preparation and immediately before Process.Start; the child was never spawned.
+    /// </summary>
+    PreStartValidationFailed,
+
 }
 
 internal readonly record struct CappedStreamOutput(string Text, bool Truncated);
+
+internal readonly record struct CappedChildProcessPreStartValidationResult(
+    bool Success,
+    string? Error,
+    string? Code = null);
+
+internal enum ChildProcessSandboxDeniedRootKind
+{
+    Source,
+    PackageCache,
+    Other,
+}
 
 internal sealed class CappedChildProcessRunResult
 {
@@ -81,6 +100,13 @@ internal sealed class CappedChildProcessRunResult
     /// </summary>
     internal string? FilesystemSandboxDenialMessage { get; init; }
 
+    internal string? PreStartValidationError { get; init; }
+
+    internal string? PreStartValidationCode { get; init; }
+
+    internal ChildProcessSandboxDeniedRootKind?
+        SandboxDeniedRoot { get; init; }
+
 }
 
 internal static class CappedChildProcessRunner
@@ -95,7 +121,9 @@ internal static class CappedChildProcessRunner
         IProcessResourceLimiter? resourceLimiter,
         CancellationToken cancellationToken,
         ChildProcessSandboxRequest? filesystemSandbox = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        Func<CappedChildProcessPreStartValidationResult>? preStartValidation = null,
+        Func<TimeSpan>? getCleanupTimeRemaining = null)
     {
 
         ChildProcessEnvironmentScrubber.ApplyProfile(startInfo, environmentProfile);
@@ -147,7 +175,11 @@ internal static class CappedChildProcessRunner
             if (sandboxResult.Status == ChildProcessSandboxApplyStatus.Unavailable)
             {
 
-                ChildProcessFilesystemJail.CleanupTempPaths(sandboxResult.TempPathsToCleanup);
+                await CleanupSandboxTempPathsAsync(
+                        sandboxResult,
+                        getCleanupTimeRemaining,
+                        logger)
+                    .ConfigureAwait(false);
 
                 return new CappedChildProcessRunResult
                 {
@@ -167,7 +199,11 @@ internal static class CappedChildProcessRunner
             if (sandboxResult.Status == ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum)
             {
 
-                ChildProcessFilesystemJail.CleanupTempPaths(sandboxResult.TempPathsToCleanup);
+                await CleanupSandboxTempPathsAsync(
+                        sandboxResult,
+                        getCleanupTimeRemaining,
+                        logger)
+                    .ConfigureAwait(false);
 
                 return new CappedChildProcessRunResult
                 {
@@ -182,10 +218,37 @@ internal static class CappedChildProcessRunner
 
             }
 
+            if (filesystemSandbox.RequireAppliedFilesystemJail
+                && sandboxResult.Status != ChildProcessSandboxApplyStatus.Applied)
+            {
+
+                await CleanupSandboxTempPathsAsync(
+                        sandboxResult,
+                        getCleanupTimeRemaining,
+                        logger)
+                    .ConfigureAwait(false);
+
+                return new CappedChildProcessRunResult
+                {
+
+                    Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
+
+                    PerStreamCapBytes = perStreamCapBytes,
+
+                    FilesystemSandboxDenialMessage =
+                        "workspace_check requires an active filesystem jail; the process was not started. "
+                        + ChildProcessSandboxMessages.NotNetworkIsolationNote,
+
+                };
+
+            }
+
             // Applied (macOS Seatbelt), NoFilesystemJail (Windows Job Objects only), and
             // EscapedByOperator continue — never treat NoFilesystemJail as Applied FS confinement.
 
         }
+
+        UnixProcessGroupSupervisor.Apply(startInfo);
 
         using Process process = new();
 
@@ -207,12 +270,78 @@ internal static class CappedChildProcessRunner
         // entirely, leaking an empty, process-less cgroup directory.
         int startedPid = -1;
 
+        int? unixProcessGroupId = null;
+        MacOsDescendantSupervisor? descendantSupervisor = null;
+        bool descendantContainmentVerified = true;
+
         try
         {
 
-            try
+            if (cancellationToken.IsCancellationRequested)
             {
 
+                return new CappedChildProcessRunResult
+                {
+
+                    Outcome =
+                        CappedChildProcessOutcome.CanceledBeforeStart,
+
+                    PerStreamCapBytes = perStreamCapBytes,
+
+                };
+            }
+
+            if (preStartValidation is not null)
+            {
+
+                CappedChildProcessPreStartValidationResult validation;
+
+                try
+                {
+
+                    validation = preStartValidation();
+                }
+                catch (Exception)
+                {
+
+                    validation = new CappedChildProcessPreStartValidationResult(
+                        false,
+                        "Trusted process identity validation failed.");
+                }
+
+                if (!validation.Success)
+                {
+
+                    return new CappedChildProcessRunResult
+                    {
+
+                        Outcome =
+                            CappedChildProcessOutcome.PreStartValidationFailed,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        PreStartValidationError = validation.Error,
+
+                        PreStartValidationCode = validation.Code,
+
+                    };
+                }
+
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+
+                return new CappedChildProcessRunResult
+                {
+                    Outcome =
+                        CappedChildProcessOutcome.CanceledBeforeStart,
+                    PerStreamCapBytes = perStreamCapBytes,
+                };
+            }
+
+            try
+            {
                 if (!process.Start())
                 {
 
@@ -308,6 +437,19 @@ internal static class CappedChildProcessRunner
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
 
+            unixProcessGroupId = UnixProcessGroup.TryCreate(startedPid);
+            descendantSupervisor =
+                MacOsDescendantSupervisor.TryStart(startedPid);
+
+            if (OperatingSystem.IsMacOS()
+                && filesystemSandbox?.ToolName
+                    == ToolRiskClassifier.WorkspaceCheckToolName
+                && descendantSupervisor is null)
+            {
+                logger?.LogWarning(
+                    "workspace_check descendant monitoring could not attach; process-group cleanup remains active.");
+            }
+
             // Windows Job Objects: AssignProcessToJobObject must run immediately after Start and
             // before any stdout/stderr wait. .NET cannot create the child suspended, so there is a
             // brief post-start race before the job binds (DESIGN §11.15). Failure here is fail-closed:
@@ -340,15 +482,33 @@ internal static class CappedChildProcessRunner
             }
 
             CancellationTokenRegistration killRegistration = waitToken.Register(
-                static state => ProcessTreeKiller.TryKillEntireTree((Process)state!, context: "execute_command/run_spell_script"),
-                process);
+                static state =>
+                {
+
+                    (Process child, int? groupId, MacOsDescendantSupervisor? supervisor) =
+                        ((Process Child, int? GroupId, MacOsDescendantSupervisor? Supervisor))state!;
+                    supervisor?.KillTracked();
+                    UnixProcessGroup.TryTerminateAndKill(
+                        groupId);
+                    ProcessTreeKiller.TryKillEntireTree(
+                        child,
+                        context: "execute_command/run_spell_script");
+
+                },
+                (process, unixProcessGroupId, descendantSupervisor));
 
             try
             {
 
-                Task<CappedStreamOutput> stdoutTask = ReadStreamCappedAsync(process.StandardOutput, perStreamCapBytes, waitToken);
+                Task<CappedStreamOutput> stdoutTask = ReadStreamCappedAsync(
+                    process.StandardOutput,
+                    perStreamCapBytes,
+                    cancellationToken);
 
-                Task<CappedStreamOutput> stderrTask = ReadStreamCappedAsync(process.StandardError, perStreamCapBytes, waitToken);
+                Task<CappedStreamOutput> stderrTask = ReadStreamCappedAsync(
+                    process.StandardError,
+                    perStreamCapBytes,
+                    cancellationToken);
 
                 try
                 {
@@ -359,9 +519,28 @@ internal static class CappedChildProcessRunner
                 catch (OperationCanceledException)
                 {
 
-                    ProcessTreeKiller.TryKillEntireTree(process, context: "execute_command/run_spell_script");
+                    UnixProcessGroup.TryKill(unixProcessGroupId);
 
-                    await ObserveStreamReadTasksAsync(stdoutTask, stderrTask).ConfigureAwait(false);
+                    ProcessTreeKiller.TryKillEntireTree(process, context: "execute_command/run_spell_script");
+                    if (descendantSupervisor is not null)
+                    {
+                        descendantContainmentVerified =
+                            await descendantSupervisor
+                            .StopKillAndVerifyAsync(
+                                TimeSpan.FromSeconds(2))
+                            .ConfigureAwait(false);
+                    }
+
+                    (CappedStreamOutput canceledStdout, CappedStreamOutput canceledStderr) =
+                        await CompleteStreamReadTasksAsync(
+                            stdoutTask,
+                            stderrTask).ConfigureAwait(false);
+
+                    if (!descendantContainmentVerified)
+                    {
+                        logger?.LogWarning(
+                            "workspace_check descendant cleanup could not verify quiescence after cancellation.");
+                    }
 
                     if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                     {
@@ -370,6 +549,10 @@ internal static class CappedChildProcessRunner
                         {
 
                             Outcome = CappedChildProcessOutcome.TimedOut,
+
+                            Stdout = canceledStdout,
+
+                            Stderr = canceledStderr,
 
                             PerStreamCapBytes = perStreamCapBytes,
 
@@ -382,10 +565,26 @@ internal static class CappedChildProcessRunner
 
                         Outcome = CappedChildProcessOutcome.Canceled,
 
+                        Stdout = canceledStdout,
+
+                        Stderr = canceledStderr,
+
                         PerStreamCapBytes = perStreamCapBytes,
 
                     };
 
+                }
+
+                // A successful parent exit is not proof that descendants exited. The captured
+                // process group remains addressable after the original pid is gone.
+                UnixProcessGroup.TryKill(unixProcessGroupId);
+                if (descendantSupervisor is not null)
+                {
+                    descendantContainmentVerified =
+                        await descendantSupervisor
+                        .StopKillAndVerifyAsync(
+                            TimeSpan.FromSeconds(2))
+                        .ConfigureAwait(false);
                 }
 
                 CappedStreamOutput stdout;
@@ -446,6 +645,12 @@ internal static class CappedChildProcessRunner
 
                 int exitCode = process.ExitCode;
 
+                if (!descendantContainmentVerified)
+                {
+                    logger?.LogWarning(
+                        "workspace_check descendant cleanup could not verify quiescence after process exit.");
+                }
+
                 ResourceLimitKind? exceededResource = await CheckSignalKillAsync(exitCode, resourceLimits, limiterResult)
                     .ConfigureAwait(false);
 
@@ -464,6 +669,11 @@ internal static class CappedChildProcessRunner
 
                     PerStreamCapBytes = perStreamCapBytes,
 
+                    SandboxDeniedRoot = ClassifySandboxDenial(
+                        stdout.Text,
+                        stderr.Text,
+                        filesystemSandbox),
+
                     ExceededResource = exceededResource,
 
                 };
@@ -472,6 +682,8 @@ internal static class CappedChildProcessRunner
             finally
             {
 
+                UnixProcessGroup.TryKill(unixProcessGroupId);
+
                 await killRegistration.DisposeAsync().ConfigureAwait(false);
 
             }
@@ -479,18 +691,138 @@ internal static class CappedChildProcessRunner
         }
         finally
         {
+            if (descendantSupervisor is not null)
+            {
+                await descendantSupervisor.DisposeAsync()
+                    .ConfigureAwait(false);
+            }
 
-            ChildProcessFilesystemJail.CleanupTempPaths(sandboxResult?.TempPathsToCleanup);
+            await CleanupSandboxTempPathsAsync(
+                    sandboxResult,
+                    getCleanupTimeRemaining,
+                    logger)
+                .ConfigureAwait(false);
 
             if (limiterResult.CleanupAsync is not null)
             {
 
-                await limiterResult.CleanupAsync(startedPid).ConfigureAwait(false);
+                try
+                {
+
+                    await limiterResult.CleanupAsync(startedPid)
+                        .WaitAsync(
+                            GetCleanupTimeRemaining(
+                                getCleanupTimeRemaining))
+                        .ConfigureAwait(false);
+
+                }
+                catch (TimeoutException)
+                {
+
+                    logger?.LogWarning(
+                        "Timed out cleaning the child-process resource limiter scope.");
+
+                }
 
             }
 
         }
 
+    }
+
+    private static async Task CleanupSandboxTempPathsAsync(
+        ChildProcessSandboxApplyResult? sandboxResult,
+        Func<TimeSpan>? getCleanupTimeRemaining,
+        ILogger? logger)
+    {
+        bool cleaned =
+            await ChildProcessFilesystemJail.CleanupTempPathsAsync(
+                    sandboxResult?.TempPathsToCleanup,
+                    GetCleanupTimeRemaining(
+                        getCleanupTimeRemaining))
+                .ConfigureAwait(false);
+
+        if (!cleaned)
+        {
+            logger?.LogWarning(
+                "Timed out cleaning child-process sandbox temporary paths.");
+        }
+    }
+
+    private static TimeSpan GetCleanupTimeRemaining(
+        Func<TimeSpan>? getCleanupTimeRemaining)
+    {
+        if (getCleanupTimeRemaining is null)
+        {
+            return TimeSpan.FromSeconds(5);
+        }
+
+        try
+        {
+            TimeSpan remaining = getCleanupTimeRemaining();
+            return remaining > TimeSpan.Zero
+                ? remaining
+                : TimeSpan.Zero;
+        }
+        catch (Exception)
+        {
+            return TimeSpan.Zero;
+        }
+    }
+
+    private static ChildProcessSandboxDeniedRootKind?
+        ClassifySandboxDenial(
+            string standardOutput,
+            string standardError,
+            ChildProcessSandboxRequest? sandbox)
+    {
+        if (sandbox?.RequireAppliedFilesystemJail != true)
+        {
+            return null;
+        }
+
+        string combined = standardOutput + "\n" + standardError;
+        bool denied = combined.Contains(
+                "Operation not permitted",
+                StringComparison.OrdinalIgnoreCase)
+            || combined.Contains(
+                "Permission denied",
+                StringComparison.OrdinalIgnoreCase)
+            || combined.Contains(
+                "read-only file system",
+                StringComparison.OrdinalIgnoreCase)
+            || (combined.Contains(
+                    "Access to the path",
+                    StringComparison.OrdinalIgnoreCase)
+                && combined.Contains(
+                    "is denied",
+                    StringComparison.OrdinalIgnoreCase))
+            || combined.Contains(
+                "Could not write lines to file",
+                StringComparison.OrdinalIgnoreCase);
+
+        if (!denied)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(sandbox.SourceReadOnlyRoot)
+            && combined.Contains(
+                sandbox.SourceReadOnlyRoot,
+                StringComparison.Ordinal))
+        {
+            return ChildProcessSandboxDeniedRootKind.Source;
+        }
+
+        if (!string.IsNullOrEmpty(sandbox.PackageReadOnlyRoot)
+            && combined.Contains(
+                sandbox.PackageReadOnlyRoot,
+                StringComparison.Ordinal))
+        {
+            return ChildProcessSandboxDeniedRootKind.PackageCache;
+        }
+
+        return ChildProcessSandboxDeniedRootKind.Other;
     }
 
     /// <summary>
@@ -589,15 +921,21 @@ internal static class CappedChildProcessRunner
 
     }
 
-    private static async Task ObserveStreamReadTasksAsync(
+    private static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
+        CompleteStreamReadTasksAsync(
         Task<CappedStreamOutput> stdoutTask,
         Task<CappedStreamOutput> stderrTask)
     {
 
+        CappedStreamOutput stdout = default;
+        CappedStreamOutput stderr = default;
+
         try
         {
 
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            stdout = await stdoutTask
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
 
         }
         catch (IOException)
@@ -612,7 +950,37 @@ internal static class CappedChildProcessRunner
         {
 
         }
+        catch (TimeoutException)
+        {
 
+        }
+
+        try
+        {
+
+            stderr = await stderrTask
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+
+        }
+        catch (IOException)
+        {
+
+        }
+        catch (UnauthorizedAccessException)
+        {
+
+        }
+        catch (OperationCanceledException)
+        {
+
+        }
+        catch (TimeoutException)
+        {
+
+        }
+
+        return (stdout, stderr);
     }
 
     private static async Task<CappedStreamOutput> ReadStreamCappedAsync(

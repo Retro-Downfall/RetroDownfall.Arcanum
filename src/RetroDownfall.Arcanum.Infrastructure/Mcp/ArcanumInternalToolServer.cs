@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -60,6 +61,12 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _listDirectorySchema;
 
+    private readonly JsonElement _searchWorkspaceSchema;
+
+    private readonly JsonElement _applyPatchSchema;
+
+    private readonly JsonElement _workspaceCheckSchema;
+
     private readonly JsonElement _executeCommandSchema;
 
     private readonly JsonElement _askHumanSchema;
@@ -85,6 +92,16 @@ internal sealed partial class ArcanumInternalToolServer
     private readonly JsonElement _dispatchSendingSchema;
 
     private readonly IntelligenceSettings _settings;
+
+    private readonly WorkspaceSearchSettings _workspaceSearchSettings;
+
+    private readonly WorkspacePatchSettings _workspacePatchSettings;
+
+    private readonly WorkspaceCheckSettings _workspaceCheckSettings;
+
+    private readonly WorkspaceCheckProfileCatalog _workspaceCheckProfiles;
+
+    private readonly IWorkspaceCheckRuntime _workspaceCheckRuntime;
 
     private readonly long _maxFileReadSizeBytes;
 
@@ -146,7 +163,9 @@ internal sealed partial class ArcanumInternalToolServer
         bool allowHostProcessTools = false,
         string? ambientConnectionKey = null,
         ILogger<ArcanumInternalToolServer>? logger = null,
-        McpJsonSerializerContext? jsonContext = null)
+        McpJsonSerializerContext? jsonContext = null,
+        CodingToolsSettings? codingToolsSettings = null,
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
         ArgumentNullException.ThrowIfNull(fromClient);
 
@@ -205,6 +224,99 @@ internal sealed partial class ArcanumInternalToolServer
 
         _settings = intelligenceSettings;
 
+        WorkspaceSearchSettings configuredSearch =
+            codingToolsSettings?.Search ?? new WorkspaceSearchSettings();
+
+        _workspaceSearchSettings = new WorkspaceSearchSettings
+        {
+            MaxPatternChars =
+                ArcanumSettingClamps.WorkspaceSearchMaxPatternChars(
+                    configuredSearch.MaxPatternChars),
+            RegexTimeoutMilliseconds =
+                ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds(
+                    configuredSearch.RegexTimeoutMilliseconds),
+            MaxElapsedMilliseconds =
+                ArcanumSettingClamps.WorkspaceSearchMaxElapsedMilliseconds(
+                    configuredSearch.MaxElapsedMilliseconds),
+            MaxFiles =
+                ArcanumSettingClamps.WorkspaceSearchMaxFiles(
+                    configuredSearch.MaxFiles),
+            MaxBytes =
+                ArcanumSettingClamps.WorkspaceSearchMaxBytes(
+                    configuredSearch.MaxBytes),
+            MaxTraversalSteps =
+                ArcanumSettingClamps.WorkspaceSearchMaxTraversalSteps(
+                    configuredSearch.MaxTraversalSteps),
+            MaxMatches =
+                ArcanumSettingClamps.WorkspaceSearchMaxMatches(
+                    configuredSearch.MaxMatches),
+            MaxPreviewChars =
+                ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(
+                    configuredSearch.MaxPreviewChars),
+        };
+
+        WorkspacePatchSettings configuredPatch =
+            codingToolsSettings?.Patch ?? new WorkspacePatchSettings();
+
+        _workspacePatchSettings = new WorkspacePatchSettings
+        {
+            MaxPatchBytes =
+                ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(
+                    configuredPatch.MaxPatchBytes),
+            MaxInputBytesPerFile =
+                ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile(
+                    configuredPatch.MaxInputBytesPerFile),
+            MaxTotalInputBytes =
+                ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes(
+                    configuredPatch.MaxTotalInputBytes),
+            MaxOutputBytesPerFile =
+                ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile(
+                    configuredPatch.MaxOutputBytesPerFile),
+            MaxTotalOutputBytes =
+                ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes(
+                    configuredPatch.MaxTotalOutputBytes),
+            MaxStagingBytesPerFile =
+                ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile(
+                    configuredPatch.MaxStagingBytesPerFile),
+            MaxTotalStagingBytes =
+                ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes(
+                    configuredPatch.MaxTotalStagingBytes),
+            MaxElapsedMilliseconds =
+                ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds(
+                    configuredPatch.MaxElapsedMilliseconds),
+            RollbackReserveMilliseconds =
+                ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds(
+                    configuredPatch.RollbackReserveMilliseconds),
+            MaxFiles =
+                ArcanumSettingClamps.WorkspacePatchMaxFiles(
+                    configuredPatch.MaxFiles),
+            MaxHunks =
+                ArcanumSettingClamps.WorkspacePatchMaxHunks(
+                    configuredPatch.MaxHunks),
+            MaxLinesPerHunk =
+                ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk(
+                    configuredPatch.MaxLinesPerHunk),
+            FuzzyMatchWindowLines =
+                ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines(
+                    configuredPatch.FuzzyMatchWindowLines),
+            MaxResultItems =
+                ArcanumSettingClamps.WorkspacePatchMaxResultItems(
+                    configuredPatch.MaxResultItems),
+        };
+
+        _workspaceCheckSettings =
+            codingToolsSettings?.WorkspaceCheck
+            ?? new WorkspaceCheckSettings();
+
+        _workspaceCheckProfiles = WorkspaceCheckProfileCatalog.Create(
+            _workspaceCheckSettings);
+
+        _workspaceCheckRuntime = workspaceCheckRuntime
+            ?? new WorkspaceCheckRuntime(
+                _workspaceCheckSettings,
+                scopeFactory,
+                logger);
+
         _maxFileReadSizeBytes = maxFileReadSizeBytes;
 
         _conclaveEnabled = conclaveEnabled;
@@ -230,6 +342,14 @@ internal sealed partial class ArcanumInternalToolServer
         _writeFileSchema = BuildWriteFileSchema();
 
         _listDirectorySchema = BuildListDirectorySchema();
+
+        _searchWorkspaceSchema = BuildSearchWorkspaceSchema(_workspaceSearchSettings);
+
+        _applyPatchSchema = BuildApplyPatchSchema(_workspacePatchSettings);
+
+        _workspaceCheckSchema = BuildWorkspaceCheckSchema(
+            _workspaceCheckProfiles,
+            _workspaceCheckSettings);
 
         _executeCommandSchema = BuildExecuteCommandSchema(_executeCommandTimeoutSeconds);
 
@@ -277,16 +397,28 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource connectionLifetime =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+        CancellationToken connectionToken =
+            connectionLifetime.Token;
+
         try
         {
-            await foreach (string line in _fromClient.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (string line in _fromClient
+                .ReadAllAsync(connectionToken)
+                .ConfigureAwait(false))
             {
                 if (line.Length == 0)
                 {
                     continue;
                 }
 
-                Task lineTask = Task.Run(() => HandleLineSafelyAsync(line, cancellationToken), CancellationToken.None);
+                Task lineTask = Task.Run(
+                    () => HandleLineSafelyAsync(
+                        line,
+                        connectionToken),
+                    CancellationToken.None);
 
                 _inFlightLineTasks[lineTask] = 0;
 
@@ -298,12 +430,15 @@ internal sealed partial class ArcanumInternalToolServer
                     TaskScheduler.Default);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
+            when (connectionToken.IsCancellationRequested)
         {
             // Normal shutdown.
         }
         finally
         {
+            await connectionLifetime.CancelAsync().ConfigureAwait(false);
+
             Task[] pending = _inFlightLineTasks.Keys.ToArray();
 
             if (pending.Length > 0)
@@ -603,35 +738,72 @@ internal sealed partial class ArcanumInternalToolServer
 
     private JsonRpcResponse BuildToolsListResponse(JsonElement rpcId)
     {
-        List<McpToolDefinitionWire> tools =
-        [
-            new McpToolDefinitionWire
-            {
-                Name = "read_file_chunk",
-                Description = "Reads a specific range of lines from a file to avoid token exhaustion.",
-                InputSchema = _readFileChunkSchema,
-            },
-            new McpToolDefinitionWire
-            {
-                Name = "replace_text_block",
-                Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
-                InputSchema = _replaceTextBlockSchema,
-            },
-            new McpToolDefinitionWire
-            {
-                Name = "write_file",
-                Description = "Create a new file or completely overwrite an existing file",
-                InputSchema = _writeFileSchema,
-            },
-            new McpToolDefinitionWire
-            {
-                Name = "list_directory",
-                Description = _listDirectoryToolsListDescription,
-                InputSchema = _listDirectorySchema,
-            },
-        ];
+        List<McpToolDefinitionWire> tools = [];
 
-        if (_allowHostProcessTools)
+        if (_workspaceRoot is not null)
+        {
+            tools.AddRange(
+            [
+                new McpToolDefinitionWire
+                {
+                    Name = "read_file_chunk",
+                    Description = "Reads a specific range of lines from a file to avoid token exhaustion.",
+                    InputSchema = _readFileChunkSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "replace_text_block",
+                    Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely.",
+                    InputSchema = _replaceTextBlockSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "write_file",
+                    Description = "Create a new file or completely overwrite an existing file",
+                    InputSchema = _writeFileSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "list_directory",
+                    Description = _listDirectoryToolsListDescription,
+                    InputSchema = _listDirectorySchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = ToolRiskClassifier.SearchWorkspaceToolName,
+                    Description =
+                        "Searches strict UTF-8 workspace files in process using exact literal or bounded line-scoped regex matching. Returns deterministic structured matches and skip/cap counters.",
+                    InputSchema = _searchWorkspaceSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = ToolRiskClassifier.ApplyPatchToolName,
+                    Description =
+                        "Applies a canonical unified diff as one reversible, sequential multi-file transaction. "
+                        + "All paths and hunks are planned before mutation; dryRun performs the same validation without staging or writes.",
+                    InputSchema = _applyPatchSchema,
+                },
+            ]);
+        }
+
+        if (_workspaceRoot is not null
+            && _workspaceCheckRuntime.GetStatus(_workspaceRoot).IsEligible)
+        {
+
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = ToolRiskClassifier.WorkspaceCheckToolName,
+                    Description =
+                        "Runs a closed operator-owned .NET build, test, or lint profile. "
+                        + "Workspace-authored MSBuild tasks, generators, analyzers, and tests execute as code. "
+                        + "The source workspace is read-only; build/intermediate/test roots are writable outside it. "
+                        + "The filesystem jail does not isolate network egress.",
+                    InputSchema = _workspaceCheckSchema,
+                });
+        }
+
+        if (_allowHostProcessTools && _workspaceRoot is not null)
         {
             tools.Add(
                 new McpToolDefinitionWire
@@ -831,6 +1003,16 @@ internal sealed partial class ArcanumInternalToolServer
         // first call's cancellation registration and break notifications/cancelled correlation).
         if (!_inFlightToolCalls.TryAdd(requestKey, toolScope))
         {
+            WorkspaceCheckDeadlineBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+            ApplyPatchInvocationBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+            PersistedToolInvocationBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+
             return new JsonRpcResponse
             {
                 Id = rpcId,
@@ -845,6 +1027,21 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         Guid? previousAmbient = SessionAttachmentToolAmbient.CurrentSessionId;
+        ApplyPatchInvocationContext? previousPatchAmbient =
+            ApplyPatchInvocationAmbient.Current;
+        PersistedToolInvocationContext? previousPersistedAmbient =
+            PersistedToolInvocationAmbient.Current;
+        IDisposable? deadlineScope = null;
+
+        if (WorkspaceCheckDeadlineBinding.TryResolveRequest(
+                _ambientConnectionKey,
+                requestKey,
+                out long inferenceDeadline))
+        {
+
+            deadlineScope = WorkspaceCheckInferenceDeadlineAmbient
+                .BeginAtTimestamp(inferenceDeadline);
+        }
 
         try
         {
@@ -853,6 +1050,23 @@ internal sealed partial class ArcanumInternalToolServer
             Guid? resolvedSession = ResolveAmbientSessionForToolsCall(requestKey, ref toolArguments);
 
             SessionAttachmentToolAmbient.CurrentSessionId = resolvedSession;
+
+            ApplyPatchInvocationAmbient.Current =
+                ApplyPatchInvocationBinding.TryResolveRequest(
+                    _ambientConnectionKey,
+                    requestKey,
+                    out ApplyPatchInvocationContext? patchContext)
+                    ? patchContext
+                    : null;
+            ApplyPatchInvocationAmbient.Current?.MarkDispatched();
+            PersistedToolInvocationAmbient.Current =
+                PersistedToolInvocationBinding.TryResolveRequest(
+                    _ambientConnectionKey,
+                    requestKey,
+                    out PersistedToolInvocationContext?
+                        persistedContext)
+                    ? persistedContext
+                    : null;
 
             if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
             {
@@ -877,8 +1091,23 @@ internal sealed partial class ArcanumInternalToolServer
         finally
         {
             SessionAttachmentToolAmbient.CurrentSessionId = previousAmbient;
+            ApplyPatchInvocationAmbient.Current = previousPatchAmbient;
+            PersistedToolInvocationAmbient.Current =
+                previousPersistedAmbient;
 
             SessionAttachmentToolAmbient.UnbindRequest(_ambientConnectionKey, requestKey);
+            ApplyPatchInvocationBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+            PersistedToolInvocationBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+
+            deadlineScope?.Dispose();
+
+            WorkspaceCheckDeadlineBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
 
             _inFlightToolCalls.TryRemove(requestKey, out _);
         }
@@ -1016,6 +1245,7 @@ internal sealed partial class ArcanumInternalToolServer
         return result;
 
     }
+
     private static JsonRpcResponse BuildMethodNotFoundResponse(JsonElement rpcId, string method)
     {
         return new JsonRpcResponse

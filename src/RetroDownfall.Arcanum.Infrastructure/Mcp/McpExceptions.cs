@@ -28,27 +28,56 @@ internal sealed class McpLineSizeExceededException : Exception
 }
 
 /// <summary>
-/// Thrown when an MCP transport is unavailable (the local server is down, unreachable, or
-/// the connection closed before a response was received). Distinct from a tool-execution
-/// failure (a <c>tools/call</c> that returned an error or threw after the tool ran): only
-/// this category is permitted to trigger the global fallback in <see cref="McpBridgeTool"/>,
-/// because re-running a possibly-mutating tool on a fallback server is unsafe once the tool
-/// has already executed on the local server.
+/// Thrown when an MCP transport is unavailable. Only an explicitly
+/// <see cref="McpRequestDispatchState.NotDispatched"/> instance may trigger fallback; timeout,
+/// completion, disposal, and unknown failures remain ambiguous because the tool may have run.
 /// </summary>
+internal enum McpRequestDispatchState
+{
+    NotDispatched,
+    DispatchedOrUnknown,
+}
+
 internal sealed class McpTransportUnavailableException : Exception
 {
 
     public McpTransportUnavailableException(string message)
+        : this(
+            message,
+            McpRequestDispatchState.DispatchedOrUnknown)
+    {
+
+    }
+
+    public McpTransportUnavailableException(
+        string message,
+        McpRequestDispatchState dispatchState)
         : base(message)
     {
 
+        DispatchState = dispatchState;
     }
 
     public McpTransportUnavailableException(string message, Exception innerException)
-        : base(message, innerException)
+        : this(
+            message,
+            McpRequestDispatchState.DispatchedOrUnknown,
+            innerException)
     {
 
     }
+
+    public McpTransportUnavailableException(
+        string message,
+        McpRequestDispatchState dispatchState,
+        Exception innerException)
+        : base(message, innerException)
+    {
+
+        DispatchState = dispatchState;
+    }
+
+    public McpRequestDispatchState DispatchState { get; }
 
 }
 

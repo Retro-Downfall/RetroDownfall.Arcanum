@@ -13,6 +13,8 @@ public enum ConfigSection
 
     Mcp,
 
+    CodingTools,
+
     Orchestration,
 
     Security,
@@ -77,6 +79,8 @@ public static class SectionDescriptors
 
         new(ConfigSection.Mcp, "MCP", "\ue7a5", "MCP client limits"),
 
+        new(ConfigSection.CodingTools, "Coding Tools", "\ue7d8", "Search, patch, and workspace-check bounds"),
+
         new(ConfigSection.Orchestration, "Orchestration", "\ue7c3", "Daemon, apprentices, conclave"),
 
         new(ConfigSection.Security, "Security / Wards", "\ue7c6", "Wards, forbidden arts, API key"),
@@ -140,6 +144,7 @@ public static class SectionDescriptors
     public static string? KeyPrefix(ConfigSection section) => section switch
     {
         ConfigSection.Resilience => "resilience.",
+        ConfigSection.CodingTools => "codingTools.",
         ConfigSection.Pricing => "pricing.",
         ConfigSection.Budget => "budget.",
         ConfigSection.StructuredOutput => "structuredOutput.",

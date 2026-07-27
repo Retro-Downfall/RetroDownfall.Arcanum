@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -28,6 +29,8 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -680,6 +683,42 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
+        Assert.Equal(1, ward.WardCallCount);
+    }
+
+    [Theory]
+    [InlineData(ToolRiskClassifier.ExecuteCommandToolName)]
+    [InlineData(ToolRiskClassifier.ApplyPatchToolName)]
+    [InlineData(ToolRiskClassifier.WorkspaceCheckToolName)]
+    public async Task IntrinsicWardTools_RequireWard_WhenConfiguredListIsEmptyAndCampaignDoesNotRequireIt(
+        string toolName)
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(toolName);
+        chat.EnqueueText("done");
+        FakeWard ward = new() { NextResolution = new WardResolution(true, null, DateTimeOffset.UtcNow) };
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateMcpTool(toolName));
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Ward = new WardSettings
+            {
+                Enabled = true,
+                ForbiddenArts = [],
+            },
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, ward: ward, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "run",
+                SkipSpellRouting = true,
+                UnattendedMode = false,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
         Assert.Equal(1, ward.WardCallCount);
     }
 
@@ -2013,7 +2052,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
 
+        mcp.Tools.Add(CreateMcpTool("search_workspace"));
+
         mcp.Tools.Add(CreateMcpTool("write_file"));
+
+        mcp.Tools.Add(CreateMcpTool("apply_patch"));
+
+        mcp.Tools.Add(CreateMcpTool("workspace_check"));
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
 
@@ -2032,8 +2077,759 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("read_file_chunk", toolNames);
 
+        Assert.Contains("search_workspace", toolNames);
+
         Assert.DoesNotContain("write_file", toolNames);
 
+        Assert.DoesNotContain("apply_patch", toolNames);
+
+        Assert.DoesNotContain("workspace_check", toolNames);
+
+    }
+
+    [Fact]
+    public async Task Stateless_turn_does_not_advertise_apply_patch()
+    {
+
+        ScriptingChatClient chat = new();
+        chat.EnqueueText("stateless");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("write_file"));
+        mcp.Tools.Add(CreateMcpTool("replace_text_block"));
+        mcp.Tools.Add(CreateMcpTool(ToolRiskClassifier.ApplyPatchToolName));
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = string.Empty,
+                StatelessMessages = [new CoreChatMessage("user", "inspect the workspace")],
+                SkipSpellRouting = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+        Assert.Contains("read_file_chunk", toolNames);
+        Assert.DoesNotContain("write_file", toolNames);
+        Assert.DoesNotContain("replace_text_block", toolNames);
+        Assert.DoesNotContain(ToolRiskClassifier.ApplyPatchToolName, toolNames);
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Apply_patch_binds_persisted_turn_and_reuses_exact_call_and_result_snapshots(
+        bool providerCallIdMissing)
+    {
+
+        const string relativePath = "buffered-production-patch.txt";
+        const string replacement = "buffered exact result";
+        Guid sessionId = Guid.NewGuid();
+        ArcanumSettings settings = DefaultSettings();
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+        };
+        ScriptingChatClient chat = new();
+        Dictionary<string, object?> arguments = new()
+        {
+            ["dryRun"] = false,
+            ["patch"] =
+                $"--- /dev/null\n+++ b/{relativePath}\n@@ -0,0 +1 @@\n+{replacement}\n",
+        };
+        if (providerCallIdMissing)
+        {
+            chat.EnqueueToolCallWithMissingId(
+                ToolRiskClassifier.ApplyPatchToolName,
+                arguments);
+        }
+        else
+        {
+            chat.EnqueueToolCall(
+                ToolRiskClassifier.ApplyPatchToolName,
+                "provider-patch-call",
+                arguments);
+        }
+        chat.EnqueueText("patched");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+        FakeInferenceAuditLogger auditLogger = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire: grimoire,
+            mcp: mcp,
+            auditLogger: auditLogger);
+        InferenceAuditContext auditContext = new()
+        {
+            RequestType = "unit6-buffered-patch",
+        };
+        TurnExecutionRequest request = new(
+            BaseRequest() with
+            {
+                Prompt = "patch",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            TurnResponseMode.Buffered,
+            TurnPurpose.Interactive,
+            HumanInteractionAvailable: false,
+            HasIdempotencyKey: false,
+            AccountingHandle: null);
+        TurnEngine engine = new(wizard);
+        List<TurnEvent> events = [];
+
+        await foreach (TurnEvent evt in engine.RunTurnAsync(
+            request,
+            auditContext,
+            CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        RunCompleted completed = Assert.Single(events.OfType<RunCompleted>());
+        ToolInvocationCompleted toolResult =
+            Assert.Single(events.OfType<ToolInvocationCompleted>());
+        MandatoryToolInteraction persisted =
+            Assert.Single(grimoire.MandatoryInteractions);
+        PromptToolCall observed = Assert.Single(completed.ToolCalls!);
+        Guid assistantEntryId = Assert.IsType<Guid>(
+            grimoire.LastAssistantEntryId);
+        string? providerCallId =
+            providerCallIdMissing ? null : "provider-patch-call";
+        ToolInteractionReceipt expectedReceipt =
+            ToolInteractionReceiptDerivation.Derive(
+                new ToolInvocationIdentity(
+                    assistantEntryId.ToString("D"),
+                    providerCallId,
+                    ToolRoundOrdinal: 0,
+                    CallOrdinal: 0,
+                    ToolRiskClassifier.ApplyPatchToolName));
+
+        Assert.Equal(sessionId, persisted.SessionId);
+        Assert.Equal(expectedReceipt, persisted.Receipt);
+        Assert.Equal(
+            providerCallId,
+            persisted.ToolCallId);
+        Assert.Equal(observed.ArgumentsJson, persisted.Arguments);
+        Assert.Equal(persisted.Arguments, toolResult.ArgumentsJson);
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetBytes(persisted.Result),
+            System.Text.Encoding.UTF8.GetBytes(toolResult.ResultText));
+        Assert.False(string.IsNullOrWhiteSpace(observed.CallId));
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetBytes(persisted.Result),
+            System.Text.Encoding.UTF8.GetBytes(
+                GetMessageText(
+                    chat.AllBufferedCalls[1].Single(
+                        static message => message.Role == ChatRole.Tool))));
+        Assert.Equal(0, grimoire.AppendToolInteractionCallCount);
+        Assert.Equal(
+            replacement + "\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+        Assert.Equal(
+            [ToolRiskClassifier.ApplyPatchToolName],
+            auditContext.ToolNames);
+        Assert.Equal([persisted.Arguments], auditContext.ToolArgumentsJson);
+        InferenceAuditRecord audit = Assert.Single(auditLogger.Records);
+        Assert.Equal(1, audit.ToolCalls);
+        Assert.Equal(
+            [ToolRiskClassifier.ApplyPatchToolName],
+            audit.ToolNames);
+        Assert.Null(audit.ToolArgumentsJson);
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_multi_call_rounds_keep_stable_receipt_ordinals()
+    {
+
+        ArcanumSettings settings = DefaultSettings();
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueResponse(
+            new ChatResponse(
+                new MeAiChatMessage(
+                    ChatRole.Assistant,
+                    [
+                        new FunctionCallContent(
+                            "round-0-call-0",
+                            ToolRiskClassifier.ApplyPatchToolName,
+                            CreateFilePatchArguments(
+                                "round-0-call-0.txt",
+                                "first")),
+                        new FunctionCallContent(
+                            string.Empty,
+                            ToolRiskClassifier.ApplyPatchToolName,
+                            CreateFilePatchArguments(
+                                "round-0-call-1.txt",
+                                "second")),
+                    ])));
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "round-1-call-0",
+            CreateFilePatchArguments(
+                "round-1-call-0.txt",
+                "third"));
+        chat.EnqueueText("all patched");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "three patches",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(3, result.Value.ToolCalls?.Count);
+        Assert.Equal(3, grimoire.MandatoryInteractions.Count);
+        Assert.Equal(0, grimoire.AppendToolInteractionCallCount);
+        Guid assistantEntryId = Assert.IsType<Guid>(
+            grimoire.LastAssistantEntryId);
+        (string? ProviderCallId, int Round, int Call)[] expectedIdentity =
+        [
+            ("round-0-call-0", 0, 0),
+            (null, 0, 1),
+            ("round-1-call-0", 1, 0),
+        ];
+
+        for (int index = 0; index < expectedIdentity.Length; index++)
+        {
+            (string? providerCallId, int round, int call) =
+                expectedIdentity[index];
+            MandatoryToolInteraction interaction =
+                grimoire.MandatoryInteractions[index];
+            ToolInteractionReceipt expectedReceipt =
+                ToolInteractionReceiptDerivation.Derive(
+                    new ToolInvocationIdentity(
+                        assistantEntryId.ToString("D"),
+                        providerCallId,
+                        round,
+                        call,
+                        ToolRiskClassifier.ApplyPatchToolName));
+
+            Assert.Equal(expectedReceipt, interaction.Receipt);
+            Assert.Equal(providerCallId, interaction.ToolCallId);
+        }
+
+        static Dictionary<string, object?> CreateFilePatchArguments(
+            string path,
+            string content) =>
+            new()
+            {
+                ["patch"] =
+                    $"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n",
+                ["dryRun"] = false,
+            };
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_streaming_recovered_receipt_reuses_exact_result_once()
+    {
+
+        const string relativePath = "streaming-production-patch.txt";
+        const string replacement = "streaming exact result";
+        const string providerCallId = "provider-stream-patch";
+        Guid sessionId = Guid.NewGuid();
+        ArcanumSettings settings = DefaultSettings();
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.RecoveredCommitted,
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            providerCallId,
+            new Dictionary<string, object?>
+            {
+                ["patch"] =
+                    $"--- /dev/null\n+++ b/{relativePath}\n@@ -0,0 +1 @@\n+{replacement}\n",
+                ["dryRun"] = false,
+            });
+        chat.EnqueueStreamTokens("patched");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+        FakeInferenceAuditLogger auditLogger = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp,
+            auditLogger: auditLogger);
+        InferenceAuditContext auditContext = new()
+        {
+            RequestType = "unit6-streaming-patch",
+        };
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "patch",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            auditContext);
+
+        IntelligenceEvent toolResult = Assert.Single(
+            events,
+            static evt => evt.Type == IntelligenceEventType.ToolResult);
+        MandatoryToolInteraction persisted =
+            Assert.Single(grimoire.MandatoryInteractions);
+        Guid assistantEntryId = Assert.IsType<Guid>(
+            grimoire.LastAssistantEntryId);
+        ToolInteractionReceipt expectedReceipt =
+            ToolInteractionReceiptDerivation.Derive(
+                new ToolInvocationIdentity(
+                    assistantEntryId.ToString("D"),
+                    providerCallId,
+                    ToolRoundOrdinal: 0,
+                    CallOrdinal: 0,
+                    ToolRiskClassifier.ApplyPatchToolName));
+
+        Assert.Equal(expectedReceipt, persisted.Receipt);
+        Assert.Equal(providerCallId, persisted.ToolCallId);
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetBytes(persisted.Result),
+            System.Text.Encoding.UTF8.GetBytes(toolResult.Data!));
+        Assert.Equal(persisted.Arguments, toolResult.ToolCall?.ArgumentsJson);
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetBytes(persisted.Result),
+            System.Text.Encoding.UTF8.GetBytes(
+                GetMessageText(
+                    chat.AllStreamingCalls[1].Single(
+                        static message => message.Role == ChatRole.Tool))));
+        Assert.Equal(0, grimoire.AppendToolInteractionCallCount);
+        Assert.Equal(
+            replacement + "\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+        Assert.Equal(
+            [ToolRiskClassifier.ApplyPatchToolName],
+            auditContext.ToolNames);
+        Assert.Equal([persisted.Arguments], auditContext.ToolArgumentsJson);
+        InferenceAuditRecord audit = Assert.Single(auditLogger.Records);
+        Assert.Null(audit.ToolArgumentsJson);
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_failed_receipt_rolls_back_and_continues_with_failure_result()
+    {
+
+        const string relativePath = "failed-production-patch.txt";
+        _workspace.WriteFile(relativePath, "before\n");
+        ArcanumSettings settings = DefaultSettings();
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.Failed,
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "failed-provider-call",
+            new Dictionary<string, object?>
+            {
+                ["patch"] =
+                    $"--- a/{relativePath}\n+++ b/{relativePath}\n@@ -1 +1 @@\n-before\n+after\n",
+                ["dryRun"] = false,
+            });
+        chat.EnqueueText("continued after receipt failure");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "patch",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Single(grimoire.MandatoryInteractions);
+        Assert.Equal(1, grimoire.AppendToolInteractionCallCount);
+        Assert.Equal(
+            "before\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+        string modelResult = GetMessageText(
+            chat.AllBufferedCalls[1].Single(
+                static message => message.Role == ChatRole.Tool));
+        using JsonDocument payload = JsonDocument.Parse(modelResult);
+        Assert.Equal(
+            "conflict",
+            payload.RootElement.GetProperty("status").GetString());
+        Assert.Equal(
+            "receipt_failed",
+            payload.RootElement.GetProperty("code").GetString());
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_ambiguous_receipt_is_never_tolerated_as_model_continuation()
+    {
+
+        const string relativePath = "ambiguous-production-patch.txt";
+        _workspace.WriteFile(relativePath, "before\n");
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with
+            {
+                TolerateToolFailures = true,
+            },
+        };
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.Ambiguous,
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "fatal-patch",
+            new Dictionary<string, object?>
+            {
+                ["patch"] =
+                    $"--- a/{relativePath}\n+++ b/{relativePath}\n@@ -1 +1 @@\n-before\n+after\n",
+                ["dryRun"] = false,
+            });
+        chat.EnqueueText("must not continue");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "patch",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+        Assert.Equal(1, chat.BufferedCallCount);
+        Assert.Single(grimoire.MandatoryInteractions);
+        Assert.Equal(0, grimoire.AppendToolInteractionCallCount);
+        Assert.Equal(
+            "after\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_post_dispatch_transport_failure_is_never_tolerated_as_model_continuation()
+    {
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Intelligence = DefaultSettings().Intelligence with
+            {
+                TolerateToolFailures = true,
+            },
+        };
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "post-dispatch-timeout",
+            new Dictionary<string, object?>
+            {
+                ["patch"] =
+                    "--- /dev/null\n"
+                    + "+++ b/must-not-run-twice.txt\n"
+                    + "@@ -0,0 +1 @@\n"
+                    + "+value\n",
+                ["dryRun"] = false,
+            });
+        chat.EnqueueText("must not continue");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(
+            CreatePostDispatchFailingApplyPatchTool());
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp);
+
+        Result<PromptTurnResult> result =
+            await wizard.ExecutePromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "patch",
+                    WorkingDirectory = _workspace.Root,
+                    SkipSpellRouting = true,
+                },
+                CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+        Assert.Equal(1, chat.BufferedCallCount);
+        Assert.Empty(grimoire.MandatoryInteractions);
+        Assert.Equal(
+            0,
+            grimoire.AppendToolInteractionCallCount);
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_observation_is_not_persisted_when_continuation_fails()
+    {
+
+        const string relativePath = "audit-boundary-patch.txt";
+        ArcanumSettings settings = DefaultSettings();
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "audit-boundary-call",
+            new Dictionary<string, object?>
+            {
+                ["patch"] =
+                    $"--- /dev/null\n+++ b/{relativePath}\n@@ -0,0 +1 @@\n+committed\n",
+                ["dryRun"] = false,
+            });
+        chat.EnqueueException(new InvalidOperationException(
+            "model continuation failed"));
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateProductionApplyPatchTool(settings));
+        FakeInferenceAuditLogger auditLogger = new();
+        InferenceAuditContext auditContext = new()
+        {
+            RequestType = "unit6-audit-boundary",
+        };
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp,
+            auditLogger: auditLogger);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "patch then fail",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            CancellationToken.None,
+            auditContext);
+
+        Assert.True(result.IsFailure);
+        Assert.Single(grimoire.MandatoryInteractions);
+        Assert.Equal(0, grimoire.AppendToolInteractionCallCount);
+        Assert.Equal(
+            [ToolRiskClassifier.ApplyPatchToolName],
+            auditContext.ToolNames);
+        Assert.Single(auditContext.ToolArgumentsJson);
+        Assert.Empty(auditLogger.Records);
+        Assert.Equal(
+            "committed\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_cancellation_after_handoff_propagates_after_cleanup()
+    {
+
+        const string relativePath = "cancel-after-handoff.txt";
+        ArcanumSettings settings = DefaultSettings();
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = Guid.NewGuid(),
+            MandatoryAppendOutcome =
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "cancel-after-handoff-call",
+            new Dictionary<string, object?>
+            {
+                ["patch"] =
+                    $"--- /dev/null\n+++ b/{relativePath}\n@@ -0,0 +1 @@\n+committed\n",
+                ["dryRun"] = false,
+            });
+        using CancellationTokenSource cancellation = new();
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(
+            CreateProductionApplyPatchTool(
+                settings,
+                sink => new CancelAfterHandoffSink(
+                    sink,
+                    cancellation)));
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire,
+            mcp: mcp);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => wizard.ExecutePromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "patch then cancel",
+                    WorkingDirectory = _workspace.Root,
+                    SkipSpellRouting = true,
+                },
+                cancellation.Token));
+
+        Assert.Single(grimoire.MandatoryInteractions);
+        Assert.Equal(0, grimoire.AppendToolInteractionCallCount);
+        Assert.Equal(
+            "committed\n",
+            await File.ReadAllTextAsync(
+                Path.Combine(_workspace.Root, relativePath)));
+        Assert.Empty(Directory.GetFiles(
+            _workspace.Root,
+            "*.arcanum-*",
+            SearchOption.AllDirectories));
+
+    }
+
+    [Fact]
+    public async Task Apply_patch_snapshot_limit_failure_denies_before_rebuilt_handler_can_mutate()
+    {
+
+        const string relativePath = "reload-race.txt";
+        _workspace.WriteFile(relativePath, "before\n");
+        string replacement = new('x', 1536);
+        string patch =
+            $"--- a/{relativePath}\n"
+            + $"+++ b/{relativePath}\n"
+            + "@@ -1 +1 @@\n"
+            + "-before\n"
+            + $"+{replacement}\n";
+        bool handlerInvoked = false;
+        ArcanumSettings snapshotSettings = DefaultSettings() with
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Patch = new WorkspacePatchSettings
+                {
+                    MaxPatchBytes = 1024,
+                },
+            },
+        };
+        Campaign campaign = BuildSanctumCampaign(
+            _workspace.Root,
+            enabled: true,
+            SanctumMode.Strict);
+        ConfigurableSanctumGuard sanctum = new()
+        {
+            PathValidator = (_, _, _, _, _) =>
+                Task.FromResult(
+                    new SanctumResult
+                    {
+                        Allowed = false,
+                        DenyReason = "strict patch path denial",
+                        Breach = new SanctumBreach
+                        {
+                            BreachType = "PathViolation",
+                        },
+                    }),
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueToolCall(
+            ToolRiskClassifier.ApplyPatchToolName,
+            "reload-race-call",
+            new Dictionary<string, object?>
+            {
+                ["patch"] = patch,
+                ["dryRun"] = false,
+            });
+        chat.EnqueueText("blocked");
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(
+            AIFunctionFactory.Create(
+                ApplyWithRebuiltSettings,
+                ToolRiskClassifier.ApplyPatchToolName,
+                "simulated rebuilt apply_patch handler"));
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            snapshotSettings,
+            campaignRepository: new FakeCampaignRepository(campaign),
+            sanctumGuard: sanctum,
+            mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "apply the large patch",
+                WorkingDirectory = _workspace.Root,
+                SkipSpellRouting = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(handlerInvoked);
+        Assert.Equal("before\n", await File.ReadAllTextAsync(
+            Path.Combine(_workspace.Root, relativePath)));
+        Assert.Contains(
+            chat.AllBufferedCalls.SelectMany(static batch => batch),
+            static message => message.Role == ChatRole.Tool
+                && GetMessageText(message).Contains(
+                    "Sanctum Guard has blocked",
+                    StringComparison.Ordinal));
+
+        string ApplyWithRebuiltSettings()
+        {
+            handlerInvoked = true;
+            _workspace.WriteFile(relativePath, replacement + "\n");
+            ApplyPatchInvocationAmbient.Current?.RecordHandoffOutcome(
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted);
+
+            return "{\"status\":\"ok\"}";
+        }
     }
 
     [Fact]
@@ -2287,6 +3083,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("execute_command"));
 
+        mcp.Tools.Add(CreateMcpTool("apply_patch"));
+
+        mcp.Tools.Add(CreateMcpTool("workspace_check"));
+
+        mcp.Tools.Add(CreateMcpTool("search_workspace"));
+
         WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
@@ -2305,6 +3107,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains("read_file_chunk", toolNames);
 
         Assert.DoesNotContain("execute_command", toolNames);
+
+        Assert.DoesNotContain("apply_patch", toolNames);
+
+        Assert.DoesNotContain("workspace_check", toolNames);
+
+        Assert.Contains("search_workspace", toolNames);
 
     }
 
@@ -2593,6 +3401,88 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.True(resultIndex > toolResultIndex, "Result must be emitted after the tool round");
 
         Assert.Contains(events.Skip(toolResultIndex + 1), static e => e.Type == IntelligenceEventType.Token);
+
+    }
+
+    [Fact]
+    public async Task Streaming_tool_interaction_is_persisted_before_tool_result_can_be_disposed()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+        TaskCompletionSource appendStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseAppend = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeGrimoireRepository grimoire = new()
+        {
+            FixedSessionId = sessionId,
+            AppendToolInteractionHandler = async cancellationToken =>
+            {
+                appendStarted.TrySetResult();
+                await releaseAppend.Task.WaitAsync(
+                    cancellationToken);
+            },
+        };
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamToolCall(
+            ArcanumLocalTimeTool.ToolName);
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: grimoire);
+        IAsyncEnumerator<IntelligenceEvent> enumerator = wizard
+            .StreamPromptAsync(
+                BaseRequest() with
+                {
+                    Prompt = "what time?",
+                    SessionId = sessionId,
+                    SkipSpellRouting = true,
+                    DisableMcpTools = true,
+                },
+                CancellationToken.None)
+            .GetAsyncEnumerator();
+        Task<IntelligenceEvent> toolResult = ReadUntilToolResultAsync(
+            enumerator);
+
+        try
+        {
+            await appendStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(5));
+            await Task.Delay(50);
+            Assert.False(toolResult.IsCompleted);
+
+            releaseAppend.TrySetResult();
+            IntelligenceEvent observed =
+                await toolResult.WaitAsync(
+                    TimeSpan.FromSeconds(5));
+            Assert.Equal(
+                IntelligenceEventType.ToolResult,
+                observed.Type);
+        }
+        finally
+        {
+            releaseAppend.TrySetResult();
+            await enumerator.DisposeAsync();
+        }
+
+        Assert.Equal(
+            1,
+            grimoire.AppendToolInteractionCallCount);
+
+        static async Task<IntelligenceEvent> ReadUntilToolResultAsync(
+            IAsyncEnumerator<IntelligenceEvent> source)
+        {
+            while (await source.MoveNextAsync())
+            {
+                if (source.Current.Type
+                    == IntelligenceEventType.ToolResult)
+                {
+                    return source.Current;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "The stream ended before a tool result.");
+        }
 
     }
 
@@ -5968,6 +6858,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         budgetMonitor ??= CreateBudgetMonitor(settings);
 
+        GrimoireTurnWriter grimoireTurnWriter = new(
+            grimoire,
+            new SessionEventHub(
+                new TestOptionsMonitor<ArcanumSettings>(settings),
+                NullLogger<SessionEventHub>.Instance),
+            NullLogger<GrimoireTurnWriter>.Instance);
+
         return new WizardIntelligenceProvider(
             factory,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
@@ -5981,11 +6878,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 ward,
                 sanctumGuard,
                 new NoOpSessionAttachmentStore(),
-                NullLogger<ToolExecutionPipeline>.Instance),
-            new GrimoireTurnWriter(
-                grimoire,
-                new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
-                NullLogger<GrimoireTurnWriter>.Instance),
+                NullLogger<ToolExecutionPipeline>.Instance,
+                grimoireTurnWriter: grimoireTurnWriter),
+            grimoireTurnWriter,
             CreateInferenceContextBuilder(grimoire, settings),
             sanctumGuard,
             new ProcessResourceLimiter(),
@@ -6348,6 +7243,86 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     private static AIFunction CreateMcpTool(string name) =>
         AIFunctionFactory.Create(() => "ok", name, "mcp tool");
 
+    private AIFunction CreateProductionApplyPatchTool(
+        ArcanumSettings settings,
+        Func<IApplyPatchPendingReceiptSink, IApplyPatchPendingReceiptSink>?
+            decorateSink = null)
+    {
+
+        async Task<string> ApplyPatchAsync(
+            string patch,
+            bool dryRun,
+            CancellationToken cancellationToken)
+        {
+
+            ApplyPatchInvocationContext ambient =
+                Assert.IsType<ApplyPatchInvocationContext>(
+                    ApplyPatchInvocationAmbient.Current);
+            ApplyPatchInvocationContext executionContext =
+                decorateSink is null
+                    ? ambient
+                    : ambient with
+                    {
+                        Sink = decorateSink(ambient.Sink),
+                    };
+            WorkspacePatchSettings patchSettings =
+                settings.CodingTools?.Patch
+                ?? new WorkspacePatchSettings();
+            ApplyPatchToolExecutionResponse response =
+                await new ApplyPatchToolExecutionService(
+                        _workspace.Root,
+                        patchSettings,
+                        outputBudgetBytes: 1024 * 1024,
+                        McpJsonSerializerContext.Default)
+                    .ExecuteAsync(
+                        new ApplyPatchParams(patch, dryRun),
+                        executionContext,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (!ReferenceEquals(ambient, executionContext)
+                && executionContext.HandoffOutcome is { } outcome)
+            {
+                if (executionContext.CancellationClassified)
+                {
+                    ambient.RecordCancellationOutcome(outcome);
+                }
+                else
+                {
+                    ambient.RecordHandoffOutcome(outcome);
+                }
+            }
+
+            return response.SerializedResult;
+
+        }
+
+        return AIFunctionFactory.Create(
+            ApplyPatchAsync,
+            ToolRiskClassifier.ApplyPatchToolName,
+            "production apply_patch executor");
+
+    }
+
+    private static AIFunction
+        CreatePostDispatchFailingApplyPatchTool() =>
+        AIFunctionFactory.Create(
+            PostDispatchFailingApplyPatch,
+            ToolRiskClassifier.ApplyPatchToolName,
+            "post-dispatch failure seam");
+
+    private static string PostDispatchFailingApplyPatch()
+    {
+        ApplyPatchInvocationContext context =
+            Assert.IsType<ApplyPatchInvocationContext>(
+                ApplyPatchInvocationAmbient.Current);
+        context.MarkDispatched();
+
+        throw new McpTransportUnavailableException(
+            "channel completed after dispatch",
+            McpRequestDispatchState.DispatchedOrUnknown);
+    }
+
     private static AIFunction CreateThrowingMcpTool(string name) =>
         AIFunctionFactory.Create(ThrowingToolDelegate, name, "throws");
 
@@ -6438,6 +7413,18 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             Dictionary<string, object?> args = arguments ?? new Dictionary<string, object?>();
 
             _buffered.Enqueue(_ => Task.FromResult(ResponseTool(toolName, callId, args)));
+        }
+
+        public void EnqueueToolCallWithMissingId(
+            string toolName,
+            Dictionary<string, object?>? arguments = null)
+        {
+            Dictionary<string, object?> args =
+                arguments ?? new Dictionary<string, object?>();
+
+            _buffered.Enqueue(
+                _ => Task.FromResult(
+                    ResponseTool(toolName, string.Empty, args)));
         }
 
         public void EnqueueException(Exception ex) =>
@@ -6761,6 +7748,22 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Guid? FixedSessionId { get; init; }
 
+        public Guid? LastAssistantEntryId { get; private set; }
+
+        public MandatoryToolInteractionAppendOutcome MandatoryAppendOutcome
+        {
+            get;
+            init;
+        } = MandatoryToolInteractionAppendOutcome.NewlyCommitted;
+
+        public Func<MandatoryToolInteraction, CancellationToken, Task>?
+            MandatoryAppendHandler { get; init; }
+
+        public List<MandatoryToolInteraction> MandatoryInteractions
+        {
+            get;
+        } = [];
+
         public Guid? LastIncrementedSessionId { get; private set; }
 
         public long LastIncrementedTokens { get; private set; }
@@ -6770,6 +7773,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public int DiscardCallCount { get; private set; }
 
         public int FinalizeCallCount { get; private set; }
+
+        public int AppendToolInteractionCallCount { get; private set; }
+
+        public Func<CancellationToken, Task>?
+            AppendToolInteractionHandler { get; init; }
 
         public string LastFinalizedContent { get; private set; } = string.Empty;
 
@@ -6791,7 +7799,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 throw new InvalidOperationException("begin failed");
             }
 
-            return Task.FromResult((FixedSessionId ?? sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
+            LastAssistantEntryId = Guid.NewGuid();
+
+            return Task.FromResult((
+                FixedSessionId ?? sessionId ?? Guid.NewGuid(),
+                LastAssistantEntryId.Value));
 
         }
 
@@ -6819,14 +7831,60 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
-        public Task AppendToolInteractionAsync(
+        public async Task AppendToolInteractionAsync(
             Guid sessionId,
             string toolName,
             string arguments,
             string result,
             string modelUsed,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            AppendToolInteractionCallCount++;
+
+            if (AppendToolInteractionHandler is not null)
+            {
+                await AppendToolInteractionHandler(
+                    cancellationToken);
+            }
+        }
+
+        public Task<MandatoryToolInteractionProbeResult>
+            ProbeMandatoryToolInteractionAsync(
+                MandatoryToolInteractionProbe probe,
+                CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                new MandatoryToolInteractionProbeResult(
+                    MandatoryToolInteractionProbeOutcome.NotFound,
+                    Result: null));
+
+        public Task<MandatoryToolInteractionPreflightResult>
+            PreflightMandatoryToolInteractionAsync(
+                MandatoryToolInteraction interaction,
+                CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                new MandatoryToolInteractionPreflightResult(
+                    MandatoryToolInteractionPreflightOutcome.Admitted,
+                    Result: null));
+
+        public async Task<MandatoryToolInteractionAppendResult>
+            AppendMandatoryToolInteractionAsync(
+                MandatoryToolInteraction interaction,
+                CancellationToken cancellationToken = default)
+        {
+
+            MandatoryInteractions.Add(interaction);
+            if (MandatoryAppendHandler is not null)
+            {
+                await MandatoryAppendHandler(
+                    interaction,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return new MandatoryToolInteractionAppendResult(
+                MandatoryAppendOutcome,
+                interaction.Receipt);
+
+        }
 
         public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -6919,6 +7977,47 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             Task.FromResult<WorkspaceContext?>(null);
+
+    }
+
+    private sealed class CancelAfterHandoffSink(
+        IApplyPatchPendingReceiptSink inner,
+        CancellationTokenSource cancellation)
+        : IApplyPatchPendingReceiptSink
+    {
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
+            ApplyPatchReceiptProbe probe,
+            CancellationToken cancellationToken) =>
+            inner.ProbeAsync(probe, cancellationToken);
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(
+            ApplyPatchReceiptPreflight preflight,
+            CancellationToken cancellationToken) =>
+            inner.PreflightAsync(preflight, cancellationToken);
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome>
+            PersistRecoveryReceiptAsync(
+                ApplyPatchRecoveryReceipt receipt,
+                CancellationToken cancellationToken) =>
+            inner.PersistRecoveryReceiptAsync(
+                receipt,
+                cancellationToken);
+
+        public async ValueTask<ApplyPatchPendingReceiptHandoffResult>
+            HandoffAsync(
+                PendingApplyPatchReceipt receipt,
+                CancellationToken cancellationToken)
+        {
+
+            ApplyPatchPendingReceiptHandoffResult result =
+                await inner.HandoffAsync(
+                    receipt,
+                    CancellationToken.None).ConfigureAwait(false);
+            cancellation.Cancel();
+
+            return result;
+
+        }
 
     }
 

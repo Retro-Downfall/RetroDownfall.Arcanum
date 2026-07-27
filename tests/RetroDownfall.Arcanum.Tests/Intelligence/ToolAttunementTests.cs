@@ -59,6 +59,26 @@ public sealed class ToolAttunementTests
         Assert.Equal("read_file_chunk", result.Excluded[0]);
     }
 
+    [Fact]
+    public void ApplyAttunement_AllowsDeclaredWorkspaceSearchAndExcludesOtherCodingTools()
+    {
+        List<AITool> mcpTools =
+        [
+            CreateTool("search_workspace"),
+            CreateTool("apply_patch"),
+            CreateTool("workspace_check"),
+        ];
+
+        AttunementResult result = ArtifactAttunement.ApplyAttunement(
+            mcpTools,
+            ["search_workspace"]);
+
+        AIFunction allowed = Assert.IsAssignableFrom<AIFunction>(Assert.Single(result.Allowed));
+
+        Assert.Equal("search_workspace", allowed.Name);
+        Assert.Equal(["apply_patch", "workspace_check"], result.Excluded);
+    }
+
     private static AIFunction CreateTool(string name)
     {
         return AIFunctionFactory.Create(() => "ok", name);

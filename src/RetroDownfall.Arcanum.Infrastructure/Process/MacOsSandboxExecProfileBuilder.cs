@@ -30,14 +30,19 @@ internal static class MacOsSandboxExecProfileBuilder
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
-        string invocationTempDir)
+        string invocationTempDir,
+        IReadOnlyList<string>? readOnlyRoots = null)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
+        readOnlyRoots ??= [];
+
         RejectWholeVolumeRoots(readWriteRoots, nameof(readWriteRoots));
 
         RejectWholeVolumeRoots(readExecuteRoots, nameof(readExecuteRoots));
+
+        RejectWholeVolumeRoots(readOnlyRoots, nameof(readOnlyRoots));
 
         RejectWholeVolumeRoots([invocationTempDir], nameof(invocationTempDir));
 
@@ -47,52 +52,79 @@ internal static class MacOsSandboxExecProfileBuilder
 
         sb.AppendLine("(deny default)");
 
-        // Minimal non-file startup allows — never "fix" getcwd/dyld by adding "/".
+        // Non-file runtime operations. File content and mutation remain explicitly rooted below.
         sb.AppendLine("(allow process*)");
-
         sb.AppendLine("(allow signal)");
-
         sb.AppendLine("(allow sysctl*)");
-
-        sb.AppendLine("(allow mach*)");
-
         sb.AppendLine("(allow system-socket)");
-
+        sb.AppendLine("(allow system-fsctl)");
         sb.AppendLine("(allow network*)");
-
         sb.AppendLine("(allow iokit*)");
-
-        sb.AppendLine("(allow ipc*)");
-
         sb.AppendLine("(allow user-preference*)");
-
         sb.AppendLine("(allow file-map-executable)");
-
-        // Metadata-only for path identity.
         sb.AppendLine("(allow file-read-metadata)");
-
         sb.AppendLine("(allow file-ioctl)");
-
-        // Directory walk / getcwd across the filesystem without granting regular-file content
-        // reads outside the explicit roots below (Seatbelt vnode-type DIRECTORY filter).
-        // Required for dyld/path resolution; proven necessary — do not replace with "/".
         sb.AppendLine("(allow file-read* (vnode-type DIRECTORY))");
+        // The .NET host requires only identity lookup and the Darwin notification center. Keep
+        // every other Mach service and generic IPC operation deny-by-default; Roslyn build hosts
+        // use Unix-domain sockets rooted beneath the invocation TMPDIR, granted explicitly below.
+        sb.AppendLine("(allow mach-lookup");
+        sb.AppendLine("  (global-name \"com.apple.system.notification_center\")");
+        sb.AppendLine("  (global-name \"com.apple.system.opendirectoryd.libinfo\"))");
+        sb.AppendLine("(deny appleevent-send)");
+        sb.AppendLine("(deny process-exec");
 
-        // System runtime + spell/script/interpreter roots: read + execute, no write.
+        foreach (string utility in LaunchBrokerUtilities)
+        {
+            sb.Append("  (literal \"")
+                .Append(EscapeSeatbeltString(utility))
+                .AppendLine("\")");
+        }
+
+        sb.AppendLine(")");
+
         AppendFileAllow(
             sb,
             "file-read*",
-            MergeUnique(SystemReadExecuteRoots, readExecuteRoots, readWriteRoots, [invocationTempDir]));
+            MergeUnique(
+                SystemReadExecuteRoots,
+                readExecuteRoots,
+                readOnlyRoots,
+                readWriteRoots,
+                [invocationTempDir]));
 
-        // Writable: workspace / AllowedPaths / invocation TMPDIR only — never broad /tmp.
         AppendFileAllow(
             sb,
             "file-write*",
-            MergeUnique(readWriteRoots, [invocationTempDir], DevWriteRoots));
+            MergeUnique(
+                readWriteRoots,
+                [invocationTempDir],
+                DevWriteRoots));
+
+        // Roslyn's dotnet-format BuildHost creates a Unix-domain socket beneath TMPDIR. Socket
+        // vnode creation remains confined to that canonical per-invocation IPC root.
+        sb.Append("(allow file-write-create (vnode-type SOCKET) (subpath \"")
+            .Append(EscapeSeatbeltString(invocationTempDir))
+            .AppendLine("\"))");
+
+        AppendFileAllow(
+            sb,
+            "file-clone",
+            MergeUnique(
+                readWriteRoots,
+                [invocationTempDir]));
+
+        AppendFileAllow(
+            sb,
+            "file-link",
+            MergeUnique(
+                readWriteRoots,
+                [invocationTempDir]));
 
         string profile = sb.ToString();
 
         AssertNoWholeVolumeFootguns(profile);
+        AssertNoLaunchBrokerFootguns(profile);
 
         return profile;
 
@@ -124,6 +156,79 @@ internal static class MacOsSandboxExecProfileBuilder
 
         }
 
+    }
+
+    /// <summary>
+    /// Rejects profile changes that could broker execution through LaunchServices or AppleEvents.
+    /// </summary>
+    internal static void AssertNoLaunchBrokerFootguns(string profile)
+    {
+
+        ArgumentNullException.ThrowIfNull(profile);
+
+        if (profile.Contains("(allow mach*)", StringComparison.Ordinal)
+            || profile.Contains("(allow ipc*)", StringComparison.Ordinal)
+            || !profile.Contains("(deny appleevent-send)", StringComparison.Ordinal))
+        {
+
+            throw new InvalidOperationException(
+                "macOS Seatbelt profile must keep broad Mach, IPC, and AppleEvents access denied.");
+        }
+
+        string? processDeny = ExtractForm(
+            profile,
+            "(deny process-exec");
+
+        foreach (string utility in LaunchBrokerUtilities)
+        {
+            if (processDeny is null
+                || !processDeny.Contains(
+                    $"(literal \"{utility}\")",
+                    StringComparison.Ordinal))
+            {
+
+                throw new InvalidOperationException(
+                    $"macOS Seatbelt profile must deny launch broker utility '{utility}'.");
+            }
+        }
+
+    }
+
+    private static string? ExtractForm(
+        string profile,
+        string prefix)
+    {
+        int start = profile.IndexOf(
+            prefix,
+            StringComparison.Ordinal);
+
+        if (start < 0)
+        {
+            return null;
+        }
+
+        int depth = 0;
+
+        for (int index = start;
+             index < profile.Length;
+             index++)
+        {
+            if (profile[index] == '(')
+            {
+                depth++;
+            }
+            else if (profile[index] == ')')
+            {
+                depth--;
+
+                if (depth == 0)
+                {
+                    return profile[start..(index + 1)];
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>True when profile text looks like it grants RW on whole-volume or broad temp.</summary>
@@ -239,6 +344,15 @@ internal static class MacOsSandboxExecProfileBuilder
     private static readonly string[] DevWriteRoots =
     [
         "/dev",
+    ];
+
+    private static readonly string[] LaunchBrokerUtilities =
+    [
+        "/usr/bin/open",
+        "/usr/bin/osascript",
+        "/usr/bin/automator",
+        "/usr/bin/shortcuts",
+        "/bin/launchctl",
     ];
 
     private static void RejectWholeVolumeRoots(IReadOnlyList<string> roots, string paramName)

@@ -30,6 +30,71 @@ public interface IGrimoireRepository
         string modelUsed,
         CancellationToken cancellationToken = default);
 
+    Task<MandatoryToolInteractionProbeResult> ProbeMandatoryToolInteractionAsync(
+        MandatoryToolInteractionProbe probe,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+
+            return Task.FromCanceled<MandatoryToolInteractionProbeResult>(
+                cancellationToken);
+
+        }
+
+        return Task.FromResult(
+            new MandatoryToolInteractionProbeResult(
+                MandatoryToolInteractionProbeOutcome.Unavailable,
+                Result: null));
+
+    }
+
+    Task<MandatoryToolInteractionPreflightResult>
+        PreflightMandatoryToolInteractionAsync(
+            MandatoryToolInteraction interaction,
+            CancellationToken cancellationToken = default)
+    {
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+
+            return Task.FromCanceled<MandatoryToolInteractionPreflightResult>(
+                cancellationToken);
+
+        }
+
+        return Task.FromResult(
+            new MandatoryToolInteractionPreflightResult(
+                MandatoryToolInteractionPreflightOutcome.Unavailable,
+                Result: null));
+
+    }
+
+    /// <summary>
+    /// Durably appends one receipt-owned call/result pair using deterministic entry primary keys.
+    /// This path does not publish process-local session events; the owning API handoff does so only
+    /// after a committed outcome. Implementations that do not support mandatory receipts fail closed.
+    /// </summary>
+    Task<MandatoryToolInteractionAppendResult> AppendMandatoryToolInteractionAsync(
+        MandatoryToolInteraction interaction,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+
+            return Task.FromCanceled<MandatoryToolInteractionAppendResult>(cancellationToken);
+
+        }
+
+        return Task.FromResult(
+            new MandatoryToolInteractionAppendResult(
+                MandatoryToolInteractionAppendOutcome.Failed,
+                interaction.Receipt));
+
+    }
+
     Task SaveCompletedExchangeAsync(
         string userPrompt,
         string assistantText,

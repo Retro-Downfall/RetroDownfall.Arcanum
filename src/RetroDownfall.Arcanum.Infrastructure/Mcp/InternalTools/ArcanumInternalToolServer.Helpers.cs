@@ -114,6 +114,19 @@ internal sealed partial class ArcanumInternalToolServer
         return null;
     }
 
+    private static McpToolsCallResultWire?
+        TryRequirePersistedToolInvocation()
+    {
+        if (PersistedToolInvocationAmbient.Current
+            is not { IsValid: true })
+        {
+            return ToolError(
+                "This mutating filesystem tool requires a bound persisted assistant-turn context.");
+        }
+
+        return null;
+    }
+
     private bool TryResolveSandboxedPath(
         string relativePath,
         [NotNullWhen(true)] out string? absolutePath,

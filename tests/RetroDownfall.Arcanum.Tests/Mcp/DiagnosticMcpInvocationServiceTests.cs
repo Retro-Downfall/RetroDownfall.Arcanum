@@ -36,6 +36,34 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
     }
 
+    [Theory]
+    [InlineData("apply_patch")]
+    [InlineData("workspace_check")]
+    [InlineData("Apply_Patch")]
+    [InlineData("WORKSPACE_CHECK")]
+    public async Task CodingToolNameCollision_IsBlockedBeforeExternalLookup(
+        string toolName)
+    {
+
+        FakeMcpConnectionManager manager = new();
+        manager.AddServer("external-srv", "running", [toolName]);
+        manager.AddTool("external-srv", toolName, """{"invoked":true}""");
+        DiagnosticMcpInvocationService service = CreateService(manager);
+
+        Result<DiagnosticMcpInvocationOutcome> result = await service
+            .InvokeAsync(
+                toolName,
+                default,
+                "external-srv",
+                null,
+                CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Mcp.DiagnosticBlocked, result.Error.Code);
+        Assert.Equal(0, manager.GetToolCallCount("external-srv", toolName));
+
+    }
+
     [Fact]
     public async Task EmptyToolName_ReturnsInvalidBody()
     {
@@ -282,6 +310,43 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
         Assert.Equal(0, manager.GetToolCallCount(DiagnosticMcpInvocationService.InternalServerName, "ask_human"));
+
+    }
+
+    [Fact]
+    public async Task MixedCaseInternalServerName_IsStillExcludedFromDiagnosticLookup()
+    {
+
+        const string mixedCaseInternal = "ArCaNuM-InTeRnAl";
+        FakeMcpConnectionManager manager = new();
+        manager.AddServer(
+            mixedCaseInternal,
+            "running",
+            ["shared"]);
+        manager.AddTool(
+            mixedCaseInternal,
+            "shared",
+            "{\"from\":\"internal\"}");
+        DiagnosticMcpInvocationService service =
+            CreateService(manager);
+
+        Result<DiagnosticMcpInvocationOutcome> result =
+            await service.InvokeAsync(
+                "shared",
+                default,
+                null,
+                null,
+                CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(
+            ErrorCodes.Mcp.ToolNotFound,
+            result.Error.Code);
+        Assert.Equal(
+            0,
+            manager.GetToolCallCount(
+                mixedCaseInternal,
+                "shared"));
 
     }
 

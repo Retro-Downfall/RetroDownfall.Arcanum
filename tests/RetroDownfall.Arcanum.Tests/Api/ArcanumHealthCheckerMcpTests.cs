@@ -65,6 +65,37 @@ public sealed class ArcanumHealthCheckerMcpTests
 
     }
 
+    [Fact]
+    public async Task BuildReportAsync_includes_workspace_check_unavailable_reason()
+    {
+
+        StubWorkspaceCheckCapability capability = new(
+            new WorkspaceCheckCapabilityStatus(
+                false,
+                true,
+                "Linux mandatory jail unavailable."));
+        ArcanumHealthChecker checker = new(
+            new ReadyGrimoire(),
+            new AlwaysOkLiveness(),
+            new EmptyMcpManager(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new WeaveIndexAvailability(),
+            new AlwaysHealthyTracker(),
+            capability);
+
+        HealthReportDto report = await checker.BuildReportAsync(
+            CancellationToken.None);
+        HealthComponentDto workspaceCheck = Assert.Single(
+            report.Components,
+            static component => component.Name == "WorkspaceCheck");
+
+        Assert.Equal(HealthStatus.Degraded, workspaceCheck.Status);
+        Assert.Contains(
+            "Linux mandatory jail unavailable",
+            workspaceCheck.Detail,
+            StringComparison.Ordinal);
+    }
+
     private sealed class ReadyGrimoire : IGrimoireDbReadiness
     {
 
@@ -211,6 +242,18 @@ public sealed class ArcanumHealthCheckerMcpTests
         }
 
         public IReadOnlyList<RetroDownfall.Arcanum.Core.Resilience.ProviderHealthStatus> GetAllStatuses() => [];
+    }
+
+    private sealed class StubWorkspaceCheckCapability(
+        WorkspaceCheckCapabilityStatus status)
+        : IWorkspaceCheckCapabilityReporter
+    {
+
+        public bool IsCurrentlyEligible => status.IsAvailable;
+
+        public WorkspaceCheckCapabilityStatus GetStatus(
+            string? workspaceRoot = null) =>
+            status;
     }
 
 }

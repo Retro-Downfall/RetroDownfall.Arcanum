@@ -223,6 +223,74 @@ public static class SettingDescriptors
 
         new("mcp.allowedHttpHosts", ConfigSection.Mcp, "Allowed HTTP hosts", "Hosts permitted over plaintext http for Streamable HTTP MCP servers (e.g. localhost for a trusted dev gateway). Remote HTTP servers must use https.", SettingKind.StringArray),
 
+        // ===== Coding tools =====
+
+        new("codingTools.search.maxPatternChars", ConfigSection.CodingTools, "Search pattern length", "Maximum literal or runtime regex pattern length accepted by search_workspace.", SettingKind.Int, 1, 16_384, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxPatternChars)),
+
+        new("codingTools.search.regexTimeoutMilliseconds", ConfigSection.CodingTools, "Regex match timeout (ms)", "Per-match timeout for line-scoped runtime regular expressions.", SettingKind.Int, 10, 10_000, 10, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds)),
+
+        new("codingTools.search.maxElapsedMilliseconds", ConfigSection.CodingTools, "Search elapsed cap (ms)", "Maximum tool-owned elapsed time for one workspace search.", SettingKind.Int, 100, 120_000, 100, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxElapsedMilliseconds)),
+
+        new("codingTools.search.maxFiles", ConfigSection.CodingTools, "Search file cap", "Maximum files inspected by one workspace search.", SettingKind.Int, 1, 100_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxFiles)),
+
+        new("codingTools.search.maxBytes", ConfigSection.CodingTools, "Search byte cap", "Maximum aggregate file bytes inspected by one workspace search.", SettingKind.Long, 1_024, 1_073_741_824, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxBytes)),
+
+        new("codingTools.search.maxTraversalSteps", ConfigSection.CodingTools, "Search traversal cap", "Maximum deterministic directory traversal steps per workspace search.", SettingKind.Int, 1, 10_000_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxTraversalSteps)),
+
+        new("codingTools.search.maxMatches", ConfigSection.CodingTools, "Search match cap", "Maximum matches returned by one workspace search.", SettingKind.Int, 1, 100_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxMatches)),
+
+        new("codingTools.search.maxPreviewChars", ConfigSection.CodingTools, "Search preview length", "Maximum characters retained in each compact search preview.", SettingKind.Int, 16, 4_096, 16, ClampName: nameof(ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars)),
+
+        new("codingTools.patch.maxPatchBytes", ConfigSection.CodingTools, "Patch input byte cap", "Maximum UTF-8 bytes accepted for one unified-diff invocation.", SettingKind.Long, 1_024, 67_108_864, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxPatchBytes)),
+
+        new("codingTools.patch.maxInputBytesPerFile", ConfigSection.CodingTools, "Patch source bytes per file", "Maximum source bytes read from one patch target.", SettingKind.Long, 1_024, 268_435_456, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile)),
+
+        new("codingTools.patch.maxTotalInputBytes", ConfigSection.CodingTools, "Patch aggregate source bytes", "Maximum source bytes read across one patch invocation.", SettingKind.Long, 1_024, 1_073_741_824, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes)),
+
+        new("codingTools.patch.maxOutputBytesPerFile", ConfigSection.CodingTools, "Patch output bytes per file", "Maximum encoded output bytes produced for one patched file.", SettingKind.Long, 1_024, 268_435_456, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile)),
+
+        new("codingTools.patch.maxTotalOutputBytes", ConfigSection.CodingTools, "Patch aggregate output bytes", "Maximum encoded output bytes produced across one patch invocation.", SettingKind.Long, 1_024, 1_073_741_824, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes)),
+
+        new("codingTools.patch.maxStagingBytesPerFile", ConfigSection.CodingTools, "Patch staging bytes per file", "Maximum exact output-plus-backup staging bytes for one patched file.", SettingKind.Long, 1_024, 536_870_912, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile)),
+
+        new("codingTools.patch.maxTotalStagingBytes", ConfigSection.CodingTools, "Patch aggregate staging bytes", "Maximum exact output-plus-backup staging bytes across one patch invocation.", SettingKind.Long, 1_024, 2_147_483_648, 1_024, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes)),
+
+        new("codingTools.patch.maxElapsedMilliseconds", ConfigSection.CodingTools, "Patch absolute deadline (ms)", "Maximum elapsed time for one patch invocation, including receipt work.", SettingKind.Int, 100, 300_000, 100, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds)),
+
+        new("codingTools.patch.rollbackReserveMilliseconds", ConfigSection.CodingTools, "Patch rollback reserve (ms)", "Time withheld from normal patch work for bounded rollback and receipt classification.", SettingKind.Int, 50, 60_000, 50, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds)),
+
+        new("codingTools.patch.maxFiles", ConfigSection.CodingTools, "Patch file cap", "Maximum files represented by one unified diff.", SettingKind.Int, 1, 1_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxFiles)),
+
+        new("codingTools.patch.maxHunks", ConfigSection.CodingTools, "Patch hunk cap", "Maximum total hunks represented by one unified diff.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxHunks)),
+
+        new("codingTools.patch.maxLinesPerHunk", ConfigSection.CodingTools, "Patch lines per hunk", "Maximum context, addition, and deletion lines in one hunk.", SettingKind.Int, 1, 100_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk)),
+
+        new("codingTools.patch.fuzzyMatchWindowLines", ConfigSection.CodingTools, "Patch fuzzy window (lines)", "Maximum line distance searched around an expected hunk location when exact placement drifts.", SettingKind.Int, 0, 1_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines)),
+
+        new("codingTools.patch.maxResultItems", ConfigSection.CodingTools, "Patch result item cap", "Maximum per-file result items retained before structured result materialization applies its byte/token budget.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspacePatchMaxResultItems)),
+
+        new("codingTools.workspaceCheck.enabled", ConfigSection.CodingTools, "Workspace checks enabled", "Allows workspace_check advertisement only when the mandatory host jail and trusted executable are also currently available.", SettingKind.Bool),
+
+        new("codingTools.workspaceCheck.timeoutSeconds", ConfigSection.CodingTools, "Workspace-check timeout (s)", "Process timeout for one typed build, test, or lint profile. Advertisement also requires this timeout plus 30 seconds of cleanup grace to fit the inference deadline.", SettingKind.Int, 30, 1_800, 30, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds)),
+
+        new("codingTools.workspaceCheck.maxCustomProfiles", ConfigSection.CodingTools, "Custom profile cap", "Maximum operator-authored workspace-check profiles.", SettingKind.Int, 0, 256, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxCustomProfiles)),
+
+        new("codingTools.workspaceCheck.maxFixedArgumentsPerProfile", ConfigSection.CodingTools, "Fixed arguments per profile", "Maximum code-reviewed fixed argument tokens in one custom profile or exact option rendering.", SettingKind.Int, 1, 128, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxFixedArgumentsPerProfile)),
+
+        new("codingTools.workspaceCheck.maxArgumentTokenChars", ConfigSection.CodingTools, "Argument token length", "Maximum characters in one fixed workspace-check argument token.", SettingKind.Int, 16, 4_096, 16, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxArgumentTokenChars)),
+
+        new("codingTools.workspaceCheck.maxOptionsPerProfile", ConfigSection.CodingTools, "Options per profile", "Maximum bounded typed options exposed by one custom profile.", SettingKind.Int, 0, 64, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxOptionsPerProfile)),
+
+        new("codingTools.workspaceCheck.maxAllowedValuesPerOption", ConfigSection.CodingTools, "Allowed values per option", "Maximum exact operator-owned argument renderings for one model-selectable option.", SettingKind.Int, 1, 128, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxAllowedValuesPerOption)),
+
+        new("codingTools.workspaceCheck.maxDiagnostics", ConfigSection.CodingTools, "Workspace-check diagnostics", "Maximum structured diagnostics retained from one check.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxDiagnostics)),
+
+        new("codingTools.workspaceCheck.maxOutputBytes", ConfigSection.CodingTools, "Workspace-check output bytes", "Maximum capped stdout/stderr bytes retained when structured parsing is partial or unavailable.", SettingKind.Long, 4_096, 67_108_864, 4_096, ClampName: nameof(ArcanumSettingClamps.WorkspaceCheckMaxOutputBytes)),
+
+        new("codingTools.workspaceCheck.executableCatalog.dotNet.path", ConfigSection.CodingTools, "Trusted dotnet executable", "Optional canonical absolute native dotnet path. Empty delegates resolution to trusted host install roots; PATH and workspace executables are never used.", SettingKind.Path, Placeholder: "/usr/local/share/dotnet/dotnet", AllowUnset: true),
+
+        new("codingTools.workspaceCheck.customProfiles", ConfigSection.CodingTools, "Custom check profiles", "Opaque dictionary of operator-authored typed profiles. Edit only in raw arcanum.json; Compendium preserves it unchanged.", SettingKind.Dictionary),
+
         // ===== Orchestration — Daemon =====
 
         new("daemon.maxConcurrentJobs", ConfigSection.Orchestration, "Daemon max concurrent jobs", "Caps the number of Unseen Servant jobs that can run concurrently.", SettingKind.Int, 1, 1024, 1, ClampName: nameof(ArcanumSettingClamps.DaemonMaxConcurrentJobs)),
