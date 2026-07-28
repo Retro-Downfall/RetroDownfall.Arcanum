@@ -24,7 +24,9 @@ internal static class UnixProcessGroupSupervisor
         "/bin/setsid",
     ];
 
-    internal static bool Apply(ProcessStartInfo startInfo)
+    internal static bool Apply(
+        ProcessStartInfo startInfo,
+        Func<string?>? linuxSetSidResolver = null)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -40,7 +42,9 @@ internal static class UnixProcessGroupSupervisor
 
         List<string> arguments = [.. startInfo.ArgumentList];
         string? setSidPath = OperatingSystem.IsLinux()
-            ? LinuxSetSidCandidates.FirstOrDefault(File.Exists)
+            ? linuxSetSidResolver is null
+                ? LinuxSetSidCandidates.FirstOrDefault(File.Exists)
+                : linuxSetSidResolver()
             : null;
         startInfo.ArgumentList.Clear();
 

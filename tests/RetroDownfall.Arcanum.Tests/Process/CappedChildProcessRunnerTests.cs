@@ -109,6 +109,52 @@ public sealed class CappedChildProcessRunnerTests
     }
 
     [SkippableFact]
+    public void Unix_process_group_supervisor_without_setsid_uses_shell_fallback()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "Linux-specific launch construction.");
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+        };
+        startInfo.ArgumentList.Add("-n");
+        startInfo.ArgumentList.Add("hello");
+
+        bool directGroup = UnixProcessGroupSupervisor.Apply(
+            startInfo,
+            static () => null);
+
+        Assert.False(directGroup);
+        Assert.Equal("/bin/sh", startInfo.FileName);
+        Assert.Equal("-c", startInfo.ArgumentList[0]);
+        Assert.Contains("set -m", startInfo.ArgumentList[1], StringComparison.Ordinal);
+        Assert.Equal("arcanum-process-group", startInfo.ArgumentList[2]);
+        Assert.Equal("/bin/echo", startInfo.ArgumentList[3]);
+        Assert.Equal("-n", startInfo.ArgumentList[4]);
+        Assert.Equal("hello", startInfo.ArgumentList[5]);
+    }
+
+    [SkippableFact]
+    public void Unix_process_group_supervisor_with_setsid_preserves_argv()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "Linux-specific launch construction.");
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "-option-shaped-command",
+        };
+        startInfo.ArgumentList.Add("argument with spaces");
+
+        bool directGroup = UnixProcessGroupSupervisor.Apply(
+            startInfo,
+            static () => "/usr/bin/setsid");
+
+        Assert.True(directGroup);
+        Assert.Equal("/usr/bin/setsid", startInfo.FileName);
+        Assert.Equal(
+            ["--", "-option-shaped-command", "argument with spaces"],
+            startInfo.ArgumentList);
+    }
+
+    [SkippableFact]
     public async Task RunAsync_kills_process_group_descendants_after_normal_parent_exit()
     {
 
